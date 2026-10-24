@@ -1,4 +1,4 @@
-"""Bounded eviction for the caches on :class:`~service_kit.media.state.AppState`.
+"""Bounded eviction for the caches on :class:`~client_kit.media.state.AppState`.
 
 TWO BOUNDS, AND THEY MEASURE DIFFERENT THINGS. The entry count is the LOOKUP bound — it keeps the
 dict small and the key space from drifting. The byte total is the MEMORY bound, and it is the one

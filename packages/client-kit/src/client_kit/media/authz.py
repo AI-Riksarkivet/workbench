@@ -5,7 +5,7 @@ This lived in `viewer/api/security.py`, whose own docstring already stated why i
 second module deriving an object string that agrees until it does not."
 
 A second service needs the same object, so the rule lives here rather than gaining a second author.
-Every media service's settings extend `service_kit.media.config.Settings`, which is where
+Every media service's settings extend `client_kit.media.config.Settings`, which is where
 `catalog_table_id` and `catalog_delimiter` live — so the shared type was always the right home; the
 function was simply written in the first service that needed it.
 """
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from service_kit.media.config import Settings
+    from client_kit.media.config import Settings
 
 
 def corpus_object(settings: Settings, dataset_id: str, table: str) -> str:

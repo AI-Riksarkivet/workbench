@@ -25,7 +25,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from service_kit.rate_limit import by_subject, make_limiter, register_rate_limiting
+from client_kit.rate_limit import by_subject, make_limiter, register_rate_limiting
 
 
 def test_the_key_function_falls_back_to_IP_for_an_anonymous_caller() -> None:

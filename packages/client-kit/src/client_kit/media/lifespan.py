@@ -1,6 +1,6 @@
 """THE media-service lifespan — one implementation for every service built on the media library.
 
-They are one shape wearing several names: a Lance media service over ``service_kit.media``. Each
+They are one shape wearing several names: a Lance media service over ``client_kit.media``. Each
 one hand-wrote the same startup and the same teardown, and docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" DUP-16 is that copy.
 The copies had already drifted in the way copies do — not in what they did, but in the ORDER they did
 it:
@@ -29,11 +29,11 @@ import httpx
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
+from client_kit.media.config import MediaSettings
+from client_kit.media.state import AppState, dataset_handle
 from service_kit.draining import arm_drain_on_sigterm
 from service_kit.governed.auth_lifespan import _GovernedSettings, attach_auth
 from service_kit.governed.fga import dispose as fga_dispose
-from service_kit.media.config import MediaSettings
-from service_kit.media.state import AppState, dataset_handle
 
 
 log = logging.getLogger(__name__)

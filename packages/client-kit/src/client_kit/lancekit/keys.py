@@ -8,9 +8,9 @@ imports a sibling group for dataset access (LANCE_MEDIA_MERGE §4.4).
 import re
 from collections.abc import Sequence
 
+from client_kit.lancekit.descriptor import Declared
+from client_kit.lancekit.predicate import and_, eq
 from service_kit.exceptions import ValidationError
-from service_kit.lancekit.descriptor import Declared
-from service_kit.lancekit.predicate import and_, eq
 
 
 def validate_doc_key(declared: Declared, doc_id: str) -> str:

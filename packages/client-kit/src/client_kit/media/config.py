@@ -1,7 +1,7 @@
 """Typed application settings (pydantic-settings).
 
 Read once via :func:`get_settings`; routers read it off ``state.settings`` (the
-injected :class:`~service_kit.media.state.AppState`). Only env-varying values live here —
+injected :class:`~client_kit.media.state.AppState`). Only env-varying values live here —
 algorithmic constants (RRF k, probe tokens, column-exclude sets) stay as module
 constants in their feature packages.
 
@@ -88,7 +88,7 @@ class MediaSettings(BaseSettings):
     #: The request-body ceiling for the media apps.
     #:
     #: These are the apps that accept MULTIPART UPLOADS, and they were the ones with no cap: they
-    #: build through `service_kit.media.middleware`, not the fleet factory that grew one. A file part
+    #: build through `client_kit.media.middleware`, not the fleet factory that grew one. A file part
     #: is spooled to a SpooledTemporaryFile in FULL before the handler is entered, so the handler's
     #: own `read(cap + 1)` bounds its memory and cannot bound the landing zone.
     #:
@@ -248,7 +248,7 @@ def get_media_settings() -> MediaSettings:
     that one takes a `Request` and returns whatever the app's own lifespan bound, this one takes
     nothing and returns an lru_cached singleton. Two functions with one name and incompatible
     signatures is how `AppState` came to default every instance in the process to a single shared
-    object — see `service_kit.media.state.AppState.settings`, which no longer does.
+    object — see `client_kit.media.state.AppState.settings`, which no longer does.
     """
     return MediaSettings()
 

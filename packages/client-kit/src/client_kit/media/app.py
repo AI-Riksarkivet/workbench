@@ -24,10 +24,10 @@ from contextlib import AbstractAsyncContextManager
 
 from fastapi import APIRouter, FastAPI
 
+from client_kit.media.config import MediaSettings
+from client_kit.media.middleware import register_media_middleware
 from service_kit.exceptions import register_handlers
 from service_kit.lakehouse.ns_errors import install_problem_handlers
-from service_kit.media.config import MediaSettings
-from service_kit.media.middleware import register_media_middleware
 from service_kit.probes import ReadyCheck, make_probes_router
 
 
@@ -56,7 +56,7 @@ def build_media_app(
       is unreachable", sending everyone to look at networking for what is really "sign in again".
       Second wins for ``RequestValidationError``, exactly the order ``make_service_app`` uses.
     * The media middleware stack (CORS with the Range headers exposed, the body ceiling, one request
-      id) — see ``service_kit.media.middleware``.
+      id) — see ``client_kit.media.middleware``.
     * The probes at the ROOT: a kubelet does not know a service's prefix. ``ready_check`` is the
       optional half, for a service with a dependency worth reporting (an actor plane).
 

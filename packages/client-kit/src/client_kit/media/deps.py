@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import Depends, Query, Request
 
-from service_kit.media.state import AppState
+from client_kit.media.state import AppState
 
 
 def get_state(request: Request) -> AppState:

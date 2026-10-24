@@ -24,7 +24,7 @@ approximate. That is a reason to share the eviction, not to keep them apart.
 
 from __future__ import annotations
 
-from service_kit.media.cache_bounds import evict_to_bounds
+from client_kit.media.cache_bounds import evict_to_bounds
 
 
 def test_an_entry_larger_than_the_whole_ceiling_does_not_empty_the_cache() -> None:

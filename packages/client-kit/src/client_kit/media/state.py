@@ -16,11 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from service_kit.media.config import MediaSettings
+from client_kit.media.config import MediaSettings
 
 
 if TYPE_CHECKING:
-    from service_kit.lancekit.registry import DatasetHandle, DatasetRegistry
+    from client_kit.lancekit.registry import DatasetHandle, DatasetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class AppState(BaseModel):
     # media/search service port and are stripped at integration. Same first-build
     # hazard as voice_encoder: sync handlers run in a threadpool, so two
     # concurrent first requests would otherwise both construct the registry.
-    registry: Any | None = None  # service_kit.lancekit.registry.DatasetRegistry
+    registry: Any | None = None  # client_kit.lancekit.registry.DatasetRegistry
     registry_lock: Any = Field(default_factory=threading.Lock)
 
 
@@ -93,7 +93,7 @@ def ensure_registry(state: AppState) -> DatasetRegistry:
     """
     # Imported per call, not at module top: service-kit's media plane stays
     # importable without the Lance stack until a registry is actually needed.
-    from service_kit.lancekit.registry import DatasetRegistry
+    from client_kit.lancekit.registry import DatasetRegistry
 
     if state.registry is None:
         # Double-checked so the steady state never takes the lock; without it two
@@ -123,8 +123,8 @@ def dataset_handle(state: AppState, dataset_id: str | None = None) -> DatasetHan
     them `Any` from its first line — so `handle.dbb` type-checks, and a renamed attribute on
     `DatasetHandle` reddens nothing anywhere in the fleet.
     """
+    from client_kit.lancekit.registry import UnknownDatasetError
     from service_kit.exceptions import NotFoundError
-    from service_kit.lancekit.registry import UnknownDatasetError
 
     registry = ensure_registry(state)
     try:

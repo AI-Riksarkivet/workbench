@@ -16,7 +16,7 @@ import lance
 import pyarrow as pa
 from pydantic import BaseModel
 
-from service_kit.lancekit import store
+from client_kit.lancekit import store
 from service_kit.lancekit.absence import reads_as_absent
 from service_kit.lancekit.blobs import is_blob_field
 
@@ -92,7 +92,7 @@ def discover_tables(db_path: str | Path, storage_options: dict[str, str] | None 
     """All user tables under a dataset root (``__manifest`` etc. are reserved).
 
     Lists over the object store when ``db_path`` is an ``s3://`` URI, else the
-    local directory — see :mod:`service_kit.lancekit.store`.
+    local directory — see :mod:`client_kit.lancekit.store`.
     """
     out: dict[str, TableInfo] = {}
     for stem in store.list_lance_stems(db_path, storage_options):

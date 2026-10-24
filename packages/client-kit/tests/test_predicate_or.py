@@ -8,7 +8,7 @@ that errors, because wrong rows look like data.
 
 from __future__ import annotations
 
-from service_kit.lancekit.predicate import and_, eq, or_
+from client_kit.lancekit.predicate import and_, eq, or_
 
 
 def test_ORed_conjunctions_keep_their_grouping() -> None:

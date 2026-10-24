@@ -9,7 +9,7 @@ states the set once, in the type — and because its members compare equal to th
 
 from __future__ import annotations
 
-from service_kit.media.config import Settings
+from client_kit.media.config import Settings
 
 
 def _settings(**env: object) -> Settings:

@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import pytest
 
+from client_kit.pagination import MAX_OFFSET, PaginationParams, build_page, guard_offset
 from service_kit.exceptions import ValidationError
-from service_kit.pagination import MAX_OFFSET, PaginationParams, build_page, guard_offset
 
 
 def test_the_offset_is_derived_not_restated() -> None:

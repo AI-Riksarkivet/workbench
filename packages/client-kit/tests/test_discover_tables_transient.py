@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from service_kit.lancekit import introspect
+from client_kit.lancekit import introspect
 
 
 def test_transient_read_error_propagates_not_swallowed(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

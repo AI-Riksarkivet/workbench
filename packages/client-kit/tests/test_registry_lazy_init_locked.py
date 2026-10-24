@@ -14,10 +14,10 @@ import threading
 
 import pytest
 
-from service_kit.lancekit import registry as registry_mod
-from service_kit.media import state as state_mod
-from service_kit.media.config import Settings
-from service_kit.media.state import AppState
+from client_kit.lancekit import registry as registry_mod
+from client_kit.media import state as state_mod
+from client_kit.media.config import Settings
+from client_kit.media.state import AppState
 
 
 def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytest.MonkeyPatch) -> None:

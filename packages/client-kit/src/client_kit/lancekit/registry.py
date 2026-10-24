@@ -2,7 +2,7 @@
 
 Datasets are directories named ``<id>.lance`` under ``MEDIA_DB_ROOT``. Each is
 opened on first use and cached with its validated
-:class:`~service_kit.lancekit.descriptor.DatasetDescriptor`; an invalid or missing
+:class:`~client_kit.lancekit.descriptor.DatasetDescriptor`; an invalid or missing
 descriptor surfaces as a domain error, never a half-served dataset. The
 legacy single-DB routes resolve through :meth:`default`, so the pre-split API
 surface keeps working while new routes address datasets explicitly.
@@ -18,11 +18,11 @@ import lance
 import lancedb
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
+from client_kit.lancekit import store
+from client_kit.lancekit.descriptor import DatasetDescriptor, load_dataset_descriptor
+from client_kit.lancekit.introspect import table_info
 from service_kit.exceptions import NotFoundError
-from service_kit.lancekit import store
 from service_kit.lancekit.absence import reads_as_absent
-from service_kit.lancekit.descriptor import DatasetDescriptor, load_dataset_descriptor
-from service_kit.lancekit.introspect import table_info
 
 
 logger = logging.getLogger(__name__)

@@ -16,8 +16,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from client_kit.media.config import Settings
 from service_kit.body_limit import BodySizeLimitMiddleware
-from service_kit.media.config import Settings
 from service_kit.middleware import RequestIDMiddleware
 
 

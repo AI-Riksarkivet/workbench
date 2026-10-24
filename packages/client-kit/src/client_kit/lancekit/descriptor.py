@@ -23,8 +23,8 @@ from typing import Any
 import lance
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from service_kit.lancekit import store
-from service_kit.lancekit.introspect import TableInfo, discover_tables
+from client_kit.lancekit import store
+from client_kit.lancekit.introspect import TableInfo, discover_tables
 
 
 logger = logging.getLogger(__name__)
