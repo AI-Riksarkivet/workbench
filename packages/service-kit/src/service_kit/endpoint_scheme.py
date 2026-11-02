@@ -1,11 +1,11 @@
 """The scheme of an object-store endpoint: one case-insensitive rule, for Lance and pyarrow alike.
 
-`objectfs.lance_storage_options`, `objectfs.s3_filesystem` and the catalog's `namespace_properties` apply
-it, and so does every caller that builds through them; an options dict or `S3FileSystem` assembled by hand
-bypasses it.
+`service_kit.storage_options.s3_filesystem`, the lakehouse's Lance storage options and the catalog's
+`namespace_properties` apply it, and so does every caller that builds through them; an options dict or
+`S3FileSystem` assembled by hand bypasses it.
 
 Its own module, importing only the stdlib, because config modules apply it (the catalog's among them) and
-none of them loads pyarrow; `objectfs` does, and importing it from a settings module would.
+none of them loads pyarrow; `storage_options` does, and importing it from a settings module would.
 """
 
 from __future__ import annotations

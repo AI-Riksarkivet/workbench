@@ -18,7 +18,7 @@ CATALOG_DELIMITER: Final = "$"
 
 #: The read-only property DescribeTable and DescribeNamespace answer an object's uuid under (ADR 0173 §11). A namespace
 #: keeps its own in its `__manifest` row's properties, which only its create writes and its undrop restores; a table's
-#: lives in its location's claim (``service_kit.lakehouse.location_claims``). No door accepts a caller's ``rask.*``
+#: lives in its location's claim (``lakehouse_kit.location_claims``). No door accepts a caller's ``rask.*``
 #: property, so no caller sets or changes one. Every service that names an object by its uuid reads it, so it is declared
 #: once.
 UUID_PROPERTY: Final = "rask.uuid"
@@ -43,15 +43,26 @@ def uuid_of(properties: object) -> str | None:
 #: It is ONE constant because it was three copies that had already diverged. A shape rule duplicated per
 #: endpoint is a rule that holds until someone fixes one site.
 #:
-#: **IT LIVES IN SERVICE-KIT BECAUSE TWO PLANES DECIDE WITH IT, AND THEY DISAGREED.** The catalog MINTS
-#: against this rule; the planes downstream — `catalog.core.lineage_emit`, the medallion's ingest
-#: trigger and transform — CONSUME with `warehouse_registry.is_safe_project`, which
-#: had its own looser copy admitting uppercase, underscores, single characters and a trailing hyphen.
-#: Anything in that gap is an id those planes would turn into an S3 key prefix, a Lance dataset URI and
-#: a lineage namespace qualifier, and that the control plane could never have issued. The rule a
-#: producer checks and the rule the issuer enforces cannot live in the issuer.
+#: **IT LIVES IN THE PLATFORM BECAUSE THE ISSUER AND EVERY PRODUCER DECIDE WITH IT.** The catalog MINTS
+#: against this rule; a producer downstream (`catalog.core.lineage_emit`, a client naming a project in its
+#: lineage) CONSUMES with :func:`is_safe_project`. A looser consume rule admitting uppercase, underscores,
+#: single characters or a trailing hyphen would pass ids those producers turn into an S3 key prefix, a Lance
+#: dataset URI and a lineage namespace qualifier, and that the control plane could never have issued. The
+#: rule a producer checks and the rule the issuer enforces cannot live in the issuer.
 CONTROL_ID_PATTERN = r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]"
 CONTROL_ID_RE = re.compile(rf"^{CONTROL_ID_PATTERN}\Z")
+
+
+def is_safe_project(value: object) -> bool:
+    """True iff ``value`` is a project id the control plane could have issued, and so path-safe.
+
+    A ``project`` a consumer reads becomes an S3 key prefix, a Lance dataset URI and a lineage namespace qualifier, so
+    anything outside the mint rule (traversal dots, separators, whitespace) is refused at the boundary, never repaired.
+    It matches with ``fullmatch`` against the ``\\Z``-anchored :data:`CONTROL_ID_RE`: Python's ``$`` also matches before
+    a trailing newline, so ``"acme\\n"`` would pass a ``$``-anchored copy. Measured before the consume rule was narrowed
+    to the mint rule: all 93 projects registered on the deployed estate (2026-09-19) already satisfied it.
+    """
+    return isinstance(value, str) and CONTROL_ID_RE.fullmatch(value) is not None
 
 
 #: The lineage namespaces that denote a source OUTSIDE the governed estate.

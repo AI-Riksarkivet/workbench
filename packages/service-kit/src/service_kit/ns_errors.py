@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from lance_namespace import ErrorCode, LanceNamespaceError, ServiceUnavailableError, UnsupportedOperationError
 
-from service_kit.lakehouse.spec_routes import is_spec_route
-from service_kit.lancekit.outage import reads_as_store_outage
+from service_kit.outage import reads_as_store_outage
 from service_kit.problem import PROBLEM_JSON, occurrence, problem_body
+from service_kit.spec_routes import is_spec_route
 
 
 if TYPE_CHECKING:

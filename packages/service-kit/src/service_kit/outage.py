@@ -1,13 +1,13 @@
 """ONE answer to "did this object-store call, Lance's or pyarrow's, fail because the store did not answer?".
 
-The sibling of :mod:`service_kit.lancekit.absence`, for the opposite question. Absence PROVES a target
-is not there; an outage proves nothing about the target, only that the store could not be asked. The
+The opposite question from absence: absence PROVES a target is not there, while an outage proves nothing
+about the target, only that the store could not be asked. The
 two must never be confused in either direction: an outage read as absence is how a black-holed store
 became "table not found" (404), and an outage read as a broken catalog is how it became a 500 that
 sends whoever is on call to the wrong system. 503 is the status that says what happened and asks the
 caller to retry.
 
-TEXT, NOT TYPES, for the reason `absence` gives: object_store flattens every failure into a bare
+TEXT, NOT TYPES, because object_store flattens every failure into a bare
 `ValueError`/`OSError` carrying `LanceError(IO)` and the reason in the message. MEASURED on pylance
 12.0.0, opening a dataset through each store fault (`lance.dataset`, bounded client timeouts):
 
