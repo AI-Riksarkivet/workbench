@@ -4,11 +4,14 @@
 //	dagger call lint                    ruff (check and format) and ty over the Python workspace
 //	dagger call test                    the offline Python suite (-m "not e2e")
 //	dagger call frontend-check          the frontend workspace's check, lint and fmt:check
+//	dagger call fga-test                the authorization model: valid, its own tests green, model.json its compiled form
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"dagger/workbench/internal/dagger"
@@ -23,6 +26,12 @@ const (
 	RustToolchain = "1.90.0"
 	// The bun the frontend workspace's lock was written by.
 	BunImage = "oven/bun:1.4.2"
+	// The OpenFGA server the offline suite asserts authorization outcomes against (tests/openfga.py), and its CLI for the
+	// model's own tests. `make openfga` exports the server binary from the same image for a developer box.
+	OpenfgaImage = "openfga/openfga:v1.18.3"
+	FgaCliImage  = "openfga/cli:v0.6.4"
+	// Where the workbench's authorization model lives in the source tree.
+	authModelDir = "packages/service-kit/src/service_kit/governed/auth"
 )
 
 // Image builds .docker/<name>.dockerfile with the repository root as its context.
@@ -98,6 +107,7 @@ func (m *Workbench) Test(
 	workers string,
 ) (string, error) {
 	return m.python(src).
+		WithFile("/usr/local/bin/openfga", dag.Container().From(OpenfgaImage).File("/openfga")).
 		WithExec([]string{"uv", "run", "--frozen", "pytest", "-m", "not e2e", "-n", workers, "-q",
 			"--timeout=300", "--timeout-method=thread"}).
 		Stdout(ctx)
@@ -119,4 +129,50 @@ func (m *Workbench) FrontendCheck(
 		WithExec([]string{"bun", "run", "lint"}).
 		WithExec([]string{"bun", "run", "fmt:check"}).
 		Stdout(ctx)
+}
+
+// FgaTest validates the authorization model, runs its own tests (model.fga.yaml), and refuses a model.json that is not
+// the model's compiled form, so the model the services load is the one the tests judged.
+func (m *Workbench) FgaTest(
+	ctx context.Context,
+	// +ignore=["**", "!packages/service-kit/src/service_kit/governed/auth/**"]
+	// +defaultPath="/"
+	src *dagger.Directory,
+) (string, error) {
+	cli := dag.Container().From(FgaCliImage).
+		WithDirectory("/auth", src.Directory(authModelDir)).
+		WithWorkdir("/auth")
+	validated, err := cli.WithExec([]string{"/fga", "model", "validate", "--file", "model.fga"}).Stdout(ctx)
+	if err != nil {
+		return "", err
+	}
+	var validity struct {
+		IsValid bool `json:"is_valid"`
+	}
+	if err := json.Unmarshal([]byte(validated), &validity); err != nil || !validity.IsValid {
+		return "", fmt.Errorf("model.fga is not valid: %s", validated)
+	}
+	tested, err := cli.WithExec([]string{"/fga", "model", "test", "--tests", "model.fga.yaml"}).Stdout(ctx)
+	if err != nil {
+		return "", err
+	}
+	compiled, err := cli.WithExec([]string{"/fga", "model", "transform", "--file", "model.fga"}).Stdout(ctx)
+	if err != nil {
+		return "", err
+	}
+	carried, err := src.File(authModelDir + "/model.json").Contents(ctx)
+	if err != nil {
+		return "", err
+	}
+	var want, got any
+	if err := json.Unmarshal([]byte(compiled), &want); err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal([]byte(carried), &got); err != nil {
+		return "", err
+	}
+	if !reflect.DeepEqual(want, got) {
+		return "", fmt.Errorf("model.json is not model.fga's compiled form: run `make fga-model`")
+	}
+	return tested, nil
 }

@@ -15,10 +15,9 @@ and anyone port-forwarding. So it is defence in depth rather than an open edge. 
 the POST reads a corpus unit and drives a model backend, spending GPU for a caller nobody checked,
 with no audit row written.
 
-WHY `can_write_data` ON THE UNIT'S TABLE. An assist prediction is a PROPOSED WRITE — it comes back
-as `status="prediction"`, `source="model:<name>"` rows the annotator renders and a reviewer accepts,
-which is the same provenance path a batch deriver's output takes. Gating it on the read rung would
-let anyone who may look at a corpus spend model compute against it and queue work for its reviewers.
+WHY `can_annotate` ON THE PROJECT. An assist prediction is a PROPOSED WRITE — it comes back as
+`status="prediction"`, `source="model:<name>"` rows the annotator renders and a reviewer accepts. Gating it on reading
+would let anyone who may look at a corpus spend model compute against it and queue work for its reviewers.
 
 The two GETs disclose the estate's model-backend topology (`/assist/producers`) and a task's ontology
 (`/assist/generation-schema`), so they sit behind the same authenticated floor even though they touch
@@ -37,7 +36,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints.assist import router
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
@@ -49,7 +48,7 @@ from tests.media_catalog import write_table
 def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: str = "gina") -> FastAPI:
     """An app whose FGA checker answers `allow` and records what it was asked."""
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if record is not None:
             record.append({"user": user, "relation": relation, "obj": obj})
         return allow
@@ -60,6 +59,7 @@ def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: st
     app.include_router(router)
     register_handlers(app)  # ForbiddenError -> problem+json 403, as in the real service
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     # The VERIFIED subject. Overriding `current_subject` (not a header) is the point: with OIDC on
     # there is no header path to this value at all.
     app.dependency_overrides[current_subject] = lambda: subject
@@ -89,9 +89,9 @@ BODY = {"producer": "sam", "prompt": "a line of text"}
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("POST", "/api/assist/doc-1/0/0"),
-        ("GET", "/api/assist/producers"),
-        ("GET", "/api/assist/generation-schema?task_id=t1"),
+        ("POST", "/api/assist/doc-1/0/0?project=p1"),
+        ("GET", "/api/assist/producers?project=p1"),
+        ("GET", "/api/assist/generation-schema?task_id=t1&project=p1"),
     ],
 )
 def test_a_caller_without_the_relation_is_refused(method: str, path: str) -> None:
@@ -104,13 +104,10 @@ def test_a_caller_without_the_relation_is_refused(method: str, path: str) -> Non
     )
 
 
-def test_the_check_names_the_WRITE_rung_on_the_units_table() -> None:
-    """A prediction is a proposed write, so the rung is `can_write_data`, and the object is the
-    corpus table the annotations plane is governed by — not a second naming scheme."""
+def test_the_check_is_the_annotating_role_on_the_named_project() -> None:
+    """A prediction is a proposed write, so the relation is `can_annotate`, on the project the request names."""
     asked: list[dict[str, Any]] = []
     client = TestClient(_app(allow=False, record=asked))
-    client.post("/api/assist/doc-1/0/0", json=BODY)
-    assert asked, "no FGA check was made at all"
-    assert asked[0]["relation"] == "can_write_data", f"assist checked {asked[0]['relation']}"
-    assert asked[0]["obj"].startswith("table:"), f"assist checked a non-table object: {asked[0]['obj']}"
-    assert asked[0]["user"] == "gina"
+    client.post("/api/assist/doc-1/0/0?project=p1", json=BODY)
+    assert asked, "no check was made at all"
+    assert (asked[0]["user"], asked[0]["relation"], asked[0]["obj"]) == ("gina", "can_annotate", "project:p1")

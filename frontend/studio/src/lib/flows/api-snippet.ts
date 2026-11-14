@@ -1,7 +1,7 @@
 /**
  * "Run this flow from outside the browser" — the snippet that turns a drawn graph into a call.
  *
- * The flows service already accepts the whole graph (`POST /api/flows/runs`, see services/flows),
+ * The flows service already accepts the whole graph (`POST /api/flows/projects/{project}/runs`, see services/flows),
  * so a built flow is callable today; nothing surfaced that. This is the Langflow affordance of
  * publishing a flow, in its honest minimal form: generate the request, let the user copy it.
  *
@@ -61,23 +61,34 @@ function serialisableConfig(raw: unknown): Record<string, unknown> {
 	return rest;
 }
 
+/** The project placeholder a snippet names when the editor has no project: a run belongs to one. */
+const PROJECT_PLACEHOLDER = '<project>';
+
 /** A copy-pasteable curl for the run. `base` defaults to the gateway's public path. */
-export function curlSnippet(body: RunRequestBody, base = 'http://localhost:8888'): string {
+export function curlSnippet(
+	body: RunRequestBody,
+	base = 'http://localhost:8888',
+	project = PROJECT_PLACEHOLDER,
+): string {
 	return [
-		`curl -sS -X POST ${base}/api/flows/runs \\`,
+		`curl -sS -X POST ${base}/api/flows/projects/${project}/runs \\`,
 		`  -H 'content-type: application/json' \\`,
 		`  -d '${JSON.stringify(body)}'`,
 	].join('\n');
 }
 
 /** The same call in Python, using httpx (the estate's HTTP client). */
-export function pythonSnippet(body: RunRequestBody, base = 'http://localhost:8888'): string {
+export function pythonSnippet(
+	body: RunRequestBody,
+	base = 'http://localhost:8888',
+	project = PROJECT_PLACEHOLDER,
+): string {
 	return [
 		'import httpx',
 		'',
 		`payload = ${JSON.stringify(body, null, 4).replace(/"/g, '"')}`,
 		'',
-		`resp = httpx.post("${base}/api/flows/runs", json=payload, timeout=300)`,
+		`resp = httpx.post("${base}/api/flows/projects/${project}/runs", json=payload, timeout=300)`,
 		'resp.raise_for_status()',
 		'print(resp.json())',
 	].join('\n');

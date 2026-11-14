@@ -20,10 +20,8 @@ cannot let an unreviewed annotation into silver.
 Counts are derived from the index rather than stored beside it. A stored counter and a stored index
 are two truths that disagree the first time one write lands and the other does not.
 
-**The project's roles live here too** (ADR 0171): who holds owner, manager, reviewer or annotator on it, in a
-partition of their own so the document every viewer reads never lists the people worth phishing. The creator is
-its first owner. Each turn reads and writes them whole, so the refusal to remove the last owner or manager cannot
-race a concurrent revoke.
+The project's roles are not here: they are grants in the workbench's own OpenFGA store (`annotator.api.v1.endpoints.
+members`), where every service that asks about a project (flows among them) reads them.
 """
 
 from __future__ import annotations
@@ -52,7 +50,6 @@ from annotator.projects.models import (
 )
 from annotator.projects.ontology import LabelOntology
 from annotator.projects.publish import namespace_for
-from annotator.projects.roles import ADMINISTRATIVE, MemberGrant, highest
 
 
 logger = logging.getLogger(__name__)
@@ -69,7 +66,6 @@ INDEX_KEY = "index"
 DROPPED_KEY = "dropped"
 #: The project's direct role grants, `[{"user": <principal>, "relation": <role>}]`: one pair per grant, as a grant
 #: and a revoke name one role, so revoking `annotator` from a manager leaves them a manager.
-MEMBERS_KEY = "members"
 
 #: The publish watchdog's name. Registered at the `publish` transition and kept armed (repeating)
 #: until the project reaches a terminal state. It is what gives the saga's "safe to call again after
@@ -154,22 +150,6 @@ class AnnotationProjectActorInterface(ActorInterface):
     async def adjudicate(self, payload: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
-    @actormethod(name="Access")
-    async def access(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @actormethod(name="Members")
-    async def members(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @actormethod(name="GrantMember")
-    async def grant_member(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @actormethod(name="RevokeMember")
-    async def revoke_member(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
-
 
 class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable):
     """Holds one project's document and its task index."""
@@ -208,15 +188,6 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
         has, raw = await self._state_manager.try_get_state(DROPPED_KEY)
         return set(json.loads(raw)) if has and raw else set()
 
-    async def _load_members(self) -> list[MemberGrant]:
-        has, raw = await self._state_manager.try_get_state(MEMBERS_KEY)
-        return [MemberGrant.model_validate(grant) for grant in json.loads(raw)] if has and raw else []
-
-    async def _store_members(self, members: list[MemberGrant]) -> None:
-        # Sorted so the persisted bytes are stable, as the tombstones are.
-        await self._state_manager.set_state(MEMBERS_KEY, json.dumps([m.model_dump() for m in sorted(members, key=lambda m: (m.user, m.relation))]))
-        await self._state_manager.save_state()
-
     async def _store(self, project: AnnotationProject, index: dict[str, str] | None = None, dropped: set[str] | None = None) -> None:
         project.updated_at = datetime.now(UTC)
         # Counts are DERIVED here, never accumulated. An incremented counter and an index are two
@@ -242,9 +213,6 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
         if existing is not None:
             return existing.model_dump(mode="json")
         project = AnnotationProject.model_validate(payload)
-        if project.created_by:
-            # The creator owns what they made, in the same turn as the document, so a project never exists unowned.
-            await self._state_manager.set_state(MEMBERS_KEY, json.dumps([MemberGrant(user=project.created_by, relation="owner").model_dump()]))
         await self._store(project, index={})
         return project.model_dump(mode="json")
 
@@ -255,7 +223,7 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
     async def discard(self, _payload: dict[str, Any]) -> dict[str, Any]:
         """Erase a project that never finished being created — the create saga's compensation.
 
-        `POST /projects` seeds this actor, its creator its owner, then registers the id in the tenant index. A
+        `POST /projects` seeds this actor, then registers the id in the tenant index. A
         failure of the second left the document behind, unlisted and unreachable forever. Retrying the create does
         not repair it — `project_id` is minted per attempt, so a retry makes a SECOND project and orphans the first.
 
@@ -274,7 +242,7 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
         index = await self._load_index()
         if project.state is not ProjectState.DRAFT or index:
             raise IllegalTransition("project", project.state, f"discard (only an empty draft can be discarded; this one holds {len(index)} task(s))")
-        for key in (PROJECT_KEY, INDEX_KEY, DROPPED_KEY, MEMBERS_KEY):
+        for key in (PROJECT_KEY, INDEX_KEY, DROPPED_KEY):
             await self._state_manager.try_remove_state(key)
         await self._state_manager.save_state()
         return {"discarded": True}
@@ -580,59 +548,6 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
         project.adjudications[group] = Adjudication(task_id=task_id, by=str(payload.get("actor") or ""), at=datetime.now(UTC))
         await self._store(project)
         return project.model_dump(mode="json")
-
-    # ---------------------------------------------------------------------------------------------
-    # Roles
-    # ---------------------------------------------------------------------------------------------
-
-    async def access(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """What this project grants ``subject``: its tenant, and the highest role it holds here, if any.
-
-        The route asks the tenant's standing of the catalog itself; this answers only for the project.
-        """
-        project = await self._load()
-        if project is None:
-            return {"exists": False}
-        subject = str(payload["subject"])
-        held: list[str] = [m.relation for m in await self._load_members() if m.user == subject]
-        return {"exists": True, "tenant": project.tenant, "rung": highest(held)}
-
-    async def members(self) -> dict[str, Any]:
-        """Every direct grant. The ROUTE gates who may read it: who holds what names the people worth phishing."""
-        await self._require()
-        return {"members": [m.model_dump() for m in await self._load_members()]}
-
-    async def grant_member(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Grant one role to one person. Idempotent: re-granting what they hold changes nothing."""
-        await self._require()
-        grant = MemberGrant.model_validate(payload)
-        members = await self._load_members()
-        if grant in members:
-            return {"members": [m.model_dump() for m in members], "changed": False}
-        members = [*members, grant]
-        await self._store_members(members)
-        return {"members": [m.model_dump() for m in members], "changed": True}
-
-    async def revoke_member(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Revoke one role from one person, refusing to remove the project's last owner or manager.
-
-        Losing every one leaves the project administrable only by a tenant admin, which, on a tenant whose admin has
-        moved on, is nobody. Revoking what is not there changes nothing.
-        """
-        project = await self._require()
-        grant = MemberGrant.model_validate(payload)
-        members = await self._load_members()
-        if grant not in members:
-            return {"members": [m.model_dump() for m in members], "changed": False}
-        if grant.relation in ADMINISTRATIVE and sum(1 for m in members if m.relation in ADMINISTRATIVE) <= 1:
-            raise IllegalTransition(
-                "project",
-                project.state,
-                f"revoke ({grant.user} holds the only remaining {grant.relation} on this project — grant another owner or manager first)",
-            )
-        members = [m for m in members if m != grant]
-        await self._store_members(members)
-        return {"members": [m.model_dump() for m in members], "changed": True}
 
     # ---------------------------------------------------------------------------------------------
     # The publish watchdog

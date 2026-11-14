@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
+from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import namespace_client, write_table
 from viewer.api.v1.endpoints import pages as pg
 from viewer.api.v1.endpoints.pages import router
@@ -72,26 +73,13 @@ def _app() -> FastAPI:
     permission failure from masquerading as a shape failure.
     """
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
-        return True
-
     app = FastAPI()
     app.include_router(router)
     register_handlers(app)
 
-    settings = ViewerSettings.model_validate(
-        {
-            "WORKBENCH_FGA_ENABLED": True,
-            "WORKBENCH_OIDC_ENABLED": True,
-            "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
-            "WORKBENCH_OIDC_AUDIENCE": "rask",
-            "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
-        }
-    )
+    settings = ViewerSettings()
     app.dependency_overrides[get_viewer_settings] = lambda: settings
-    app.dependency_overrides[pg.CheckerDep.__metadata__[0].dependency] = lambda: checker
-    app.dependency_overrides[pg.CurrentSubject.__metadata__[0].dependency] = lambda: "gina"
-    app.dependency_overrides[pg.RawBearerToken.__metadata__[0].dependency] = lambda: "caller-jwt"
+    app.dependency_overrides[pg.CallerDep.__metadata__[0].dependency] = lambda: LakehouseCaller(subject="keycloak~gina", token=lambda: "caller-jwt")
     state = AppState(settings=Settings())
     app.dependency_overrides[pg.StateDep.__metadata__[0].dependency] = lambda: state
     return app

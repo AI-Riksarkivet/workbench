@@ -1,0 +1,76 @@
+{{- /*
+The workbench's model writer, run before the annotator rolls: the store named `auth.fga.store` holds the model this
+image carries and exactly the organisations `auth.fga.orgs` declares (`service_kit.governed.auth.write_model`). A hook,
+so a new image's model is in the store before its pods look for it; run again with nothing changed, it writes nothing.
+*/ -}}
+{{- if .Values.auth.enabled }}
+{{- $name := include "annotator.name" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-orgs
+  labels:
+    {{- include "annotator.selector" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  orgs.json: {{ dict "orgs" .Values.auth.fga.orgs | toJson | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-openfga-model
+  labels:
+    {{- include "annotator.selector" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        {{- include "annotator.selector" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: model-writer
+          image: "{{ .Values.image.repository }}:{{ required "image.tag must be set" .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["python", "-m", "service_kit.governed.auth.write_model"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            {{- include "annotator.fgaEnv" . | nindent 12 }}
+            - { name: WORKBENCH_FGA_ORGS_FILE, value: /etc/workbench/orgs/orgs.json }
+          volumeMounts:
+            - { name: orgs, mountPath: /etc/workbench/orgs, readOnly: true }
+            {{- if .Values.auth.fga.credential.name }}
+            - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
+            {{- end }}
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: orgs
+          configMap:
+            name: {{ $name }}-orgs
+        {{- with .Values.auth.fga.credential.name }}
+        - name: fga-credential
+          secret:
+            secretName: {{ . }}
+            items: [{ key: {{ $.Values.auth.fga.credential.key }}, path: preshared-key }]
+        {{- end }}
+{{- end }}

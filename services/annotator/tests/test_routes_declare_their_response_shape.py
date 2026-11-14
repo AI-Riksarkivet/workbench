@@ -115,7 +115,7 @@ def _client(monkeypatch: pytest.MonkeyPatch, router: Any) -> TestClient:
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _tid: _TaskActor(task, draft))
     monkeypatch.setattr(events_ep, "_project_proxy", lambda _pid: _ProjectActor(project))
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         return True
 
     api = FastAPI()
@@ -141,7 +141,7 @@ def test_an_actor_document_that_has_drifted_does_not_reach_the_client(monkeypatc
     drifted = _full_task() | {"internal_scratch": {"sidecar": "bookkeeping"}, "operator_note": "do not ship"}
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _tid: _TaskActor(drifted, _full_draft()))
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         return True
 
     api = FastAPI()
@@ -170,7 +170,7 @@ def test_the_plain_task_listing_still_omits_the_details_keys(monkeypatch: pytest
 
     monkeypatch.setattr(events_ep, "_project_proxy", lambda _pid: _Project())
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         return True
 
     api = FastAPI()

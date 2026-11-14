@@ -1,9 +1,7 @@
-"""Project lifecycle endpoints — and the two-door publish crossing of §6.2.
+"""Project lifecycle endpoints, publish among them.
 
-The publish doors are the design's most important authz consequence, so most of this file is one
-question asked several ways: can anyone move labels into the lakehouse while holding only half the
-authority? `can_publish` alone must not be enough, and `can_create_table` alone must not be enough.
-Collapsing the two would let either plane's admin quietly acquire the other's.
+A publish asks the workbench's own `can_publish` on the project and nothing of the lakehouse: the publish writes as the
+workbench's own identity, and the lakehouse decides that write itself.
 
 The actors are faked, so these prove the HTTP contract without a sidecar.
 """
@@ -17,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as ev
 from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import ProjectState
@@ -94,7 +92,7 @@ class _FakeTask:
 def _app(project: _FakeProject, *, grant: set[str], seen: list[dict[str, Any]], task: _FakeTask | None = None) -> FastAPI:
     """`grant` is the set of relations this subject holds — everything else is denied."""
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         seen.append({"user": user, "relation": relation, "obj": obj})
         return relation in grant
 
@@ -102,6 +100,7 @@ def _app(project: _FakeProject, *, grant: set[str], seen: list[dict[str, Any]], 
     register_handlers(app)
     app.include_router(ev.router)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: SUBJECT
     # `send` now consults the dataset registry to refuse an item whose media dataset does not
     # resolve, so this router carries `StateDep`. Real app state is built by the service lifespan
@@ -131,7 +130,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Any:
     return build
 
 
-ALL_PUBLISH_DOORS = {"can_publish", "can_create_table"}
+ALL_PUBLISH_DOORS = {"can_publish"}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -139,47 +138,24 @@ ALL_PUBLISH_DOORS = {"can_publish", "can_create_table"}
 # --------------------------------------------------------------------------------------------------
 
 
-def test_publish_needs_every_door(wired: Any) -> None:
+def test_publish_asks_the_projects_own_role_and_nothing_of_the_lakehouse(wired: Any) -> None:
     client, project, _t, seen = wired(ALL_PUBLISH_DOORS)
 
     r = client.post("/projects/p1/events", json={"event": "publish"})
 
     assert r.status_code == 200, r.text
-    relations = [c["relation"] for c in seen]
-    assert relations == ["can_publish", "can_create_table"], "the doors must be crossed in order"
-    assert seen[0]["obj"] == "annotation_project:p1", "door 1 is the annotator's own domain"
-    assert seen[1]["obj"] == "namespace:acme$silver", "door 2 is the tenant warehouse's silver namespace, not the project"
+    assert [(c["relation"], c["obj"]) for c in seen] == [("can_publish", "project:p1")]
     assert project.fired, "the transition never reached the actor"
 
 
-@pytest.mark.parametrize(
-    ("held", "closed"),
-    [
-        ({"can_create_table"}, "can_publish"),
-        ({"can_publish"}, "can_create_table"),
-    ],
-)
-def test_holding_only_some_doors_is_403(wired: Any, held: set[str], closed: str) -> None:
-    """Half the authority is not authority. Each door is load-bearing on its own."""
-    client, project, _t, _seen = wired(held)
+def test_publish_without_the_projects_publish_role_is_403(wired: Any) -> None:
+    client, project, _t, _seen = wired(set())
 
     r = client.post("/projects/p1/events", json={"event": "publish"})
 
     assert r.status_code == 403
-    assert closed in r.text, "the refusal must name the door that closed"
-    assert project.fired == [], "the publish reached the actor despite a closed door"
-
-
-def test_the_doors_are_checked_wherever_the_publish_points(wired: Any) -> None:
-    """Door 2 names the namespace the publish targets. Its tier is the catalog's tier judge's question
-    (ADR 0160), so no door here depends on what that namespace is called."""
-    client, _p, _t, seen = wired({"can_publish", "can_create_table"})
-
-    r = client.post("/projects/p1/events", json={"event": "publish", "tenant": "acme", "target_namespace": "scratch"})
-
-    assert r.status_code == 200, r.text
-    assert [c["relation"] for c in seen] == ["can_publish", "can_create_table"]
-    assert seen[1]["obj"] == "namespace:scratch", "the doors are checked wherever the publish points"
+    assert "can_publish" in r.text, "the refusal must name the role that is missing"
+    assert project.fired == [], "the publish reached the actor without the role"
 
 
 def test_an_actor_precondition_failure_is_409_not_500(wired: Any) -> None:
@@ -203,7 +179,7 @@ def test_a_non_publish_edge_checks_the_permission_the_table_declares(wired: Any)
     client, _p, _t, seen = wired({"can_manage"})
     r = client.post("/projects/p1/events", json={"event": "open"})
     assert r.status_code == 200, r.text
-    assert seen == [{"user": SUBJECT, "relation": "can_manage", "obj": "annotation_project:p1"}]
+    assert seen == [{"user": SUBJECT, "relation": "can_manage", "obj": "project:p1"}]
 
 
 def test_an_edge_absent_from_the_table_is_409(wired: Any) -> None:
@@ -219,7 +195,7 @@ def test_a_system_only_project_edge_is_refused_over_http(wired: Any, event: str)
     """These are fired by the publish saga. Exposed unauthenticated — which is what "permission is
     None" produced before — anyone could mark another operator\'s publish succeeded, or fail one
     that was mid-flight."""
-    client, project, _t, _seen = wired({"can_manage", "can_publish", "can_create_table"})
+    client, project, _t, _seen = wired({"can_manage", "can_publish"})
 
     r = client.post("/projects/p1/events", json={"event": event})
 
@@ -437,7 +413,7 @@ def test_adjudicate_is_gated_on_can_manage_and_reaches_the_actor(wired: Any, mon
 
     assert r.status_code == 200, r.text
     assert picks == [{"group": "g1", "task_id": "g1-r2", "actor": SUBJECT}]
-    assert ("can_manage", "annotation_project:p1") in [(c["relation"], c["obj"]) for c in seen]
+    assert ("can_manage", "project:p1") in [(c["relation"], c["obj"]) for c in seen]
 
 
 def test_adjudicate_without_can_manage_is_403(wired: Any) -> None:
@@ -479,4 +455,4 @@ def test_clearing_an_adjudication_is_a_manager_gated_delete(wired: Any, monkeypa
 
     assert r.status_code == 200, r.text
     assert picks == [{"group": "g1", "task_id": None, "actor": SUBJECT}]
-    assert ("can_manage", "annotation_project:p1") in [(c["relation"], c["obj"]) for c in seen]
+    assert ("can_manage", "project:p1") in [(c["relation"], c["obj"]) for c in seen]

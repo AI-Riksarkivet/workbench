@@ -12,14 +12,13 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Query, Response
 
-from annotator.annotations.schema import ANNOTATIONS_TABLE, EMPTY_SCHEMA
+from annotator.annotations.schema import EMPTY_SCHEMA
 from annotator.annotations.versions import checkout
-from annotator.api.security import RawBearerToken
+from annotator.api.security import MAY_VIEW, AnnotationsDep, CallerDep
 from annotator.corpus import resolve
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE, encode_arrow_stream
-from service_kit.exceptions import NotFoundError
 
 
 if TYPE_CHECKING:
@@ -29,13 +28,14 @@ if TYPE_CHECKING:
 router = APIRouter(tags=["annotate"])
 
 
-@router.get("/annotations/{doc_id}/{speech_id}/{chunk_id}")
+@router.get("/annotations/{doc_id}/{speech_id}/{chunk_id}", dependencies=[MAY_VIEW])
 def annotations(
+    caller: CallerDep,
     state: StateDep,
+    annotations: AnnotationsDep,
     doc_id: str,
     speech_id: int,
     chunk_id: int,
-    caller_token: RawBearerToken = None,
     dataset: DatasetParam = None,
     version: Annotated[int | None, Query(ge=1, description="Read a historical version (time-travel).")] = None,
 ) -> Response:
@@ -44,12 +44,11 @@ def annotations(
     The keys map positionally onto the descriptor's identity fields (same shape as
     the chunk / chunk-frame routes). ``version`` reads a HISTORICAL snapshot (Lance
     time-travel) for the compare-versions view; omitted ⇒ the latest."""
-    corpus = resolve(state, dataset, caller_token)
+    corpus = resolve(state, dataset, caller)
     declared = corpus.declared
     doc_id = validate_doc_key(declared, doc_id)
-    try:
-        ds = corpus.handle.dataset(ANNOTATIONS_TABLE)
-    except NotFoundError:
+    ds = annotations(corpus.id).open()
+    if ds is None:
         # No annotations table yet — serve an empty stream so the client renders 0.
         return _empty_stream_response()
     where = chunk_key_filter(declared, doc_id, (speech_id, chunk_id))

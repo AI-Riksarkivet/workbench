@@ -18,6 +18,8 @@ from client_kit.lancekit import registry as registry_mod
 from client_kit.media import state as state_mod
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
+from service_kit.governed.deps import ANONYMOUS_CALLER
+from service_kit.governed.token_exchange import LakehouseCaller
 
 
 def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -33,10 +35,10 @@ def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytes
             with contextlib.suppress(threading.BrokenBarrierError):
                 overlap.wait()
 
-        def default(self, caller_token: str | None) -> str:
+        def default(self, caller: LakehouseCaller) -> str:
             return "handle"
 
-        def get(self, dataset_id: str, caller_token: str | None) -> str:
+        def get(self, dataset_id: str, caller: LakehouseCaller) -> str:
             return "handle"
 
     # dataset_handle imports DatasetRegistry from the registry module per call,
@@ -47,7 +49,7 @@ def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytes
     results: list[object] = []
 
     def first_request() -> None:
-        results.append(state_mod.dataset_handle(state, None, None))
+        results.append(state_mod.dataset_handle(state, None, ANONYMOUS_CALLER))
 
     threads = [threading.Thread(target=first_request) for _ in range(2)]
     for t in threads:

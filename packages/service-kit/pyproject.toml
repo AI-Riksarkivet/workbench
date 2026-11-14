@@ -33,6 +33,9 @@ governed = [
     # bypass and redirect-following key-set fetch (this verifier sends a fetch token on that request), and aiohttp,
     # urllib3, certifi and cryptography behind them.
     "pyjwt[crypto]>=2.15.1",
+    # The JWS and JWK work under DPoP proof verification (`service_kit.governed.dpop`): signature, key import, RFC 7638
+    # thumbprint.
+    "joserfc>=1.8.0",
     "aiohttp>=3.14.4",
     "urllib3>=2.8.0",
     "certifi>=2026.10.23",

@@ -1,11 +1,11 @@
 """Annotation-project endpoints — slice S4, the create pin.
 
 Create is a **create-on-parent** operation: at authorization time the child does not exist, so the
-door is the TENANT (`member` of `project:<tenant>`, which the catalog answers on the person's own token),
-never the child. Checking the child would be checking an object nobody holds a role on yet.
+door is the organisation (`can_create_project` on `org:<tenant>`, in the workbench's own store), never the
+child. Checking the child would be checking an object nobody holds a role on yet. The create then writes the new
+project's place under its organisation and its creator's `owner` grant to the store.
 
-The checker is injected rather than reached for, so the authorization contract is testable without a
-catalog. Authorization decides *whether*; the state machine in `annotator.projects.machines` decides
+The checker is injected rather than reached for, so the authorization contract is testable. Authorization decides *whether*; the state machine in `annotator.projects.machines` decides
 *what* — they are deliberately separate.
 """
 
@@ -19,7 +19,7 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Path, Query, status
 from pydantic import BaseModel, Field
 
-from annotator.api.security import CheckerDep, CurrentSubject
+from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject
 from annotator.api.v1.responses import LegalEvent, ProjectDetail, ProjectListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.projects.machines import legal_project_events
@@ -27,6 +27,7 @@ from annotator.projects.models import AnnotationProject, ProjectState
 from annotator.projects.ontology import LabelOntology
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.governed.fga import Authorizer, Grant, user_object
 from service_kit.naming import CONTROL_ID_PATTERN
 
 
@@ -34,13 +35,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["annotation-projects"])
 
-#: The relation guarding creation, on the tenant: labeling is ordinary tenant work, and the creator becomes the new
+#: The relation guarding creation, on the organisation: labeling is ordinary org work, and the creator becomes the new
 #: project's owner.
-CREATE_RELATION = "member"
+CREATE_RELATION = "can_create_project"
 
-#: The relation guarding the tenant's project LIST, on the tenant. A tenant member views every project below it
-#: (`annotator.api.authorization`), so member-gates-the-list and can_view-gates-the-item agree by construction.
-LIST_RELATION = "member"
+#: The relation guarding the org's project LIST, on the organisation. An org member views every project below it (the
+#: model's `viewer`), so the list's gate and each item's `can_view` agree by construction.
+LIST_RELATION = "can_list_projects"
 
 #: How many project-actor reads the landing keeps in flight at once. One actor id PER project, so
 #: these genuinely parallelise rather than queueing on a single actor's turn lock. Matches the send
@@ -74,8 +75,8 @@ class CreateProjectRequest(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_annotation_project(payload: CreateProjectRequest, checker: CheckerDep, subject: CurrentSubject) -> AnnotationProject:
-    """Create a project in `draft`. 403 when the caller is not a member of the target tenant.
+async def create_annotation_project(payload: CreateProjectRequest, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject) -> AnnotationProject:
+    """Create a project in `draft`. 403 when the caller may not create one in the target organisation.
 
     `subject` is the **verified** OIDC principal (`annotator.api.security`), not a header the caller
     supplied — every entity below is keyed on who owns or claims it, so a spoofable identity here
@@ -84,7 +85,7 @@ async def create_annotation_project(payload: CreateProjectRequest, checker: Chec
     Fails CLOSED: any falsy check result denies. A project is born in `draft` — `open` is a separate,
     `can_manage`-gated transition, so creating one never implies it is ready to label.
     """
-    parent = f"project:{payload.tenant}"
+    parent = f"org:{payload.tenant}"
     allowed = await checker(user=subject, relation=CREATE_RELATION, obj=parent)
     if not allowed:
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_CREATE, AuditOutcome.FAILURE, subject=subject, resource=parent, relation=CREATE_RELATION)
@@ -107,11 +108,24 @@ async def create_annotation_project(payload: CreateProjectRequest, checker: Chec
         updated_at=now,
         created_by=subject,
     )
-    # PERSIST it, the creator its first owner in the same actor turn (`AnnotationProjectActor.create`), so a
-    # project never exists that nobody may manage. Until 2026-07-28 this endpoint built the model, audited, and
-    # returned it — so the single entry point into the whole plane was a no-op that reported 201, and the very next
-    # call (`POST /projects/<id>/items`) answered 409 "annotation project does not exist".
-    stored = await _create_actor(project.project_id).create(project.model_dump(mode="json"))
+    # ITS GRANTS FIRST: the project's place under its organisation and its creator's `owner`, so a project never
+    # exists that nobody may manage. A grant on a project with no document yet answers nothing but a 404, which is why
+    # these lead and the compensation below removes them.
+    grants = (
+        [
+            Grant(user=project.org_object, relation="org", object=project.authz_object),
+            Grant(user=user_object(subject), relation="owner", object=project.authz_object),
+        ]
+        if authz is not None
+        else []
+    )
+    if authz is not None:
+        await authz.write(grants)
+    try:
+        stored = await _create_actor(project.project_id).create(project.model_dump(mode="json"))
+    except Exception:
+        await _undo_grants(authz, grants)
+        raise
 
     # THE SECOND WRITE, COMPENSATED. `project_id` is minted per attempt (`default_factory=new_id`), so a retry
     # creates a SECOND project and ORPHANS the first as a document nothing lists. So a failure past this point
@@ -123,6 +137,7 @@ async def create_annotation_project(payload: CreateProjectRequest, checker: Chec
         await _tenant_actor(payload.tenant).register({"project_id": project.project_id})
     except Exception:
         await _undo_create(project.project_id)
+        await _undo_grants(authz, grants)
         # `reason`, not `relation`: the create was AUTHORIZED — a later write in the sequence
         # failed. Stamping the door here would read as a denial that never happened.
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_CREATE, AuditOutcome.FAILURE, subject=subject, resource=project.authz_object, reason="compensated")
@@ -130,6 +145,16 @@ async def create_annotation_project(payload: CreateProjectRequest, checker: Chec
 
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_CREATE, AuditOutcome.SUCCESS, subject=subject, resource=project.authz_object)
     return AnnotationProject.model_validate(stored)
+
+
+async def _undo_grants(authz: Authorizer | None, grants: list[Grant]) -> None:
+    """Remove the create's grants, best-effort and logged, as `_undo_create` removes its document."""
+    if authz is None or not grants:
+        return
+    try:
+        await authz.delete(grants)
+    except Exception:
+        logger.exception("could not remove the grants of a failed create on %s", grants[0].object)
 
 
 async def _undo_create(project_id: str) -> None:
@@ -159,7 +184,7 @@ async def list_projects(tenant: Annotated[str, Query(min_length=1)], checker: Ch
     DIFFERENT actor, so the reads are independent. Awaited in series the landing's wall clock is one
     sidecar round-trip per project in the tenant.
     """
-    parent = f"project:{tenant}"
+    parent = f"org:{tenant}"
     if not await checker(user=subject, relation=LIST_RELATION, obj=parent):
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_LIST, AuditOutcome.FAILURE, subject=subject, resource=parent, relation=LIST_RELATION)
         raise ForbiddenError(f"{subject} lacks {LIST_RELATION} on {parent}")
@@ -189,9 +214,9 @@ async def get_project(project_id: ProjectId, checker: CheckerDep, subject: Curre
     machine that drifts. Each event carries the permission that gates it, so the UI can explain a
     disabled action — while the ACTUAL gate stays server-side on the event POST.
     """
-    if not await checker(user=subject, relation="can_view", obj=f"annotation_project:{project_id}"):
+    if not await checker(user=subject, relation="can_view", obj=f"project:{project_id}"):
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_GET, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation="can_view")
-        raise ForbiddenError(f"{subject} lacks can_view on annotation_project:{project_id}")
+        raise ForbiddenError(f"{subject} lacks can_view on project:{project_id}")
     doc = await _create_actor(project_id).get()
     if doc is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
@@ -235,7 +260,7 @@ async def update_project_ontology(
     judged by the contract it was issued under. That is the point of the capture, and it is what
     makes editing safe enough to allow during `labeling` at all.
     """
-    obj = f"annotation_project:{project_id}"
+    obj = f"project:{project_id}"
     if not await checker(user=subject, relation=MANAGE_RELATION, obj=obj):
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_ONTOLOGY, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation=MANAGE_RELATION)
         raise ForbiddenError(f"{subject} lacks {MANAGE_RELATION} on {obj}")

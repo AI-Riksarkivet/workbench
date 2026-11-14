@@ -10,20 +10,14 @@ from functools import lru_cache
 from pydantic import Field
 
 from client_kit.media.config import Settings
-from service_kit.governed.settings import GovernedAuthSettings
+from service_kit.governed.settings import LakehouseTokenSettings, OidcSettings
 
 
-class ViewerSettings(Settings, GovernedAuthSettings):
-    """The viewer's config, now carrying the shared OIDC/FGA knobs.
+class ViewerSettings(Settings, OidcSettings, LakehouseTokenSettings):
+    """The viewer's config: the media plane's, the workbench's sign-in, and its client for tokens to the lakehouse.
 
-    The service shipped with NO authorization at all — `/api/datasets` enumerated every corpus on
-    disk, with its table stats and capabilities, to any caller. That was the documented
-    "localhost / trusted network" posture, and it stops being defensible the moment the zone is
-    reachable by more than one person: a corpus LIST names data someone may not know exists.
-
-    Mixing the shared `GovernedAuthSettings` in rather than declaring VIEWER_* twins keeps one set of
-    WORKBENCH_OIDC_*/WORKBENCH_FGA_* variables across every governed service, and inherits its fail-fast
-    validator (FGA without OIDC is refused at construction, because authz needs a verified subject).
+    The viewer reads every corpus as the person asking, on a token it exchanges for them, so the lakehouse decides
+    what they may see; it checks nothing of its own on a corpus.
     """
 
     service_name: str = "viewer"
@@ -37,26 +31,6 @@ class ViewerSettings(Settings, GovernedAuthSettings):
     #: A setting rather than a literal because a hard-coded endpoint does not survive multi-env
     #: deploys (`fastapi` references/anti-patterns.md).
     voiceprint_serve_url: str = Field(default="", alias="VIEWER_VOICEPRINT_SERVE_URL")
-
-    #: Where `media_clip`'s ffmpeg fetches the source media from. EMPTY derives the loopback from
-    #: `service_port` — see :attr:`clip_source_origin`.
-    #:
-    #: A setting, because the alternative was the REQUEST (VS-09): the origin used to be
-    #: `request.base_url`, which is the caller's `Host` / `X-Forwarded-Host` header, so a request
-    #: could point the viewer's own ffmpeg at any host the pod can reach and download the transcode
-    #: of whatever answered. Configuration is the only source for a URL this service fetches on its
-    #: own behalf.
-    clip_source_origin_override: str = Field(default="", alias="VIEWER_CLIP_SOURCE_ORIGIN")
-
-    @property
-    def clip_source_origin(self) -> str:
-        """The trusted origin ffmpeg pulls clip source bytes from.
-
-        `127.0.0.1` rather than `host`: this is a call the pod makes to ITSELF, and `host` is the
-        BIND address (`0.0.0.0` in the chart), which is not an address to connect to. The override
-        exists for a deployment that fronts the media route somewhere else.
-        """
-        return self.clip_source_origin_override or f"http://127.0.0.1:{self.service_port}"
 
 
 @lru_cache

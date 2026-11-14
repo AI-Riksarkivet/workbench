@@ -27,7 +27,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import tasks as tasks_ep
 from annotator.projects.machines import TASK_EDGES
 from annotator.projects.models import ProjectState, TaskState
@@ -75,7 +75,7 @@ class _FakeActor:
 
 
 def _app(*, allow: bool, seen: list[dict[str, Any]] | None = None) -> FastAPI:
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
         return allow
@@ -84,6 +84,7 @@ def _app(*, allow: bool, seen: list[dict[str, Any]] | None = None) -> FastAPI:
     register_handlers(app)
     app.include_router(tasks_ep.router)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: SUBJECT
     return app
 
@@ -301,7 +302,7 @@ def test_reading_a_task_authorizes_before_returning_it(monkeypatch: pytest.Monke
     r = client.get("/tasks/t1")
 
     assert r.status_code == 403
-    assert seen[0] == {"user": SUBJECT, "relation": "can_view", "obj": f"annotation_project:{PROJECT_ID}"}
+    assert seen[0] == {"user": SUBJECT, "relation": "can_view", "obj": "task:t1"}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -366,7 +367,7 @@ def test_release_is_refused_to_a_non_holder_without_can_manage(monkeypatch: pyte
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
     seen: list[dict[str, Any]] = []
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         seen.append({"relation": relation})
         return relation == "can_annotate"  # holds the rung, but is not a manager
 
@@ -374,6 +375,7 @@ def test_release_is_refused_to_a_non_holder_without_can_manage(monkeypatch: pyte
     register_handlers(app)
     app.include_router(tasks_ep.router)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: SUBJECT
     r = TestClient(app).post("/tasks/t1/events", json={"event": "release"})
 

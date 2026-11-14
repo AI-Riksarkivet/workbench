@@ -95,51 +95,72 @@ _BY_CODE: Final[dict[ErrorCode, tuple[type[DomainError], str]]] = {
 }
 
 
-def connect_catalog(base_url: str, *, token: str | None, delimiter: str = CATALOG_DELIMITER, headers: Mapping[str, str] | None = None) -> LanceNamespace:
-    """The stock REST namespace for one caller: ``token`` rides every request as its bearer, and no other credential does.
+def connect_catalog(
+    base_url: str, *, token: Callable[[], str] | None, delimiter: str = CATALOG_DELIMITER, headers: Mapping[str, str] | None = None
+) -> LanceNamespace:
+    """The stock REST namespace for one caller: ``token`` answers the bearer every request carries, asked per request.
 
-    One per caller rather than one shared: the bearer is a header of the namespace, and a shared one would answer the next
-    caller under the previous caller's identity. Measured 2026-11-02, a namespace and its describe cost 3.8 ms, and 200 of
-    them left the process's thread count where it was. ``headers`` are the request's context headers (the spec's
-    ``header.``-prefixed context, `lance_docs/ns_catalog/catalog/rest/index.md` § Context Header Mapping). The caller's
-    trace context is added per call (:class:`TraceContext`), so the catalog's span joins the trace of the call that
-    reached it: the SDK's client is Rust, which no Python instrumentor reaches.
+    One per caller rather than one shared: the bearer names the caller, and a shared client would answer the next caller
+    under the previous one's identity. ``token`` is asked before each operation (:class:`CallContext`), so a client kept
+    across requests presents a token that has not lapsed: measured 2026-11-14 on pylance 13.0.0 against a socket, each
+    call carries the ``Authorization`` the provider answered for it, over a static ``header.Authorization`` too.
+    ``headers`` are the request's static context headers (`lance_docs/ns_catalog/catalog/rest/index.md` § Context Header
+    Mapping). Measured 2026-11-02, a namespace and its describe cost 3.8 ms, and 200 of them left the process's thread
+    count where it was.
     """
     properties = {"uri": base_url, "delimiter": delimiter} | {f"header.{name}": value for name, value in (headers or {}).items()}
-    if token:
-        properties["header.Authorization"] = f"Bearer {token}"
-    return RestNamespace(context_provider=TraceContext(), **properties)
+    return RestNamespace(context_provider=CallContext(token), **properties)
 
 
-class TraceContext(DynamicContextProvider):
-    """The trace context of the call being made, as headers, asked for before every namespace operation.
+class CallContext(DynamicContextProvider):
+    """The headers of the call being made, asked for before every namespace operation: the caller's bearer and the trace.
 
     Per call, not per client: a client outlives the request that built it (the registry caches it per caller), so a
-    ``traceparent`` fixed at construction would put every later call in the first request's trace. pylance's
-    ``RestNamespace`` asks its context provider before each operation and sends its ``headers.``-prefixed keys as HTTP
-    headers (pylance 13.0.0, ``lance/namespace.py`` ``DynamicContextProvider``); the ``header.`` properties above are the
-    client's static ones, the spelling ``RestNamespace``'s own docstring documents.
+    bearer or a ``traceparent`` fixed at construction would outlive the token's expiry and put every later call in the
+    first request's trace. pylance's ``RestNamespace`` asks its context provider before each operation and sends its
+    ``headers.``-prefixed keys as HTTP headers (pylance 13.0.0, ``lance/namespace.py`` ``DynamicContextProvider``); the
+    SDK's client is Rust, which no Python instrumentor reaches, so the trace context travels here too.
     """
+
+    def __init__(self, token: Callable[[], str] | None) -> None:
+        self._token = token
 
     def provide_context(self, info: dict[str, str]) -> dict[str, str]:
         del info
         carrier: dict[str, str] = {}
         propagate.inject(carrier)
+        if self._token is not None:
+            carrier["Authorization"] = f"Bearer {self._token()}"
         return {f"headers.{name}": value for name, value in carrier.items()}
 
 
-def connect_namespace(settings: MediaSettings, caller_token: str | None) -> LanceNamespace:
-    """The namespace client the media plane reads and writes through, as the caller.
+def connect_namespace(settings: MediaSettings, token: Callable[[], str] | None) -> LanceNamespace:
+    """The namespace client the media plane reads and writes through, presenting ``token`` (a person's or its own).
 
-    The catalog's REST door on ``MEDIA_CATALOG_URI``, carrying the caller's bearer and no other credential; or
-    lance-namespace's stock directory catalog on ``MEDIA_CATALOG_DIR``, which authenticates nobody, for development and
-    the offline suite. Either way the same doors answer, so the code above this seam does not know which it has.
+    The catalog's REST door on ``MEDIA_CATALOG_URI``, carrying that bearer and no other credential; or lance-namespace's
+    stock directory catalog on ``MEDIA_CATALOG_DIR``, which authenticates nobody, for development and the offline suite.
+    Either way the same doors answer, so the code above this seam does not know which it has.
     """
     if settings.catalog_dir is not None:
         return lance_namespace.connect("dir", {"root": str(settings.catalog_dir)})
     if settings.catalog_uri is None:
         raise TypeError("MediaSettings names no catalog; its validator admits none without one")
-    return connect_catalog(settings.catalog_uri, token=caller_token, delimiter=settings.catalog_delimiter)
+    return connect_catalog(settings.catalog_uri, token=token, delimiter=settings.catalog_delimiter)
+
+
+def service_writer(settings: MediaSettings, table_id: list[str], *, token: Callable[[], str] | None, originator: str) -> NamespaceCatalogWriteTransport:
+    """The catalog's write doors for one table as the workbench's own identity, naming the person it writes for.
+
+    The workbench decides who may annotate before it writes (its own role check); the lakehouse decides whether the
+    workbench may write the table. ``originator`` rides the spec's ``x-lance-originator`` context header, which the
+    catalog stamps in the commit's run as ``rask_lance.originator`` (`docs/rask/COMMIT-EVENTS.md` § Whom a run names).
+    """
+    if settings.catalog_dir is not None:
+        return NamespaceCatalogWriteTransport(lance_namespace.connect("dir", {"root": str(settings.catalog_dir)}), table_id)
+    if settings.catalog_uri is None:
+        raise TypeError("MediaSettings names no catalog; its validator admits none without one")
+    client = connect_catalog(settings.catalog_uri, token=token, delimiter=settings.catalog_delimiter, headers={"x-lance-originator": originator})
+    return NamespaceCatalogWriteTransport(client, table_id)
 
 
 @contextmanager
@@ -181,6 +202,11 @@ class NamespaceCatalogWriteTransport:
     def __init__(self, namespace: LanceNamespace, table_id: list[str]) -> None:
         self._namespace = namespace
         self._id = list(table_id)
+
+    @property
+    def namespace(self) -> LanceNamespace:
+        """The namespace client the doors are reached through, with the identity and context headers it carries."""
+        return self._namespace
 
     def merge_upsert(self, delta: pa.Table, on: str) -> None:
         """Insert the unmatched rows of ``delta`` and update the matched ones, keyed on ``on``."""

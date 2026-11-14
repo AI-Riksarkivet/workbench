@@ -18,6 +18,7 @@ import pytest
 from search.api.v1 import router as router_mod
 from search.services.fuse import RRF_SCORE
 from service_kit.exceptions import ValidationError
+from service_kit.governed.deps import ANONYMOUS_CALLER
 
 
 class _Declared:
@@ -76,7 +77,7 @@ def fan(corpora: list[str], **kw: Any) -> list[dict[str, Any]]:
     # Request would add setup that proves nothing about the fan-out.
     state: Any = None
     request: Any = _Request()
-    return router_mod._fused_search(state, corpora, request, _spec(kw.pop("n", 10)), None, None, None)
+    return router_mod._fused_search(state, corpora, request, _spec(kw.pop("n", 10)), None, None, ANONYMOUS_CALLER)
 
 
 def test_the_result_is_RANK_fused_not_score_sorted(monkeypatch: pytest.MonkeyPatch) -> None:

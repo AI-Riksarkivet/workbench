@@ -75,7 +75,7 @@ def test_schema_single_source_of_truth(tmp_path: Path) -> None:
     spec.loader.exec_module(seed_mod)
 
     client = namespace_client(tmp_path)
-    table_id = seed_mod.seed(client, ["acme", "demo"], "a" * 16)
+    table_id = seed_mod.seed(client, ["workbench", "annotations"], "p1__demo", "a" * 16)
     seeded = lance.dataset(namespace_client=client, table_id=table_id).schema
     expected = pa.schema(
         [

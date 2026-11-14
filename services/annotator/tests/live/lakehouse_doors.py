@@ -31,11 +31,10 @@ ADMIN_USER = os.environ.get("LANCE_E2E_USER", "alice@example.com")
 JOB_USER = os.environ.get("LANCE_E2E_PIPELINE_USER", "publisher@rask.internal")
 SETTLE_SECONDS = float(os.environ.get("LANCE_E2E_SETTLE_SECONDS", "120"))
 
-#: The client a suite signs in as, and the lakehouse's audience every governed door requires: `federated:id` makes
-#: Dex report the connector and user id the catalog keys a person on, and the cross-client scope puts the audience in
-#: the token.
-DEX_CLIENT = os.environ.get("LANCE_E2E_OIDC_CLIENT_ID", "rask-web")
-DEX_AUDIENCE = os.environ.get("LANCE_E2E_OIDC_AUDIENCE", "rask-lakehouse")
+#: The client a suite signs in as and the audience its token is for, named by the lane that runs it (the workbench's own
+#: registration at its provider, never rask's): unset, the suite has no sign-in to make, and every live test skips.
+DEX_CLIENT = os.environ.get("LANCE_E2E_OIDC_CLIENT_ID", "")
+DEX_AUDIENCE = os.environ.get("LANCE_E2E_OIDC_AUDIENCE", "")
 DEX_SCOPE = f"openid email federated:id audience:server:client_id:{DEX_AUDIENCE}"
 
 CLOSE_EACH_REQUEST = "close"

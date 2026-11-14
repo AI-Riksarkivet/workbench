@@ -20,8 +20,7 @@ from client_kit.lancekit.registry import table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from client_kit.pagination import Page, PaginationDep, build_page
-from service_kit.governed.deps import RawBearerToken
-from viewer.api.security import REQUIRE_CORPUS_METADATA, CorpusFactsVisible
+from viewer.api.security import AUTHENTICATED, CallerDep, OptionalCallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.schemas.system import ColumnKind, DbFacts, FilterColumn, HealthResponse, VllmPing
 
@@ -36,15 +35,15 @@ DURATION_COLUMN = "duration"
 
 
 @router.get("/health")
-def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> HealthResponse:
+def health(caller: OptionalCallerDep, state: StateDep, dataset: DatasetParam = None) -> HealthResponse:
     """Frontend status badge: pings vLLM embed/rerank, reports DB facts.
 
     ALWAYS 200 — this is the media plane's liveness/capability probe, not a dataset read. That
-    contract is why this route is EXEMPT from the corpus decorator gate its siblings carry: a 401/403
-    here would recreate the red-dot regression below in a new costume. Authorization is SOFT instead
-    — `CorpusFactsVisible` never raises for an anonymous caller, and when the caller is not entitled
-    the corpus FACTS (table names, row counts, the store path) are REDACTED while the probe still
-    answers 200 with encoder reachability, which names no corpus.
+    contract is why this route is EXEMPT from the authentication its siblings carry: a 401/403
+    here would recreate the red-dot regression below in a new costume. The corpus FACTS (table names,
+    row counts) are read as the caller, so an anonymous caller, or one the lakehouse refuses, gets
+    `db_error` and no facts while the probe still answers 200 with encoder reachability, which names
+    no corpus.
 
     It used to resolve the dataset FIRST, so a deployment whose corpus volume is empty (now the chart
     default: ``explorer.corpus.mode=emptyDir``, since the old hostPath wedged every fresh cluster) answered
@@ -80,7 +79,7 @@ def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetP
     rerank = _ping(state.settings.rerank_url)
 
     try:
-        handle = dataset_handle(state, dataset, caller_token)
+        handle = dataset_handle(state, dataset, caller)
     except Exception as e:
         # NotFoundError (unknown id / missing-or-invalid descriptor) is the expected case on an
         # un-loaded corpus; anything else (a broken S3 endpoint, a corrupt manifest) is equally a
@@ -88,11 +87,6 @@ def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetP
         logger.info("health: no dataset resolved (%s: %s)", type(e).__name__, e)
         reason = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         return HealthResponse(db=None, db_error=reason, embed=embed, rerank=rerank)
-
-    if not facts_visible:
-        # Redacted, not refused: the probe's job (is the service up, are the encoders reachable)
-        # is answered; what the caller may not have is the corpus's shape.
-        return HealthResponse(db=None, db_error="not authorized to read corpus facts", embed=embed, rerank=rerank)
 
     declared = handle.descriptor.declared
     tables = handle.descriptor.tables
@@ -136,14 +130,14 @@ def _filterable(column: ColumnInfo, exclude: set[str]) -> ColumnKind | None:
     return _column_kind(column.arrow_type)
 
 
-@router.get("/columns", dependencies=[REQUIRE_CORPUS_METADATA])
-def columns(state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> list[FilterColumn]:
+@router.get("/columns", dependencies=[AUTHENTICATED])
+def columns(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) -> list[FilterColumn]:
     """Filterable scalar columns of the declared row table (name + friendly kind).
 
     Lets the UI show *what* can go in a WHERE filter. Vector / blob / list /
     alignments columns are omitted — they can't appear in a SQL filter anyway.
     """
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     if declared.search is None:
         return []
@@ -175,8 +169,9 @@ class DocumentsPage(Page[dict[str, Any]]):
         return self.items
 
 
-@router.get("/documents", dependencies=[REQUIRE_CORPUS_METADATA])
+@router.get("/documents", dependencies=[AUTHENTICATED])
 def documents(
+    caller: CallerDep,
     state: StateDep,
     # THE ESTATE'S SHARED OFFSET PARAMS, and the reason they are a dependency rather than two
     # `Query(...)` arguments: `page: Query(ge=1)` bounds the page NUMBER and therefore bounds nothing
@@ -185,11 +180,10 @@ def documents(
     # `per_page`) and so is the 100 ceiling.
     pagination: PaginationDep,
     dataset: DatasetParam = None,
-    caller_token: RawBearerToken = None,
 ) -> DocumentsPage:
     """Documents gallery: the declared doc-level display fields, paged."""
     per_page = pagination.page_size
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     binding = declared.document
     info = handle.descriptor.tables.get(binding.table) if binding is not None else None

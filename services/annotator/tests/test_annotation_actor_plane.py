@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import tasks as tasks_ep
 from annotator.projects.models import TaskState
 from service_kit.exceptions import register_handlers
@@ -68,13 +68,14 @@ class _LiveTask:
 
 
 def _app(actors_registered: bool | None) -> FastAPI:
-    async def checker(*, user: str, relation: str, obj: str) -> bool:  # noqa: ARG001
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:  # noqa: ARG001
         return True
 
     app = FastAPI()
     register_handlers(app)
     app.include_router(tasks_ep.router)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: SUBJECT
     # Absent is a THIRD state, not a missing second one — see the three-state test below.
     if actors_registered is not None:

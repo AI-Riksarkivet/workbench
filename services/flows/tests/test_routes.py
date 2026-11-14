@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from flows import health, routes
 from flows.config import FlowsSettings
 from flows.dependencies import FlowScheduler, ScheduleUnconfirmed
+from flows.models import RunJob
 from service_kit.exceptions import register_handlers
 
 
@@ -144,7 +145,7 @@ def test_the_catalog_endpoint_serves_the_pinned_shape(client: TestClient) -> Non
 
 
 def test_validate_accepts_the_v0_chain(client: TestClient) -> None:
-    resp = client.post("/api/flows/validate", json=CHAIN["graph"])
+    resp = client.post("/api/flows/projects/p1/validate", json=CHAIN["graph"])
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "problems": []}
 
@@ -154,7 +155,7 @@ def test_validate_refuses_a_cycle_and_says_why(client: TestClient) -> None:
         "nodes": [{"id": "a", "kind": "text"}, {"id": "b", "kind": "inspect"}],
         "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
     }
-    body = client.post("/api/flows/validate", json=graph).json()
+    body = client.post("/api/flows/projects/p1/validate", json=graph).json()
     assert body["ok"] is False
     assert body["problems"] == ["graph has a cycle"]
 
@@ -166,7 +167,7 @@ def test_validate_refuses_a_cycle_and_says_why(client: TestClient) -> None:
 def test_a_run_executes_inline_and_is_readable_afterwards(client: TestClient) -> None:
     respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
 
-    resp = client.post("/api/flows/runs", json=CHAIN)
+    resp = client.post("/api/flows/projects/p1/runs", json=CHAIN)
     assert resp.status_code == 200
     state = resp.json()
     assert state["status"] == "succeeded"
@@ -174,7 +175,7 @@ def test_a_run_executes_inline_and_is_readable_afterwards(client: TestClient) ->
     assert state["nodes"]["a"]["output_text"] == "Anno 1723"
 
     # The run resource is the same document, not a re-execution: reading it must not call Serve again.
-    again = client.get(f"/api/flows/runs/{state['run_id']}")
+    again = client.get(f"/api/flows/projects/p1/runs/{state['run_id']}")
     assert again.status_code == 200
     assert again.json() == state
     assert respx.calls.call_count == 1
@@ -193,7 +194,7 @@ def test_a_failing_model_node_blocks_its_dependents(client: TestClient) -> None:
     5xx'd on a red node would leave the builder nothing to paint."""
     respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(502))
 
-    resp = client.post("/api/flows/runs", json=CHAIN)
+    resp = client.post("/api/flows/projects/p1/runs", json=CHAIN)
     assert resp.status_code == 200
     nodes = resp.json()["nodes"]
     assert resp.json()["status"] == "failed"
@@ -208,7 +209,7 @@ def test_a_graph_that_does_not_validate_is_refused_with_the_problem_LIST(client:
     """422 + problem+json + the structured `problems`. The list is the point: the builder highlights
     the offending nodes, which a single flattened `detail` string cannot support."""
     resp = client.post(
-        "/api/flows/runs",
+        "/api/flows/projects/p1/runs",
         json={"graph": {"nodes": [{"id": "a", "kind": "quantum"}], "edges": []}, "seeds": {}},
     )
     assert resp.status_code == 422
@@ -226,7 +227,7 @@ def test_the_durable_lane_takes_over_when_a_scheduler_is_present(client: TestCli
     scheduler = _RecordingScheduler()
     client.app.state.workflow_scheduler = scheduler
 
-    state = client.post("/api/flows/runs", json=CHAIN).json()
+    state = client.post("/api/flows/projects/p1/runs", json=CHAIN).json()
     assert state["status"] == "running"
     assert state["nodes"] == {}
 
@@ -240,7 +241,7 @@ def test_the_durable_lane_takes_over_when_a_scheduler_is_present(client: TestCli
     assert payload["serve_url"] == SERVE
     assert payload["seeds"] == {"t": "page bytes stand-in"}
     # Readable immediately, so a client can poll the same resource in either lane.
-    assert client.get(f"/api/flows/runs/{run_id}").status_code == 200
+    assert client.get(f"/api/flows/projects/p1/runs/{run_id}").status_code == 200
 
 
 @respx.mock
@@ -254,7 +255,7 @@ def test_an_unconfirmed_schedule_refuses_instead_of_running_the_graph_twice(clie
     route = respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
     client.app.state.workflow_scheduler = _RefusingScheduler(ScheduleUnconfirmed("the workflow engine neither started nor refused run run-x within 7s"))
 
-    resp = client.post("/api/flows/runs", json=CHAIN, headers={"Idempotency-Key": "k-1"})
+    resp = client.post("/api/flows/projects/p1/runs", json=CHAIN, headers={"Idempotency-Key": "k-1"})
 
     assert resp.status_code == 503
     assert "retry with the same Idempotency-Key" in resp.json()["detail"]
@@ -270,7 +271,7 @@ def test_a_confirmed_refusal_still_degrades_to_the_inline_lane(client: TestClien
     respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
     client.app.state.workflow_scheduler = _RefusingScheduler(RuntimeError("the state store is not configured to use the actor runtime"))
 
-    resp = client.post("/api/flows/runs", json=CHAIN)
+    resp = client.post("/api/flows/projects/p1/runs", json=CHAIN)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "succeeded"
@@ -282,8 +283,8 @@ def test_the_same_idempotency_key_resolves_to_the_same_run_and_executes_once(cli
     503'd client to converge on, and every retry would be a new run."""
     respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
 
-    first = client.post("/api/flows/runs", json=CHAIN, headers={"Idempotency-Key": "page-7"}).json()
-    second = client.post("/api/flows/runs", json=CHAIN, headers={"Idempotency-Key": "page-7"}).json()
+    first = client.post("/api/flows/projects/p1/runs", json=CHAIN, headers={"Idempotency-Key": "page-7"}).json()
+    second = client.post("/api/flows/projects/p1/runs", json=CHAIN, headers={"Idempotency-Key": "page-7"}).json()
 
     assert first["run_id"] == second["run_id"]
     assert second == first  # the same document, not a re-execution
@@ -297,7 +298,7 @@ def test_a_key_less_post_still_gets_a_fresh_run_each_time(client: TestClient) ->
     scheduler = _RecordingScheduler()
     client.app.state.workflow_scheduler = scheduler
 
-    ids = {client.post("/api/flows/runs", json=CHAIN).json()["run_id"] for _ in range(3)}
+    ids = {client.post("/api/flows/projects/p1/runs", json=CHAIN).json()["run_id"] for _ in range(3)}
 
     assert len(ids) == 3
     assert len(scheduler.dispatched) == 3
@@ -309,11 +310,11 @@ def test_the_run_store_is_bounded_and_evicts_the_oldest(client: TestClient) -> N
     an unbounded dict on a long-lived pod is a leak that only shows up in production."""
     respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
 
-    ids = [client.post("/api/flows/runs", json=CHAIN).json()["run_id"] for _ in range(4)]
+    ids = [client.post("/api/flows/projects/p1/runs", json=CHAIN).json()["run_id"] for _ in range(4)]
 
     assert len(_runs(client)) == 3  # max_runs from the fixture
-    assert client.get(f"/api/flows/runs/{ids[0]}").status_code == 404
-    assert client.get(f"/api/flows/runs/{ids[-1]}").status_code == 200
+    assert client.get(f"/api/flows/projects/p1/runs/{ids[0]}").status_code == 404
+    assert client.get(f"/api/flows/projects/p1/runs/{ids[-1]}").status_code == 200
 
 
 def test_an_oversized_graph_is_REFUSED_at_the_door_with_the_node_NAMED(client: TestClient) -> None:
@@ -331,7 +332,7 @@ def test_an_oversized_graph_is_REFUSED_at_the_door_with_the_node_NAMED(client: T
 
     over = MAX_NODE_FAN_IN + 1
     resp = client.post(
-        "/api/flows/runs",
+        "/api/flows/projects/p1/runs",
         json={
             "graph": {
                 "nodes": [{"id": "a", "kind": "text"}, {"id": "b", "kind": "inspect"}],
@@ -349,13 +350,15 @@ def test_an_oversized_graph_is_REFUSED_at_the_door_with_the_node_NAMED(client: T
 
 
 class _RecordingReader:
-    """A run reader that records terminations. `state` answers None so the route falls to the cache."""
+    """A run reader that records terminations, and answers every run as running in project p1, as the engine answers a
+    run whose input job names that project."""
 
     def __init__(self) -> None:
         self.terminated: list[str] = []
 
     def state(self, _run_id: str) -> dict[str, object] | None:
-        return None
+        job = RunJob(graph=CHAIN["graph"], serve_url=SERVE, project="p1")
+        return {"runtime_status": "RUNNING", "serialized_input": job.model_dump_json()}
 
     def terminate(self, run_id: str) -> None:
         self.terminated.append(run_id)
@@ -377,7 +380,7 @@ def test_a_durable_run_can_be_TERMINATED(client: TestClient) -> None:
     reader = _RecordingReader()
     client.app.state.workflow_reader = reader
 
-    resp = client.post("/api/flows/runs/run-abc/terminate")
+    resp = client.post("/api/flows/projects/p1/runs/run-abc/terminate")
 
     assert resp.status_code == HTTPStatus.ACCEPTED
     assert reader.terminated == ["run-abc"]
@@ -390,6 +393,6 @@ def test_terminate_without_an_engine_is_UNAVAILABLE_not_a_silent_success(client:
     """No reader means no sidecar. Answering 202 would tell an operator the runaway was stopped."""
     client.app.state.workflow_reader = None
 
-    resp = client.post("/api/flows/runs/run-abc/terminate")
+    resp = client.post("/api/flows/projects/p1/runs/run-abc/terminate")
 
     assert resp.status_code == HTTPStatus.SERVICE_UNAVAILABLE

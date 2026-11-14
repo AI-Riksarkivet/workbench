@@ -10,15 +10,12 @@ the content behind it was not, so knowing a `doc_id` was authorization.
 
 DENY-BY-DEFAULT IS THE GATE'S SHAPE. The audit's sharpest observation was that `router.py` mounts
 every sub-router bare, "so a new route lands ungated by default". This test inverts that: it walks
-the APP's dependant graph and requires every route to resolve `current_subject` — via signature or
+the APP's dependant graph and requires every route to resolve `authenticate` — via signature or
 decorator `dependencies=[...]` — unless it appears in the exemption table WITH ITS REASON. Route 33
 therefore arrives gated or argued, never silently open.
 
-THE OBJECT FOLLOWS `datasets.py`'s OWN RULE: the search ROW table is the corpus's visibility object,
-and a corpus that declares no search block is DENIED under authz rather than checked against an
-invented identifier ("guessing an identifier would authorize against something the catalog never
-governs"). The media-byte family keeps its established object (the document binding's table — the
-same one `pages.py` and `media_clip` already check).
+What a verified person may read is then the lakehouse's to decide: every corpus read is made as them, on a token the
+viewer exchanges for them, so this walk pins authentication and nothing more.
 """
 
 from __future__ import annotations
@@ -32,18 +29,17 @@ EXEMPT: dict[tuple[str, str], str] = {
     ("GET", "/livez"): "process liveness — dependency-free by contract",
     ("GET", "/readyz"): "readiness — lifecycle-gated, no corpus content",
     ("GET", "/api/health"): (
-        "recorded ALWAYS-200 contract (the 2026-07-28 red-dot regression) — authorization is SOFT: "
-        "`CorpusFactsVisible` redacts the corpus facts in-body instead of refusing the probe, pinned "
-        "by test_health_badge_redacts_for_the_unentitled.py"
+        "recorded ALWAYS-200 contract (the 2026-07-28 red-dot regression) — authentication is SOFT: an absent "
+        "token reads the corpus facts anonymously, which the lakehouse refuses, and the probe still answers"
     ),
 }
 
 
 def _resolves_current_subject(route: APIRoute) -> bool:
-    """Whether the route's dependant graph — signature AND decorator deps — reaches the verified subject."""
+    """Whether the route's dependant graph — signature AND decorator deps — reaches the door that verifies the person."""
     from viewer.api import security
 
-    target = security._deps.current_subject  # noqa: SLF001 - the one callable identity that matters
+    target = security._deps.authenticate  # noqa: SLF001 - the one callable identity that matters
 
     def _walk(dependant) -> bool:
         if dependant.call is target:

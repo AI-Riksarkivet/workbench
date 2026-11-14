@@ -1,7 +1,8 @@
-"""Seed the ``annotations`` table for the annotator wire, through a lance-namespace catalog.
+"""Seed one project's annotations table on one dataset for the annotator wire, through a lance-namespace catalog.
 
-Writes ``<warehouse>$<namespace>$annotations`` with a few sample shapes on a real frame, through the catalog's CreateTable
-door (``mode=overwrite``), so a re-seed converges the fixture. The contract columns come STRAIGHT from the backend's
+Writes the project's table in the workbench's annotations namespace (``annotator.annotations.store``: one table per
+project and dataset) with a few sample shapes on a real frame, through the catalog's CreateTable door
+(``mode=overwrite``), so a re-seed converges the fixture. The contract columns come STRAIGHT from the backend's
 ``EMPTY_SCHEMA`` (the single source of truth — ``services/annotator/annotations/schema.py``); this script only prepends
 the demo descriptor's identity columns. A test asserts the seeded table matches the composition, so drift fails loudly.
 
@@ -9,7 +10,7 @@ The catalog is the one the media plane reads: ``MEDIA_CATALOG_DIR`` (lance-names
 stack) or ``MEDIA_CATALOG_URI`` (the catalog's REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), where the table's
 maintenance policy is set too.
 
-    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_annotations.py <warehouse>$<namespace> [doc_id]
+    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_annotations.py <annotations warehouse>$<namespace> <project> <dataset> [doc_id]
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import pyarrow as pa
 from lance_namespace import CreateNamespaceRequest, CreateTableRequest, LanceNamespace, NamespaceAlreadyExistsError
 
 from annotator.annotations.schema import EMPTY_SCHEMA
+from annotator.annotations.store import table_name
 
 
 SCHEMA = pa.schema(
@@ -87,17 +89,17 @@ def sample_table(doc_id: str) -> pa.Table:
     return pa.table(rows, schema=SCHEMA)
 
 
-def seed(client: LanceNamespace, namespace: list[str], doc_id: str) -> list[str]:
-    """OVERWRITE ``annotations`` in ``namespace`` with the sample rows, creating the namespace's levels the catalog lacks;
-    returns the table's id."""
+def seed(client: LanceNamespace, namespace: list[str], table: str, doc_id: str) -> list[str]:
+    """OVERWRITE ``table`` in ``namespace`` with the sample rows, creating the namespace's levels the catalog lacks; returns
+    the table's id."""
     for depth in range(1, len(namespace) + 1):
         with contextlib.suppress(NamespaceAlreadyExistsError):
             client.create_namespace(CreateNamespaceRequest(id=namespace[:depth]))
-    table = sample_table(doc_id)
+    rows = sample_table(doc_id)
     body = io.BytesIO()
-    with pa.ipc.new_stream(body, table.schema) as writer:
-        writer.write_table(table)
-    table_id = [*namespace, "annotations"]
+    with pa.ipc.new_stream(body, rows.schema) as writer:
+        writer.write_table(rows)
+    table_id = [*namespace, table]
     client.create_table(CreateTableRequest(id=table_id, mode="overwrite"), body.getvalue())
     return table_id
 
@@ -131,14 +133,14 @@ def _client() -> LanceNamespace:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        raise SystemExit("usage: seed_annotations.py <warehouse>$<namespace> [doc_id]")
+    if len(sys.argv) < 4:
+        raise SystemExit("usage: seed_annotations.py <annotations warehouse>$<namespace> <project> <dataset> [doc_id]")
     namespace = sys.argv[1].split("$")
     if len(namespace) < 2 or not all(namespace):
-        raise SystemExit("name the dataset as <warehouse>$<namespace>: a name's first segment is its warehouse")
-    doc = sys.argv[2] if len(sys.argv) > 2 else "fe00cd746463ad2c"
+        raise SystemExit("name the annotations namespace as <warehouse>$<namespace>: a name's first segment is its warehouse")
+    doc = sys.argv[4] if len(sys.argv) > 4 else "fe00cd746463ad2c"
     client = _client()
-    table_id = seed(client, namespace, doc)
+    table_id = seed(client, namespace, table_name(sys.argv[2], sys.argv[3]), doc)
     if uri := os.environ.get("MEDIA_CATALOG_URI"):
         set_maintenance_policy(uri, table_id, os.environ.get("MEDIA_CATALOG_TOKEN"))
     ds = lance.dataset(namespace_client=client, table_id=table_id)

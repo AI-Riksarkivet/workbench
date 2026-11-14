@@ -20,8 +20,8 @@ import re
 from collections.abc import Iterator
 from enum import Enum
 from io import BytesIO
+from pathlib import Path
 from typing import Annotated
-from urllib.parse import quote
 
 import lance
 from fastapi import APIRouter, Query, Request, Response
@@ -34,14 +34,11 @@ from client_kit.lancekit.descriptor import DocumentBinding
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.lancekit.predicate import eq
 from client_kit.lancekit.registry import DatasetHandle, table_dataset
-from client_kit.media.authz import corpus_object
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
-from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
-from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.deps import RawBearerToken
-from viewer.api.security import READ_DATA, REQUIRE_MEDIA_BYTES, CheckerDep, CurrentSubject, SettingsDep
-from viewer.audit_actions import ViewerAuditAction
+from service_kit.exceptions import NotFoundError, ServiceUnavailableError, ValidationError
+from service_kit.governed.token_exchange import LakehouseCaller
+from viewer.api.security import AUTHENTICATED, CallerDep
 from viewer.services.clips import MAX_CLIP_S, ClipBusyError, build_clip
 
 
@@ -279,9 +276,9 @@ def _frames_binding(handle: DatasetHandle) -> tuple[str, str, str | None] | None
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/thumbnail/{doc_id}", dependencies=[REQUIRE_MEDIA_BYTES])
-def thumbnail(doc_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> Response:
-    handle = dataset_handle(state, dataset, caller_token)
+@router.get("/thumbnail/{doc_id}", dependencies=[AUTHENTICATED])
+def thumbnail(caller: CallerDep, doc_id: str, state: StateDep, dataset: DatasetParam = None) -> Response:
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document
@@ -305,21 +302,21 @@ def thumbnail(doc_id: str, state: StateDep, dataset: DatasetParam = None, caller
     return blob_response(blob, mime=mime, empty_detail="no thumbnail for doc_id")
 
 
-@router.get("/chunk-frame/{doc_id}/{group_id}/{chunk_id}", dependencies=[REQUIRE_MEDIA_BYTES])
+@router.get("/chunk-frame/{doc_id}/{group_id}/{chunk_id}", dependencies=[AUTHENTICATED])
 def chunk_frame(
+    caller: CallerDep,
     doc_id: str,
     group_id: int,
     chunk_id: int,
     state: StateDep,
     frame_idx: Annotated[int, Query(ge=0)] = 0,
     dataset: DatasetParam = None,
-    caller_token: RawBearerToken = None,
 ) -> Response:
     """A chunk's frame from the frames table; 404 until frames are extracted.
     ``frame_idx`` selects which frame when a chunk was sampled multiple times
     (0 = the representative frame). The path params map positionally onto the
     descriptor's identity key fields (doc key first)."""
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = _frames_binding(handle)
@@ -363,9 +360,9 @@ def chunk_frame(
     return blob_response(blob, mime=mime, empty_detail="frame body empty")
 
 
-def _clip_source(state: AppState, dataset: str | None, caller_token: str | None, doc_id: str) -> tuple[DatasetHandle, str, DocumentBinding]:
+def _clip_source(state: AppState, dataset: str | None, caller: LakehouseCaller, doc_id: str) -> tuple[DatasetHandle, str, DocumentBinding]:
     """The dataset, the validated doc key and the document binding a clip is cut from; 404 when the doc is absent."""
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document
@@ -376,79 +373,48 @@ def _clip_source(state: AppState, dataset: str | None, caller_token: str | None,
     return handle, doc_id, binding
 
 
-@router.get("/media-clip/{doc_id}")
+@router.get("/media-clip/{doc_id}", dependencies=[AUTHENTICATED])
 async def media_clip(
+    caller: CallerDep,
     doc_id: str,
-    request: Request,
     state: StateDep,
-    subject: CurrentSubject,
-    checker: CheckerDep,
-    settings: SettingsDep,
     lo: Annotated[float, Query(ge=0)],
     hi: Annotated[float, Query(gt=0)],
     dataset: DatasetParam = None,
-    caller_token: RawBearerToken = None,
 ) -> FileResponse:
     """A windowed excerpt of the media with MP3 audio — built for MCP-app
     iframes in hosts whose webview lacks the AAC codec (VS Code). The clip is
-    transcoded on first request (ffmpeg over the Range-streaming media
-    endpoint) and disk-cached; FileResponse serves it with Range support so
+    transcoded on first request and disk-cached; FileResponse serves it with Range support so
     in-clip seeking works. Timestamps are clip-local: second 0 == ``lo``.
+
+    The source is read as the caller, through their own handle on the dataset, so the lakehouse decides the read as it
+    does for `/api/media`; it is written to a temporary file ffmpeg reads, and no token of the caller's leaves this
+    process.
     """
     if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
         raise ValidationError("need finite seconds with hi > lo")
     if hi - lo > MAX_CLIP_S:
         raise ValidationError(f"clip window capped at {MAX_CLIP_S:.0f}s")
     # Off the loop: resolving the dataset and opening its document table are catalog calls and manifest reads.
-    handle, doc_id, binding = await run_in_threadpool(_clip_source, state, dataset, caller_token, doc_id)
+    handle, doc_id, binding = await run_in_threadpool(_clip_source, state, dataset, caller, doc_id)
     # build_clip always emits an MP4 container (libx264 + mp3), so the response
     # mime is video/mp4 regardless of the source doc's stored mime.
     mime = "video/mp4"
-    # THE ORIGIN IS CONFIGURATION, NOT THE REQUEST (VS-09). This used to be
-    # `request.base_url` — i.e. the caller's `Host` / `X-Forwarded-Host` header — so
-    # `Host: internal-metadata.local` made this pod's own ffmpeg fetch that host over the pod
-    # network and hand the caller a transcode of whatever answered: a read primitive against
-    # everything the pod can reach, with a 120 s ffmpeg timeout per attempt.
-    #
-    # The path changed with it, because the old one resolved nowhere: this service serves media
-    # bytes at `/api/media/{doc_id}` and has no `/api/explorer/{doc_id}` route, while the cluster
-    # route's `/api/explorer` → `/api` rule rewrites the external form to `/api/{doc_id}`, which it
-    # has no route for either. The header-derived host was buying nothing but the SSRF.
-    source = f"{settings.clip_source_origin.rstrip('/')}/api/media/{doc_id}"
-    if dataset:
-        source += f"?dataset={quote(dataset, safe='')}"
 
-    # AUTHZ, after shape. `can_read_data`, not `can_get_metadata`: a clip IS the media, so this is
-    # the rung `pages.py` uses for image bytes rather than the one `datasets.py` uses for a listing.
-    # The whole module carried no auth constructs at all until 2026-08-26, while its two siblings
-    # gated the same corpus objects — and the viewer is published at the edge through the cluster
-    # route's `/api/explorer` rule.
-    obj = corpus_object(settings, handle.id, binding.table)
-    if not await checker(user=subject, relation=READ_DATA, obj=obj):
-        audit(ViewerAuditAction.VIEWER_CLIP_READ, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=READ_DATA)
-        raise ForbiddenError(f"{subject} lacks {READ_DATA} on {obj}")
+    def write_source(path: Path) -> None:
+        ds = table_dataset(handle, binding.table)
+        rowid = rowid_for_doc(ds, handle.descriptor.declared.identity.doc_key, doc_id)
+        if rowid is None:
+            raise NotFoundError("doc_id not found")
+        total = payload_size(ds, binding.media_blob, rowid)
+        with path.open("wb") as out:
+            for chunk in stream_blob_range(ds, binding.media_blob, rowid, start=0, end=total - 1):
+                out.write(chunk)
 
-    # OFF THE LOOP, and refusing rather than queueing. This route was a plain `def`, so FastAPI
-    # threadpooled it — and every caller waiting on the old global build lock held a POOL THREAD for
-    # as long as the queue ahead of it took, 120 s ffmpeg timeout at the head. Measured: 41 concurrent
-    # requests exhausted the pool while `/livez` stayed green, because liveness does not know the pool
-    # is gone. It is `async def` now for the authz above, so the blocking build must go to a thread
-    # explicitly; `build_clip` takes a bounded slot and raises `ClipBusyError` instead of waiting.
-    #
-    # THE CALLER'S OWN CREDENTIAL RIDES WITH THE FETCH. `/api/media/{doc_id}` is
-    # `REQUIRE_MEDIA_BYTES`-gated, so a bare loopback would transcode a 403 body once FGA is on.
-    # Forwarding the incoming bearer escalates nothing: the door it opens is the same
-    # `can_read_data` grant on the same corpus object this route just checked, for this same
-    # subject. (Header, not query param — a token in a URL lands in access logs.)
+    # OFF THE LOOP, and refusing rather than queueing: `build_clip` takes a bounded slot and raises `ClipBusyError`
+    # instead of waiting, so a burst cannot exhaust the threadpool while `/livez` stays green.
     try:
-        path = await asyncio.to_thread(
-            build_clip,
-            source,
-            f"{handle.id}--{doc_id}",
-            lo,
-            hi,
-            authorization=request.headers.get("authorization"),
-        )
+        path = await asyncio.to_thread(build_clip, write_source, f"{handle.id}--{doc_id}", lo, hi)
     except ClipBusyError as exc:
         # 503 + Retry-After: a fact the caller can act on. Queueing would have told them nothing and
         # cost a thread to say it.
@@ -470,9 +436,9 @@ async def media_clip(
     return FileResponse(path, media_type=mime, headers={"Cache-Control": "no-store"}, stat_result=stat_result)
 
 
-@router.get("/media/{doc_id}", dependencies=[REQUIRE_MEDIA_BYTES])
-def media(doc_id: str, request: Request, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> Response:
-    handle = dataset_handle(state, dataset, caller_token)
+@router.get("/media/{doc_id}", dependencies=[AUTHENTICATED])
+def media(caller: CallerDep, doc_id: str, request: Request, state: StateDep, dataset: DatasetParam = None) -> Response:
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document

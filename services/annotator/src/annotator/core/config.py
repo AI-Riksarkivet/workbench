@@ -1,24 +1,23 @@
 """Per-service settings — the shared media-library config plus the annotator's own knobs.
 
-The annotator is a client of the lakehouse with its own release (ADR 0171): it reads and writes governed tables
-through the catalog's doors, as the person on their own token, and publishes as its own ServiceAccount. So its
-settings name the catalog and the token files it presents, and never a store credential: a corpus is opened on
-the credential the catalog vends.
+The annotator is a client of the lakehouse: it reads governed tables through the catalog's doors as the person, on a
+token it exchanges for them, and writes annotations and publishes as the workbench's own confidential client, naming
+the person in each commit. So its settings name the catalog and that client (`LakehouseTokenSettings`), and never a store
+credential: a corpus is opened on the credential the catalog vends.
 
-It mixes in :class:`GovernedAuthSettings` for the person it serves: every entity the annotator keeps (projects,
-tasks, claims, drafts, member roles) is keyed on who owns or claims it, so a request needs a VERIFIED subject.
+It mixes in :class:`GovernedAuthSettings` for the person it serves: every entity the annotator keeps (projects, tasks,
+claims, drafts) is keyed on who owns or claims it, and what they may do is the workbench's own store's answer.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
-from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
 from client_kit.media.config import Settings
-from service_kit.governed.settings import GovernedAuthSettings
+from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
 class LineageSink(StrEnum):
@@ -52,15 +51,14 @@ class AssistBackend(BaseModel):
         return {"url": value} if isinstance(value, str) else value
 
 
-class AnnotatorSettings(GovernedAuthSettings, Settings):
+class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     service_name: str = "annotator"
     service_port: int = Field(default=8103, alias="ANNOTATOR_PORT")
 
-    #: The projected ServiceAccount token the publish saga presents to the catalog (audience `rask-catalog`), read on
-    #: every call because the kubelet replaces it before it expires. The catalog verifies it like any service's, and a
-    #: project admin grants that principal writer on the publish target through the catalog's grant door. Unset, the
-    #: saga publishes with no bearer, which only a catalog authenticating nobody admits.
-    catalog_token_file: Path | None = Field(default=None, alias="ANNOTATOR_CATALOG_TOKEN_FILE")
+    #: The lakehouse namespace that holds the workbench's annotation tables (`<warehouse>$<namespace>`), which the
+    #: workbench's own identity is granted to write: one table per (project, dataset), so a project's annotations are
+    #: its own rows and no other project's write can reach them (`annotator.annotations.store`).
+    annotations_namespace: str = Field(default="workbench$annotations", min_length=3, alias="ANNOTATOR_ANNOTATIONS_NAMESPACE")
 
     #: Where a local-mode save logs its RunEvent; see `LineageSink`.
     lineage_sink: LineageSink = Field(default=LineageSink.log, alias="ANNOTATOR_LINEAGE_SINK")

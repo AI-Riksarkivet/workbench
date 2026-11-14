@@ -16,6 +16,7 @@ import pytest
 
 from client_kit.lancekit.descriptor import DatasetDescriptor
 from client_kit.lancekit.registry import DatasetHandle
+from search.services.filters import extract_filters
 from search.services.spec import SearchSpec
 from search.services.target import resolve_target
 from service_kit.exceptions import NotFoundError, ValidationError
@@ -232,3 +233,8 @@ def test_the_default_and_its_own_name_share_one_entry() -> None:
     named = cache_key(_as_handle(handle), _spec("pages"), None, None)
     omitted = cache_key(_as_handle(handle), _spec(None), None, None)
     assert named == omitted, "naming the default split one question into two cache entries"
+
+
+def test_a_filter_is_taken_only_for_a_declared_field_and_only_when_it_has_a_value() -> None:
+    """Every other request parameter is someone else's, and an empty value is a filter not set."""
+    assert extract_filters({"language": "sv", "hand": "scribe-2", "doc_id": ""}, ["language", "doc_id"]) == {"language": "sv"}

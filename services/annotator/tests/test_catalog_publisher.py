@@ -104,7 +104,7 @@ def catalog() -> Iterator[_Catalog]:
 @pytest.mark.asyncio
 async def test_create_posts_exist_ok_with_schema_typed_rows_and_its_run(catalog: _Catalog, tmp_path: Path) -> None:
     catalog.version = 9
-    publisher = CatalogPublisher(catalog.url, token_file=_token(tmp_path / "token", "svc-token"), originator="alice")
+    publisher = CatalogPublisher(catalog.url, token=lambda: "svc-token", originator="alice")
 
     version = await publisher.create_table(
         "silver$vasa_0123456789ab", _plan(rows=2), properties={"annotation.project_id": "p1"}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07"
@@ -135,21 +135,20 @@ async def test_the_pin_reaches_the_create_as_the_runs_input(catalog: _Catalog) -
 
 
 @pytest.mark.asyncio
-async def test_every_publish_call_presents_the_annotators_own_token_read_again_and_names_the_person(catalog: _Catalog, tmp_path: Path) -> None:
-    """The token as it is when each call is made, and the person the publish is for.
+async def test_every_publish_call_presents_the_workbench_token_of_the_moment_and_names_the_person(catalog: _Catalog) -> None:
+    """The workbench's own token as it is when each call is made, and the person the publish is for.
 
-    The kubelet replaces the projected token before each one expires, so a token read once at construction would present
-    an expired credential to every call after the first.
+    The token client renews the workbench's client-credentials token before it expires, so a token taken once at
+    construction would present an expired credential to every call after the first.
     """
-    token = _token(tmp_path / "token", "token-1")
-    publisher = CatalogPublisher(catalog.url, token_file=token, originator="dex~gina")
+    issued = iter(["token-1", "token-2"])
+    publisher = CatalogPublisher(catalog.url, token=lambda: next(issued), originator="keycloak~gina")
 
     await publisher.create_table("acme$silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
-    _token(token, "token-2")
     await publisher.create_table("acme$silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
 
     presented = [(call.headers["authorization"], call.headers["x-lance-originator"]) for call in catalog.calls]
-    assert presented == [("Bearer token-1", "dex~gina"), ("Bearer token-2", "dex~gina")]
+    assert presented == [("Bearer token-1", "keycloak~gina"), ("Bearer token-2", "keycloak~gina")]
 
 
 @pytest.mark.asyncio

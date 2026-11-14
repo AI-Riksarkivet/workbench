@@ -100,7 +100,12 @@ spec:
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
             - { name: app-token, mountPath: /var/run/secrets/annotator/app-token, readOnly: true }
-            - { name: identity-rask-catalog, mountPath: /var/run/secrets/rask/identity/rask-catalog, readOnly: true }
+            {{- if .Values.auth.enabled }}
+            - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
+            {{- if .Values.auth.fga.credential.name }}
+            - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.port }}
@@ -110,8 +115,6 @@ spec:
             # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only: each
             # table opens through lance-namespace on the credential the catalog vends the person, so the pod holds no store key.
             - { name: MEDIA_CATALOG_URI, value: {{ .Values.catalog.url | default (printf "http://%s-catalog:2333" $r) | quote }} }
-            # The publish saga's identity: this pod's own ServiceAccount token, projected for the catalog.
-            - { name: ANNOTATOR_CATALOG_TOKEN_FILE, value: /var/run/secrets/rask/identity/rask-catalog/token }
             # The token the sidecar presents to the actor callbacks, mounted from the Secret this release generates.
             - { name: WORKBENCH_APP_TOKEN_FILE, value: /var/run/secrets/annotator/app-token/token }
             {{- with .Values.serve.discoveryUrl }}
@@ -134,21 +137,10 @@ spec:
             - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=rask,deployment.environment.name={{ .Values.otel.environment }},service.version={{ .Chart.AppVersion }}" }
             {{- end }}
             {{- if .Values.auth.enabled }}
-            {{- $issuer := required "auth.oidc.issuer is rask's auth.oidc.issuer; the annotator accepts a token only when its iss equals it" .Values.auth.oidc.issuer }}
-            - { name: WORKBENCH_AUDIT_ENABLED, value: {{ .Values.auth.audit | quote }} }
-            - { name: WORKBENCH_OIDC_ENABLED, value: "true" }
-            - { name: WORKBENCH_OIDC_ISSUER, value: {{ $issuer | quote }} }
-            - { name: WORKBENCH_OIDC_DISCOVERY_URL, value: {{ .Values.auth.oidc.discoveryUrl | default (printf "http://%s-dex:5556/dex" $r) | quote }} }
-            - { name: WORKBENCH_OIDC_AUDIENCE, value: {{ .Values.auth.oidc.audience | quote }} }
-            - { name: WORKBENCH_OIDC_ALLOW_INSECURE, value: {{ ternary "false" "true" (hasPrefix "https://" $issuer) | quote }} }
-            {{- $connectors := required "auth.oidc.connectors is rask's: the idp id of each Dex connector" .Values.auth.oidc.connectors }}
-            {{- range $connector, $idp := $connectors }}
-            {{- if or (not $connector) (not (kindIs "string" $idp)) (eq $idp "kubernetes") (not (regexMatch "^[a-z0-9-]+$" $idp)) }}
-            {{- fail (printf "auth.oidc.connectors.%s=%v is not an idp id: lower-case letters, digits and '-', never kubernetes, as rask's auth.oidc.connectors" $connector $idp) }}
-            {{- end }}
-            {{- end }}
-            - { name: WORKBENCH_OIDC_CONNECTORS, value: {{ $connectors | toJson | quote }} }
+            {{- include "annotator.authEnv" . | nindent 12 }}
             {{- else }}
+            # Authentication off, said the one loud way the services accept: a local stack only.
+            - { name: WORKBENCH_OIDC_ENABLED, value: "false" }
             - { name: WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED, value: "true" }
             {{- end }}
           startupProbe:
@@ -174,10 +166,19 @@ spec:
           secret:
             secretName: {{ $name }}-dapr-app-token
             items: [{ key: token, path: token }]
-        - name: identity-rask-catalog
-          projected:
-            sources:
-              - serviceAccountToken: { path: token, audience: {{ .Values.catalog.audience | quote }}, expirationSeconds: 600 }
+        {{- if .Values.auth.enabled }}
+        # The workbench's confidential client's secret: the token exchange and its own token for the lakehouse.
+        - name: oidc-client
+          secret:
+            secretName: {{ required "auth.oidc.client.secret.name: the Secret holding the workbench client's secret" .Values.auth.oidc.client.secret.name }}
+            items: [{ key: {{ .Values.auth.oidc.client.secret.key }}, path: client-secret }]
+        {{- with .Values.auth.fga.credential.name }}
+        - name: fga-credential
+          secret:
+            secretName: {{ . }}
+            items: [{ key: {{ $.Values.auth.fga.credential.key }}, path: preshared-key }]
+        {{- end }}
+        {{- end }}
         # The sidecar's Kubernetes API identity, the one its secret store reads the state credential with.
         - name: kube-api
           projected:

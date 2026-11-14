@@ -20,8 +20,7 @@ from client_kit.lancekit.predicate import eq
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from service_kit.exceptions import ValidationError
-from service_kit.governed.deps import RawBearerToken
-from viewer.api.security import REQUIRE_CORPUS_DATA
+from viewer.api.security import AUTHENTICATED, CallerDep
 from viewer.schemas.diarization import DiarizationResponse, SpeakerTurn
 
 
@@ -42,10 +41,10 @@ def _not_built(doc_id: str) -> DiarizationResponse:
     return DiarizationResponse(built=False, doc_id=doc_id)
 
 
-@router.get("/{doc_id}", dependencies=[REQUIRE_CORPUS_DATA])
-def get_diarization(doc_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> DiarizationResponse:
+@router.get("/{doc_id}", dependencies=[AUTHENTICATED])
+def get_diarization(caller: CallerDep, doc_id: str, state: StateDep, dataset: DatasetParam = None) -> DiarizationResponse:
     """A recording's speaker turns (sorted by start), or ``built: false`` if absent."""
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     # Whitelist the path param against the descriptor's identity pattern BEFORE
     # it is inlined into the Lance filter literal below — otherwise a crafted
     # doc_id is a SQL-injection vector.

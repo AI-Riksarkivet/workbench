@@ -24,6 +24,9 @@ export RAY_ENABLE_UV_RUN_RUNTIME_ENV=0   # documented Ray/uv gotcha
 # chart's routes publish /api/flows, /api/ray, … unchanged — a mismatch is a 404
 # at the service (e.g. the compute zone's /api/ray/jobs).
 export WORKBENCH_API_PREFIX="${WORKBENCH_API_PREFIX:-/api}"
+# A local stack signs nobody in, and says so the one way the services accept (authentication is on by default).
+export WORKBENCH_OIDC_ENABLED="${WORKBENCH_OIDC_ENABLED:-false}"
+export WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED="${WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED:-true}"
 # The media plane reads one lance-namespace catalog: a local directory catalog unless MEDIA_CATALOG_URI names the
 # catalog's REST door. `uv run python scripts/seed_demo_corpus.py` seeds the same directory.
 if [ -z "${MEDIA_CATALOG_URI:-}" ]; then

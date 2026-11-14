@@ -1,4 +1,4 @@
-"""The flows HTTP surface: `/flows/catalog`, `/flows/validate`, `/flows/runs[/{run_id}]`.
+"""The flows HTTP surface: `/flows/catalog`, and per project `/flows/projects/{project}/validate` and `.../runs[/{run_id}]`.
 
 Mounted under `settings.api_prefix` by `make_service_app`, so the deployed paths are
 `/api/flows/...` (the chart sets `WORKBENCH_API_PREFIX=/api`, and `scripts/dev-micro.sh` matches it) —
@@ -6,7 +6,7 @@ which is exactly what the cluster route's `/api/flows` rule forwards unrewritten
 `/flows` with an api_prefix of `/api/v1` would serve `/api/v1/flows/...` and every call through the
 route would 404; that trap has already been paid for once in this estate (the ingest row's `/v1`).
 
-Every route is gated on the lakehouse's estate-admin verb (`flows.security`), and a run id is
+Every project route is gated on that project's roles in the workbench's own store (`flows.security`), and a run id is
 DERIVED from the caller's `Idempotency-Key` rather than minted per attempt — the run id is also the
 durable workflow's instance id, so deriving it is what makes a retry converge on the run it is
 retrying instead of forking a second one. See `create_run` and `lifespan.DaprFlowScheduler`.
@@ -18,13 +18,13 @@ import uuid
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Path
 from pydantic import BaseModel, ValidationError
 
 from flows import executor, security
 from flows.audit_actions import FlowsAuditAction
 from flows.catalog import CATALOG
-from flows.dependencies import FlowsSettingsDep, HttpDep, RunReaderDep, RunsDep, SchedulerDep, ScheduleUnconfirmed
+from flows.dependencies import FlowRunReader, FlowsSettingsDep, HttpDep, RunReaderDep, RunsDep, SchedulerDep, ScheduleUnconfirmed
 from flows.graph import validate_graph
 from flows.metrics import DURABLE, INLINE, record_run
 from flows.models import (
@@ -37,13 +37,15 @@ from flows.models import (
     RunState,
     ValidateResponse,
 )
-from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
-from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.exceptions import NotFoundError, ServiceUnavailableError
 
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/flows", tags=["flows"])
+
+#: A project id, as the annotator mints and names them.
+ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
 
 #: The namespace that makes a run id deterministic across processes, replicas and restarts. A fixed
 #: constant, not uuid1/uuid4: the whole point is that the same `Idempotency-Key` yields the same run
@@ -52,7 +54,7 @@ router = APIRouter(prefix="/flows", tags=["flows"])
 RUN_NAMESPACE = uuid.UUID("2c9b7f41-6d4a-5e18-9a3c-71b0c5d2e480")
 
 
-def run_id_for(subject: str, idempotency_key: str) -> str:
+def run_id_for(project: str, subject: str, idempotency_key: str) -> str:
     """Derive the run id from the CALLER's key — the estate's idempotency pattern (`ingest.runs`).
 
     Deterministic by construction: same subject + same key -> same id, on any pod, after any crash.
@@ -60,9 +62,9 @@ def run_id_for(subject: str, idempotency_key: str) -> str:
     timeout unrecoverable: with nothing to converge on, the only choices were "run it again" and
     "lose it".
 
-    Scoped by SUBJECT, because the run id IS the workflow instance id and it is also the URL of a
+    Scoped by PROJECT and SUBJECT, because the run id IS the workflow instance id and it is also the URL of a
     readable resource: an unscoped key would let one caller's `Idempotency-Key: 1` land on another's
-    run. A flow has no project to scope to.
+    run, or one project's on another's.
 
     The name is INJECTIVE, and a printable separator is not enough to make it so. `f"{subject}-flows-{key}"`
     lets the delimiter occur inside either field, so distinct pairs collide: subject `alice` with
@@ -77,26 +79,22 @@ def run_id_for(subject: str, idempotency_key: str) -> str:
     verifier. That is a property of the alphabet rather than a convention about what people name
     things, which is the only kind of separator argument that survives a hostile input.
     """
-    return f"run-{uuid.uuid5(RUN_NAMESPACE, '\x00'.join((subject, 'flows', idempotency_key))).hex}"
+    return f"run-{uuid.uuid5(RUN_NAMESPACE, '\x00'.join((project, subject, 'flows', idempotency_key))).hex}"
 
 
-@router.get("/catalog")
-async def get_catalog(
-    subject: security.CurrentSubject,
-    checker: security.CheckerDep,
-    settings: FlowsSettingsDep,
-) -> CatalogResponse:
-    """The server-declared node kinds. Shape is pinned — see `models.CatalogResponse`."""
-    await security.require_read(checker, settings, subject)
+@router.get("/catalog", dependencies=[security.AUTHENTICATED])
+async def get_catalog() -> CatalogResponse:
+    """The server-declared node kinds, to any verified person: they name no project and no run. Shape is pinned —
+    see `models.CatalogResponse`."""
     return CatalogResponse(kinds=CATALOG)
 
 
-@router.post("/validate")
+@router.post("/projects/{project}/validate")
 async def validate(
+    project: ProjectId,
     graph: FlowGraph,
     subject: security.CurrentSubject,
     checker: security.CheckerDep,
-    settings: FlowsSettingsDep,
 ) -> ValidateResponse:
     """Graph hygiene, with no cluster involved: duplicate ids, unknown kinds, dangling edges,
     self-loops, cycles. Same vocabulary the frontend executor refuses on.
@@ -105,13 +103,13 @@ async def validate(
     the MODEL now — `FlowGraph.nodes` carries `max_length` — because the ceiling in `validate_graph`
     fires only after every node has been built, which bounded the answer and not the work.
     """
-    await security.require_read(checker, settings, subject)
+    await security.require(checker, subject, security.READ, project, FlowsAuditAction.FLOWS_READ)
     problems = validate_graph(graph)
     return ValidateResponse(ok=not problems, problems=problems)
 
 
 @router.post(
-    "/runs",
+    "/projects/{project}/runs",
     # NO `response_model=`: the return annotation is `RunState` and FastAPI derives the schema from
     # it, so restating it would carry no information — the argument is reserved for a wire shape that
     # DIFFERS from the annotation. Ruff's FAST001 refuses the restatement here, because this module
@@ -123,6 +121,7 @@ async def validate(
     responses={HTTPStatus.UNPROCESSABLE_ENTITY: {"model": RunRefused, "description": "The graph does not validate."}},
 )
 async def create_run(
+    project: ProjectId,
     request: RunRequest,
     http: HttpDep,
     settings: FlowsSettingsDep,
@@ -157,18 +156,13 @@ async def create_run(
     if problems:
         raise RunRefusedError(f"{len(problems)} problem(s) in the graph", extensions={"problems": problems})
 
-    # AUTHZ, after shape (identity 401 → shape 422 → authz 403, the estate's door order). A flow's
-    # model nodes invoke live Serve endpoints, so this is the one route that spends compute. The
-    # denial NAMES the missing tuple — the estate's FGA-denial format, so the fix is in the message.
-    obj = settings.fga_root_object
-    allowed = await checker(user=subject, relation=security.ESTATE_ADMIN, obj=obj)
-    audit(FlowsAuditAction.FLOWS_RUN, AuditOutcome.ALLOW if allowed else AuditOutcome.DENY, subject=subject, resource=obj)
-    if not allowed:
-        raise ForbiddenError(f"'{subject}' lacks '{security.ESTATE_ADMIN}' on '{obj}' — running a flow needs the estate admin")
+    # AUTHZ, after shape (identity 401 → shape 422 → authz 403). A flow's model nodes invoke live Serve endpoints, so
+    # this is the route that spends compute, and it takes the project's run role.
+    await security.require(checker, subject, security.RUN, project, FlowsAuditAction.FLOWS_RUN)
 
     # A key-less call gets a fresh run: `run_id_for` still derives it, so one code path mints every
     # run id, and the randomness lives in the KEY rather than in a second id scheme.
-    run_id = run_id_for(subject, idempotency_key or uuid.uuid4().hex)
+    run_id = run_id_for(project, subject, idempotency_key or uuid.uuid4().hex)
 
     existing = runs.get(run_id)
     if existing is not None:
@@ -193,6 +187,7 @@ async def create_run(
             seeds=request.seeds,
             serve_url=settings.serve_url,
             serve_timeout=settings.serve_timeout,
+            project=project,
         )
         try:
             await scheduler.schedule(run_id, job.model_dump())
@@ -222,7 +217,7 @@ async def create_run(
             # `running`, with no node states yet: the engine owns the run from here. Reading the live
             # per-node state back out of the workflow history is the follow-up (open_studio_flows.md
             # defers streaming per-node progress) — v0 proves the seam, it does not stream it.
-            state = RunState(run_id=run_id, status="running")
+            state = RunState(run_id=run_id, project=project, status="running")
             record_run(DURABLE)
 
     if state is None:
@@ -237,6 +232,7 @@ async def create_run(
             serve_url=settings.serve_url,
             serve_timeout=settings.serve_timeout,
         )
+        state = state.model_copy(update={"project": project})
 
     _remember(runs, state, settings.max_runs)
     return state
@@ -255,11 +251,12 @@ class TerminateAccepted(BaseModel):
     detail: str = "further scheduling stops; work already in flight may still complete"
 
 
-@router.post("/runs/{run_id}/terminate", status_code=HTTPStatus.ACCEPTED)
+@router.post("/projects/{project}/runs/{run_id}/terminate", status_code=HTTPStatus.ACCEPTED)
 async def terminate_run(
+    project: ProjectId,
     run_id: str,
+    runs: RunsDep,
     reader: RunReaderDep,
-    settings: FlowsSettingsDep,
     subject: security.CurrentSubject,
     checker: security.CheckerDep,
 ) -> TerminateAccepted:
@@ -270,64 +267,52 @@ async def terminate_run(
     deployment occupies replicas for `serve_timeout` x NODE_RETRY per node per wave with no way to
     intervene — a pod restart does not help, because the instance is durable and resumes.
 
-    THE SAME DOOR as start and read, and the same relation: whoever may spend the estate's GPU on a
-    drawn graph is who may stop spending it. A narrower gate here would mean the person who started a
-    runaway could not stop it.
-
-    AUTHZ BEFORE EXISTENCE, matching `get_run`: no run-id oracle for an unpermitted caller.
+    THE SAME relation as start: whoever may spend compute on a project's graph may stop spending it, so the person
+    who started a runaway can stop it. AUTHZ BEFORE EXISTENCE, matching `get_run`: no run-id oracle for an unpermitted
+    caller, and a run of another project is a 404 here.
     """
-    obj = settings.fga_root_object
-    allowed = await checker(user=subject, relation=security.ESTATE_ADMIN, obj=obj)
-    audit(FlowsAuditAction.FLOWS_RUN_TERMINATE, AuditOutcome.ALLOW if allowed else AuditOutcome.DENY, subject=subject, resource=obj)
-    if not allowed:
-        raise ForbiddenError(f"'{subject}' lacks '{security.ESTATE_ADMIN}' on '{obj}' — stopping a run needs the estate admin")
+    await security.require(checker, subject, security.RUN, project, FlowsAuditAction.FLOWS_RUN_TERMINATE)
     if reader is None:
         raise ServiceUnavailableError("the workflow engine is not reachable from this pod")
+    await _run_of(project, run_id, runs, reader)
     # Through a thread: `DaprWorkflowClient` is synchronous gRPC, and blocking the loop here would
     # stall every other request on the worker — the same rule `get_run` follows for `state`.
     await asyncio.to_thread(reader.terminate, run_id)
     return TerminateAccepted(run_id=run_id)
 
 
-@router.get("/runs/{run_id}")
+@router.get("/projects/{project}/runs/{run_id}")
 async def get_run(
+    project: ProjectId,
     run_id: str,
     runs: RunsDep,
     reader: RunReaderDep,
-    settings: FlowsSettingsDep,
     subject: security.CurrentSubject,
     checker: security.CheckerDep,
 ) -> RunState:
     """Read a run back.
 
-    The SAME door as `POST /runs`, and the same relation. A run document carries what the model
-    nodes returned — transcribed page text, prompt output, upstream error strings — so leaving the
-    read ungated made the write gate cosmetic: anyone could read the product of the compute they
-    were refused permission to spend. The tier is not too strict for its own resource either, since
-    nobody can create a run without already holding it.
-
-    AUTHZ BEFORE EXISTENCE: a 404 that only a permitted caller can distinguish from a 403 is one
-    less oracle for guessing run ids.
+    A run document carries what the model nodes returned — transcribed page text, prompt output, upstream error
+    strings — so it takes the project's read role (a viewer reads a flow's runs). AUTHZ BEFORE EXISTENCE: a 404 that
+    only a permitted caller can distinguish from a 403 is one less oracle for guessing run ids, and a run of another
+    project is a 404 here.
     """
-    obj = settings.fga_root_object
-    allowed = await checker(user=subject, relation=security.ESTATE_ADMIN, obj=obj)
-    audit(FlowsAuditAction.FLOWS_RUN_READ, AuditOutcome.ALLOW if allowed else AuditOutcome.DENY, subject=subject, resource=obj)
-    if not allowed:
-        raise ForbiddenError(f"'{subject}' lacks '{security.ESTATE_ADMIN}' on '{obj}' — reading a run needs the estate admin")
+    await security.require(checker, subject, security.READ, project, FlowsAuditAction.FLOWS_RUN_READ)
+    return await _run_of(project, run_id, runs, reader)
 
-    # The ENGINE first, the local dict second. In the durable lane the dict only ever holds
-    # `RunState(status="running")` with an empty `nodes` map — written once by `_remember` and never
-    # updated — so preferring it would report a completed run as running forever, hide a FAILED run's
-    # error, and 404 every run older than `max_runs` or predating a restart, all while the workflow
-    # itself was fine. The workflow RETURNS `RunState.model_dump()`, so the engine holds the real
-    # answer and the dict is the cache its own docstring claims to be.
+
+async def _run_of(project: str, run_id: str, runs: dict[str, RunState], reader: FlowRunReader | None) -> RunState:
+    """The run ``run_id`` of ``project``, or a 404: one of another project is not this project's to show.
+
+    The ENGINE first, the local dict second. In the durable lane the dict only ever holds `RunState(status="running")`
+    with an empty `nodes` map — written once by `_remember` and never updated — so preferring it would report a
+    completed run as running forever, hide a FAILED run's error, and 404 every run older than `max_runs` or predating a
+    restart, all while the workflow itself was fine. The workflow RETURNS `RunState.model_dump()`, so the engine holds
+    the real answer and the dict is the cache its own docstring claims to be.
+    """
     engine = await asyncio.to_thread(reader.state, run_id) if reader is not None else None
-    live = _state_from_engine(run_id, engine)
-    if live is not None:
-        return live
-
-    state = runs.get(run_id)
-    if state is None:
+    state = _state_from_engine(run_id, engine) or runs.get(run_id)
+    if state is None or state.project != project:
         raise NotFoundError(f"no such run: {run_id}")
     return state
 
@@ -341,6 +326,9 @@ def _state_from_engine(run_id: str, engine: dict[str, object] | None) -> RunStat
     if not engine:
         return None
     status = str(engine.get("runtime_status") or "")
+    # The run's project, from the job the workflow was started with: a run the engine holds belongs to the project its
+    # input names, whatever state it is in.
+    project = _project_of(engine.get("serialized_input"))
 
     # COMPLETED means the workflow RETURNED — and what it returned is a whole RunState, node states
     # included. Parse it rather than synthesising one: the workflow already decided succeeded-vs-failed
@@ -356,21 +344,31 @@ def _state_from_engine(run_id: str, engine: dict[str, object] | None) -> RunStat
                 # reader and the workflow, not a missing run. Say so, rather than reporting the run as
                 # absent and sending an operator to look for a run that plainly exists.
                 log.exception("run %s completed but its output does not parse as a RunState", run_id)
-                return RunState(run_id=run_id, status="failed", error="the run completed but its result could not be read")
-        return RunState(run_id=run_id, status="failed", error="the run completed but returned no result")
+                return RunState(run_id=run_id, project=project, status="failed", error="the run completed but its result could not be read")
+        return RunState(run_id=run_id, project=project, status="failed", error="the run completed but returned no result")
 
     # FAILED/TERMINATED never produced a RunState — the body raised or was killed — so this is the one
     # place the reader must compose the answer itself.
     if status in ("FAILED", "TERMINATED"):
         detail = engine.get("failure_details") or engine.get("_failure_detail")
-        return RunState(run_id=run_id, status="failed", error=str(detail) if detail else f"the workflow engine reports the run as {status}")
+        return RunState(run_id=run_id, project=project, status="failed", error=str(detail) if detail else f"the workflow engine reports the run as {status}")
 
     # RUNNING / PENDING / SUSPENDED — genuinely still going. Per-node progress is not streamed yet
     # (open_studio_flows.md defers it), so the honest answer is the status without invented node
     # states; the local record, if any, carries no more than this either.
     if status:
-        return RunState(run_id=run_id, status="running")
+        return RunState(run_id=run_id, project=project, status="running")
     return None
+
+
+def _project_of(serialized_input: object) -> str:
+    """The project a workflow's input `RunJob` names, or empty when it cannot be read (which no project matches)."""
+    if not isinstance(serialized_input, str) or not serialized_input:
+        return ""
+    try:
+        return RunJob.model_validate_json(serialized_input).project
+    except ValidationError:
+        return ""
 
 
 def _remember(runs: dict[str, RunState], state: RunState, max_runs: int) -> None:

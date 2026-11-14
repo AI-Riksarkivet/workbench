@@ -49,6 +49,7 @@ from annotator.projects.models import Draft, Link, ProjectState, Shape, Task, Ta
 from annotator.projects.ontology import LabelOntology
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.governed.fga import Grant
 from service_kit.governed.principal import is_principal
 
 
@@ -139,18 +140,16 @@ def _proxy(task_id: str) -> AnnotationTaskActorInterface:
     return cast(AnnotationTaskActorInterface, typed_proxy("AnnotationTaskActor", task_id, AnnotationTaskActorInterface))
 
 
-async def _authorize(checker: Checker, subject: str, permission: str, project_id: str, what: AnnotatorAuditAction, **context: str) -> None:
-    """Check one relation on the ANNOTATION PROJECT, fail closed, and audit either way.
+async def _authorize(checker: Checker, subject: str, permission: str, task_id: str, project_id: str, what: AnnotatorAuditAction, **context: str) -> None:
+    """Check one relation on the TASK, fail closed, and audit either way.
 
-    The object is `annotation_project:<project_id>`, the project whose roles grant `can_claim` / `can_annotate` /
-    `can_review` / `can_manage` (`annotator.projects.roles`). Only creation is asked of the tenant, because at create
-    time the child does not exist yet.
-
-    The project id comes from the TASK's own record, never from the request, so a caller cannot
-    choose which object its permission is evaluated against.
+    The object is `task:<task_id>`, whose permissions the model takes from its project's roles. The task's project
+    rides the check as a contextual edge (`task#project`) rather than a stored tuple per task: it comes from the TASK's
+    own record, never from the request, so a caller cannot choose which project its permission is evaluated against.
     """
-    obj = f"annotation_project:{project_id}"
-    if not await checker(user=subject, relation=permission, obj=obj):
+    obj = f"task:{task_id}"
+    edge = Grant(user=f"project:{project_id}", relation="project", object=obj)
+    if not await checker(user=subject, relation=permission, obj=obj, contextual=[edge]):
         audit(what, AuditOutcome.FAILURE, subject=subject, resource=obj, relation=permission, **context)
         raise ForbiddenError(f"{subject} lacks {permission} on {obj}")
 
@@ -226,7 +225,7 @@ async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: Checke
         raise ForbiddenError(f"{payload.event} requires no principal permission and is not exposed")
 
     project_id = str(current["project_id"])
-    await _authorize(checker, subject, permission, project_id, AnnotatorAuditAction.TASK_TRANSITION, event=payload.event)
+    await _authorize(checker, subject, permission, task_id, project_id, AnnotatorAuditAction.TASK_TRANSITION, event=payload.event)
     # An assignee is the subject the assigned person's own token will prove ([[LH-063]]): with authentication on that
     # is a principal, so a bare name, which no token proves, is refused rather than stored for nobody to claim.
     if settings.oidc_enabled and payload.assignee is not None and not is_principal(payload.assignee):
@@ -248,7 +247,7 @@ async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: Checke
     # edge nobody fires in a loop.
     subject_can_manage = False
     if payload.event in HOLDER_OR_MANAGER:
-        subject_can_manage = await checker(user=subject, relation="can_manage", obj=f"annotation_project:{project_id}")
+        subject_can_manage = await checker(user=subject, relation="can_manage", obj=f"project:{project_id}")
 
     # Rules the table cannot express, because they depend on the task's own rows. Answered here for
     # the 403 and re-answered inside the actor's turn for the truth — see the module docstring.
@@ -299,7 +298,7 @@ async def get_task(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject
     task = await _proxy(task_id).get()
     if task is None:
         raise ConflictError(f"task {task_id} has not been sent into a project")
-    await _authorize(checker, subject, "can_view", str(task["project_id"]), AnnotatorAuditAction.TASK_VIEW)
+    await _authorize(checker, subject, "can_view", task_id, str(task["project_id"]), AnnotatorAuditAction.TASK_VIEW)
     return Task.model_validate(task)
 
 
@@ -311,7 +310,7 @@ async def save_draft(task_id: TaskId, payload: SaveDraftRequest, checker: Checke
     current = await actor.get()
     if current is None:
         raise ConflictError(f"task {task_id} has not been sent into a project")
-    await _authorize(checker, subject, "can_annotate", str(current["project_id"]), AnnotatorAuditAction.TASK_SAVE_DRAFT)
+    await _authorize(checker, subject, "can_annotate", task_id, str(current["project_id"]), AnnotatorAuditAction.TASK_SAVE_DRAFT)
 
     # A draft is only writable while the task is CLAIMED. Without this an ACCEPTED task's shapes
     # could be rewritten after review — and during a publish — which would put annotations into the
@@ -371,7 +370,7 @@ async def import_annotations(task_id: TaskId, request: Request, checker: Checker
     current = await actor.get()
     if current is None:
         raise ConflictError(f"task {task_id} has not been sent into a project")
-    await _authorize(checker, subject, "can_annotate", str(current["project_id"]), AnnotatorAuditAction.TASK_IMPORT)
+    await _authorize(checker, subject, "can_annotate", task_id, str(current["project_id"]), AnnotatorAuditAction.TASK_IMPORT)
 
     project_state = await _verified_project_state(str(current["project_id"]), "import")
     if TaskState(current["state"]) is not TaskState.CLAIMED:
@@ -445,7 +444,7 @@ async def get_draft(task_id: TaskId, checker: CheckerDep, subject: CurrentSubjec
     task = await actor.get()
     if task is None:
         raise ConflictError(f"task {task_id} has not been sent into a project")
-    await _authorize(checker, subject, "can_view", str(task["project_id"]), AnnotatorAuditAction.TASK_VIEW_DRAFT)
+    await _authorize(checker, subject, "can_view", task_id, str(task["project_id"]), AnnotatorAuditAction.TASK_VIEW_DRAFT)
     draft = await actor.get_draft()
     if draft is None:
         raise NotFoundError(f"task {task_id} has no draft")

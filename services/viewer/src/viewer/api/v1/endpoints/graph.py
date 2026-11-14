@@ -32,8 +32,7 @@ from pydantic import BaseModel, ConfigDict
 
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
-from service_kit.governed.deps import RawBearerToken
-from viewer.api.security import REQUIRE_CORPUS_DATA, REQUIRE_CORPUS_METADATA
+from viewer.api.security import AUTHENTICATED, CallerDep
 from viewer.schemas.graph import (
     CypherResponse,
     EntityClip,
@@ -390,10 +389,10 @@ def _run_rows(res: _GraphResources, cypher: str) -> list[dict[str, Any]]:
     return result.to_pylist() if hasattr(result, "to_pylist") else list(result)
 
 
-@router.get("/status", dependencies=[REQUIRE_CORPUS_METADATA])
-def get_status(state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> GraphStatusResponse:
+@router.get("/status", dependencies=[AUTHENTICATED])
+def get_status(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) -> GraphStatusResponse:
     """Row counts for the explorer header, or ``built: false`` if the KG is absent."""
-    res = _resources(state, dataset_handle(state, dataset, caller_token))
+    res = _resources(state, dataset_handle(state, dataset, caller))
     if res is None:
         return GraphStatusResponse(built=False)
     return GraphStatusResponse(
@@ -412,10 +411,10 @@ class CypherRequest(BaseModel):
     limit: int = _DEFAULT_LIMIT
 
 
-@router.post("/cypher", dependencies=[REQUIRE_CORPUS_DATA])
-def run_cypher(body: CypherRequest, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> CypherResponse:
+@router.post("/cypher", dependencies=[AUTHENTICATED])
+def run_cypher(caller: CallerDep, body: CypherRequest, state: StateDep, dataset: DatasetParam = None) -> CypherResponse:
     """Run arbitrary read Cypher; invalid queries return ``error`` (HTTP 200)."""
-    res = _resources(state, dataset_handle(state, dataset, caller_token))
+    res = _resources(state, dataset_handle(state, dataset, caller))
     if res is None:
         return CypherResponse(built=False)
     raw = body.query.strip()
@@ -438,10 +437,10 @@ def run_cypher(body: CypherRequest, state: StateDep, dataset: DatasetParam = Non
     )
 
 
-@router.get("/search", dependencies=[REQUIRE_CORPUS_DATA])
-def search_entities(q: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> GraphSearchResponse:
+@router.get("/search", dependencies=[AUTHENTICATED])
+def search_entities(caller: CallerDep, q: str, state: StateDep, dataset: DatasetParam = None) -> GraphSearchResponse:
     """Entity-name substring matches (top 10 by mention count). ``q`` never hits Cypher."""
-    res = _resources(state, dataset_handle(state, dataset, caller_token))
+    res = _resources(state, dataset_handle(state, dataset, caller))
     if res is None:
         return GraphSearchResponse(built=False)
     needle = q.strip().lower()
@@ -480,8 +479,8 @@ def _clip(row: dict[str, Any], title_column: str | None) -> EntityClip:
     )
 
 
-@router.get("/entity/{entity_id}", dependencies=[REQUIRE_CORPUS_DATA])
-def get_entity(entity_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> GraphEntityResponse:
+@router.get("/entity/{entity_id}", dependencies=[AUTHENTICATED])
+def get_entity(caller: CallerDep, entity_id: str, state: StateDep, dataset: DatasetParam = None) -> GraphEntityResponse:
     """An entity's properties + clips + relationship neighbours + co-occurrences.
 
     Clips, neighbours and co-occurrences are answered through the live
@@ -490,7 +489,7 @@ def get_entity(entity_id: str, state: StateDep, dataset: DatasetParam = None, ca
     content pending descriptor-ization (they name the KG writer contract's
     columns, no corpus schema).
     """
-    res = _resources(state, dataset_handle(state, dataset, caller_token))
+    res = _resources(state, dataset_handle(state, dataset, caller))
     if res is None:
         return GraphEntityResponse(built=False)
     if not _ENTITY_ID.match(entity_id):
@@ -547,15 +546,15 @@ def get_entity(entity_id: str, state: StateDep, dataset: DatasetParam = None, ca
     )
 
 
-@router.get("/subgraph", dependencies=[REQUIRE_CORPUS_DATA])
+@router.get("/subgraph", dependencies=[AUTHENTICATED])
 def get_subgraph(
+    caller: CallerDep,
     state: StateDep,
     entity_id: str | None = None,
     # DECLARED, not clamped: `max(1, min(limit, _MAX_LIMIT))` below is the real bound and the
     # schema never said so.
     limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = 150,
     dataset: DatasetParam = None,
-    caller_token: RawBearerToken = None,
 ) -> SubgraphResponse:
     """Nodes + edges for the force-layout view.
 
@@ -563,7 +562,7 @@ def get_subgraph(
     relationship among them). With one → that entity plus its 1-hop relationship
     neighbourhood.
     """
-    res = _resources(state, dataset_handle(state, dataset, caller_token))
+    res = _resources(state, dataset_handle(state, dataset, caller))
     if res is None:
         return SubgraphResponse(built=False)
     limit = max(1, min(limit, _MAX_LIMIT))

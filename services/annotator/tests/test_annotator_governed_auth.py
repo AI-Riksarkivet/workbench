@@ -4,7 +4,8 @@
 (`client_kit.media.deps.get_author`, defaulting to `"anon"`). That is fine for reads and a
 cross-user leak for annotation projects, whose every entity is keyed on who owns or claims it.
 
-These tests pin the two properties that make the difference real:
+These tests pin the two properties that make the difference real (the door itself, token and proof, is
+`packages/service-kit/tests/test_every_verifier_failure_is_a_401_or_a_503.py`'s):
 
 1. the subject comes from a **verified token**, with no header fallback; and
 2. an auth layer that is *enabled but broken* returns **503**, never open access.
@@ -29,9 +30,6 @@ from annotator.api.security import (
 )
 from annotator.core.config import AnnotatorSettings
 from service_kit.exceptions import register_handlers
-from service_kit.governed.idp_identity import PersonPrincipal
-from service_kit.governed.oidc import IDToken
-from service_kit.governed.principal import Principal
 from service_kit.ns_errors import install_problem_handlers
 
 
@@ -85,32 +83,16 @@ def test_an_x_user_header_can_no_longer_choose_the_subject() -> None:
     assert got["subject"] != "attacker"
 
 
-class _Verifier:
-    def verify(self, token: str) -> PersonPrincipal:
-        assert token == "good-token"
-        return PersonPrincipal(principal=Principal(idp_id="dex", subject="gina"), claims=IDToken(iss="i", sub="gina", aud="lance", exp=1, iat=1))
-
-
-def test_with_oidc_on_the_subject_is_the_verified_principal() -> None:
-    client = TestClient(_app(_settings(oidc_enabled=True, fga_enabled=False), oidc=_Verifier()))
-    r = client.get("/whoami", headers={"Authorization": "Bearer good-token"})
-    assert r.status_code == 200
-    assert r.json() == {"subject": "dex~gina"}
-
-
 # --------------------------------------------------------------------------------------------------
 # Fail closed — the property that must never regress
 # --------------------------------------------------------------------------------------------------
 
 
-def test_authentication_on_but_no_catalog_to_ask_is_503_not_permissive() -> None:
-    """The dangerous one: a broken authz layer must not silently become an open one.
-
-    With authentication on, every decision is the catalog's answer for the caller (`annotator.api.authorization`),
-    so a process that cannot ask it (no client on the app, here) refuses rather than allowing.
-    """
-    client = TestClient(_app(_settings(oidc_enabled=True, fga_enabled=False, catalog_uri="http://catalog.test"), oidc=_Verifier()))
-    assert client.get("/guarded", headers={"Authorization": "Bearer good-token"}).status_code == 503
+def test_authorization_on_but_no_store_to_ask_is_503_not_permissive() -> None:
+    """The dangerous one: a broken authz layer must not silently become an open one. With authorization on, every
+    decision is the workbench store's answer, so a process that cannot ask it (no store on the app, here) refuses."""
+    client = TestClient(_app(_settings(oidc_enabled=False, fga_enabled=True), authz=None))
+    assert client.get("/guarded").status_code == 503
 
 
 # --------------------------------------------------------------------------------------------------
@@ -130,15 +112,6 @@ def test_authorization_without_authentication_is_refused_at_construction(monkeyp
     monkeypatch.setenv("WORKBENCH_FGA_ENABLED", "true")
     monkeypatch.setenv("WORKBENCH_OIDC_ENABLED", "false")
     with pytest.raises(ValueError, match="WORKBENCH_OIDC_ENABLED is required"):
-        AnnotatorSettings()
-
-
-def test_oidc_without_issuer_and_audience_is_refused_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WORKBENCH_OIDC_ENABLED", "true")
-    monkeypatch.setenv("WORKBENCH_OIDC_CONNECTORS", '{"local": "dex"}')
-    monkeypatch.delenv("WORKBENCH_OIDC_ISSUER", raising=False)
-    monkeypatch.delenv("WORKBENCH_OIDC_AUDIENCE", raising=False)
-    with pytest.raises(ValueError, match="WORKBENCH_OIDC_ISSUER and WORKBENCH_OIDC_AUDIENCE are required"):
         AnnotatorSettings()
 
 

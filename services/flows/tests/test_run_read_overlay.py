@@ -57,16 +57,16 @@ def _app(engine: Any, runs: dict[str, RunState] | None = None) -> FastAPI:
 def finished() -> Iterator[dict[str, object]]:
     yield {
         "runtime_status": "COMPLETED",
-        "serialized_output": RunState(run_id=RUN_ID, status="succeeded").model_dump_json(),
+        "serialized_output": RunState(run_id=RUN_ID, project="p1", status="succeeded").model_dump_json(),
     }
 
 
 def test_the_engine_OVERRIDES_a_stale_local_record(finished: dict[str, object]) -> None:
     """THE regression. The durable lane writes `running` once and never updates it, so preferring the
     dict reported a finished run as running for the life of the pod."""
-    stale = {RUN_ID: RunState(run_id=RUN_ID, status="running")}
+    stale = {RUN_ID: RunState(run_id=RUN_ID, project="p1", status="running")}
     with TestClient(_app(_Engine(finished), stale)) as client:
-        body = client.get(f"/api/flows/runs/{RUN_ID}").json()
+        body = client.get(f"/api/flows/projects/p1/runs/{RUN_ID}").json()
 
     assert body["status"] == "succeeded", "the stale local record won — the durable lane is still write-only"
 
@@ -75,7 +75,7 @@ def test_a_run_EVICTED_from_the_dict_is_still_readable(finished: dict[str, objec
     """`_remember` evicts past `max_runs`, and a restart empties the dict entirely. Neither may turn a
     live durable run into a 404 — that is the failure an operator hits watching a long run."""
     with TestClient(_app(_Engine(finished), {})) as client:
-        response = client.get(f"/api/flows/runs/{RUN_ID}")
+        response = client.get(f"/api/flows/projects/p1/runs/{RUN_ID}")
 
     assert response.status_code == 200
     assert response.json()["status"] == "succeeded"
@@ -85,4 +85,4 @@ def test_a_run_in_NEITHER_place_is_a_404_not_an_empty_200() -> None:
     """The fallback must stay reachable: an engine that has nothing is different from an engine that
     says running, and only the first may fall through to the dict — then to a genuine 404."""
     with TestClient(_app(_Engine(None), {})) as client:
-        assert client.get(f"/api/flows/runs/{RUN_ID}").status_code == 404
+        assert client.get(f"/api/flows/projects/p1/runs/{RUN_ID}").status_code == 404

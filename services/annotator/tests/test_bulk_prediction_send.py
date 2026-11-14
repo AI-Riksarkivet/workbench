@@ -27,7 +27,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as ev
 from annotator.projects.models import ProjectState
 from client_kit.media.config import Settings
@@ -103,6 +103,7 @@ def _client(project: _FakeProject, task: _FakeTask, monkeypatch: pytest.MonkeyPa
     register_handlers(app)
     app.include_router(ev.router)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: SUBJECT
     state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(catalog)}))
     app.dependency_overrides[get_state] = lambda: state

@@ -10,20 +10,14 @@ from functools import lru_cache
 from pydantic import Field
 
 from client_kit.media.config import Settings
-from service_kit.governed.settings import GovernedAuthSettings
+from service_kit.governed.settings import LakehouseTokenSettings, OidcSettings
 
 
-class SearchSettings(Settings, GovernedAuthSettings):
-    """The search service's config, now carrying the shared OIDC/FGA knobs.
+class SearchSettings(Settings, OidcSettings, LakehouseTokenSettings):
+    """The search service's config: the media plane's, the workbench's sign-in, and its client for lakehouse tokens.
 
-    It shipped with NO authorization of any kind — the only explorer service without one — while the
-    chart set `WORKBENCH_OIDC_*`/`WORKBENCH_FGA_*` on all three. That env reached this service and bound to
-    nothing, so authorization here was configured-looking and inert (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" X6), and the
-    route that takes a raw SQL `where` predicate was the one with no subject behind it (VS-13).
-
-    Mixed in rather than declared as SEARCH_* twins, for the reason ViewerSettings gives: one set of
-    variables across every governed service, and the shared fail-fast validator (FGA without OIDC is
-    refused at construction, because authz needs a verified subject to be about).
+    Search reads every corpus as the person asking, on a token it exchanges for them, so the lakehouse decides what they
+    may search; it checks nothing of its own on a corpus.
     """
 
     service_name: str = "search"

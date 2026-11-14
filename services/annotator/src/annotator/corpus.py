@@ -22,6 +22,7 @@ from client_kit.lancekit.descriptor import Declared
 from client_kit.lancekit.registry import DatasetHandle
 from client_kit.media.state import dataset_handle
 from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
+from service_kit.governed.token_exchange import LakehouseCaller
 
 
 if TYPE_CHECKING:
@@ -42,10 +43,10 @@ class Corpus(BaseModel):
     handle: DatasetHandle
 
 
-def resolve(state: AppState, dataset_id: str | None, caller_token: str | None) -> Corpus:
+def resolve(state: AppState, dataset_id: str | None, caller: LakehouseCaller) -> Corpus:
     """One media dataset, as the caller. Blocking (catalog calls, a manifest read per table), so an async route runs it in
     the threadpool."""
-    handle = dataset_handle(state, dataset_id, caller_token)
+    handle = dataset_handle(state, dataset_id, caller)
     return Corpus(id=handle.id, declared=handle.descriptor.declared, handle=handle)
 
 
@@ -65,7 +66,7 @@ def _is_table(client: lance_namespace.LanceNamespace, identifier: list[str]) -> 
     return True
 
 
-def input_tables(state: AppState, names: list[str], caller_token: str | None) -> dict[str, str | None] | None:
+def input_tables(state: AppState, names: list[str], caller: LakehouseCaller) -> dict[str, str | None] | None:
     """For each of ``names`` the catalog shows the caller, the governed table an item's captured version is a version of.
 
     A name is written as the catalog writes it, its warehouse first. One of three or more segments that the catalog holds
@@ -76,7 +77,7 @@ def input_tables(state: AppState, names: list[str], caller_token: str | None) ->
     refused, or a dataset with no valid descriptor. None when the catalog could not be asked.
     """
     settings = state.settings
-    client = connect_namespace(settings, caller_token)
+    client = connect_namespace(settings, caller.token)
     found: dict[str, str | None] = {}
     for name in names:
         identifier = name.split(settings.catalog_delimiter)
@@ -84,7 +85,7 @@ def input_tables(state: AppState, names: list[str], caller_token: str | None) ->
             if len(identifier) >= 3 and _is_table(client, identifier):
                 found[name] = name
             else:
-                search = resolve(state, name, caller_token).declared.search
+                search = resolve(state, name, caller).declared.search
                 found[name] = settings.catalog_delimiter.join(settings.catalog_table_id(name, search.row_table)) if search else None
         except (
             lance_namespace.TableNotFoundError,

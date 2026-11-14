@@ -141,7 +141,7 @@ class _Table:
     """The table as the media plane reads it: opened through the namespace at its latest version on every read."""
 
     def __init__(self, table_id: list[str]) -> None:
-        self._client = connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None)
+        self._client = connect_catalog(CATALOG_URL, token=(lambda: CATALOG_TOKEN) if CATALOG_TOKEN else None)
         self._id = table_id
 
     def latest(self) -> lance.LanceDataset:
@@ -156,7 +156,7 @@ def reader(table_id: list[str]) -> _Table:
 
 @pytest.fixture(scope="module")
 def writer(table_id: list[str]) -> NamespaceCatalogWriteTransport:
-    return NamespaceCatalogWriteTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None), table_id)
+    return NamespaceCatalogWriteTransport(connect_catalog(CATALOG_URL, token=(lambda: CATALOG_TOKEN) if CATALOG_TOKEN else None), table_id)
 
 
 def test_milestone_loop(reader: _Table, writer: NamespaceCatalogWriteTransport) -> None:

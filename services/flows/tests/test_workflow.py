@@ -39,6 +39,7 @@ JOB = RunJob(
     },
     seeds={"t": "seed"},
     serve_url=SERVE,
+    project="p1",
 )
 
 
@@ -119,6 +120,7 @@ def test_the_orchestrator_refuses_a_cycle_before_dispatching_anything() -> None:
             "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
         },
         serve_url=SERVE,
+        project="p1",
     )
     ctx = _FakeContext()
     generator = _orchestrator()(ctx, job.model_dump())

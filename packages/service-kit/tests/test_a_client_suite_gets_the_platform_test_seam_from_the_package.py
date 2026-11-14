@@ -38,13 +38,6 @@ def test_the_next_test_reads_the_store_again():
     assert secret_cache.STORE_READS.get(READ, lambda: {"k": "second"}) == {"k": "second"}
 
 
-def test_each_door_has_a_projected_token_file():
-    assert {door: Path(os.environ[f"WORKBENCH_{door}_IDENTITY_TOKEN_FILE"]).is_file() for door in ("CATALOG", "LINEAGE")} == {
-        "CATALOG": True,
-        "LINEAGE": True,
-    }
-
-
 def test_the_sidecar_handshake_is_bounded():
     assert dapr_settings.DAPR_HEALTH_TIMEOUT == 1.0
 
@@ -85,7 +78,6 @@ def test_a_suite_outside_the_repository_is_served_the_seam_by_the_installed_pack
     assert outcomes == {
         "test_a_first_read_is_the_stores_answer": "passed",
         "test_the_next_test_reads_the_store_again": "passed",
-        "test_each_door_has_a_projected_token_file": "passed",
         "test_the_sidecar_handshake_is_bounded": "passed",
         "test_a_route_nobody_calls_fails_the_test": "failure",
         "test_a_route_registered_to_prove_it_is_not_called_may_stay_uncalled": "passed",

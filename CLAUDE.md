@@ -19,17 +19,33 @@ tool would:
 - the lakehouse's events as `docs/rask/COMMIT-EVENTS.md` describes them.
 
 **Its authentication and authorization are its own and have nothing to do with rask's.**
-- **Sign-in** is the platform's OIDC provider (Dex in development, Keycloak or the like in production). Neither rask nor
-  the workbench hosts identity. The workbench registers its own client and audience there, serves its own login
-  callback, and verifies tokens addressed to it.
-- **Authorization** is the workbench's own model and store: who may do what to its projects, tasks, corpora and flows.
-  It never asks rask's decision door or rask's OpenFGA store, and rask knows nothing of the workbench's users or roles.
-- **Data** in a rask lakehouse is rask's to govern. When the workbench reads or writes a table there, rask decides
-  whether that caller (the person, or the workbench's service identity) may. The workbench is one more outside client
-  there.
+- **Sign-in** is any OIDC provider (Keycloak is the reference; Keycloak replaces Dex in development with rask's XC-214).
+  Neither rask nor the workbench hosts identity. The workbench has its own public PKCE client and its own audience
+  there. Its tokens are bound to the browser's key with DPoP (RFC 9449), and every service verifies the token and its
+  proof on every request (`service_kit.governed.deps`, `service_kit.governed.dpop`).
+- **Authorization** is the workbench's own OpenFGA model and store (`service_kit/governed/auth/model.fga`): an org's
+  admins and members, a project's five roles (owner > manager > reviewer > annotator > viewer), and the tasks, corpora
+  and flows that inherit from a project. It never asks rask's decision door or rask's OpenFGA store, and rask knows
+  nothing of the workbench's users or roles. The model and the declared organisations are written by the model writer
+  (`python -m service_kit.governed.auth.write_model`), a Job the deployment runs; a service finds the store by its name
+  and the model its own image carries, and never writes either.
+- **Data** in a rask lakehouse is rask's to govern. A read is made as the person, on a token the service exchanges for
+  them at the provider (RFC 8693, `service_kit.governed.token_exchange`): the person's own token is never forwarded.
+  An annotation write is made as the workbench's own confidential client after the workbench's own role check on the
+  project the request names (`?project=`), into that project's own table in the workbench's annotations namespace
+  (`<project>__<dataset digest>`), and names the person in the commit; a corpus binding grants reading, never writing.
+  rask decides whether that caller may, and its refusal is final.
 
-Not there yet: service-kit's `governed/decider.py` still asks rask's decision door, and its OpenFGA setup still
-provisions rask's authorization model. Replacing both with the workbench's own is spec row WB-5.
+The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); every credential is a mounted file:
+
+| Setting | What it names |
+| --- | --- |
+| `WORKBENCH_OIDC_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_IDP_ID`, `_DISCOVERY_URL` | sign-in, on by default; the provider, the workbench's own audience, and the idp id its subjects are principals of (`<idp-id>~<sub>`) |
+| `WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED` | the only way to run with sign-in off, refused unless sign-in is off; a service with it logs a warning at start |
+| `WORKBENCH_PUBLIC_URL`, `WORKBENCH_PUBLIC_MOUNT`, `WORKBENCH_DPOP_WINDOW_SECONDS` | the URL a DPoP proof's `htu` names (and the path a gateway rewrites it to), and the proof's `iat` and replay window |
+| `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse |
+| `ANNOTATOR_ANNOTATIONS_NAMESPACE` | the lakehouse namespace that holds every project's annotation tables (`workbench$annotations`) |
+| `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned |
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
 names, changed freely: service-kit, and the frontend packages `@workbench/ui`, `@workbench/api`,
@@ -92,6 +108,8 @@ The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and w
 | Tests (no live stack) | `make test` (= `uv run pytest -m "not e2e" -n 8`) |
 | One test | `uv run pytest services/<svc>/tests/<file>.py::<test>` |
 | Lint, format, type-check | `make check` |
+| The authorization model's tests | `make fga-test` (= `dagger call fga-test`); after editing `model.fga`, `make fga-model` |
+| The pinned OpenFGA server for the suite | `make openfga` (exported through Dagger to `.localbin/openfga`) |
 | Frontend gates | `make frontend-check` |
 | Build an image | `make image NAME=<stem>` (= `dagger call image --name=<stem>`) |
 | The CI gates locally | `dagger call lint`, `dagger call test`, `dagger call frontend-check` |

@@ -52,8 +52,8 @@ pytestmark = [
     pytest.mark.e2e,
     pytest.mark.annotator,
     pytest.mark.skipif(
-        not (ANNOTATOR and CATALOG and lakehouse_doors.DEX),
-        reason="LANCE_E2E_ANNOTATOR_URL, LANCE_E2E_CATALOG_URL and LANCE_E2E_DEX",
+        not (ANNOTATOR and CATALOG and lakehouse_doors.DEX and lakehouse_doors.DEX_CLIENT and lakehouse_doors.DEX_AUDIENCE),
+        reason="LANCE_E2E_ANNOTATOR_URL, LANCE_E2E_CATALOG_URL, LANCE_E2E_DEX, LANCE_E2E_OIDC_CLIENT_ID and LANCE_E2E_OIDC_AUDIENCE",
     ),
 ]
 

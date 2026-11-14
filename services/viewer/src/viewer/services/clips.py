@@ -1,14 +1,13 @@
 """Clip excerpts with MP3 audio — the codec workaround for webview hosts.
 
-Ported from the pre-split ``backend/media/clips.py``: ffmpeg loopback over this service's own
-Range-streaming ``/api/media/{doc_id}`` endpoint, at the CONFIGURED origin (never a request header
-— VS-09), with the caller's bearer forwarded because that endpoint is gated; disk cache capped at
-50 clips; at most ``MAX_CONCURRENT_BUILDS`` transcodes at once, refusing rather than queueing.
+ffmpeg cuts the window from the source media, which the route writes to a temporary file first, read through the
+caller's own handle on the dataset (the lakehouse decides that read). Nothing is fetched over HTTP, and no token of the
+caller's is handed to ffmpeg or forwarded anywhere. Disk cache capped at 50 clips; at most ``MAX_CONCURRENT_BUILDS``
+transcodes at once, refusing rather than queueing.
 
 VS Code's webview Chromium ships without the AAC decoder (microsoft/vscode
 #167685), so archive H.264+AAC files play silently inside MCP apps. This module
-cuts the requested window out of the source (read seekably via the media
-endpoint, since media lives in Lance blobs, not files) and re-encodes audio to
+cuts the requested window out of the source and re-encodes audio to
 MP3, which every webview supports. Results are small complete MP4s served with
 normal Range support, cached on disk and evicted oldest-first.
 """
@@ -20,6 +19,7 @@ import os
 import subprocess
 import tempfile
 import threading
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -129,18 +129,12 @@ def evict_old_clips(cache_dir: Path, keep: int = _MAX_CACHED) -> None:
         stale.unlink(missing_ok=True)
 
 
-def build_clip(source_url: str, cache_key: str, lo: float, hi: float, *, authorization: str | None = None) -> Path:
+def build_clip(write_source: Callable[[Path], None], cache_key: str, lo: float, hi: float) -> Path:
     """Return the cached clip for the window, transcoding it on first request.
 
-    ``-ss`` before ``-i`` on an HTTP input seeks via Range requests; video is
-    re-encoded (not copied) so the output starts frame-accurately at ``lo``
-    and the viewer's ``media_offset_s`` mapping holds.
-
-    ``source_url`` is the CALLER'S business only in the sense that the caller named the document:
-    the origin comes from `ViewerSettings.clip_source_origin`, never from a request header (VS-09).
-    ``authorization`` is the requesting caller's own bearer, forwarded because the media door this
-    fetches from is authorization-gated; ``-protocol_whitelist`` then keeps a redirect or a crafted
-    playlist from turning the fetch into something other than an HTTP read.
+    ``write_source`` writes the source media to the path it is given; it runs only on a cache miss, inside a build
+    slot. Video is re-encoded (not copied) so the output starts frame-accurately at ``lo`` and the viewer's
+    ``media_offset_s`` mapping holds. ffmpeg reads a local file alone (``-protocol_whitelist file``).
     """
     out = clip_cache_path(cache_key, lo, hi)
     if out.exists():
@@ -150,18 +144,19 @@ def build_clip(source_url: str, cache_key: str, lo: float, hi: float, *, authori
             return _touch(out)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".tmp.mp4")
+        source = out.with_suffix(".source")
+        write_source(source)
         cmd = [
             "ffmpeg",
             "-nostdin",
             "-v",
             "error",
             "-protocol_whitelist",
-            "http,https,tcp,tls",
-            *(("-headers", f"Authorization: {authorization}\r\n") if authorization else ()),
+            "file",
             "-ss",
             f"{lo:.3f}",
             "-i",
-            source_url,
+            str(source),
             "-t",
             f"{hi - lo:.3f}",
             "-c:v",
@@ -184,6 +179,8 @@ def build_clip(source_url: str, cache_key: str, lo: float, hi: float, *, authori
         except subprocess.TimeoutExpired as exc:
             tmp.unlink(missing_ok=True)
             raise ServiceUnavailableError("clip transcode timed out") from exc
+        finally:
+            source.unlink(missing_ok=True)
         if proc.returncode != 0 or not tmp.exists():
             tmp.unlink(missing_ok=True)
             logger.warning("ffmpeg clip build failed: %s", proc.stderr[-500:])

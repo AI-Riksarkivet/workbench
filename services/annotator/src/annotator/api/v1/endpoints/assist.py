@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.security import CheckerDep, CurrentSubject, RawBearerToken
+from annotator.api.security import CallerDep, CheckerDep, CurrentSubject, ProjectParam
 from annotator.api.v1.endpoints.serve_discovery import discovered_backends
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AssistBackend
@@ -28,7 +28,6 @@ from annotator.projects.generation_schema import generation_schema
 from annotator.projects.machines import UnreadableOntology, refuse_unreadable_ontology
 from annotator.projects.ontology import LabelOntology
 from client_kit.lancekit.keys import validate_doc_key
-from client_kit.media.authz import corpus_object
 from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState
 from service_kit.exceptions import ForbiddenError, ServiceUnavailableError
@@ -37,15 +36,13 @@ from service_kit.governed.audit import AuditOutcome, audit
 
 logger = logging.getLogger(__name__)
 
-#: An assist prediction is a PROPOSED WRITE: it comes back as `status="prediction"`,
-#: `source="model:<name>"` rows the annotator renders and a reviewer accepts or rejects — the same
-#: provenance path a batch deriver's output takes. So the rung is the write one. Gating on the read
-#: rung would let anyone who may merely LOOK at a corpus spend model compute against it and queue
-#: work for its reviewers.
-WRITE_DATA = "can_write_data"
+#: An assist prediction is a PROPOSED WRITE: it comes back as `status="prediction"`, `source="model:<name>"` rows the
+#: annotator renders and a reviewer accepts or rejects. So the relation is the annotating one on the project the request
+#: names, in the workbench's own store: anyone who may merely LOOK at a corpus may not spend model compute against it.
+ANNOTATE = "can_annotate"
 
 
-async def require_assist(request: Request, state: StateDep, subject: CurrentSubject, checker: CheckerDep, caller_token: RawBearerToken = None) -> None:
+async def require_assist(caller: CallerDep, request: Request, state: StateDep, subject: CurrentSubject, checker: CheckerDep, project: ProjectParam) -> None:
     """The door for the whole assist plane.
 
     AT THE ROUTER, not on each handler — the reference's own rule for a group where every route needs
@@ -60,22 +57,23 @@ async def require_assist(request: Request, state: StateDep, subject: CurrentSubj
     which is the same corpus their answers describe. That keeps one door for the group instead of a
     per-route rung, which is what made this router easy to add a fourth ungated route to.
 
-    The dataset is resolved through the catalog as the caller on a live catalog (`annotator.corpus`), and the
-    write rung on its documents table is the catalog's answer for the caller. Blocking, so it goes to the
-    threadpool, and the handler reads the resolved dataset off the request rather than resolving it again.
+    The dataset is resolved through the catalog as the caller (`annotator.corpus`), so the lakehouse decides whether
+    they may read it; whether they may annotate is the workbench's own `can_annotate` on the project the request names
+    (`?project=`). Blocking, so the resolve goes to the threadpool, and the handler reads the resolved dataset off the
+    request rather than resolving it again.
     """
-    handle = await run_in_threadpool(resolve, state, request.query_params.get("dataset"), caller_token)
+    handle = await run_in_threadpool(resolve, state, request.query_params.get("dataset"), caller)
     request.state.corpus = handle
     binding = handle.declared.document
     if binding is None:
         # FAIL CLOSED. With no document binding there is no table to authorize against, and answering
         # anyway would make a malformed descriptor an authorization bypass.
-        audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=WRITE_DATA)
+        audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=ANNOTATE)
         raise ForbiddenError(f"{subject} cannot be authorized for assist on {handle.id}: no documents table")
-    obj = corpus_object(state.settings, handle.id, binding.table)
-    if not await checker(user=subject, relation=WRITE_DATA, obj=obj):
-        audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=WRITE_DATA)
-        raise ForbiddenError(f"{subject} lacks {WRITE_DATA} on {obj}")
+    obj = f"project:{project}"
+    if not await checker(user=subject, relation=ANNOTATE, obj=obj):
+        audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=ANNOTATE)
+        raise ForbiddenError(f"{subject} lacks {ANNOTATE} on {obj}")
 
 
 router = APIRouter(prefix="/api", tags=["assist"], dependencies=[Depends(require_assist)])

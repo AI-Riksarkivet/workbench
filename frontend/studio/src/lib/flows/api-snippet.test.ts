@@ -40,7 +40,7 @@ describe('snippets', () => {
 	it('curl posts valid JSON to the gateway row', () => {
 		const { body } = buildRunRequest([{ id: 'txt', type: 'text' }], [], CONFIG);
 		const out = curlSnippet(body);
-		expect(out).toContain('/api/flows/runs');
+		expect(out).toContain('/api/flows/projects/<project>/runs');
 		// The embedded body must round-trip — a snippet that pastes broken JSON is worse than none.
 		const json = out.slice(out.indexOf("-d '") + 4, out.lastIndexOf("'"));
 		expect(JSON.parse(json)).toEqual(body);
@@ -48,8 +48,8 @@ describe('snippets', () => {
 
 	it('python uses httpx and the same path', () => {
 		const { body } = buildRunRequest([{ id: 'txt', type: 'text' }], [], CONFIG);
-		const out = pythonSnippet(body, 'http://gw:8888');
+		const out = pythonSnippet(body, 'http://gw:8888', 'p1');
 		expect(out).toContain('import httpx');
-		expect(out).toContain('http://gw:8888/api/flows/runs');
+		expect(out).toContain('http://gw:8888/api/flows/projects/p1/runs');
 	});
 });

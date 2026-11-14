@@ -4,9 +4,8 @@ Module-level ``app``; ALL construction in the lifespan onto ``app.state`` (impor
 zero I/O). The lifespan and the assembly are both SHARED — ``client_kit.media.lifespan`` and
 ``client_kit.media.app`` — because viewer, search and annotator are three deployments of one shape
 and used to hand-write it three times (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" DUP-16 / X12 / DUP-20). What is genuinely
-this service's own — the actor plane and the client its checker asks the catalog with — arrives through the
-shared lifespan's ``setup``/``teardown`` hooks, which run before readiness is announced and before anything
-shared is disposed.
+this service's own — the actor plane — arrives through the shared lifespan's ``setup`` hook, which runs before
+readiness is announced.
 
 The annotator is a client of the lakehouse with its own release (ADR 0171): it publishes nothing on the
 lakehouse's bus, and tells a person about their work on its own surface.
@@ -15,9 +14,7 @@ lakehouse's bus, and tells a person about their work on its own surface.
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
 
-import httpx
 from dapr.ext.fastapi import DaprActor
 from fastapi import FastAPI, Request
 
@@ -49,9 +46,6 @@ async def _start_task_plane(app: FastAPI, _state: AppState) -> None:
     Ordering is the whole reason this is a hook and not code after the shared lifespan: a pod that
     reports ready while its task actors are unregistered answers 503 to every task route.
 
-    **The catalog client** the checker asks the person's standing with (`annotator.api.security.get_checker`):
-    one pooled client for the process, not one per request.
-
     **Actor registration** happens here, not at import, because it mutates process-global runtime
     state (`ActorRuntime._actor_managers`, and the entity list `/dapr/config` advertises) — a side
     effect that merely importing this module for `--help` or an image build must not have.
@@ -67,7 +61,9 @@ async def _start_task_plane(app: FastAPI, _state: AppState) -> None:
     `tasks.require_actor_plane` gates every task route on the flag (503, with the reason), and
     `/readyz` reports it as a component.
     """
-    app.state.catalog_http = httpx.AsyncClient()
+    from annotator.projects.lakehouse import use_publish_tokens  # noqa: PLC0415 - the publish module imports pyarrow lazily
+
+    use_publish_tokens(getattr(app.state, "lakehouse_tokens", None))
 
     if actor_ext is None:
         return
@@ -89,14 +85,6 @@ async def _start_task_plane(app: FastAPI, _state: AppState) -> None:
     except Exception:
         app.state.actors_registered = False
         logger.exception("annotator: actor registration failed — the task plane will 503")
-
-
-async def _stop_task_plane(app: FastAPI) -> None:
-    """Close the catalog client. Suppressed like every other close: a shutdown that raises hides whatever came after it."""
-    catalog_http = getattr(app.state, "catalog_http", None)
-    if catalog_http is not None:
-        with suppress(Exception):
-            await catalog_http.aclose()
 
 
 # Application logging, before the app exists — every module here uses getLogger(__name__), and
@@ -142,7 +130,6 @@ lifespan = make_media_lifespan(
     service="annotator",
     closes=lambda state: (state.http,),
     setup=_start_task_plane,
-    teardown=_stop_task_plane,
 )
 
 app = build_media_app(

@@ -20,6 +20,7 @@ from client_kit.media.config import MediaSettings
 
 if TYPE_CHECKING:
     from client_kit.lancekit.registry import DatasetHandle, DatasetRegistry
+    from service_kit.governed.token_exchange import LakehouseCaller
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +89,10 @@ def ensure_registry(state: AppState) -> DatasetRegistry:
     return registry
 
 
-def dataset_handle(state: AppState, dataset_id: str | None, caller_token: str | None) -> DatasetHandle:
+def dataset_handle(state: AppState, dataset_id: str | None, caller: LakehouseCaller) -> DatasetHandle:
     """Resolve a dataset by id, as the caller, through the registry (``None`` is the configured default).
 
-    ``caller_token`` is the caller's bearer, which the catalog reads the dataset for; the handle is that caller's alone.
+    ``caller`` is the person the catalog reads the dataset for, on their own token; the handle is theirs alone.
     The one resolution path every media route shares; an unknown id or an invalid descriptor is a ``NotFoundError``, so
     the RFC 9457 handler renders a clean 404.
     """
@@ -100,7 +101,7 @@ def dataset_handle(state: AppState, dataset_id: str | None, caller_token: str | 
 
     registry = ensure_registry(state)
     try:
-        return registry.get(dataset_id, caller_token) if dataset_id else registry.default(caller_token)
+        return registry.get(dataset_id, caller) if dataset_id else registry.default(caller)
     except UnknownDatasetError as exc:
         raise NotFoundError(str(exc)) from exc
     except ValueError as exc:  # invalid/missing descriptor — a config problem, not a 500

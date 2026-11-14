@@ -35,7 +35,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import tasks as tasks_ep
 from annotator.projects.models import TaskState
 from service_kit.exceptions import register_handlers
@@ -72,13 +72,14 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
 
     monkeypatch.setattr(tasks_ep, "shapes_from_ipc", _slow_decode)
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:  # noqa: ARG001
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:  # noqa: ARG001
         return True
 
     app = FastAPI()
     register_handlers(app)
     app.include_router(tasks_ep.router)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: SUBJECT
     app.state.actors_registered = True
     return app

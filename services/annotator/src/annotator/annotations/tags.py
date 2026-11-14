@@ -16,14 +16,13 @@ from fastapi import APIRouter
 
 from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit
 from annotator.annotations.schema import (
-    ANNOTATIONS_TABLE,
     NewAnnotation,
     SaveResult,
     TagBatch,
     TagWrite,
     identity_values,
 )
-from annotator.api.security import CurrentSubject, RawBearerToken
+from annotator.api.security import MAY_ANNOTATE, AnnotationsDep, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from client_kit.lancekit.descriptor import Declared
 from client_kit.lancekit.keys import validate_doc_key
@@ -86,30 +85,34 @@ def tag_rows(adds: Sequence[TagWrite], declared: Declared, *, author: str, schem
     return pa.Table.from_pylist(list(by_id.values()), schema=schema)
 
 
-@router.post("/annotations/tags")
+@router.post("/annotations/tags", dependencies=[MAY_ANNOTATE])
 def apply_tags(
+    caller: CallerDep,
     state: StateDep,
     # The VERIFIED subject, never a header (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit": any caller could sign another
     # person's name onto annotation provenance via `X-User`). `current_subject` is `anon` with
     # OIDC off (byte-identical dev behaviour), the token's principal key with it on, 401 with no token,
     # 503 when enabled-but-unwired — the same no-header-fallback rule the projects plane got.
     author: CurrentSubject,
+    annotations: AnnotationsDep,
     body: TagBatch,
-    caller_token: RawBearerToken = None,
     dataset: DatasetParam = None,
 ) -> SaveResult:
-    """Apply a TagBatch: adds insert-if-absent (never clobbering a reviewer's edits to
-    an existing tag row), removes DELETE by the deterministic id. Idempotent re-Save."""
-    corpus = resolve(state, dataset, caller_token)
+    """Apply a TagBatch to the project's own table: adds insert-if-absent (never clobbering a reviewer's edits to an
+    existing tag row), removes DELETE by the deterministic id. Idempotent re-Save; a removal reaches only this project's
+    rows."""
+    corpus = resolve(state, dataset, caller)
     declared = corpus.declared
     check_keys_arity(declared, [*body.adds, *body.removes])
-    ds = corpus.handle.dataset(ANNOTATIONS_TABLE)
+    table = annotations(corpus.id)
+    existing = table.open()
     # Optimistic concurrency degrades to table-GLOBAL for a cross-unit batch; optional +
-    # last-write-wins per deterministic id is the pragmatic contract.
-    check_base_version_value(int(ds.version), body.base_version)
+    # last-write-wins per deterministic id is the pragmatic contract. A table not yet made is version 0.
+    check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version)
+    ds = existing if existing is not None else table.open_or_create(declared, author)
 
     delta = tag_rows(body.adds, declared, author=author, schema=ds.schema)
-    writer = corpus.handle.writer(ANNOTATIONS_TABLE)
+    writer = table.writer(author)
     touched = 0
     if delta.num_rows:
         # INSERT-ONLY (not upsert): a tag that already exists is left untouched, so a
@@ -124,7 +127,7 @@ def apply_tags(
         touched += len(remove_ids)
 
     result = finalize_commit(
-        corpus,
+        table,
         state.settings,
         touched=touched,
         unit_key=f"tags:{len(body.adds)}+{len(body.removes)}",

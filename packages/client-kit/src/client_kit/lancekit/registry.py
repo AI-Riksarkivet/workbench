@@ -8,10 +8,11 @@ DescribeTable for the table's location and read with the storage options it retu
 the catalog vends this caller (`lance_docs/ns_catalog/spec.yaml` § DescribeTableResponse.storage_options). This process
 holds no store credential.
 
-The namespace client carries the caller's bearer, so a handle is the caller's: the cache is keyed on a digest of the
-bearer and the dataset, and one caller's handle (and the credential its tables were opened on) is never served to
-another. A handle reuses each open until shortly before its vend expires, so a read costs one DescribeTable (one store
-session minted on rask) per table per vend lifetime rather than per request. Refreshing a credential during a long read is
+The namespace client presents the caller's own token for the lakehouse, asked per call, so a handle is the caller's: the
+cache is keyed on the caller's principal key and the dataset, never on a token, and one caller's handle (and the
+credential its tables were opened on) is never served to another. A handle reuses each open until shortly before its
+vend expires, so a read costs one DescribeTable (one store session minted on rask) per table per vend lifetime rather than
+per request. Refreshing a credential during a long read is
 pylance's: a dataset opened through a namespace client builds a storage options provider that asks the namespace again
 as the credential nears expiry (pylance 13.0.0, ``lance/__init__.py`` ``dataset`` notes and ``LanceDataset.__init__``).
 
@@ -23,7 +24,6 @@ is refused, so a session shares no credential between callers.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import threading
@@ -47,6 +47,7 @@ from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, DatasetDescr
 from client_kit.lancekit.introspect import TableInfo, dataset_info
 from client_kit.media.config import MediaSettings
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError
+from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.outage import reads_as_store_outage
 
 
@@ -68,13 +69,6 @@ UNEXPIRING_OPEN_TTL_S: Final = 300.0
 
 class UnknownDatasetError(LookupError):
     """The id names no dataset the catalog shows this caller."""
-
-
-def caller_key(caller_token: str | None) -> str:
-    """The cache key of one caller: a digest of the bearer, so the bearer itself is never a key or a log field."""
-    if not caller_token:
-        return "anonymous"
-    return hashlib.sha256(caller_token.encode()).hexdigest()
 
 
 class CallerSessions(BaseModel):
@@ -317,13 +311,13 @@ class DatasetRegistry:
         self._sessions: OrderedDict[str, CallerSessions] = OrderedDict()
         self._lock = threading.Lock()
 
-    def list_ids(self, caller_token: str | None) -> list[str]:
+    def list_ids(self, caller: LakehouseCaller) -> list[str]:
         """Every ``warehouse$namespace`` the catalog shows the caller: the root's warehouses, then each one's namespaces.
 
         A warehouse whose listing fails (refused, or gone since the root listed it) is logged and left out, so one
         warehouse cannot hide the others; a failure to list the root is the caller's answer.
         """
-        client = connect_namespace(self._settings, caller_token)
+        client = connect_namespace(self._settings, caller.token)
         delimiter = self._settings.catalog_delimiter
         with translate_catalog_errors():
             warehouses = _list_namespaces(client, [])
@@ -337,15 +331,14 @@ class DatasetRegistry:
             ids.extend(delimiter.join([warehouse, child]) for child in children)
         return ids
 
-    def get(self, dataset_id: str, caller_token: str | None) -> DatasetHandle:
+    def get(self, dataset_id: str, caller: LakehouseCaller) -> DatasetHandle:
         """The caller's handle on ``dataset_id``, opened on first use and cached for this caller alone.
 
         Raises:
             UnknownDatasetError: The id is not a warehouse-qualified namespace, or the catalog holds no such namespace.
             ValueError: The dataset's descriptor is missing or invalid.
         """
-        caller = caller_key(caller_token)
-        key = (caller, dataset_id)
+        key = (caller.subject, dataset_id)
         with self._lock:
             handle = self._handles.get(key)
             if handle is not None:
@@ -355,14 +348,14 @@ class DatasetRegistry:
             namespace = self._settings.catalog_namespace_id(dataset_id)
         except ValueError as exc:
             raise UnknownDatasetError(f"invalid dataset id {dataset_id!r}: {exc}") from exc
-        client = connect_namespace(self._settings, caller_token)
-        sessions = self._caller_sessions(caller)
+        client = connect_namespace(self._settings, caller.token)
+        sessions = self._caller_sessions(caller.subject)
         try:
             with translate_catalog_errors():
                 descriptor = load_dataset_descriptor(client, dataset_id, namespace, self._settings.descriptor_dir, sessions.lance)
         except NotFoundError as exc:
             raise UnknownDatasetError(f"dataset {dataset_id!r} not found: {exc}") from exc
-        # The lancedb connection shares the namespace client, so lancedb's opens carry the same bearer and trace context.
+        # The lancedb connection shares the namespace client, so lancedb's opens carry the same token and trace context.
         connection = LanceNamespaceDBConnection(namespace_client=client, session=sessions.lancedb, read_consistency_interval=timedelta(0))
         handle = DatasetHandle(id=dataset_id, namespace=namespace, descriptor=descriptor, client=client, connection=connection, sessions=sessions)
         with self._lock:
@@ -385,7 +378,7 @@ class DatasetRegistry:
                 self._sessions.popitem(last=False)
             return sessions
 
-    def default(self, caller_token: str | None) -> DatasetHandle:
+    def default(self, caller: LakehouseCaller) -> DatasetHandle:
         """The caller's handle on the configured default dataset.
 
         Raises:
@@ -393,4 +386,4 @@ class DatasetRegistry:
         """
         if self._settings.default_dataset is None:
             raise UnknownDatasetError("the request names no dataset and MEDIA_DEFAULT_DATASET is not set")
-        return self.get(self._settings.default_dataset, caller_token)
+        return self.get(self._settings.default_dataset, caller)

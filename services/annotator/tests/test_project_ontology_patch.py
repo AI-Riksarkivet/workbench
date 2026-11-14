@@ -20,7 +20,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import projects as projects_ep
 from annotator.api.v1.endpoints.projects import router
 from service_kit.exceptions import register_handlers
@@ -53,7 +53,7 @@ class _FakeProjectActor:
 def _app(actor: _FakeProjectActor, monkeypatch: pytest.MonkeyPatch, *, allow: bool = True, record: list | None = None) -> FastAPI:
     monkeypatch.setattr(projects_ep, "_create_actor", lambda _p: actor)
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if record is not None:
             record.append({"user": user, "relation": relation, "obj": obj})
         return allow
@@ -62,6 +62,7 @@ def _app(actor: _FakeProjectActor, monkeypatch: pytest.MonkeyPatch, *, allow: bo
     app.include_router(router)
     register_handlers(app)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: "gina"
     return app
 

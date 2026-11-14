@@ -1,13 +1,9 @@
-"""Who a verified caller is: `<idp-id>~<subject>`, the one key every grant, inbox and attribution names ([[LH-063]]).
+"""Who a verified caller is: `<idp-id>~<subject>`, the one key every grant and attribution names.
 
-ADR 0159 D5 and ADR 0156 C5. The idp id names the identity provider that vouched for the caller, so two providers'
-subjects never share a namespace, and renaming a provider in its own configuration re-keys nobody. `kubernetes` is the
-cluster's service-account issuer, whose subject is the account's username (`system:serviceaccount:<ns>:<sa>`);
-`dex-client` is a Dex client signed in for itself with the client-credentials grant, whose subject is its client id
-(ADR 0181); every other idp id is one the deployment names for a Dex connector (`WORKBENCH_OIDC_CONNECTORS`), whose subject
-is the upstream user id Dex reports for it (`service_kit.governed.idp_identity`). The first two are machines. The idp
-id's grammar excludes `~`, so the first `~` ends it and the subject may carry any other character (Lakekeeper's `UserId`,
-crates/lakekeeper/src/service/authn.rs).
+The idp id names the identity provider that vouched for the caller (`WORKBENCH_OIDC_IDP_ID`), so two providers'
+subjects never share a namespace; the subject is the token's `sub` (`service_kit.governed.identity`). `kubernetes` is
+reserved for the cluster's service-account issuer, a machine, so no person's provider may be given it. The idp id's
+grammar excludes `~`, so the first `~` ends it and the subject may carry any other character.
 
 A string that names no identity provider is no principal. Every place that requires one parses it here: a grant, a
 seed, an admin list, an inbox address. A bare name is refused there, because no token can ever prove it.
@@ -24,14 +20,11 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
 
 SEPARATOR: Final = "~"
-#: The idp id of the cluster's service-account issuer. No Dex connector may be given it.
+#: The idp id of the cluster's service-account issuer, a machine. No person's provider may be given it.
 SERVICE_ACCOUNT_IDP: Final = "kubernetes"
-#: The idp id of a Dex client signed in with the client-credentials grant. No Dex connector may be given it, so a client
-#: id and a person's user id never name one principal.
-CLIENT_IDP: Final = "dex-client"
 #: The idp ids whose principals are machines: a person is a principal under any other.
-MACHINE_IDPS: Final = frozenset({SERVICE_ACCOUNT_IDP, CLIENT_IDP})
-#: Lakekeeper's idp-id grammar (crates/lakekeeper/src/config.rs): it holds no `~`, so the first `~` ends it.
+MACHINE_IDPS: Final = frozenset({SERVICE_ACCOUNT_IDP})
+#: The idp-id grammar: it holds no `~`, so the first `~` ends it.
 _IDP_ID: Final = re.compile(r"[a-z0-9-]+")
 #: OpenFGA's ceiling on a tuple's `user` (`TupleKey.user`, `max_bytes: 512` in openfga.proto, v1.18.3). A principal
 #: whose `user` would not fit is refused when it forms, so it is never authenticated and then refused at its first check.
@@ -80,8 +73,7 @@ class Principal(BaseModel):
     def fga_user(self) -> str:
         """The OpenFGA user this principal is: `user:` and the key, percent-encoded.
 
-        Everything outside `A-Za-z0-9_.-~` is encoded, as Lakekeeper encodes a `UserId` for OpenFGA
-        (crates/authz-openfga/src/entities.rs). OpenFGA takes a user id with one `:` and no `#` as one user (a second
+        Everything outside `A-Za-z0-9_.-~` is encoded. OpenFGA takes a user id with one `:` and no `#` as one user (a second
         `:` is malformed, measured on the live store 2026-10-14; a `#` makes it a userset), and refuses whitespace, so a
         subject carrying any of them is stored as the one user it is.
         """
@@ -91,11 +83,6 @@ class Principal(BaseModel):
     def is_service(self) -> bool:
         """Whether the cluster's service-account issuer vouched for it: a service account, whose signing key it names."""
         return self.idp_id == SERVICE_ACCOUNT_IDP
-
-    @property
-    def is_machine(self) -> bool:
-        """Whether a machine identity vouched for it, a service account or a Dex client: the estate's one test of a machine."""
-        return self.idp_id in MACHINE_IDPS
 
 
 def is_principal(value: str) -> bool:

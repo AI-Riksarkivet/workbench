@@ -20,8 +20,7 @@ import lance
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from annotator.annotations.schema import ANNOTATIONS_TABLE
-from annotator.api.security import RawBearerToken
+from annotator.api.security import MAY_VIEW, AnnotationsDep, CallerDep
 from annotator.corpus import resolve
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
@@ -70,13 +69,14 @@ class AnnotationVersion(BaseModel):
     count: int
 
 
-@router.get("/annotations/{doc_id}/{speech_id}/{chunk_id}/versions")
+@router.get("/annotations/{doc_id}/{speech_id}/{chunk_id}/versions", dependencies=[MAY_VIEW])
 def annotation_versions(
+    caller: CallerDep,
     state: StateDep,
+    annotations: AnnotationsDep,
     doc_id: str,
     speech_id: int,
     chunk_id: int,
-    caller_token: RawBearerToken = None,
     dataset: DatasetParam = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
 ) -> list[AnnotationVersion]:
@@ -84,12 +84,11 @@ def annotation_versions(
     timestamp + the count of THIS unit's annotations at it. Powers the compare-versions
     panel — the read-side of the write-plane provenance story (who=reviewer, when=version,
     what=lineage)."""
-    corpus = resolve(state, dataset, caller_token)
+    corpus = resolve(state, dataset, caller)
     declared = corpus.declared
     doc_id = validate_doc_key(declared, doc_id)
-    try:
-        ds = corpus.handle.dataset(ANNOTATIONS_TABLE)
-    except NotFoundError:
+    ds = annotations(corpus.id).open()
+    if ds is None:
         return []
     where = chunk_key_filter(declared, doc_id, (speech_id, chunk_id))
     return table_annotation_versions(ds, where, limit=limit)

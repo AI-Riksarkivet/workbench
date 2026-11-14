@@ -1,299 +1,115 @@
-"""Governed-auth settings: the OIDC + OpenFGA knobs, declared ONCE for the whole estate.
+"""The workbench's sign-in and authorization settings, one ``WORKBENCH_*`` name each.
 
-ONE DECLARATION FOR THE ESTATE, because per-service copies under per-service prefixes (`LANCE_*`,
-`LINEAGE_*`, `MAINTENANCE_*`) make turning authorization on estate-wide mean setting several names for
-one switch, and the copies drift: measured before 2026-08-30, one copy declared `fga_store_id: str = ""`
-where the rest declared `str | None`, dropped the `ge=0.1` floor on `fga_timeout_seconds`, and never grew
-the HTTPS-issuer validator, so an `http://` issuer booted there and answered 401 on every VALID bearer.
+Three mixins, because the services have three needs:
 
-One declaration, one `WORKBENCH_*` name each. The old prefixed names are DELETED, with no alias list and no
-precedence chain: `_refuse_retired_names` turns a deployment that still sets one into a startup error,
-because the failure it replaces — half an estate authenticating and half not — is silent.
+* `OidcSettings`: verify a person's DPoP-bound token, addressed to the workbench's own audience, from any OIDC provider.
+* `FgaSettings`: the workbench's own OpenFGA store, found by its name, and the model this image carries in it.
+* `LakehouseTokenSettings`: the workbench's own confidential client at the provider, with which a service exchanges a
+  person's token for one addressed to the lakehouse, and takes its own for the writes it makes as itself.
 
-THREE CLASSES, because the estate really does have three postures:
+`GovernedAuthSettings` composes the first two with their coupling: authorization asks about a person, so it needs one
+authenticated. Every credential is a mounted file (``*_FILE``), never a value in the environment.
 
-* `FgaSettings` — the OpenFGA client alone. A service that authorizes as its OWN service identity and
-  has no human door (`maintenance`'s reconciler) needs the client and no verifier.
-* `OidcSettings` — the bearer-token verifier alone, with the invariant that a knowable
-  misconfiguration must not become a runtime 401.
-* `GovernedAuthSettings` — both, plus the coupling: FGA answers "may THIS subject do it", so a service
-  with a human door must not authorize a subject nobody authenticated.
-
-Mix into a `pydantic-settings` `BaseSettings` subclass. Deliberately plain mixins rather than
-`BaseSettings` of their own: a service's settings class is already a `BaseSettings` with its own
-`model_config`, and inheriting a second one would fight over that config.
+Mix into a ``pydantic-settings`` ``BaseSettings`` subclass; they are plain mixins so the service's own class keeps its
+``model_config``.
 """
 
 from __future__ import annotations
 
-import os
-from contextlib import suppress
-from pathlib import Path
 from typing import Self
 
-from dotenv import dotenv_values
 from pydantic import Field, model_validator
 
+from service_kit.governed.dpop import DEFAULT_WINDOW_SECONDS
+from service_kit.governed.fga import DEFAULT_STORE_NAME
 from service_kit.governed.principal import MACHINE_IDPS, require_idp_id
 
 
-#: The names the 2026-08-30 hard rename deleted. Kept as a REFUSAL list, never as an alias list: an
-#: operator who upgrades without re-templating must be stopped at boot, not silently unauthenticated.
-#: Service-specific FGA knobs (`LANCE_FGA_LOCK_ROOT_CREATE`, `LINEAGE_FGA_OBJECT_TYPE`) are
-#: absent on purpose — each is declared once already and keeps its owning service's namespace.
-RETIRED_AUTH_ENV_NAMES: tuple[str, ...] = tuple(
-    f"{prefix}_{suffix}"
-    for prefix in ("LANCE", "LINEAGE", "MEDALLION", "MAINTENANCE")
-    for suffix in (
-        "OIDC_ENABLED",
-        "OIDC_ISSUER",
-        "OIDC_AUDIENCE",
-        "OIDC_DISCOVERY_URL",
-        "OIDC_CACHE_TTL",
-        "OIDC_LEEWAY",
-        "OIDC_ALLOW_INSECURE",
-        "FGA_ENABLED",
-        "FGA_API_URL",
-        "FGA_STORE_ID",
-        "FGA_MODEL_ID",
-        "FGA_TIMEOUT_SECONDS",
-        "FGA_ROOT_OBJECT",
-    )
-)
-
-
 class FgaSettings:
-    """The OpenFGA client coordinates. Mix in alone when the service authorizes as ITSELF."""
+    """The workbench's own OpenFGA store."""
 
     fga_enabled: bool = Field(default=False, alias="WORKBENCH_FGA_ENABLED")
     fga_api_url: str = Field(default="http://openfga:8080", alias="WORKBENCH_FGA_API_URL")
-    fga_store_id: str | None = Field(default=None, alias="WORKBENCH_FGA_STORE_ID")
+    #: The store's name; the model writer creates it, and a service finds it by this name.
+    fga_store: str = Field(default=DEFAULT_STORE_NAME, min_length=1, alias="WORKBENCH_FGA_STORE")
+    #: A model id to pin. Unset, a service checks against the model its own image carries, found by its body.
     fga_model_id: str | None = Field(default=None, alias="WORKBENCH_FGA_MODEL_ID")
-    fga_timeout_seconds: float = Field(default=5.0, ge=0.1, alias="WORKBENCH_FGA_TIMEOUT_SECONDS")
-    #: This pod's projected ServiceAccount token for the `rask-openfga` audience, presented as the bearer of
-    #: every OpenFGA request and read on each one, because the kubelet rotates it ([[XC-077]]). Unset sends
-    #: no credential, which only an OpenFGA without authn admits; the chart sets it wherever auth is on.
-    fga_token_file: str | None = Field(default=None, alias="WORKBENCH_FGA_TOKEN_FILE")
-    #: The catalog whose decision door answers this service's authorization questions ([[LH-442]],
-    #: `service_kit.governed.decider`). Set, the service builds no OpenFGA client and holds no credential to the
-    #: store; unset, it is one of the store's clients at `fga_api_url`. The chart sets it on every governed
-    #: service that writes no tuple.
-    fga_decider_url: str | None = Field(default=None, alias="WORKBENCH_FGA_DECIDER_URL")
-    #: This pod's projected ServiceAccount token for the catalog's `rask-catalog` audience, the bearer of every
-    #: decision request, read on each one.
-    fga_decider_token_file: str | None = Field(default=None, alias="WORKBENCH_FGA_DECIDER_TOKEN_FILE")
-    #: The estate's root FGA object — the one a platform-wide PRIVILEGE is checked against, as
-    #: opposed to a per-tenant one. Shared here rather than redeclared per service because it is a
-    #: coordinate every governed service must agree on: the catalog gates its estate-wide doors on it,
-    #: lineage gates its whole-estate projection on it, and a client gating an estate-wide surface of its
-    #: own asks the estate-admin verb there through the decision door. Three
-    #: copies of the same default in three configs is exactly how one of them ends up naming a
-    #: different object and quietly authorizing against something nobody grants.
-    fga_root_object: str = Field(default="estate:rask", alias="WORKBENCH_FGA_ROOT_OBJECT")
-    #: The estate's default WAREHOUSE — a structural coordinate, and deliberately NOT the one above.
-    #:
-    #: [[LH-055]]'s port moves the estate privileges onto `type estate`, and the single setting was
-    #: answering two unrelated questions. This one answers "which warehouse does a namespace with no
-    #: warehouse of its own live in": `fga.parent_object` writes the `parent`/`child` edge to it, and
-    #: `_create_parent_check` gates top-level creation on `can_create_namespace` there when
-    #: `fga_lock_root_create` is set. Both require a `warehouse:`, and MEASURED on the live store
-    #: 2026-09-22 it is load-bearing: `warehouse:lance_catalog` carries 7 `child` edges (bronze,
-    #: silver, gold, bronze-media, silver-media, models, lakehouse) and 10 principal grants, which is
-    #: the cascade every medallion write depends on.
-    #:
-    #: THREE THINGS BREAK IF THESE TWO EVER COLLAPSE BACK INTO ONE, each measured rather than argued:
-    #: `namespace#parent` is typed `[warehouse, namespace]` and every `… from parent` rung it inherits
-    #: must exist on the parent's type, so an `estate:` parent is a model error and a lost cascade;
-    #: `can_create_namespace` is not an estate relation, and `LANCE_FGA_LOCK_ROOT_CREATE` defaults to
-    #: TRUE on a real deployment, so top-level creation would fail in production and nowhere else;
-    #: and maintenance's reconcile excludes the platform's own warehouse from the ghost report by
-    #: matching the root's TYPE, so a non-warehouse root reports the default warehouse as a ghost on
-    #: every tick.
-    fga_default_warehouse_object: str = Field(default="warehouse:lance_catalog", alias="WORKBENCH_FGA_DEFAULT_WAREHOUSE_OBJECT")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_retired_names(cls, data: object) -> object:
-        """A retired variable is an ERROR, not a no-op.
-
-        Every one of these classes sets `populate_by_name` with a service `env_prefix`, which teaches
-        pydantic-settings the bare FIELD NAME as a second lookup. So a service-prefixed spelling of
-        one of these switches would still BIND on the class carrying that prefix — and bind nothing
-        anywhere else. That is the pre-rename estate wearing new names: one switch set under four
-        spellings, disagreeing pod by pod. Refusing the name outright is the only version of
-        "deleted" that a running deployment can observe.
-
-        (The retired spellings are deliberately not written out here. `RETIRED_AUTH_ENV_NAMES` builds
-        them from prefix-by-suffix precisely so no literal survives in the tree.)
-
-        SCANS BOTH SOURCES pydantic-settings would read: the process environment AND the configured
-        `env_file`. It checked only `os.environ` at first, justified by "every deployment path in this
-        estate sets real env vars" — but settings classes DO set `env_file=".env"`
-        (the shared `Settings` among them). A retired name in a dotenv therefore bound silently while the guard
-        stayed quiet, which is the one outcome a hard rename exists to prevent. Sources, not
-        assembled values: by the time pydantic-settings hands over a dict, the NAME that supplied a
-        value is gone.
-        """
-        if retired := cls._retired_names_in_scope():
-            raise ValueError(
-                f"{', '.join(retired)} no longer exist — the auth settings were unified onto one "
-                f"WORKBENCH_* name each (WORKBENCH_OIDC_*, WORKBENCH_FGA_*). Re-template the deployment; there is no "
-                f"alias and no fallback, so leaving these set would authenticate some pods and not others."
-            )
-        return data
-
-    @classmethod
-    def _retired_names_in_scope(cls) -> list[str]:
-        """Every retired name set on any source this class would actually read.
-
-        Case-insensitive, because several of these classes set `case_sensitive=False` and a dotenv
-        written in lower case binds exactly the same — a guard that missed it would be precisely as
-        silent as no guard.
-        """
-        retired_by_upper = {name.upper(): name for name in RETIRED_AUTH_ENV_NAMES}
-        found = {retired_by_upper[key.upper()] for key in os.environ if key.upper() in retired_by_upper}
-        for path in _configured_env_files(cls):
-            with suppress(OSError):
-                found |= {retired_by_upper[key.upper()] for key in dotenv_values(path) if key.upper() in retired_by_upper}
-        return sorted(found)
-
-
-def _configured_env_files(cls: type) -> list[Path]:
-    """The dotenv paths a settings class declares, normalised. Empty for a class that declares none.
-
-    `env_file` accepts a str, a Path, or a sequence of either, so all three shapes are handled here
-    rather than at the one call site — the alternative is a guard that works on three of the four
-    classes and reads as if it works on all of them.
-    """
-    declared = getattr(cls, "model_config", {}).get("env_file")
-    if declared is None:
-        return []
-    candidates = [declared] if isinstance(declared, str | Path) else list(declared)
-    return [Path(entry) for entry in candidates if entry]
+    #: The mounted secret file holding the store's preshared key, read on every request. Unset sends no credential,
+    #: which only an OpenFGA authenticating nobody admits.
+    fga_credential_file: str | None = Field(default=None, alias="WORKBENCH_FGA_CREDENTIAL_FILE")
 
 
 class OidcSettings:
-    """The bearer-token verifier's knobs. Mix in alone only alongside `FgaSettings` (see medallion)."""
+    """Verify a person's token addressed to the workbench, and its DPoP proof."""
 
-    oidc_enabled: bool = Field(default=False, alias="WORKBENCH_OIDC_ENABLED")
+    #: ON by default: a service authenticates every request unless an operator says, loudly, that it must not.
+    oidc_enabled: bool = Field(default=True, alias="WORKBENCH_OIDC_ENABLED")
+    #: The one way to serve unauthenticated, for a local development stack only: every route then answers `anon` and
+    #: every check allows. Logged at startup; refused at construction unless OIDC is off too, and never set in production.
+    insecure_allow_unauthenticated: bool = Field(default=False, alias="WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED")
     oidc_issuer: str | None = Field(default=None, alias="WORKBENCH_OIDC_ISSUER")
+    #: The workbench's own audience: a token addressed to anything else (the lakehouse's among them) is refused.
     oidc_audience: str | None = Field(default=None, alias="WORKBENCH_OIDC_AUDIENCE")
-    #: Split-horizon fetch (reverse-proxied IdP): pull discovery/JWKS in-cluster while tokens keep the
-    #: PUBLIC issuer string. Unset = derive the fetch URL from the issuer.
+    #: Where discovery and the key set are fetched from when it differs from the issuer (a reverse-proxied provider).
     oidc_discovery_url: str | None = Field(default=None, alias="WORKBENCH_OIDC_DISCOVERY_URL")
     oidc_cache_ttl: int = Field(default=3600, alias="WORKBENCH_OIDC_CACHE_TTL")
     oidc_leeway: int = Field(default=60, alias="WORKBENCH_OIDC_LEEWAY")
     oidc_allow_insecure: bool = Field(default=False, alias="WORKBENCH_OIDC_ALLOW_INSECURE")
-    #: The idp id each Dex connector's users are principals of, keyed by the connector id Dex reports in
-    #: `federated_claims` ([[LH-063]], `service_kit.governed.idp_identity`): `{"local": "dex"}` makes the user id
-    #: `u` of connector `local` the principal `dex~u`. Renaming a connector adds its new id under the same idp id, so
-    #: no grant is re-keyed. A connector absent here authenticates nobody.
-    oidc_connectors: dict[str, str] = Field(default_factory=dict, alias="WORKBENCH_OIDC_CONNECTORS")
-    #: AN ACKNOWLEDGEMENT, NOT A SWITCH — it turns nothing off. `oidc_enabled` already decides whether
-    #: this service authenticates; this says an operator MEANT the answer to be "no". Without it,
-    #: "auth off because I meant it" and "auth off because nothing set it" are indistinguishable, and
-    #: only the second is a vulnerability. `assert_authentication_configured` refuses to boot on that
-    #: ambiguity alone (Q17-6 / §F2-2, Lakekeeper Plus's shape).
-    insecure_allow_unauthenticated: bool = Field(default=False, alias="WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED")
-    #: The cluster's service-account issuer, the one way a service authenticates ([[LH-220]], ADR 0156 C5). A projected
-    #: token is verified offline against its key set and is the subject `kubernetes~system:serviceaccount:<ns>:<sa>`,
-    #: whatever its namespace; OpenFGA alone decides what that subject may do. Unset, this door admits no service.
-    sa_issuer: str | None = Field(default=None, alias="WORKBENCH_SA_ISSUER")
-    sa_audience: str | None = Field(default=None, alias="WORKBENCH_SA_AUDIENCE")
-    #: The issuer serves discovery and its keys only to a bearer from a private CA (k3s, measured 2026-10-02).
-    sa_fetch_token_file: str | None = Field(default=None, alias="WORKBENCH_SA_FETCH_TOKEN_FILE")
-    sa_ca_file: str | None = Field(default=None, alias="WORKBENCH_SA_CA_FILE")
-
-    @model_validator(mode="after")
-    def _validate_service_accounts(self) -> Self:
-        """An issuer with no audience would accept a token minted for any other door, or refuse every one."""
-        if self.sa_issuer and not self.sa_audience:
-            raise ValueError("WORKBENCH_SA_AUDIENCE is required with WORKBENCH_SA_ISSUER")
-        if self.sa_issuer and not self.sa_issuer.startswith("https://"):
-            raise ValueError("WORKBENCH_SA_ISSUER must use HTTPS")
-        # A door routes a bearer by its unverified `iss`, the service-account issuer first, so one issuer named twice
-        # would answer every person's token as a service account's. Lakekeeper refuses two providers claiming one
-        # issuer at boot (crates/lakekeeper/src/service/authn.rs).
-        if self.oidc_enabled and self.sa_issuer and self.oidc_issuer and self.sa_issuer.rstrip("/") == self.oidc_issuer.rstrip("/"):
-            raise ValueError(
-                "WORKBENCH_SA_ISSUER and WORKBENCH_OIDC_ISSUER name one issuer: its tokens would be routed as service accounts' and never as a person's"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_connectors(self) -> Self:
-        """A connector maps to an idp id a principal can carry, never a machine identity's (`kubernetes`, `dex-client`)."""
-        if self.oidc_enabled and not self.oidc_connectors:
-            raise ValueError("WORKBENCH_OIDC_CONNECTORS is required when OIDC is enabled: a person is the principal their Dex connector maps to")
-        for connector, idp_id in self.oidc_connectors.items():
-            if not connector:
-                raise ValueError("WORKBENCH_OIDC_CONNECTORS names an empty connector id")
-            if idp_id in MACHINE_IDPS:
-                raise ValueError(f"WORKBENCH_OIDC_CONNECTORS maps {connector!r} to {idp_id!r}, a machine identity's idp id")
-            try:
-                require_idp_id(idp_id)
-            except ValueError as exc:
-                raise ValueError(f"WORKBENCH_OIDC_CONNECTORS maps {connector!r} to an idp id no principal can carry: {exc}") from exc
-        return self
+    #: The idp id the provider's subjects are principals of: a token's `sub` is the principal `<idp-id>~<sub>`.
+    oidc_idp_id: str | None = Field(default=None, alias="WORKBENCH_OIDC_IDP_ID")
+    #: How far a DPoP proof's `iat` may lie from now, and how long its `jti` is remembered against a replay.
+    dpop_window_seconds: int = Field(default=DEFAULT_WINDOW_SECONDS, ge=1, le=600, alias="WORKBENCH_DPOP_WINDOW_SECONDS")
+    #: The URL the browser addresses this service by, which a proof's `htu` names: the public origin, or the public prefix
+    #: a gateway rewrites to `public_mount`. Unset, the request's own URL: right when nothing between the browser and
+    #: the service rewrites the scheme, host or path.
+    public_url: str | None = Field(default=None, alias="WORKBENCH_PUBLIC_URL")
+    #: The path a gateway rewrites `public_url`'s prefix to before the request reaches this service; empty for none.
+    public_mount: str = Field(default="", alias="WORKBENCH_PUBLIC_MOUNT")
 
     @model_validator(mode="after")
     def _validate_oidc(self) -> Self:
-        """Fail fast at construction rather than fail open — or fail confusingly — at request time."""
-        if self.oidc_enabled and not (self.oidc_issuer and self.oidc_audience):
-            raise ValueError("WORKBENCH_OIDC_ISSUER and WORKBENCH_OIDC_AUDIENCE are required when OIDC is enabled")
-        # AN `http://` ISSUER IS A MISCONFIGURATION, AND IT BELONGS HERE. `_require_https` catches it
-        # only at VERIFY time, refusing every bearer — valid or not — with a 503 on the first request
-        # after a healthy-looking startup. A scheme is knowable at construction, which is what this
-        # validator is for.
-        #
-        # The `jwks_uri` half cannot move here: it comes from DISCOVERY, so settings never sees it and
-        # `_require_https` remains the backstop for that path.
-        if self.oidc_enabled and self.oidc_issuer and not self.oidc_allow_insecure and not self.oidc_issuer.startswith("https://"):
-            raise ValueError("WORKBENCH_OIDC_ISSUER must use HTTPS (set WORKBENCH_OIDC_ALLOW_INSECURE=true for a dev IdP)")
+        """A misconfiguration knowable at construction fails here, not as a 401 on every valid request."""
+        if not self.oidc_enabled:
+            if not self.insecure_allow_unauthenticated:
+                raise ValueError(
+                    "WORKBENCH_OIDC_ENABLED is off and WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED is not set: this service would serve "
+                    "every route to anyone. Turn OIDC on, or set WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED=true for a local stack."
+                )
+            return self
+        if self.insecure_allow_unauthenticated:
+            raise ValueError("WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED contradicts WORKBENCH_OIDC_ENABLED; set one")
+        if not (self.oidc_issuer and self.oidc_audience and self.oidc_idp_id):
+            raise ValueError("WORKBENCH_OIDC_ISSUER, WORKBENCH_OIDC_AUDIENCE and WORKBENCH_OIDC_IDP_ID are required when OIDC is enabled")
+        if not self.oidc_allow_insecure and not self.oidc_issuer.startswith("https://"):
+            raise ValueError("WORKBENCH_OIDC_ISSUER must use HTTPS (set WORKBENCH_OIDC_ALLOW_INSECURE=true for a dev provider)")
+        if self.oidc_idp_id in MACHINE_IDPS:
+            raise ValueError(f"WORKBENCH_OIDC_IDP_ID {self.oidc_idp_id!r} is a machine identity's idp id")
+        require_idp_id(self.oidc_idp_id)
+        return self
+
+
+class LakehouseTokenSettings:
+    """The workbench's confidential client at the provider, for tokens addressed to the lakehouse."""
+
+    #: The lakehouse's audience: the `audience` of every exchange and of the workbench's own client-credentials token.
+    lakehouse_audience: str | None = Field(default=None, alias="WORKBENCH_LAKEHOUSE_AUDIENCE")
+    oidc_client_id: str | None = Field(default=None, alias="WORKBENCH_OIDC_CLIENT_ID")
+    #: The mounted secret file holding the client's secret, read on every request to the provider.
+    oidc_client_secret_file: str | None = Field(default=None, alias="WORKBENCH_OIDC_CLIENT_SECRET_FILE")
+
+    @model_validator(mode="after")
+    def _validate_client(self) -> Self:
+        named = [self.lakehouse_audience, self.oidc_client_id, self.oidc_client_secret_file]
+        if any(named) and not all(named):
+            raise ValueError("WORKBENCH_LAKEHOUSE_AUDIENCE, WORKBENCH_OIDC_CLIENT_ID and WORKBENCH_OIDC_CLIENT_SECRET_FILE are set together")
         return self
 
 
 class GovernedAuthSettings(OidcSettings, FgaSettings):
-    """Both halves plus the coupling — what a service with a HUMAN door mixes in.
-
-    The coupling lives here and not on `FgaSettings` because it is a statement about human doors:
-    FGA answers "may THIS subject do it", so enabling it without OIDC would mean checking a subject
-    nobody verified. A service that authorizes as its own SERVICE identity has already answered
-    "which subject" from config, so it composes the two mixins directly instead (medallion), or takes
-    `FgaSettings` alone (maintenance).
-    """
+    """Both halves, and their coupling: authorization asks about a person, so it needs one authenticated."""
 
     @model_validator(mode="after")
     def _authorization_requires_authentication(self) -> Self:
         if self.fga_enabled and not self.oidc_enabled:
-            raise ValueError("WORKBENCH_OIDC_ENABLED is required when WORKBENCH_FGA_ENABLED is set (authz needs a verified subject)")
+            raise ValueError("WORKBENCH_OIDC_ENABLED is required when WORKBENCH_FGA_ENABLED is set (authorization needs a verified person)")
         return self
-
-
-def assert_authentication_configured(*, oidc_enabled: bool, insecure_allow_unauthenticated: bool) -> None:
-    """Fail closed at startup: a service that authenticates nobody must SAY SO.
-
-    `oidc_enabled` defaults to False and `authenticate()` returns `None` when it is off, so every
-    route opens. The chart flips it on, which leaves the DEPLOYED estate closed and the CODE open —
-    and the gap is any service run another way: a `uv run`, a compose stack, an image started outside
-    the chart. Lakekeeper OSS has the identical shape and only its Plus edition refuses to boot
-    without an authenticator; this is that refusal.
-
-    THE REFUSAL IS ON THE AMBIGUITY, NOT ON BEING OPEN. Flipping the default would change what an
-    explicitly-configured deployment does and would red every suite that constructs settings without
-    naming auth. What is actually indefensible is that "off because I meant it" and "off because
-    nothing set it" look identical, so an operator resolves it by saying which they meant. No-op once
-    either is true.
-
-    A sibling of `dapr_auth.assert_app_token_configured` on purpose — same shape, same reasoning,
-    called from the same place in each service's boot. A second shape for one class of problem is how
-    one of them ends up wrong.
-    """
-    if oidc_enabled or insecure_allow_unauthenticated:
-        return
-    raise RuntimeError(
-        "this service would start with NO authentication: WORKBENCH_OIDC_ENABLED is off and nothing "
-        "acknowledged it, so every route would serve any caller that can reach the port. Set "
-        "WORKBENCH_OIDC_ENABLED=true (with WORKBENCH_OIDC_ISSUER + WORKBENCH_OIDC_AUDIENCE), or set "
-        "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED=true to declare that an open service is what you meant."
-    )

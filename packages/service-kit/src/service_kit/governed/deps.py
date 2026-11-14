@@ -1,94 +1,80 @@
-"""Authn/authz FastAPI dependencies, built once for any governed service.
+"""The sign-in and authorization dependencies every workbench service's routes annotate with.
 
-Every governed service needs the same three things — verify the bearer, name the subject, check one
-relation — so they live here once rather than in each service: the lakehouse policy forms had exactly one
-duplicated builder, and when the contract widened both copies broke identically.
+Who the request is: a token addressed to the workbench, presented with the DPoP scheme (``Authorization: DPoP <token>``)
+and a proof in the ``DPoP`` header that the presenter holds the key the token is bound to (RFC 9449 § 7). Every refusal
+is a 401 carrying a ``WWW-Authenticate: DPoP`` challenge (§ 7.1). A bearer presented under the ``Bearer`` scheme is
+refused: a DPoP-bound token must not be accepted without its proof.
 
-A FACTORY, not module-level dependencies, because each service types its own settings object. Call
-it once at module scope in the service's own security module and export the results.
+What they may do: the workbench's own OpenFGA store. With authorization off the checker allows everything; on but
+unwired it answers 503, never a permissive fallback.
 
-The three-outcome checker is the load-bearing part, and the middle case is why it exists:
-
-- FGA **off** → permissive, so a dev/offline stack behaves as it did before authz existed.
-- FGA **on** with a client → the real check, which retries and fails closed on outage.
-- FGA **on** without a client → **503**. Never permissive here: that turns a broken authorization
-  layer into an open one, silently, which is the failure nobody notices until it matters.
+How they read the lakehouse: as themselves, on a token the service exchanges for them (`LakehouseCaller`). Their own
+token is never forwarded.
 """
 
-# NO `from __future__ import annotations` IN THIS MODULE, and it must stay that way.
-#
-# `make_auth_deps(settings_dep)` annotates its inner dependencies with `settings_dep` — a LOCAL
-# name. Deferred annotations turn that into the string `"settings_dep"`, which FastAPI resolves via
-# `get_type_hints` against this module's GLOBALS, where no such name exists. The result is not an
-# error: the ForwardRef stays unresolved and FastAPI silently demotes the parameter to a QUERY
-# PARAM. Every gated route then answers `422 {"field": "query.settings", "message": "Field
-# required"}` instead of authorizing, and the checker never runs.
-#
-# It shipped that way. A dataset-list gate was affected
-# from the day it landed, and its tests did not catch it because they override
-# `CheckerDep.__metadata__[0].dependency`, which replaces the sub-dependency whose signature is the
-# broken one. Found 2026-08-04 while gating the object routes (#90), by building a bare app with no
-# overrides: `test_auth_deps_resolve.py` now does exactly that, on purpose.
-from collections.abc import Callable
-from typing import Annotated, Any, Protocol
+# NO `from __future__ import annotations`: the inner dependencies annotate a parameter with `settings_dep`, a local name
+# FastAPI resolves at definition; a deferred annotation would silently demote it to a query parameter.
+from collections.abc import Callable, Iterable
+from typing import Annotated, Any, Final, Protocol
 
 from fastapi import Depends, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-# TWO TAXONOMIES ON PURPOSE, AND THE SPLIT IS THE 4xx/5xx LINE (SKG-05).
-#
-# The 401 is `lance_namespace`'s, matching this package's other three modules (`fga.py` raises its
-# `ServiceUnavailableError`, `oidc.py` its `UnauthenticatedError`, `dapr_auth.py` its
-# `PermissionDeniedError`) and matching THIS function's own other outcome: a bad bearer already left
-# here as a lance `UnauthenticatedError` raised inside `verify`, so a MISSING bearer leaving as a
-# fleet `DomainError` meant one dependency answering two adjacent cases in two envelopes — only one
-# of which carries the numeric `code` a Lance-Namespace client parses.
-#
-# The 503 stays on the fleet taxonomy, and that is not drift left standing. `ns_errors.problem_detail`
-# REDACTS every 5xx detail (`_UNREDACTED_5XX` is empty), so a lance `ServiceUnavailableError` here would answer
-# "Internal Server Error" and delete "Authentication is enabled but unavailable" — the one string that
-# tells an operator WHICH knob is unwired. That is a capability statement,
-# not a fault report, so the honest fix is to widen `_UNREDACTED_5XX`; until that is decided, keeping
-# the message beats matching the sibling module.
 from lance_namespace import UnauthenticatedError
 
-from service_kit.exceptions import ServiceUnavailableError
+from service_kit.exceptions import ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.audit import AuditAction, AuditOutcome, audit
-from service_kit.governed.decider import AccessDecider
-from service_kit.governed.idp_identity import IdpVerifier, PersonPrincipal
-from service_kit.governed.machine_identity import ServicePrincipal
+from service_kit.governed.dpop import ALGORITHMS, DpopVerifier, InvalidProofError
+from service_kit.governed.fga import Authorizer, Grant
+from service_kit.governed.identity import Caller, PersonVerifier
 from service_kit.governed.oidc import ProviderUnavailableError
+from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
 
 
-#: The subject used when OIDC is disabled. Named rather than inlined so a grep for who can act
-#: without a token returns exactly one place.
-ANONYMOUS_SUBJECT = "anon"
+#: The subject when authentication is off. Named so a grep for who can act without a token finds one place.
+ANONYMOUS_SUBJECT: Final = "anon"
 
-# auto_error=False: the 401 is raised here so it renders as problem+json like every other error.
-_bearer = HTTPBearer(auto_error=False, description="OIDC bearer token")
-_CredentialsDep = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
+_ALGS: Final = " ".join(sorted(ALGORITHMS))
+
+
+def _challenge(error: str | None = None) -> dict[str, str]:
+    """The `WWW-Authenticate` a 401 carries: the DPoP scheme and the algorithms a proof may use (RFC 9449 § 7.1)."""
+    params = ([f'error="{error}"'] if error else []) + [f'algs="{_ALGS}"']
+    return {"WWW-Authenticate": f"DPoP {', '.join(params)}"}
+
+
+def _refuse(reason: str, detail: str, *, error: str | None) -> UnauthorizedError:
+    audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason=reason)
+    return UnauthorizedError(detail, headers=_challenge(error))
 
 
 class FgaChecker(Protocol):
-    """The one capability a read endpoint needs from OpenFGA.
+    """The one question a route asks: may ``user`` hold ``relation`` on ``obj``, with ``contextual`` parent edges."""
 
-    Narrower than the real client on purpose: an endpoint should not be able to write tuples or
-    enumerate objects, and a test double should not have to pretend it can.
-    """
-
-    async def __call__(self, *, user: str, relation: str, obj: str) -> bool: ...
+    async def __call__(self, *, user: str, relation: str, obj: str, contextual: Iterable[Grant] = ()) -> bool: ...
 
 
-#: The FastAPI dependency callables this factory hands back.
-#:
-#: `Callable[..., X]` rather than a per-dependency Protocol because the PARAMETERS are FastAPI's
-#: business — each closure declares whatever `Request` / settings / credentials it needs injected, and
-#: pinning those here would make the annotation a lie the moment one grows a parameter. What a caller
-#: actually depends on is the RESULT type, and that is what these name.
-type _Authenticate = Callable[..., PersonPrincipal | ServicePrincipal | None]
-type _NamesSubject = Callable[..., str]
-type _ResolvesChecker = Callable[..., FgaChecker]
-type _ResolvesDecider = Callable[..., AccessDecider | None]
+async def _allow_all(*, user: str, relation: str, obj: str, contextual: Iterable[Grant] = ()) -> bool:
+    """Authorization off: every check is allowed."""
+    del user, relation, obj, contextual
+    return True
+
+
+ALLOW_ALL: Final[FgaChecker] = _allow_all
+
+
+ANONYMOUS_CALLER: Final = LakehouseCaller(subject=ANONYMOUS_SUBJECT)
+
+
+def _public_url(request: Request, settings: Any) -> str:
+    """The URL a proof's `htu` must name: the configured public URL plus the path below the gateway's rewrite, or the
+    request's own URL when none is configured."""
+    public_url: str | None = getattr(settings, "public_url", None)
+    if not public_url:
+        return str(request.url.replace(query=""))
+    path = request.url.path
+    mount: str = getattr(settings, "public_mount", "")
+    if mount and (path == mount or path.startswith(f"{mount.rstrip('/')}/")):
+        path = path[len(mount.rstrip("/")) :]
+    return f"{public_url.rstrip('/')}{path}"
 
 
 class AuthDeps:
@@ -96,188 +82,118 @@ class AuthDeps:
 
     def __init__(
         self,
-        authenticate: _Authenticate,
-        current_subject: _NamesSubject,
-        get_checker: _ResolvesChecker,
-        get_decider: _ResolvesDecider,
-        #: NOT `| None`. The name means the SUBJECT may be anonymous — the dependency itself always
-        #: exists, and `build_auth_deps` below is the only construction site and always passes it.
-        #: Declaring it optional propagated `None` into every consumer's type: a caller writing
-        #: `app.dependency_overrides[deps.optional_subject] = ...` failed the estate's
-        #: error-on-warning type gate because the key could be `None`.
-        optional_subject: _NamesSubject,
+        authenticate: Callable[..., Caller | None],
+        current_subject: Callable[..., str],
+        get_checker: Callable[..., FgaChecker],
+        get_authorizer: Callable[..., Authorizer | None],
+        lakehouse_caller: Callable[..., LakehouseCaller],
+        optional_lakehouse_caller: Callable[..., LakehouseCaller],
     ) -> None:
         self.authenticate = authenticate
         self.current_subject = current_subject
-        self.optional_subject = optional_subject
         self.get_checker = get_checker
-        #: The decider, for the filtered LIST the one-relation checker cannot express: `authz.md` says to prefer a
-        #: batch there, one round trip for every object a page shows.
-        self.get_decider = get_decider
+        self.get_authorizer = get_authorizer
+        self.lakehouse_caller = lakehouse_caller
+        self.optional_lakehouse_caller = optional_lakehouse_caller
 
 
 def make_auth_deps(settings_dep: Any) -> AuthDeps:
-    """Build the authn/authz dependencies against one service's settings type.
+    """Build the dependencies against one service's settings type (`Annotated[TSettings, Depends(get_settings)]`).
 
-    `settings_dep` is that service's `Annotated[TSettings, Depends(get_settings)]`. Everything below
-    reads only `oidc_enabled` / `fga_enabled`, which come from the shared `GovernedAuthSettings`
-    mixin, so any service carrying that mixin can use this unchanged.
-
-    `Any` is the honest annotation for that one parameter and stays: an `Annotated[...]` alias is a
-    TYPE FORM passed as a value, which no narrower annotation describes. Everything this factory
-    RETURNS is typed (see `AuthDeps`).
-
-    The inner dependencies annotate a parameter with `settings_dep`, a local NAME, which is not a type
-    expression. They used to carry `  # ` for it — mypy's syntax, which this
-    estate does not run and `ty` does not honour, so the comments suppressed nothing and only asserted
-    a diagnostic that never existed. `ty` accepts these as written; the notes are gone rather than
-    translated.
+    `Any` is the honest annotation for an `Annotated[...]` alias passed as a value.
     """
 
-    def authenticate(request: Request, settings: settings_dep, credentials: _CredentialsDep) -> PersonPrincipal | ServicePrincipal | None:
-        """Verify the bearer, returning the person or the Dex client it proves (or `None` when OIDC is off)."""
+    def authenticate(request: Request, settings: settings_dep) -> Caller | None:
+        """The person the request's DPoP-bound token and proof prove, or ``None`` with authentication off."""
         if not settings.oidc_enabled:
             return None
-        verifier: IdpVerifier | None = getattr(request.app.state, "oidc", None)
-        if verifier is None:
+        verifier: PersonVerifier | None = getattr(request.app.state, "oidc", None)
+        dpop: DpopVerifier | None = getattr(request.app.state, "dpop", None)
+        if verifier is None or dpop is None:
             audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="verifier_unavailable")
             raise ServiceUnavailableError("Authentication is enabled but unavailable")
-        if credentials is None or not credentials.credentials:
-            audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="missing_token")
-            raise UnauthenticatedError("Missing bearer token")
+        scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+        if not token:
+            raise _refuse("missing_token", "Missing DPoP-bound access token", error=None)
+        if scheme.lower() != "dpop":
+            raise _refuse("not_dpop", "The access token must be presented with the DPoP scheme", error="invalid_token")
+        proofs = request.headers.getlist("dpop")
+        if len(proofs) != 1:
+            raise _refuse("missing_proof", "Exactly one DPoP proof is required", error="invalid_dpop_proof")
         try:
-            token = verifier.verify(credentials.credentials)
+            caller = verifier.verify(token.strip())
         except ProviderUnavailableError:
-            # OUR fault, not theirs. A verifier that cannot reach or trust its issuer fails for a
-            # reason the caller's bearer had no part in, and recording it as `invalid_token` writes
-            # a false statement into the estate's own evidence of who was refused and why — one
-            # record per request, for the whole duration of a configuration outage. Same reason and
-            # same status as the missing-verifier branch above, because it is the same fact arriving
-            # later. The verifier's own subclass rather than the fleet base, so a provider-fault site
-            # raising anything else is audited against the caller and a test sees it.
             audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="verifier_unavailable")
             raise
-        except Exception:
-            audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="invalid_token")
-            raise
-        audit(AuditAction.AUTHN, AuditOutcome.SUCCESS, subject=token.subject)
-        return token
+        except UnauthenticatedError as exc:
+            raise _refuse("invalid_token", "Invalid or expired token", error="invalid_token") from exc
+        try:
+            dpop.verify(proofs[0], method=request.method, url=_public_url(request, settings), access_token=token.strip(), jkt=caller.jkt, person=caller.subject)
+        except InvalidProofError as exc:
+            raise _refuse("invalid_dpop_proof", str(exc), error="invalid_dpop_proof") from exc
+        tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
+        if tokens is not None:
+            tokens.remember(caller.subject, caller.access_token.get_secret_value())
+        audit(AuditAction.AUTHN, AuditOutcome.SUCCESS, subject=caller.subject)
+        return caller
 
-    def current_subject(request: Request, token: Annotated[PersonPrincipal | ServicePrincipal | None, Depends(authenticate)]) -> str:
-        """The verified principal as the FGA subject id (no `user:` prefix — `fga.check` qualifies it).
-
-        With OIDC off this is `anon`, which keeps a dev stack working. With OIDC on it is the principal key the
-        verified token proves (`<idp-id>~<user id>`) and nothing else: there is deliberately no header fallback,
-        because a fallback is what turns "verified subject" back into "whatever the caller claimed".
-
-        **IT IS ALSO PUBLISHED ON `request.state`, and that is not incidental.** A per-route rate limiter
-        keys a request by `request.state.subject` and falls back to the client IP when nothing published
-        one. Behind a proxy the observed IP is the proxy's pod, so an unpublished subject puts every caller
-        in one bucket — worse than no limiter, because a single caller can exhaust everyone's quota.
-
-        Published HERE rather than in a limiter because a limiter's key function runs outside the
-        dependency graph: it cannot ask for a subject, so the subject has to leave one. And here rather
-        than per-service so every route on this dependency is keyed correctly.
-        """
-        subject = token.subject if token is not None else ANONYMOUS_SUBJECT
+    def current_subject(request: Request, caller: Annotated[Caller | None, Depends(authenticate)]) -> str:
+        """The verified principal key, or ``anon`` with authentication off; published on `request.state` for a rate
+        limiter, which keys a request by it."""
+        subject = caller.subject if caller is not None else ANONYMOUS_SUBJECT
         request.state.subject = subject
         return subject
 
-    def optional_subject(request: Request, settings: settings_dep, credentials: _CredentialsDep) -> str:
-        """The verified principal, or ``anon`` — soft ONLY on absence.
-
-        For always-answering surfaces (a health badge that must stay 200) where `current_subject`'s
-        401-on-missing is the wrong contract. The softness is precisely scoped: NO credential →
-        `anon` (the caller gets whatever anonymous is entitled to, which under FGA is nothing); a
-        PRESENTED credential that fails verification still raises — a bad token must never be
-        silently downgraded to anonymous, or a caller cannot tell an expired session from an empty
-        entitlement; and enabled-but-unwired still fails closed with 503, exactly as `authenticate`.
-        """
-        if not settings.oidc_enabled:
-            return ANONYMOUS_SUBJECT
-        verifier: IdpVerifier | None = getattr(request.app.state, "oidc", None)
-        if verifier is None:
-            audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="verifier_unavailable")
-            raise ServiceUnavailableError("Authentication is enabled but unavailable")
-        if credentials is None or not credentials.credentials:
-            return ANONYMOUS_SUBJECT
-        try:
-            token = verifier.verify(credentials.credentials)
-        except ProviderUnavailableError:
-            # The same split as `authenticate`. Applying it to one door only would leave the other
-            # writing the false records, and this door is the one an anonymous-capable endpoint uses
-            # — so it is the one most likely to be called during an outage.
-            audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="verifier_unavailable")
-            raise
-        except Exception:
-            audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="invalid_token")
-            raise
-        return token.subject
-
-    def get_checker(request: Request, settings: settings_dep) -> FgaChecker:
-        """Resolve the FGA checker — see this module's docstring for the three outcomes."""
-        if not settings.fga_enabled:
-
-            async def _open(*, user: str, relation: str, obj: str) -> bool:
-                return True
-
-            return _open
-
-        decider = _require_decider(request)
-
-        async def _check(*, user: str, relation: str, obj: str) -> bool:
-            return await decider.check(user=user, relation=relation, obj=obj)
-
-        return _check
-
-    def get_decider(request: Request, settings: settings_dep) -> AccessDecider | None:
-        """The decider, with the SAME fail-closed posture as the checker, for a filtered list that asks many objects at once.
-
-        FGA off → `None`, matching `get_checker`'s permissive branch: a caller batching against a disabled store has
-        nothing to ask. FGA on but unwired → 503, never a permissive fallback.
-        """
-        if not settings.fga_enabled:
+    def get_authorizer(request: Request, settings: settings_dep) -> Authorizer | None:
+        """The workbench's store: ``None`` with authorization off, 503 when it is on and unwired."""
+        if not getattr(settings, "fga_enabled", False):
             return None
-        return _require_decider(request)
+        authz: Authorizer | None = getattr(request.app.state, "authz", None)
+        if authz is None:
+            audit(AuditAction.AUTHZ, AuditOutcome.FAILURE, reason="client_unavailable")
+            raise ServiceUnavailableError("Authorization is enabled but unavailable")
+        return authz
+
+    def get_checker(authz: Annotated[Authorizer | None, Depends(get_authorizer)]) -> FgaChecker:
+        """The one-question checker over the store, or one that allows everything with authorization off."""
+        return ALLOW_ALL if authz is None else authz.check
+
+    def _as_lakehouse_caller(request: Request, settings: Any, caller: Caller | None) -> LakehouseCaller:
+        if caller is None:
+            return ANONYMOUS_CALLER
+        tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
+        if tokens is None:
+            if getattr(settings, "catalog_uri", None):
+                # A read with no token would be made anonymously on a person's behalf: refused, never sent.
+                raise ServiceUnavailableError(
+                    "this service names no confidential client to read the lakehouse as the person: set WORKBENCH_OIDC_CLIENT_ID, "
+                    "WORKBENCH_OIDC_CLIENT_SECRET_FILE and WORKBENCH_LAKEHOUSE_AUDIENCE"
+                )
+            # A local directory catalog authenticates nobody, so the read needs no token.
+            return LakehouseCaller(subject=caller.subject)
+        subject = caller.subject
+        return LakehouseCaller(subject=subject, token=lambda: tokens.for_person(subject))
+
+    def lakehouse_caller(request: Request, settings: settings_dep, caller: Annotated[Caller | None, Depends(authenticate)]) -> LakehouseCaller:
+        """The person a lakehouse read is made as, with their exchanged token; anonymous with authentication off. With
+        authentication on and no confidential client named, a read of a lakehouse catalog is a 503, never anonymous."""
+        return _as_lakehouse_caller(request, settings, caller)
+
+    def optional_lakehouse_caller(request: Request, settings: settings_dep) -> LakehouseCaller:
+        """As `lakehouse_caller`, but anonymous when the request presents no token at all, for a probe that always
+        answers; a token that is presented and fails is still refused, never read as anonymous."""
+        if not request.headers.get("authorization"):
+            return ANONYMOUS_CALLER
+        return _as_lakehouse_caller(request, settings, authenticate(request, settings))
 
     return AuthDeps(
         authenticate=authenticate,
         current_subject=current_subject,
-        optional_subject=optional_subject,
         get_checker=get_checker,
-        get_decider=get_decider,
+        get_authorizer=get_authorizer,
+        lakehouse_caller=lakehouse_caller,
+        optional_lakehouse_caller=optional_lakehouse_caller,
     )
 
 
-def _require_decider(request: Request) -> AccessDecider:
-    """`app.state.decider`, or the 503 an enabled-but-unwired authorization layer answers."""
-    decider = getattr(request.app.state, "decider", None)
-    if decider is None:
-        audit(AuditAction.AUTHZ, AuditOutcome.FAILURE, reason="client_unavailable")
-        raise ServiceUnavailableError("Authorization is enabled but unavailable")
-    return decider
-
-
-def raw_bearer(credentials: _CredentialsDep) -> str | None:
-    """The raw bearer JWT (scheme-stripped), or `None` — for FORWARDING, not verifying.
-
-    A service reading Lance through the REST catalog must forward the CALLER's bearer rather than a
-    service credential: the catalog's own `authorize` checks one relation on one `table:` object and
-    injects no row predicate, so a service token answers 200 for a caller with no grant at all. The
-    two users diverge, not the rows.
-    """
-    return credentials.credentials if credentials is not None else None
-
-
-#: The caller's raw bearer JWT (`None` when absent).
-RawBearerToken = Annotated[str | None, Depends(raw_bearer)]
-
-__all__ = [
-    "ANONYMOUS_SUBJECT",
-    "AccessDecider",
-    "AuthDeps",
-    "FgaChecker",
-    "RawBearerToken",
-    "make_auth_deps",
-    "raw_bearer",
-]
+__all__ = ["ALLOW_ALL", "ANONYMOUS_CALLER", "ANONYMOUS_SUBJECT", "AuthDeps", "FgaChecker", "LakehouseCaller", "make_auth_deps"]

@@ -1,11 +1,34 @@
-.PHONY: help install sync test lint fmt typecheck check frontend-check frontend-fmt image claude-bootstrap
+.PHONY: help install sync test lint fmt typecheck check frontend-check frontend-fmt image claude-bootstrap openfga fga-test fga-model
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
 PYTEST_WORKERS ?= 8
 
 help:
-	@echo "Targets: install test lint fmt typecheck check frontend-check image NAME=<stem> claude-bootstrap"
+	@echo "Targets: install test lint fmt typecheck check frontend-check fga-test fga-model openfga image NAME=<stem> claude-bootstrap"
+
+# The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
+# `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
+# from outside the repository so it does not load this repository's module first.
+OPENFGA_BIN := $(CURDIR)/.localbin/openfga
+OPENFGA_IMAGE = $(shell sed -n 's/^[[:space:]]*OpenfgaImage[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' .dagger/main.go)
+FGA_CLI_IMAGE = $(shell sed -n 's/^[[:space:]]*FgaCliImage[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' .dagger/main.go)
+AUTH_MODEL = packages/service-kit/src/service_kit/governed/auth
+$(OPENFGA_BIN): .dagger/main.go
+	@mkdir -p $(dir $@)
+	cd /tmp && $(DAGGER) core container from --address=$(OPENFGA_IMAGE) file --path=/openfga export --path=$@
+	@chmod +x $@ && touch $@
+openfga: $(OPENFGA_BIN)
+
+# The authorization model's own tests, and model.json checked to be model.fga's compiled form.
+fga-test:
+	$(DAGGER) call fga-test
+
+# Regenerate model.json from model.fga with the pinned CLI, after editing the model.
+fga-model:
+	cd /tmp && $(DAGGER) core container from --address=$(FGA_CLI_IMAGE) with-directory --path=/auth --source=$(CURDIR)/$(AUTH_MODEL) \
+		with-exec --args=/fga,model,transform,--file,/auth/model.fga stdout 2>/dev/null | python3 -m json.tool --sort-keys --indent 2 > $(CURDIR)/.localbin/model.json
+	mv $(CURDIR)/.localbin/model.json $(CURDIR)/$(AUTH_MODEL)/model.json
 
 install: sync claude-bootstrap
 	prek install --hook-type pre-commit --hook-type commit-msg
@@ -14,7 +37,7 @@ sync:
 	uv sync --all-packages
 	bun --cwd=frontend install
 
-test:
+test: $(OPENFGA_BIN)
 	uv run pytest -m "not e2e" -n $(PYTEST_WORKERS)
 
 lint:
@@ -31,7 +54,7 @@ typecheck:
 	uv run ty check
 	bun --cwd=frontend run check
 
-check: lint typecheck
+check: lint typecheck fga-test
 	bun --cwd=frontend run fmt:check
 	bun --cwd=frontend run knip
 

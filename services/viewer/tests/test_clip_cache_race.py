@@ -39,7 +39,7 @@ def test_eviction_keeps_the_recently_SERVED_not_the_recently_built(tmp_path: Pat
         os.utime(clip, (now - 100 + i, now - 100 + i))
 
     # c0 is the OLDEST by creation. Serve it, then evict down to two.
-    clips.build_clip("src", "c0", 0.0, 1.0)
+    clips.build_clip(Path.touch, "c0", 0.0, 1.0)
     clips.evict_old_clips(tmp_path, keep=2)
 
     survivors = {p.name for p in tmp_path.glob("*.mp4")}

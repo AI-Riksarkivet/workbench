@@ -6,14 +6,12 @@ hermetic against the platform's process-global state travels with the package, u
 its `dapr` dependency keeps across a process; this repository's suites get the same seam the same way.
 
 - every test gets its own cache of secret-store reads (`service_kit.governed.secret_cache.STORE_READS`);
-- every test gets the token files a pod's kubelet projects, one per lakehouse door;
 - Dapr's sidecar handshake is bounded and its process-global actor-proxy factory starts empty;
 - respx's bare `@respx.mock` is strict, and `respx_allows_unused_routes` opts a test out.
 """
 
 from __future__ import annotations
 
-import pathlib
 from collections.abc import Iterator
 from typing import Final
 
@@ -33,9 +31,6 @@ except ImportError:  # a client whose suite mocks no HTTP does not install respx
 #: nothing is cached, so every unstubbed `ActorProxy.create` pays it again: CI run 35726435185 spent 8m17s in
 #: `wait_for_sidecar` before `--timeout=300` took the offline suite and four e2e lanes with it.
 DAPR_HANDSHAKE_BUDGET_SECONDS: Final = 1.0
-
-#: The doors whose callers read a projected token file, `WORKBENCH_<DOOR>_IDENTITY_TOKEN_FILE`.
-PROJECTED_TOKEN_DOORS: Final = ("catalog", "lineage")
 
 
 # respx's own default is strict (`MockRouter.__init__` takes assert_all_called=True), and that holds for the
@@ -78,21 +73,6 @@ def _a_fresh_secret_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     TTL replaces it again with a cache on its own clock.
     """
     monkeypatch.setattr(secret_cache, "STORE_READS", secret_cache.SecretCache())
-
-
-@pytest.fixture(autouse=True)
-def _projected_identity_tokens(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give each test the token files the kubelet projects into a pod, one per door ([[LH-220]]).
-
-    A service authenticates to the catalog's and lineage's doors with the token projected for that audience, read
-    afresh on every call, and a call whose file is absent is not sent. So a test that drives such a call reads a file
-    the way the pod does, at the path the settings name. The contents are opaque: the door under test is a double, or a
-    real verifier minted its own token.
-    """
-    for door in PROJECTED_TOKEN_DOORS:
-        path = tmp_path / f"projected-rask-{door}-token"
-        path.write_text(f"projected-for-rask-{door}")
-        monkeypatch.setenv(f"WORKBENCH_{door.upper()}_IDENTITY_TOKEN_FILE", str(path))
 
 
 @pytest.fixture(autouse=True)

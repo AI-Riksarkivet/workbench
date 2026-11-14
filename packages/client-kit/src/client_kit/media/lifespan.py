@@ -31,8 +31,8 @@ from fastapi import FastAPI
 from client_kit.media.config import MediaSettings
 from client_kit.media.state import AppState
 from service_kit.draining import arm_drain_on_sigterm
-from service_kit.governed.auth_lifespan import _GovernedSettings, attach_auth
-from service_kit.governed.fga import dispose as fga_dispose
+from service_kit.governed.auth_lifespan import _AuthSettings, attach_auth
+from service_kit.governed.auth_lifespan import dispose as auth_dispose
 
 
 log = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ async def media_lifespan(
 
     1. Build ``AppState`` onto ``app.state.resources`` — the shape every media router reads through
        ``StateDep``.
-    2. ``attach_auth``. Both halves default OFF and the service behaves exactly as it always did when
+    2. ``attach_auth``. Every part defaults OFF and the service behaves exactly as it always did when
        they are. Built here, never at import — an ``OIDCVerifier`` fetches discovery, so module scope
        would make importing a main do I/O. A failure to BUILD is logged and non-fatal: the dependency
        then finds no verifier/client on ``app.state`` and answers 503, which is the honest reading.
@@ -93,13 +93,11 @@ async def media_lifespan(
     """
     state = make_media_state(settings)
     app.state.resources = state
-    # CAST, not a widened parameter: `attach_auth` wants the structural `_GovernedSettings` (issuer,
-    # audience, the FGA coordinates), and every settings object that reaches here is a `MediaSettings`
-    # ALSO mixing in `GovernedAuthSettings` — `ViewerSettings` and `SearchSettings` do, and so must a
-    # client's. Python has no intersection type to say that, and typing the parameter as the protocol
-    # instead would lose the `MediaSettings` that `AppState` requires. Only those class definitions
-    # hold the invariant, so a new governed media service's settings must mix it in as well.
-    await attach_auth(app, cast(_GovernedSettings, settings), service=service)
+    # CAST, not a widened parameter: `attach_auth` wants the structural `_AuthSettings` (issuer, audience, idp id), and
+    # every settings object that reaches here is a `MediaSettings` ALSO mixing in `OidcSettings` — `ViewerSettings`,
+    # `SearchSettings` and `AnnotatorSettings` do. Python has no intersection type to say that, and typing the parameter
+    # as the protocol instead would lose the `MediaSettings` that `AppState` requires.
+    await attach_auth(app, cast(_AuthSettings, settings), service=service)
     if setup is not None:
         await setup(app, state)
     app.state.startup_complete = True
@@ -110,11 +108,9 @@ async def media_lifespan(
     finally:
         if teardown is not None:
             await teardown(app)
-        # The OpenFGA client this lifespan opened. Its SDK is aiohttp-backed, so collecting it
-        # unclosed leaves one half-open connection per replica until OpenFGA's own idle timeout, with
-        # an "Unclosed client session" line as the only trace. Disposal lives beside the factory
-        # (`service_kit.governed.fga.dispose`) rather than as a third copy of the same block.
-        await fga_dispose(app)
+        # What `attach_auth` opened: the OpenFGA client (aiohttp-backed, so collected unclosed it leaves a half-open
+        # connection per replica) and the token client's HTTP pool. Disposal lives beside the builder.
+        await auth_dispose(app)
         _disarm_drain()
         app.state.shutting_down = True
         for resource in closes(state):

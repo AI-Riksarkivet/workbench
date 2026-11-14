@@ -22,6 +22,7 @@ from client_kit.media.config import MediaSettings
 from search.services.result_cache import run_cached
 from search.services.spec import SearchSpec
 from service_kit.exceptions import ForbiddenError
+from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import write_table
 from tests.vending_catalog import VendingCatalog
 
@@ -36,7 +37,7 @@ def test_a_refused_caller_is_not_served_what_another_caller_cached(monkeypatch: 
     catalog = VendingCatalog(write_table(tmp_path, ["wh", "ns", "chunks"], _ROWS).uri, {"caller-a": expired, "caller-b": expired})
     monkeypatch.delenv("MEDIA_CATALOG_DIR")
     registry = DatasetRegistry(MediaSettings.model_validate({"MEDIA_CATALOG_URI": catalog.url}))
-    as_a, as_b = registry.get("wh$ns", "caller-a"), registry.get("wh$ns", "caller-b")
+    as_a, as_b = (registry.get("wh$ns", LakehouseCaller(subject=f"keycloak~{t}", token=lambda t=t: t)) for t in ("caller-a", "caller-b"))
     cache: dict[Any, Any] = {}
     spec = SearchSpec.model_validate({"q": "cat"})
     catalog.answers["caller-a"] = "fail"

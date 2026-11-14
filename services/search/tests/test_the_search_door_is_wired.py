@@ -1,103 +1,38 @@
-"""The search service's authorization gate has to be CONNECTED to something.
+"""The search service's door has to be connected to something: its real lifespan verifies the person.
 
-A regression in my own X6 fix (`3593381c`), caught by an adversarial re-verification of the audit
-backlog rather than by any test — including the one I wrote for X6.
-
-X6 gave search everything except the line that makes it work: `SearchSettings` mixes in
-`GovernedAuthSettings`, `api/security.py` builds the deps, every route declares the gate, and the
-chart ships `WORKBENCH_OIDC_*`/`WORKBENCH_FGA_*`. But `main.py::lifespan` never set `app.state.fga`, and
-`make_auth_deps.get_checker` is fail-CLOSED by design: FGA enabled with no client is
-`ServiceUnavailableError`. So on an auth-enabled estate every search route answered **503**. The door
-was shut, not guarded — which is safe, and is not what shipping an authorization seam means.
-
-THE ESTATE HAD ALREADY PAID FOR THIS EXACT BUG, six days earlier, and left a note.
-`services/compute/src/compute/lifespan.py:34-37`, above its own `attach_auth` call: "answers 503
-'Authentication is enabled but unavailable' — which is fail-CLOSED and correct, and also means the
-service does nothing. Measured on the live estate: that is exactly what shipped when the settings and
-the gate landed without this line." I wrote the same shape into a third service without reading it.
-
-WHY A DECISION TEST CANNOT SEE IT: a test that overrides `security._deps.current_subject` and
-`security._deps.get_checker` to drive the decision replaces exactly the two dependencies that would
-have 503'd. Overriding the thing under test is how a gate can be proven to DECIDE correctly while
-never being proven to be REACHED. So this file runs the real lifespan.
-
-The disposal half comes with it: the lifespan's `yield` was bare, so an exception past it skipped the
-resource loop, and the FGA client was never closed at all — the leak `service_kit.governed.fga.
-dispose` exists to prevent, and which five siblings already call.
+`api/security.py` builds the dependencies and every route declares them, but they find their verifier on `app.state`,
+which only the lifespan puts there; enabled and unwired, every route answers 503. So this runs the real app with its real
+lifespan against the loopback provider, and requires the DPoP challenge a person without a token is owed, not a 503.
 """
 
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from search.core.config import SearchSettings
+from search import main as main_mod
+from search.core.config import SearchSettings, get_search_settings
+from tests.identity import IDP_ID, WORKBENCH_AUDIENCE, Provider
 
 
-def _governed_settings() -> SearchSettings:
-    """FGA on, and pre-provisioned so `attach_auth` builds a client without touching the network."""
-    return SearchSettings.model_validate(
+def test_a_request_without_a_token_is_challenged_not_503(monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider) -> None:
+    settings = SearchSettings.model_validate(
         {
-            "WORKBENCH_FGA_ENABLED": True,
             "WORKBENCH_OIDC_ENABLED": True,
-            "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
-            "WORKBENCH_OIDC_AUDIENCE": "rask",
-            "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
-            "WORKBENCH_FGA_STORE_ID": "01JSTORE",
-            "WORKBENCH_FGA_MODEL_ID": "01JMODEL",
+            "WORKBENCH_OIDC_ISSUER": oidc_provider.issuer,
+            "WORKBENCH_OIDC_AUDIENCE": WORKBENCH_AUDIENCE,
+            "WORKBENCH_OIDC_IDP_ID": IDP_ID,
+            "WORKBENCH_OIDC_ALLOW_INSECURE": True,
+            "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
         }
     )
+    monkeypatch.setattr(main_mod, "get_search_settings", lambda: settings)
+    main_mod.app.dependency_overrides[get_search_settings] = lambda: settings
+    try:
+        with TestClient(main_mod.app) as client:
+            response = client.get("/api/search", params={"q": "x"})
+    finally:
+        main_mod.app.dependency_overrides.clear()
 
-
-@pytest.fixture
-def hermetic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the lifespan off the network; the auth wiring is what is under test."""
-    from search import main as main_mod
-
-    # `search.main._settings` resolves `get_search_settings` from this module's globals at LIFESPAN
-    # time, so the patch reaches the real lifespan rather than a value captured at import.
-    monkeypatch.setattr(main_mod, "get_search_settings", _governed_settings)
-
-
-@pytest.mark.asyncio
-async def test_the_gate_decides_rather_than_503s(hermetic: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    """What the wiring is FOR: a real checker resolved from real app state, reaching a real verdict."""
-    from search.api import security
-    from search.main import lifespan
-    from service_kit.governed import fga as fga_mod
-
-    async def check(_client: object, *, user: str, relation: str, obj: str) -> bool:
-        return False
-
-    monkeypatch.setattr(fga_mod, "check", check)
-
-    app = FastAPI()
-    async with lifespan(app):
-        request = type("R", (), {"app": app})()
-        checker = security._deps.get_checker(request, _governed_settings())
-        assert await checker(user="eve", relation="can_read_data", obj="corpus:x") is False, (
-            "the checker did not reach a verdict — it either 503'd or fell back to permissive"
-        )
-
-
-@pytest.mark.asyncio
-async def test_the_client_is_disposed_on_shutdown(hermetic: None) -> None:
-    """`fga.dispose` exists because five lifespans built a client and one closed it. Six now.
-
-    Asserted through the REAL disposer by swapping in a client that records its own close, rather
-    than by patching `search.main`'s binding — patching the name would prove only that a call site
-    exists, and the point is that the client actually gets closed.
-    """
-    from search.main import lifespan
-
-    class _Spy:
-        closed = False
-
-        async def close(self) -> None:
-            type(self).closed = True
-
-    app = FastAPI()
-    async with lifespan(app):
-        assert app.state.fga is not None
-        app.state.fga = _Spy()
-    assert _Spy.closed, "the search lifespan never closed its FGA client — the aiohttp session leaks one half-open connection per replica"
+    assert response.status_code == 401, response.text
+    assert response.headers["www-authenticate"].startswith("DPoP ")

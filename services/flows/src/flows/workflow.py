@@ -54,7 +54,7 @@ def flow_run_workflow(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]) -> G
 
     waves = topo_waves(request.graph)
     if waves is None:
-        return RunState(run_id=ctx.instance_id, status="failed", error="graph has a cycle").model_dump()
+        return RunState(run_id=ctx.instance_id, project=request.project, status="failed", error="graph has a cycle").model_dump()
 
     by_id = {node.id: node for node in request.graph.nodes}
     incoming = upstreams(request.graph)
@@ -103,6 +103,7 @@ def flow_run_workflow(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]) -> G
     failed = any(s.status == "failed" for s in states.values())
     return RunState(
         run_id=ctx.instance_id,
+        project=request.project,
         status="failed" if failed else "succeeded",
         nodes=states,
     ).model_dump()

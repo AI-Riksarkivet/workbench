@@ -4,20 +4,11 @@ The sibling of `tasks.py`, and it reads the permission the same way: from `PROJE
 a ladder written here. Adding an edge to the machine gates it with no route change, and a route
 cannot drift from the model.
 
-**Publish is the one operation with more than one door (§6.2), and that is the design's most important
-authz consequence.** Two checks, both of which must pass:
-
-1. `can_publish` on `annotation_project:<project_id>` — the annotator's own domain.
-2. `can_create_table` on the TARGET NAMESPACE — the governed plane's own rung, which the catalog answers for the
-   person on their own token (`annotator.api.authorization`).
-
-The target's tier is not a door here: the write reaches the catalog, whose tier judge decides it under
-the tier the namespace declares (ADR 0160).
-
-Nobody moves labels into the lakehouse by holding annotator rights alone, and nobody is forced to
-publish by holding table rights alone. The crossing between the two planes is explicit, which is what
-"its own domain, synced only when we choose" means in authz terms. Collapsing these into one check
-would let either plane's admin quietly acquire the other's authority.
+**Publish crosses into the lakehouse, and each side decides its own half.** The annotator checks
+`can_publish` on `project:<project_id>` in the workbench's own store; the publish then writes as the
+workbench's own identity, and the lakehouse decides whether that identity may create the table in the
+target namespace (and its tier judge, under the tier the namespace declares). The person needs no
+lakehouse write grant, and the commit names them as the run's originator.
 
 The third precondition — every task terminal — is NOT checked here. It lives in the project actor
 (`fire`), so it holds for any caller, including the publish workflow retrying after a crash.
@@ -35,7 +26,7 @@ from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.security import Checker, CheckerDep, CurrentSubject, RawBearerToken
+from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.corpus import input_tables
@@ -54,6 +45,8 @@ from annotator.projects.publish import namespace_for
 from client_kit.media.deps import StateDep
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.governed.fga import Grant
+from service_kit.governed.token_exchange import LakehouseCaller
 
 
 if TYPE_CHECKING:
@@ -69,9 +62,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["annotation-projects"])
 
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
-
-#: §6.2 door 2 — the governed plane's rung on the target namespace.
-CREATE_TABLE_RELATION: Final[str] = "can_create_table"
 
 #: The TIER human labels are curated into (§6.2) — the NAME is composed per project, because a bare
 #: literal put every tenant's labels in one namespace with one parent and one set of grants.
@@ -94,7 +84,7 @@ _ACTOR_FANOUT: Final[int] = 16
 class ProjectEventRequest(BaseModel):
     """One event against a project. `event` must be an edge in `PROJECT_EDGES`.
 
-    Carries no tenant: the authorization object is `annotation_project:<project_id>` from the path,
+    Carries no tenant: the authorization object is `project:<project_id>` from the path,
     so a caller cannot name the object its own permission is checked against.
     """
 
@@ -189,17 +179,6 @@ async def _check(checker: Checker, subject: str, relation: str, obj: str, what: 
         raise ForbiddenError(f"{subject} lacks {relation} on {obj}")
 
 
-async def _authorize_publish(checker: Checker, subject: str, project_id: str, namespace: str) -> None:
-    """The two-door crossing of §6.2.
-
-    Checked in order and short-circuiting, so the audit trail names the FIRST door that closed rather
-    than a composite verdict nobody can act on. The target's tier is not asked here: the write reaches
-    the catalog, whose tier judge decides it under the tier the namespace declares (ADR 0160).
-    """
-    await _check(checker, subject, "can_publish", f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_PUBLISH)
-    await _check(checker, subject, CREATE_TABLE_RELATION, f"namespace:{namespace}", AnnotatorAuditAction.PROJECT_PUBLISH)
-
-
 @router.post("/{project_id}/events", status_code=status.HTTP_200_OK)
 async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest, checker: CheckerDep, subject: CurrentSubject) -> AnnotationProject:
     """Drive one project transition.
@@ -220,20 +199,17 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
     except IllegalTransition as exc:
         raise ConflictError(str(exc)) from exc
 
-    # RESOLVED ONCE, BEFORE THE GATE. The door authorizes `namespace:<target>` and the actor pins the
-    # table id from the same string; deriving them separately would let the gate check one object
-    # while the write lands in another. Only a publish has a target.
+    # RESOLVED ONCE, here, and pinned by the actor with the publish token, so the write lands in the namespace this
+    # request named. Only a publish has a target.
     target: str | None = None
     if payload.event == "publish":
         try:
             target = payload.target_namespace or namespace_for(publish_warehouse_of(current), DEFAULT_TARGET_TIER)
         except ValueError as exc:
             raise ConflictError(f"annotation project {project_id} names no publish warehouse: {exc}") from exc
-        await _authorize_publish(checker, subject, project_id, target)
+        await _check(checker, subject, "can_publish", f"project:{project_id}", AnnotatorAuditAction.PROJECT_PUBLISH)
     elif permission is not None:
-        # `annotation_project`, not `project:<tenant>`: the project's roles grant can_manage /
-        # can_send_items / can_publish, and the tenant answers only membership.
-        await _check(checker, subject, permission, f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
+        await _check(checker, subject, permission, f"project:{project_id}", AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
 
     try:
         # `target_namespace` rides along so the actor can PIN it with the publish token — the saga
@@ -271,7 +247,7 @@ async def adjudicate_group(
     project is adjudicable is the intended idempotent shape; the actor refuses once provenance is
     frozen, and refuses a target that is not an accepted member of the group.
     """
-    await _check(checker, subject, "can_manage", f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
+    await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
     try:
         updated = await _project_proxy(project_id).adjudicate({"group": group_id, "task_id": payload.task_id, "actor": subject})
     except IllegalTransition as exc:
@@ -291,7 +267,7 @@ async def clear_adjudication(
     refuses a stale or groupless pick (correctly), so without removal one wrong pick would wedge
     the publish permanently (audit finding). Idempotent — clearing an absent pick is a no-op —
     and refused once provenance is frozen, exactly like setting one."""
-    await _check(checker, subject, "can_manage", f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
+    await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
     try:
         updated = await _project_proxy(project_id).adjudicate({"group": group_id, "task_id": None, "actor": subject})
     except IllegalTransition as exc:
@@ -325,7 +301,7 @@ async def drop_task(
     dropping an absent task is a no-op, so a retry cannot 404 a project that is already how the
     caller wants it.
     """
-    await _check(checker, subject, "can_manage", f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_DROP_TASK)
+    await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_DROP_TASK)
     proxy = _project_proxy(project_id)
     doc = await proxy.get()
     if doc is None:
@@ -338,7 +314,7 @@ async def drop_task(
     return DropReceipt.model_validate(result)
 
 
-def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller_token: str | None) -> dict[str, str | None]:
+def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller: LakehouseCaller) -> dict[str, str | None]:
     """Refuse the WHOLE send if any item names a media dataset that does not resolve; else each source's input table.
 
     Removal (`DELETE .../tasks/{id}`) is the escape hatch; this is the thing that stops the trap
@@ -363,7 +339,7 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller_
     names = sorted({item.source.where for item in payload.items if item.source.where})
     if not names:
         return {}  # every item takes the backend default, which resolves by construction
-    found = input_tables(state, names, caller_token)
+    found = input_tables(state, names, caller)
     if found is None:
         return {}
     if unseen := [name for name in names if name not in found]:
@@ -420,7 +396,13 @@ def _validated_predictions(project: dict[str, Any], payload: SendItemsRequest) -
 
 @router.post("/{project_id}/items", status_code=status.HTTP_201_CREATED)
 async def send_items(
-    project_id: ProjectId, payload: SendItemsRequest, state: StateDep, checker: CheckerDep, subject: CurrentSubject, caller_token: RawBearerToken = None
+    caller: CallerDep,
+    project_id: ProjectId,
+    payload: SendItemsRequest,
+    state: StateDep,
+    checker: CheckerDep,
+    authz: AuthorizerDep,
+    subject: CurrentSubject,
 ) -> SendReceipt:
     """Send items into the project as tasks.
 
@@ -450,14 +432,21 @@ async def send_items(
         # Checked here as well as in the actor so a refusal costs zero seeded task actors — the
         # actor's own refusal would fire only after the first `seed` had already landed.
         raise ConflictError(f"project {project_id} is {project['state']} — items may only be sent while it is draft or labeling")
-    await _check(checker, subject, "can_send_items", f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_SEND)
+    await _check(checker, subject, "can_send_items", f"project:{project_id}", AnnotatorAuditAction.PROJECT_SEND)
 
     # REFUSE an item whose media dataset does not resolve. Deliberately after the role check: the
     # refusal can name the datasets that DO exist, which is what makes it actionable and also what
     # makes it something an unauthorised caller must not be able to enumerate. Off the loop: the
     # body asks the catalog or the registry (blocking) per named dataset — inline it froze every
     # in-flight request on a cold miss (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-01).
-    tables = await run_in_threadpool(_refuse_unknown_datasets, state, payload, caller_token)
+    tables = await run_in_threadpool(_refuse_unknown_datasets, state, payload, caller)
+
+    # BIND each corpus the items come from to this project (`corpus:<dataset>#project`), so the people who annotate
+    # here may write that corpus's annotations through the workbench (`can_annotate` on the corpus). The send's own
+    # `can_send_items` is the model's `can_bind_corpus`, so no second check is asked.
+    if authz is not None:
+        corpora = sorted({item.source.where or state.settings.default_dataset or "" for item in payload.items} - {""})
+        await authz.write(Grant(user=f"project:{project_id}", relation="project", object=f"corpus:{name}") for name in corpora)
 
     # Consensus v1: N>1 seeds N independent replica items per source item, deterministic sibling
     # ids (`{gid}-r{k}`) — determinism is what lets the one-replica-per-annotator guard find them.
@@ -594,7 +583,7 @@ async def list_project_tasks(
     queue UI needs the rest. A task whose actor holds no state is reported in ``missing`` rather
     than silently dropped or a 500 — the index can lead its actors after a half-completed send.
     """
-    await _check(checker, subject, "can_view", f"annotation_project:{project_id}", AnnotatorAuditAction.PROJECT_LIST_TASKS)
+    await _check(checker, subject, "can_view", f"project:{project_id}", AnnotatorAuditAction.PROJECT_LIST_TASKS)
     listing = await _project_proxy(project_id).list_tasks()
     # Against the MEMBER, not the string. A StrEnum compares equal to its value so the old form still
     # worked, but comparing to a literal here would leave the enum decorative — a renamed member

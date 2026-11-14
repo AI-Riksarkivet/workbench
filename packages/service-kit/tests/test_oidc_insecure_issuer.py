@@ -48,16 +48,17 @@ def _settings(**over: object) -> _Governed:
     base = {
         "WORKBENCH_OIDC_ENABLED": True,
         "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
-        "WORKBENCH_OIDC_AUDIENCE": "rask",
-        "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
+        "WORKBENCH_OIDC_AUDIENCE": "workbench",
+        "WORKBENCH_OIDC_IDP_ID": "keycloak",
+        "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
     }
     return _Governed.model_validate({**base, **over})
 
 
 def test_the_dev_escape_hatch_still_works() -> None:
-    """A local Dex over http is the case the flag exists for; this must not become a hard ban."""
-    settings = _settings(WORKBENCH_OIDC_ISSUER="http://dex.local:5556", WORKBENCH_OIDC_ALLOW_INSECURE=True)
-    assert settings.oidc_issuer == "http://dex.local:5556"
+    """A local provider over http is the case the flag exists for; this must not become a hard ban."""
+    settings = _settings(WORKBENCH_OIDC_ISSUER="http://keycloak.local:8080/realms/dev", WORKBENCH_OIDC_ALLOW_INSECURE=True)
+    assert settings.oidc_issuer == "http://keycloak.local:8080/realms/dev"
 
 
 def test_the_check_is_skipped_when_oidc_is_off() -> None:
@@ -69,22 +70,18 @@ def test_the_check_is_skipped_when_oidc_is_off() -> None:
     ("over", "refusal"),
     [
         pytest.param({"WORKBENCH_OIDC_ISSUER": "http://issuer.test"}, "HTTPS", id="an-http-issuer"),
-        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {}}, "WORKBENCH_OIDC_CONNECTORS is required", id="no-connector-names-anyone"),
-        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "kubernetes"}}, "a machine identity's idp id", id="a-connector-claims-the-clusters-idp-id"),
-        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "dex-client"}}, "a machine identity's idp id", id="a-connector-claims-the-dex-clients-idp-id"),
-        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "Corp~1"}}, "no principal can carry", id="an-idp-id-outside-the-grammar"),
-        pytest.param(
-            {"WORKBENCH_SA_ISSUER": "https://issuer.test/", "WORKBENCH_SA_AUDIENCE": "rask-catalog"},
-            "name one issuer",
-            id="the-cluster-and-the-idp-named-as-one-issuer",
-        ),
+        pytest.param({"WORKBENCH_OIDC_IDP_ID": None}, "WORKBENCH_OIDC_IDP_ID are required", id="no-idp-id-names-anyone"),
+        pytest.param({"WORKBENCH_OIDC_AUDIENCE": None}, "WORKBENCH_OIDC_AUDIENCE", id="no-audience-of-the-workbench-own"),
+        pytest.param({"WORKBENCH_OIDC_IDP_ID": "kubernetes"}, "a machine identity's idp id", id="the-clusters-idp-id"),
+        pytest.param({"WORKBENCH_OIDC_IDP_ID": "Corp~1"}, "lower-case letters", id="an-idp-id-outside-the-grammar"),
+        pytest.param({"WORKBENCH_OIDC_ENABLED": False}, "would serve every route to anyone", id="authentication-off-unacknowledged"),
+        pytest.param({"WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": True}, "contradicts", id="authentication-on-and-acknowledged-off"),
     ],
 )
 def test_settings_no_bearer_could_pass_are_refused_at_construction(over: dict[str, object], refusal: str) -> None:
     """Each is refused when the settings are built, not met one request at a time: an issuer verified over http answers
-    401 to every bearer. A person is the principal their Dex connector maps to ([[LH-063]]), so a map naming nobody, or
-    an id no principal can carry, answers 401 to every person; a connector given the cluster's idp id makes its people
-    service accounts; and one issuer named for both routes every person's token as a service account's."""
+    401 to every token, and a person is the principal `<idp-id>~<sub>`, so an idp id no principal can carry, or a
+    machine's, answers 401 to every person."""
     with pytest.raises(ValueError, match=refusal):
         _settings(**over)
 

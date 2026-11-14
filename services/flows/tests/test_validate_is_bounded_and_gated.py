@@ -63,7 +63,7 @@ def test_a_graph_over_the_ceiling_is_REFUSED_AT_THE_BOUNDARY(open_client: TestCl
     tell you there were too many; a 422 means pydantic stopped at the declared bound. Only the second
     one bounds the work.
     """
-    resp = open_client.post("/api/flows/validate", json=_graph(MAX_GRAPH_NODES + 1))
+    resp = open_client.post("/api/flows/projects/p1/validate", json=_graph(MAX_GRAPH_NODES + 1))
 
     assert resp.status_code == 422, (
         f"an over-ceiling graph answered {resp.status_code} — it was parsed in full and judged afterwards, which is the unmetered parse this test exists for"
@@ -72,7 +72,7 @@ def test_a_graph_over_the_ceiling_is_REFUSED_AT_THE_BOUNDARY(open_client: TestCl
 
 def test_a_graph_AT_the_ceiling_still_validates(open_client: TestClient) -> None:
     """The bound must be the documented one, not a stricter one that breaks real graphs."""
-    resp = open_client.post("/api/flows/validate", json=_graph(MAX_GRAPH_NODES))
+    resp = open_client.post("/api/flows/projects/p1/validate", json=_graph(MAX_GRAPH_NODES))
     assert resp.status_code == 200
 
 
@@ -90,22 +90,7 @@ def test_validate_is_GATED_on_a_governed_stack() -> None:
     app.dependency_overrides[security._deps.current_subject] = lambda: "mallory"
     app.dependency_overrides[security._deps.get_checker] = lambda: _deny
     with TestClient(app) as client:
-        resp = client.post("/api/flows/validate", json=_graph(2))
+        resp = client.post("/api/flows/projects/p1/validate", json=_graph(2))
 
     assert resp.status_code == 403, f"validate answered {resp.status_code} to a denied subject"
     assert "mallory" in resp.json()["detail"]
-
-
-def test_the_catalog_is_GATED_on_a_governed_stack() -> None:
-    """The palette registry is served to a caller the estate has refused, otherwise."""
-    app = _app(_settings())
-
-    async def _deny(*, user: str, relation: str, obj: str) -> bool:
-        return False
-
-    app.dependency_overrides[security._deps.current_subject] = lambda: "mallory"
-    app.dependency_overrides[security._deps.get_checker] = lambda: _deny
-    with TestClient(app) as client:
-        resp = client.get("/api/flows/catalog")
-
-    assert resp.status_code == 403, f"the catalog answered {resp.status_code} to a denied subject"

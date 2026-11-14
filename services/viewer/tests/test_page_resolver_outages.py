@@ -26,6 +26,7 @@ import pytest
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError
+from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import write_table
 from viewer.api.v1.endpoints import pages as pages_ep
 
@@ -68,7 +69,7 @@ def test_a_catalog_outage_is_not_a_missing_page(monkeypatch: pytest.MonkeyPatch,
     catalog takes the same path: pylance's REST client reports it as the spec's ServiceUnavailable (code 17), one more
     code no caller can act on (measured 2026-11-14 on pylance 13.0.0)."""
     with pytest.raises(ServiceUnavailableError) as caught:
-        pages_ep._open(_state(monkeypatch, failing_catalog), TABLE, "tok")  # noqa: SLF001
+        pages_ep._open(_state(monkeypatch, failing_catalog), TABLE, LakehouseCaller(subject="keycloak~gina", token=lambda: "tok"))  # noqa: SLF001
     assert not isinstance(caught.value, NotFoundError)
     assert SECRET not in str(caught.value)
     assert "127.0.0.1" not in str(caught.value)
@@ -85,7 +86,7 @@ def test_an_unreadable_dataset_is_an_outage_not_a_404(monkeypatch: pytest.Monkey
     state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
 
     with pytest.raises(ServiceUnavailableError) as caught:
-        pages_ep._open(state, TABLE, "tok")  # noqa: SLF001
+        pages_ep._open(state, TABLE, LakehouseCaller(subject="keycloak~gina", token=lambda: "tok"))  # noqa: SLF001
     message = str(caught.value)
     assert not isinstance(caught.value, NotFoundError)
     assert SECRET not in message, f"the detail carried the driver text: {message}"
@@ -99,4 +100,4 @@ def test_a_table_the_catalog_does_not_hold_stays_a_404(tmp_path: Path) -> None:
     state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
 
     with pytest.raises(NotFoundError):
-        pages_ep._open(state, TABLE, "tok")  # noqa: SLF001
+        pages_ep._open(state, TABLE, LakehouseCaller(subject="keycloak~gina", token=lambda: "tok"))  # noqa: SLF001

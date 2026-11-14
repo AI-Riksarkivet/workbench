@@ -12,16 +12,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from annotator.annotations.lineage import emit_save
-from annotator.annotations.schema import ANNOTATIONS_TABLE, SaveResult
+from annotator.annotations.schema import SaveResult
 from annotator.core.config import AnnotatorSettings
 from client_kit.lancekit.predicate import isin
-from service_kit.exceptions import ConflictError
+from service_kit.exceptions import ConflictError, NotFoundError
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from annotator.corpus import Corpus
+    import lance
+
+    from annotator.annotations.store import ProjectAnnotations
     from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport
     from client_kit.media.config import Settings
 
@@ -70,18 +72,27 @@ def delete_by_ids(writer: NamespaceCatalogWriteTransport, ids: Sequence[str]) ->
 
 
 def finalize_commit(
-    corpus: Corpus,
+    table: ProjectAnnotations,
     settings: Settings,
     *,
     touched: int,
     unit_key: str,
 ) -> SaveResult:
-    """Close out a write: report the version the write committed, read off the table re-opened through the namespace, and
-    on a local directory catalog log the OpenLineage RunEvent the catalog's REST door would otherwise announce
+    """Close out a write: report the version the write committed, read off the project's table re-opened, and on a
+    local directory catalog log the OpenLineage RunEvent the catalog's REST door would otherwise announce
     (``effective_lineage_sink``)."""
-    fresh = corpus.handle.dataset(ANNOTATIONS_TABLE)
+    fresh = table.open()
+    if fresh is None:
+        return SaveResult(saved=0, version=0)
     # The sink is the annotator's own setting; media settings that carry none (a bare test state's) emit nothing.
     sink = settings.effective_lineage_sink if isinstance(settings, AnnotatorSettings) else "none"
     if touched and sink != "none":
-        emit_save(ds=fresh, table_uri=fresh.uri, table_name=ANNOTATIONS_TABLE, unit_key=unit_key, sink=sink)
+        emit_save(ds=fresh, table_uri=fresh.uri, table_name=table.name, unit_key=unit_key, sink=sink)
     return SaveResult(saved=touched, version=int(fresh.version))
+
+
+def refuse_unknown_ids(ds: lance.LanceDataset, ids: Sequence[str]) -> None:
+    """Refuse a delete naming any id the project's table does not hold: such an id is another project's row, or none."""
+    held = set(ds.to_table(columns=["id"], filter=isin("id", list(ids))).column("id").to_pylist())
+    if unknown := sorted(set(ids) - held):
+        raise NotFoundError(f"annotation(s) {unknown[:20]} are not this project's")

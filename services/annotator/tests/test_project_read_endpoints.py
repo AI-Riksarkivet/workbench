@@ -3,7 +3,7 @@
 Three contracts pinned here:
 
 1. `GET /projects?tenant=` lists through the TENANT index actor and is gated on tenant membership —
-   a member sees the tenant's projects, an outsider sees a 403, never an empty list that reads as
+   an org member sees the tenant's projects, an outsider sees a 403, never an empty list that reads as
    "no projects".
 2. `GET /projects/{id}` is `can_view`-gated and carries `legal_events` derived from the MACHINE
    TABLES — the single source the UI renders so it never hardcodes a second copy that drifts.
@@ -18,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import projects as projects_ep
 from annotator.projects.models import AnnotationProject, ProjectState
 from service_kit.exceptions import register_handlers
@@ -58,7 +58,7 @@ class _FakeTenantActor:
 
 
 def _app(*, grant: set[str], seen: list[dict[str, Any]] | None = None) -> FastAPI:
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
         return relation in grant
@@ -67,6 +67,7 @@ def _app(*, grant: set[str], seen: list[dict[str, Any]] | None = None) -> FastAP
     app.include_router(projects_ep.router)
     register_handlers(app)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: "gina"
     return app
 
@@ -96,7 +97,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 def test_a_member_lists_the_tenants_projects(wired: Any) -> None:
     client, _tenant, seen = wired(
-        grant={"member"},
+        grant={"can_list_projects"},
         tenant_ids=["p1", "p2"],
         projects={"p1": _doc("p1"), "p2": _doc("p2", ProjectState.FROZEN)},
     )
@@ -107,7 +108,7 @@ def test_a_member_lists_the_tenants_projects(wired: Any) -> None:
     body = r.json()
     assert [p["project_id"] for p in body["projects"]] == ["p1", "p2"]
     assert body["projects"][1]["state"] == "frozen"
-    assert seen[0] == {"user": "gina", "relation": "member", "obj": "project:acme"}
+    assert seen[0] == {"user": "gina", "relation": "can_list_projects", "obj": "org:acme"}
 
 
 def test_a_non_member_gets_403_not_an_empty_list(wired: Any) -> None:
@@ -120,7 +121,7 @@ def test_a_registered_but_stateless_project_is_skipped_not_a_500(wired: Any) -> 
     """The index can briefly lead the project actor (a crash between register and... no — register
     follows create, but a lost actor partition is a real failure mode). A ghost id must not take
     the whole landing down."""
-    client, _tenant, _seen = wired(grant={"member"}, tenant_ids=["p1", "ghost"], projects={"p1": _doc("p1"), "ghost": None})
+    client, _tenant, _seen = wired(grant={"can_list_projects"}, tenant_ids=["p1", "ghost"], projects={"p1": _doc("p1"), "ghost": None})
     r = client.get("/projects", params={"tenant": "acme"})
     assert r.status_code == 200
     assert [p["project_id"] for p in r.json()["projects"]] == ["p1"]
@@ -144,7 +145,7 @@ def test_get_project_carries_legal_events_from_the_machine_tables(wired: Any) ->
         ("publish", "can_publish"),
         ("archive", "can_manage"),
     }
-    assert seen[0] == {"user": "gina", "relation": "can_view", "obj": "annotation_project:p1"}
+    assert seen[0] == {"user": "gina", "relation": "can_view", "obj": "project:p1"}
 
 
 def test_get_project_without_can_view_is_403(wired: Any) -> None:

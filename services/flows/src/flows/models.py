@@ -236,6 +236,8 @@ class RunJob(RunRequest):
 
     serve_url: str
     serve_timeout: float = 180.0
+    #: The project the run belongs to: its roles decide who may read and stop it.
+    project: str
 
 
 class NodeRunState(BaseModel):
@@ -258,9 +260,11 @@ class NodeRunState(BaseModel):
 
 
 class RunState(BaseModel):
-    """A whole run, addressable at `GET /flows/runs/{run_id}`."""
+    """A whole run, addressable at `GET /flows/projects/{project}/runs/{run_id}`."""
 
     run_id: str
+    #: The project the run belongs to; empty only for an engine state that named none.
+    project: str = ""
     status: RunStatus
     nodes: dict[str, NodeRunState] = Field(default_factory=dict)
     error: str | None = None

@@ -27,7 +27,7 @@ from starlette.concurrency import run_in_threadpool
 from client_kit.lancekit.registry import DatasetHandle
 from client_kit.media.state import AppState, dataset_handle
 from search.api.dependencies import EmbedderFactoryDep, RerankerFactoryDep, StateDep
-from search.api.security import AuthorizedCorpora, CheckerDep, CurrentSubject, SettingsDep, require_search
+from search.api.security import CallerDep, FanOut
 from search.core.rate_limit import SEARCH_LIMIT, SEARCH_SCOPE, limiter
 from search.services.filters import TOPIC_FILTER, extract_filters
 from search.services.fuse import reciprocal_rank_fusion
@@ -38,7 +38,7 @@ from search.services.spec import PostSearchSpec, SearchMode, SearchSpec
 from search.services.target import resolve_target
 from search.services.vector import vector_search
 from service_kit.exceptions import DomainError, ValidationError
-from service_kit.governed.deps import RawBearerToken
+from service_kit.governed.token_exchange import LakehouseCaller
 
 
 logger = logging.getLogger(__name__)
@@ -117,25 +117,20 @@ def _spec_from_query(request: Request) -> SearchSpec:
 @router.get("/search")
 @limiter.shared_limit(SEARCH_LIMIT, scope=SEARCH_SCOPE)
 def search_get(
+    caller: CallerDep,
     request: Request,
     state: StateDep,
     get_embedder: EmbedderFactoryDep,
     get_reranker: RerankerFactoryDep,
-    # FAN-OUT, ALREADY AUTHORIZED. `?corpus=a&corpus=b` still declares the fan-out (the dependency
-    # takes the same query param), but what arrives here is the SUBSET this caller may read —
-    # filtered, not refused, per `datasets.list_datasets`' rule. `None` means a single-corpus search,
-    # which the dependency has already 403'd if the caller is not entitled to it. The gate is a
-    # dependency because this handler is a sync `def` with a blocking Lance body and cannot await
-    # the checker itself (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" X6 / VS-13).
-    corpus: AuthorizedCorpora = None,
-    caller_token: RawBearerToken = None,
+    # FAN-OUT: `?corpus=a&corpus=b`. Each corpus is read as the caller, and one the lakehouse refuses is skipped.
+    corpus: FanOut = None,
 ) -> list[dict[str, Any]]:
     spec = _spec_from_query(request)
     if corpus is not None:
         # An empty list means the caller asked to fan out and may read NONE of them: an empty result
         # is the same shorter-list answer, not an error.
-        return _fused_search(state, corpus, request, spec, get_embedder, get_reranker, caller_token) if corpus else []
-    handle = dataset_handle(state, spec.dataset, caller_token)
+        return _fused_search(state, corpus, request, spec, get_embedder, get_reranker, caller) if corpus else []
+    handle = dataset_handle(state, spec.dataset, caller)
     filters = extract_filters(request.query_params, _filterable(handle, spec.table))
     # Empty-input short-circuit: only the topic facet triggers filter-only
     # browse (the Tree page contract); other filters without a query stay [].
@@ -151,7 +146,7 @@ def _fused_search(
     spec: SearchSpec,
     get_embedder: Any,
     get_reranker: Any,
-    caller_token: str | None,
+    caller: LakehouseCaller,
 ) -> list[dict[str, Any]]:
     """Search several corpora and fuse the results by RECIPROCAL RANK.
 
@@ -173,7 +168,7 @@ def _fused_search(
     key_fields: list[str] = []
     for dataset_id in dict.fromkeys(corpora):  # de-duplicated, order preserved
         try:
-            handle = dataset_handle(state, dataset_id, caller_token)
+            handle = dataset_handle(state, dataset_id, caller)
             filters = extract_filters(request.query_params, _filterable(handle, spec.table))
             if not spec.q and not spec.q_vec and not filters.get(TOPIC_FILTER):
                 continue
@@ -230,20 +225,16 @@ def _post_spec(
 @router.post("/search")
 @limiter.shared_limit(SEARCH_LIMIT, scope=SEARCH_SCOPE)
 async def search_post(
+    caller: CallerDep,
     request: Request,
     state: StateDep,
     get_embedder: EmbedderFactoryDep,
     get_reranker: RerankerFactoryDep,
     spec: Annotated[PostSearchSpec, Depends(_post_spec)],
-    subject: CurrentSubject,
-    checker: CheckerDep,
-    settings: SettingsDep,
     image: Annotated[UploadFile | None, File()] = None,
     dataset: Annotated[str | None, Query(description="Dataset id (the configured default when omitted)")] = None,
     table: Annotated[str | None, Query(description="Searchable table name (the corpus default when omitted)")] = None,
-    caller_token: RawBearerToken = None,
 ) -> list[dict[str, Any]]:
-    await require_search(state, dataset, table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token)
     image_bytes = None
     if image is not None:
         # Bound the read so a large multipart part can't be buffered whole
@@ -252,7 +243,7 @@ async def search_post(
         if len(image_bytes) > _MAX_IMAGE_BYTES:
             raise ValidationError(f"image upload exceeds {_MAX_IMAGE_BYTES // (1024 * 1024)} MB")
     # First resolution opens the Lance DB (blocking IO) — keep the loop free.
-    handle = await run_in_threadpool(dataset_handle, state, dataset, caller_token)
+    handle = await run_in_threadpool(dataset_handle, state, dataset, caller)
     form = await request.form()  # already parsed by FastAPI; cached by Starlette
     form_values = {k: v for k, v in form.items() if isinstance(v, str)}
     filters = extract_filters(form_values, _filterable(handle, table))
@@ -267,9 +258,9 @@ async def search_post(
     return await run_in_threadpool(_cached_search, state, handle, spec, filters, image_bytes, get_embedder, get_reranker)
 
 
-def _run_similar(state: AppState, spec: SimilarSpec, dataset: str | None, table: str | None, caller_token: str | None) -> list[dict[str, Any]]:
+def _run_similar(state: AppState, spec: SimilarSpec, dataset: str | None, table: str | None, caller: LakehouseCaller) -> list[dict[str, Any]]:
     """The whole "more like this" path, off the event loop (every call below is blocking Lance IO)."""
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     target = resolve_target(handle, table)
 
     # WHICH vector space. A named one must exist — falling back to the default would answer a
@@ -319,6 +310,7 @@ class _AsList:
 @router.get("/search/similar")
 @limiter.shared_limit(SEARCH_LIMIT, scope=SEARCH_SCOPE)
 async def search_similar(
+    caller: CallerDep,
     # `request` exists for slowapi, which requires it in the signature. THE SAME SCOPE as /search on
     # purpose: this route drives the same Lance ANN fan-out from a stored seed vector (no embedder,
     # so the GPU half is smaller — but a third unmetered door beside two metered ones is budget in
@@ -326,16 +318,12 @@ async def search_similar(
     # re-audit of the search closure, whose note claimed all three entry points were covered.
     request: Request,
     state: StateDep,
-    subject: CurrentSubject,
-    checker: CheckerDep,
-    settings: SettingsDep,
     key: Annotated[str, Query(description="The seed row, its identity fields joined by '/'")],
     n: Annotated[int, Query(ge=1, le=200, description="How many neighbours")] = 24,
     space: Annotated[str | None, Query(description="Declared vector space (the corpus's first when omitted)")] = None,
     where: Annotated[str | None, Query(description="Raw SQL filter, ANDed")] = None,
     dataset: Annotated[str | None, Query(description="Dataset id (the configured default when omitted)")] = None,
     table: Annotated[str | None, Query(description="Searchable table name (the corpus default when omitted)")] = None,
-    caller_token: RawBearerToken = None,
 ) -> list[dict[str, Any]]:
     """ "More like this" — the k nearest rows to one the caller already has.
 
@@ -352,6 +340,5 @@ async def search_similar(
     # (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-13 names that as the sharp edge of the service having no authz at all);
     # the predicate stays — `duration > 60` is a real feature — but it can now only ever run against
     # the corpus TABLE this caller may read — `table=`, the same one `_run_similar` resolves rows from.
-    await require_search(state, dataset, table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token)
     spec = SimilarSpec(key=key, n=n, space=space, where=where)
-    return await run_in_threadpool(_run_similar, state, spec, dataset, table, caller_token)
+    return await run_in_threadpool(_run_similar, state, spec, dataset, table, caller)

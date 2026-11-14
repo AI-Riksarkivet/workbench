@@ -18,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as events_ep
 from annotator.api.v1.endpoints.project_events import router
 from service_kit.exceptions import register_handlers
@@ -47,7 +47,7 @@ class _FakeProjectActor:
 def _app(actor: _FakeProjectActor, monkeypatch: pytest.MonkeyPatch, *, allow: bool = True, seen: list | None = None) -> FastAPI:
     monkeypatch.setattr(events_ep, "_project_proxy", lambda _p: actor)
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
         return allow
@@ -56,6 +56,7 @@ def _app(actor: _FakeProjectActor, monkeypatch: pytest.MonkeyPatch, *, allow: bo
     app.include_router(router)
     register_handlers(app)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: "gina"
     return app
 
@@ -80,7 +81,7 @@ def test_the_gate_is_can_manage(monkeypatch: pytest.MonkeyPatch) -> None:
     client.delete("/projects/p1/tasks/t1")
 
     assert [c["relation"] for c in seen] == ["can_manage"]
-    assert seen[0]["obj"] == "annotation_project:p1"
+    assert seen[0]["obj"] == "project:p1"
 
 
 def test_a_denied_caller_gets_403_and_removes_NOTHING(monkeypatch: pytest.MonkeyPatch) -> None:

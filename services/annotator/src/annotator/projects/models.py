@@ -325,8 +325,8 @@ def publish_warehouse_of(project: Mapping[str, object]) -> str:
 
 
 class AnnotationProject(BaseModel):
-    """§4.1. `tenant` is the authz parent — the object a role is checked on is `annotation_project:<project_id>`,
-    and creating one is checked as membership of `project:<tenant>` (`annotator.api.authorization`)."""
+    """§4.1. `tenant` is the authz parent — the object a role is checked on is `project:<project_id>`, and creating one
+    is checked as `can_create_project` on `org:<tenant>`, in the workbench's own store."""
 
     project_id: str = Field(default_factory=new_id)
     tenant: str
@@ -398,7 +398,7 @@ class AnnotationProject(BaseModel):
     @property
     def authz_object(self) -> str:
         """The object this project's roles are checked on."""
-        return f"annotation_project:{self.project_id}"
+        return f"project:{self.project_id}"
 
     @property
     def publish_warehouse(self) -> str:
@@ -406,6 +406,6 @@ class AnnotationProject(BaseModel):
         return publish_warehouse_of({"warehouse": self.warehouse, "tenant": self.tenant})
 
     @property
-    def tenant_object(self) -> str:
-        """The create-on-parent door: the tenant, checked before the child exists."""
-        return f"project:{self.tenant}"
+    def org_object(self) -> str:
+        """The create-on-parent door: the project's organisation, checked before the child exists."""
+        return f"org:{self.tenant}"

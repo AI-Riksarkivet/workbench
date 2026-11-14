@@ -36,8 +36,7 @@ from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
 from service_kit.exceptions import NotFoundError, ValidationError
-from service_kit.governed.deps import RawBearerToken
-from viewer.api.security import REQUIRE_CORPUS_DATA, REQUIRE_CORPUS_METADATA
+from viewer.api.security import AUTHENTICATED, CallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.api.v1.endpoints.media import FRAME_INDEX_COLUMN
 from viewer.api.v1.endpoints.system import DURATION_COLUMN
@@ -80,15 +79,15 @@ def _built_rows(ds: lance.LanceDataset, space: AtlasSpace) -> int:
     return ds.count_rows(filter=f"{space.x} IS NOT NULL")
 
 
-@router.get("/status", dependencies=[REQUIRE_CORPUS_METADATA])
-def atlas_status(state: StateDep, space: SpaceParam = None, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> AtlasStatusResponse:
+@router.get("/status", dependencies=[AUTHENTICATED])
+def atlas_status(caller: CallerDep, state: StateDep, space: SpaceParam = None, dataset: DatasetParam = None) -> AtlasStatusResponse:
     """Which projection spaces are built, plus the requested space's row count.
 
     ``spaces`` always reports every declared space's built-ness (so the UI can
     gate its toggle); ``projected``/``rows`` reflect the requested ``space``
     (back-compatible with the old single-space shape).
     """
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     requested = _space(declared, space)
     datasets: dict[str, lance.LanceDataset] = {}
@@ -106,10 +105,10 @@ def atlas_status(state: StateDep, space: SpaceParam = None, dataset: DatasetPara
     )
 
 
-@router.get("/points", dependencies=[REQUIRE_CORPUS_DATA])
-def atlas_points(state: StateDep, space: SpaceParam = None, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> Response:
+@router.get("/points", dependencies=[AUTHENTICATED])
+def atlas_points(caller: CallerDep, state: StateDep, space: SpaceParam = None, dataset: DatasetParam = None) -> Response:
     """One Apache Arrow IPC stream for the scatter renderer (coords + codes + keys)."""
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     requested = _space(declared, space)
     ds = table_dataset(handle, requested.table)
@@ -226,18 +225,18 @@ def _attach_frame_captions(handle: DatasetHandle, rows: list[dict[str, Any]]) ->
         logger.warning("frame caption attach failed", exc_info=True)
 
 
-@router.get("/chunk/{doc_id}/{group_id}/{chunk_id}", dependencies=[REQUIRE_CORPUS_DATA])
+@router.get("/chunk/{doc_id}/{group_id}/{chunk_id}", dependencies=[AUTHENTICATED])
 def atlas_chunk(
+    caller: CallerDep,
     state: StateDep,
     doc_id: str,
     group_id: int,
     chunk_id: int,
     dataset: DatasetParam = None,
-    caller_token: RawBearerToken = None,
 ) -> dict[str, Any]:
     """Full hit for one chunk (detail pane + playback), looked up by key. The
     path params map positionally onto the descriptor's identity key fields."""
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     if declared.search is None:
@@ -251,8 +250,8 @@ def atlas_chunk(
     return _finalize_hits(handle, rows)[0]
 
 
-@router.post("/chunks/by-key", dependencies=[REQUIRE_CORPUS_DATA])
-def atlas_chunks_by_key(state: StateDep, body: ChunkKeys, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> ChunkHits:
+@router.post("/chunks/by-key", dependencies=[AUTHENTICATED])
+def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dataset: DatasetParam = None) -> ChunkHits:
     """Full hits for rows addressed BY KEY — the join a labelling queue needs (#60).
 
     ``POST /chunks`` beside this is cheaper and stays the right door for anything that came from
@@ -277,7 +276,7 @@ def atlas_chunks_by_key(state: StateDep, body: ChunkKeys, dataset: DatasetParam 
     task has no reason to have fetched the descriptor. Making it fetch one just to use this door
     would be handing it a second source of truth for the identity it is already addressing by.
     """
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")
@@ -294,8 +293,8 @@ def atlas_chunks_by_key(state: StateDep, body: ChunkKeys, dataset: DatasetParam 
     return ChunkHits(rows=_finalize_hits(handle, rows), key_fields=key_fields)
 
 
-@router.post("/chunks", dependencies=[REQUIRE_CORPUS_DATA])
-def atlas_chunks(state: StateDep, body: ChunkRowIds, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> list[dict[str, Any]]:
+@router.post("/chunks", dependencies=[AUTHENTICATED])
+def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset: DatasetParam = None) -> list[dict[str, Any]]:
     """Full hits for a lasso/box/legend selection, addressed by ``_rowid``.
 
     A flat ``_rowid IN (...)`` predicate lets Lance fetch exactly the selected
@@ -304,7 +303,7 @@ def atlas_chunks(state: StateDep, body: ChunkRowIds, dataset: DatasetParam = Non
     stable for the served table version; stale ids simply don't match. Capped at
     1000 (the table render budget); the full selection still drives map dimming.
     """
-    handle = dataset_handle(state, dataset, caller_token)
+    handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")

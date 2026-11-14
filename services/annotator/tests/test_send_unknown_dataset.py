@@ -22,7 +22,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as events_ep
 from annotator.api.v1.endpoints.project_events import router
 from client_kit.media.config import Settings
@@ -70,6 +70,8 @@ def _app(monkeypatch: pytest.MonkeyPatch, task_actor: _FakeTaskActor, settings: 
         return True
 
     app.dependency_overrides[get_checker] = lambda: checker
+
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: "gina"
     state = AppState(settings=settings)
     app.dependency_overrides[get_state] = lambda: state

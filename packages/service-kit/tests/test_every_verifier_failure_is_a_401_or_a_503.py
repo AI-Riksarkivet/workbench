@@ -1,7 +1,10 @@
-"""A bearer the verifier cannot use is answered 401 or 503 at the governed doors, and never 500.
+"""A token or proof the door cannot use is answered 401 or 503, and never 500.
 
-`OIDCVerifier.verify` has exactly two refusal types, and both doors (`authenticate`, `optional_subject`) are built
-around them: `UnauthenticatedError` when the PRESENTED TOKEN is at fault (401, audited `invalid_token`), and
+The door (`authenticate`) takes a token addressed to the workbench under the DPoP scheme and a proof of the key it is
+bound to (RFC 9449). Every proof that breaks a rule of § 4.3, and a token bound to another key, is a 401 carrying a
+`WWW-Authenticate: DPoP` challenge; so is a token the verifier refuses.
+
+`OIDCVerifier.verify` has exactly two refusal types, and the door is built around them: `UnauthenticatedError` when the PRESENTED TOKEN is at fault (401, audited `invalid_token`), and
 `ProviderUnavailableError` when the IdP, or this deployment's view of it, is at fault (503, audited
 `verifier_unavailable`). Any third type — the fleet's `ServiceUnavailableError` included — reaches their `except
 Exception` branch and is recorded as `invalid_token` against the caller, so each 503 case below also pins that its
@@ -34,6 +37,7 @@ the code under test.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import socket
@@ -44,7 +48,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Annotated
+from typing import Annotated, cast
 
 import jwt
 import pytest
@@ -54,16 +58,21 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from service_kit.exceptions import register_handlers
+from service_kit.governed import dpop as dpop_mod
 from service_kit.governed.audit import AUDIT_LOGGER
 from service_kit.governed.deps import make_auth_deps
-from service_kit.governed.idp_identity import IdpVerifier
+from service_kit.governed.dpop import ALGORITHMS, DpopVerifier
+from service_kit.governed.identity import PersonVerifier
 from service_kit.governed.oidc import UNKNOWN_KID_REFRESH_INTERVAL_SECONDS, OIDCVerifier
+from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.ns_errors import install_problem_handlers
+from tests.identity import BrowserKey
 
 
-AUDIENCE = "rask"
+AUDIENCE = "workbench"
 KID = "signing-1"
-DOORS = ["/gated", "/soft"]
+DOORS = ["/gated"]
+URL = "http://testserver/gated"
 DISCOVERY_PATH = "/.well-known/openid-configuration"
 JWKS_PATH = "/jwks"
 
@@ -76,6 +85,9 @@ SIGN_IN_PAGE = b"<!doctype html><title>Sign in</title>"
 class _AuthSettings(BaseModel):
     oidc_enabled: bool = True
     fga_enabled: bool = False
+    public_url: str | None = None
+    public_mount: str = ""
+    catalog_uri: str | None = None
 
 
 def _auth_settings() -> _AuthSettings:
@@ -86,7 +98,10 @@ def _auth_settings() -> _AuthSettings:
 # (`test_auth_deps_resolve.py` records why a local binding silently degrades to a query parameter).
 _deps = make_auth_deps(Annotated[_AuthSettings, Depends(_auth_settings)])
 _Subject = Annotated[str, Depends(_deps.current_subject)]
-_OptionalSubject = Annotated[str, Depends(_deps.optional_subject)]
+_AsPerson = Annotated[LakehouseCaller, Depends(_deps.lakehouse_caller)]
+
+#: The browser's key every token below is bound to, unless a case binds one to another.
+BROWSER = BrowserKey()
 
 
 class _Fault(StrEnum):
@@ -197,9 +212,9 @@ def idp(rsa_key: rsa.RSAPrivateKey) -> Iterator[_IdP]:
         server.server_close()
 
 
-def _token(idp: _IdP, key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey, algorithm: str, *, kid: str | None = KID) -> str:
+def _token(idp: _IdP, key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey, algorithm: str, *, kid: str | None = KID, jkt: str | None = BROWSER.jkt) -> str:
     now = int(time.time())
-    claims = {"iss": idp.issuer, "sub": "gina", "aud": AUDIENCE, "iat": now, "exp": now + 300, "federated_claims": {"connector_id": "corp", "user_id": "gina"}}
+    claims = {"iss": idp.issuer, "sub": "gina", "aud": AUDIENCE, "iat": now, "exp": now + 300} | ({"cnf": {"jkt": jkt}} if jkt else {})
     return jwt.encode(claims, key, algorithm=algorithm, headers={} if kid is None else {"kid": kid})
 
 
@@ -216,21 +231,23 @@ def _client(idp: _IdP, *, clock: Callable[[], float] = time.monotonic) -> TestCl
     app = FastAPI()
     register_handlers(app)
     install_problem_handlers(app, logging.getLogger(__name__))
-    app.state.oidc = IdpVerifier(OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True, clock=clock), {"corp": "corp"})
+    app.state.oidc = PersonVerifier(OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True, clock=clock), "corp")
+    app.state.dpop = DpopVerifier()
 
     @app.get("/gated")
     def _gated(subject: _Subject) -> dict[str, str]:
         return {"subject": subject}
 
-    @app.get("/soft")
-    def _soft(subject: _OptionalSubject) -> dict[str, str]:
-        return {"subject": subject}
+    @app.get("/as-person")
+    def _as_person(caller: _AsPerson) -> dict[str, str]:
+        return {"subject": caller.subject}
 
     return TestClient(app, raise_server_exceptions=False)
 
 
 def _call(idp: _IdP, door: str, token: str, *, client: TestClient | None = None) -> tuple[int, str]:
-    response = (client or _client(idp)).get(door, headers={"Authorization": f"Bearer {token}"})
+    proof = BROWSER.proof("GET", f"http://testserver{door}", token)
+    response = (client or _client(idp)).get(door, headers={"Authorization": f"DPoP {token}", "DPoP": proof})
     return response.status_code, response.text
 
 
@@ -475,3 +492,139 @@ def test_a_key_set_that_cannot_be_reached_is_asked_for_once(door: str, idp: _IdP
 
     assert _call(idp, door, _token(idp, rsa_key, "RS256"))[0] == 503
     assert idp.fetches[JWKS_PATH] == 1
+
+
+# ── the proof of possession (RFC 9449 § 4.3, § 7) ─────────────────────────────────────────────────────
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _forged(header: dict[str, object], claims: dict[str, object]) -> str:
+    """A compact JWS whose header and claims are the caller's to write, signed by a key the header does not name."""
+    stranger = BrowserKey()
+    signed = stranger.proof("GET", URL, None).split(".")[2]
+    return ".".join([_b64(json.dumps(header).encode()), _b64(json.dumps(claims).encode()), signed])
+
+
+def _claims(token: str, **over: object) -> dict[str, object]:
+    ath = _b64(hashlib.sha256(token.encode()).digest())
+    return {"jti": f"jti-{time.monotonic_ns()}", "htm": "GET", "htu": URL, "iat": int(time.time()), "ath": ath} | over
+
+
+PUBLIC_JWK = BROWSER._key.as_dict(private=False)
+
+#: Each case breaks one rule; the proof is otherwise the browser's own, for a token bound to the browser's key.
+BROKEN_PROOFS: dict[str, Callable[[str], str]] = {
+    "typ-is-not-dpop-jwt": lambda token: BROWSER.proof("GET", URL, token, header={"typ": "JWT"}),
+    "alg-is-symmetric": lambda token: _forged({"typ": "dpop+jwt", "alg": "HS256", "jwk": PUBLIC_JWK}, _claims(token)),
+    "no-jwk": lambda token: _forged({"typ": "dpop+jwt", "alg": "ES256"}, _claims(token)),
+    "jwk-carries-the-private-key": lambda token: BROWSER.proof("GET", URL, token, header={"jwk": BROWSER._key.as_dict(private=True)}),
+    "signed-by-another-key": lambda token: _forged({"typ": "dpop+jwt", "alg": "ES256", "jwk": PUBLIC_JWK}, _claims(token)),
+    "htm-is-another-method": lambda token: BROWSER.proof("POST", URL, token),
+    "htu-is-another-url": lambda token: BROWSER.proof("GET", "http://testserver/elsewhere", token),
+    "iat-outside-the-window": lambda token: BROWSER.proof("GET", URL, token, iat=int(time.time()) - 3600),
+    "ath-of-another-token": lambda token: BROWSER.proof("GET", URL, token + "x"),
+    "no-ath": lambda token: BROWSER.proof("GET", URL, None),
+    "no-jti": lambda token: BROWSER.proof("GET", URL, token, jti=None),
+    "not-a-jws": lambda token: "not.a.proof",
+}
+
+
+@pytest.mark.parametrize("make_proof", BROKEN_PROOFS.values(), ids=BROKEN_PROOFS.keys())
+def test_a_proof_that_breaks_a_rule_is_refused_with_a_dpop_challenge(
+    make_proof: Callable[[str], str], idp: _IdP, rsa_key: rsa.RSAPrivateKey, audit_trail: pytest.LogCaptureFixture
+) -> None:
+    token = _token(idp, rsa_key, "RS256")
+
+    response = _client(idp).get("/gated", headers={"Authorization": f"DPoP {token}", "DPoP": make_proof(token)})
+
+    assert response.status_code == 401, response.text
+    assert response.headers["www-authenticate"].startswith('DPoP error="invalid_dpop_proof", algs="')
+    assert _audited_reasons(audit_trail) == ["invalid_dpop_proof"]
+
+
+@pytest.mark.parametrize("jkt", [BrowserKey().jkt, None], ids=["bound-to-another-key", "bound-to-no-key"])
+def test_a_token_not_bound_to_the_proofs_key_is_refused(jkt: str | None, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    token = _token(idp, rsa_key, "RS256", jkt=jkt)
+
+    status, body = _call(idp, "/gated", token)
+
+    assert status == 401, body
+    assert "not bound to the DPoP proof's key" in json.loads(body)["detail"]
+
+
+def test_a_proof_sent_twice_is_refused_the_second_time(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """The replay store is this process's: the stated limit is a replay to another replica, which it cannot see."""
+    client = _client(idp)
+    token = _token(idp, rsa_key, "RS256")
+    headers = {"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", URL, token)}
+
+    first, second = client.get("/gated", headers=headers), client.get("/gated", headers=headers)
+
+    assert (first.status_code, second.status_code) == (200, 401)
+    assert "already used" in second.json()["detail"]
+
+
+DOOR_REFUSALS = {
+    "no-token": ({}, None),
+    "bearer-scheme": ({"Authorization": "Bearer {token}", "DPoP": "{proof}"}, "invalid_token"),
+    "no-proof": ({"Authorization": "DPoP {token}"}, "invalid_dpop_proof"),
+}
+
+
+@pytest.mark.parametrize(("headers", "error"), DOOR_REFUSALS.values(), ids=DOOR_REFUSALS.keys())
+def test_a_request_without_a_dpop_bound_token_and_its_proof_is_challenged(
+    headers: dict[str, str], error: str | None, idp: _IdP, rsa_key: rsa.RSAPrivateKey
+) -> None:
+    token = _token(idp, rsa_key, "RS256")
+    proof = BROWSER.proof("GET", URL, token)
+
+    response = _client(idp).get("/gated", headers={k: v.format(token=token, proof=proof) for k, v in headers.items()})
+
+    assert response.status_code == 401
+    algs = f'algs="{" ".join(sorted(ALGORITHMS))}"'
+    assert response.headers["www-authenticate"] == (f'DPoP error="{error}", {algs}' if error else f"DPoP {algs}")
+
+
+def test_behind_a_gateway_that_rewrites_the_prefix_the_proof_names_the_public_url(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """The browser signs the URL it addresses; the service sees the path the gateway rewrote it to."""
+    public = "https://workbench.example/api/explorer/annotations"
+    client = _client(idp)
+    app = cast(FastAPI, client.app)
+    app.dependency_overrides[_auth_settings] = lambda: _AuthSettings(public_url=public, public_mount="/gated")
+    token = _token(idp, rsa_key, "RS256")
+
+    as_signed = client.get("/gated", headers={"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", public, token)})
+    # RFC 3986 § 6.2.3: a URL naming its scheme's default port is the same URL.
+    with_port = client.get(
+        "/gated", headers={"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", public.replace(".example/", ".example:443/"), token)}
+    )
+    as_seen = client.get("/gated", headers={"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", URL, token)})
+
+    assert (as_signed.status_code, with_port.status_code, as_seen.status_code) == (200, 200, 401)
+
+
+def test_one_persons_flood_of_proofs_does_not_make_the_store_forget_anothers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each person fills a bucket of their own, so a stolen proof stays refused however many proofs someone else sends."""
+    monkeypatch.setattr(dpop_mod, "REPLAY_PER_PERSON", 2)
+    store = dpop_mod.ReplayStore(window_seconds=60)
+    assert store.first_use("corp~gina", "stolen")
+
+    flooded = [store.first_use("corp~mallory", f"flood-{n}") for n in range(10)]
+
+    assert all(flooded) and not store.first_use("corp~gina", "stolen")
+
+
+def test_a_lakehouse_read_as_a_person_with_no_client_to_exchange_their_token_is_refused_not_anonymous(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    client = _client(idp)
+    app = cast(FastAPI, client.app)
+    app.dependency_overrides[_auth_settings] = lambda: _AuthSettings(catalog_uri="http://catalog.test")
+    token = _token(idp, rsa_key, "RS256")
+    url = "http://testserver/as-person"
+
+    response = client.get("/as-person", headers={"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", url, token)})
+
+    assert response.status_code == 503
+    assert "WORKBENCH_OIDC_CLIENT_ID" in response.json()["detail"]

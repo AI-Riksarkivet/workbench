@@ -17,6 +17,7 @@ import pytest
 
 from client_kit.lancekit import registry
 from client_kit.media.config import MediaSettings
+from service_kit.governed.deps import ANONYMOUS_CALLER
 from tests.media_catalog import namespace_client, write_table
 
 
@@ -38,7 +39,7 @@ def test_transient_read_error_propagates_not_swallowed(monkeypatch: pytest.Monke
     monkeypatch.setattr(registry, "_open", _reset)
 
     with pytest.raises(OSError, match="connection reset"):
-        datasets.get("wh$ns", None)
+        datasets.get("wh$ns", ANONYMOUS_CALLER)
 
 
 def test_a_listed_table_whose_bytes_are_gone_is_dropped_and_named(tmp_path: Path) -> None:
@@ -46,4 +47,4 @@ def test_a_listed_table_whose_bytes_are_gone_is_dropped_and_named(tmp_path: Path
     shutil.rmtree(Path(registry.lance.dataset(namespace_client=namespace_client(tmp_path), table_id=["wh", "ns", "chunks"]).uri.removeprefix("file://")))
 
     with pytest.raises(ValueError, match="row_table 'chunks' does not exist"):
-        datasets.get("wh$ns", None)
+        datasets.get("wh$ns", ANONYMOUS_CALLER)

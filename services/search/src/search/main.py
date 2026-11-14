@@ -44,14 +44,11 @@ def _settings() -> MediaSettings:
     return get_search_settings()
 
 
-#: `attach_auth` inside the shared lifespan IS THE LINE THAT MAKES THE GATE FUNCTION. `api/security.py`
-#: builds the deps and every route declares them, but `make_auth_deps.get_checker` is fail-CLOSED: FGA
-#: enabled with no client on `app.state` is a 503, not a permissive fallback. Without it the whole X6
-#: seam — settings mixin, gated routes, chart env — resolves to "Authorization is enabled but
-#: unavailable" on every request, which is safe and is also the service doing nothing. It shipped that
-#: way three times (compute, controlplane, search); hence one lifespan rather than three, and
-#: `services/search/tests/test_the_search_door_is_wired.py`, which runs this lifespan and requires a
-#: verdict rather than a 503.
+#: `attach_auth` inside the shared lifespan IS THE LINE THAT MAKES THE DOOR FUNCTION. `api/security.py` builds the deps
+#: and every route declares them, but they find the verifier on `app.state`, and enabled with none there is a 503, never
+#: a permissive fallback; hence one lifespan for every media service, and
+#: `services/search/tests/test_the_search_door_is_wired.py`, which runs this lifespan and requires a challenge rather
+#: than a 503.
 lifespan = make_media_lifespan(
     _settings,
     service="search",

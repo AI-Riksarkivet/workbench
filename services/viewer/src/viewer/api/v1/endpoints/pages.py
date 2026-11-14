@@ -19,7 +19,7 @@ correct for single-row serving (``ids=[rowid]``, where an empty result IS the nu
 READS MUST BE BOUNDED BY THE REQUEST, NOT BY THE DATASET (VS-05). Both routes used to run one
 unfiltered, unbounded ``read_aligned_table`` at ``blob_handling="all_binary"``, which materialises
 EVERY row's bytes: serving one page cost the whole corpus, and the listing's ``limit`` was applied
-only after the scan, so a ``can_get_metadata`` route's memory was bounded by the volume. A blob
+only after the scan, so the listing's memory was bounded by the volume. A blob
 column scanned at DEFAULT ``blob_handling`` yields ``struct<kind, position, size, blob_id,
 blob_uri>`` and reads no object bytes at all, so ``size`` and ``has_payload`` are answerable for
 free; the bytes are fetched for one row, by row id, only on the route that serves them. A PLAIN
@@ -48,14 +48,11 @@ from client_kit.lancekit.absence import reads_as_absent
 from client_kit.lancekit.blobs import is_blob_field
 from client_kit.lancekit.catalog import bounded, connect_namespace, translate_catalog_errors
 from client_kit.lancekit.predicate import eq
-from client_kit.media.authz import table_object
 from client_kit.media.deps import StateDep
-from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError
-from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.deps import RawBearerToken
-from viewer.api.security import READ_DATA, READ_METADATA, CheckerDep, CurrentSubject
+from service_kit.exceptions import NotFoundError, ServiceUnavailableError, UnauthorizedError
+from service_kit.governed.token_exchange import LakehouseCaller
+from viewer.api.security import CallerDep
 from viewer.api.v1.endpoints.media import MAX_BUFFERED_BLOB_BYTES, _handle_size, _stream_handle
-from viewer.audit_actions import ViewerAuditAction
 
 
 logger = logging.getLogger(__name__)
@@ -161,7 +158,7 @@ def sniff_media_type(payload: bytes) -> str:
     return "application/octet-stream"
 
 
-def _open(state: StateDep, table: str, token: str | None) -> lance.LanceDataset:
+def _open(state: StateDep, table: str, caller: LakehouseCaller) -> lance.LanceDataset:
     """Open a catalog table by its id (``acme$bronze$pages``), through the namespace as the caller.
 
     THROUGH THE CATALOG, never a caller-supplied URI. Taking an ``s3://`` parameter would let a caller point this
@@ -169,14 +166,13 @@ def _open(state: StateDep, table: str, token: str | None) -> lance.LanceDataset:
     read on the credential the catalog vends this caller (DescribeTable's storage options), so the viewer holds no store
     credential of its own.
 
-    The caller's own bearer rides the namespace client, never a service credential (#90): the catalog checks one relation
-    on one ``table:`` object and injects no row predicate, so a service token would answer for a caller with no grant.
-    Its refusals keep their meaning (`client_kit.lancekit.catalog.translate_catalog_errors`): absent is 404, an unknown
+    The caller's own token for the lakehouse rides the namespace client, never a service credential: the lakehouse decides
+    the read for the person, and its 403 is final. Its refusals keep their meaning (`client_kit.lancekit.catalog.translate_catalog_errors`): absent is 404, an unknown
     caller 401 (saying whether a bearer was sent at all), a refused one 403, and an unreachable or failing catalog 503, which a reader retries, never the terminal
     404. A store failure behind a table the catalog resolved is a 503 too, with the location kept out of the detail: it
     is a path the caller never supplied.
     """
-    client = connect_namespace(state.settings, token)
+    client = connect_namespace(state.settings, caller.token)
     identifier = table.split(state.settings.catalog_delimiter)
     try:
         with translate_catalog_errors():
@@ -185,40 +181,13 @@ def _open(state: StateDep, table: str, token: str | None) -> lance.LanceDataset:
             return bounded(lambda: lance.dataset(namespace_client=client, table_id=identifier))
     except UnauthorizedError as exc:
         # "No credential sent" and "credential refused" send a reader in opposite directions, so the detail says which.
-        detail = "no bearer was sent (the caller is anonymous)" if not token else "the caller's bearer was refused"
+        detail = "no bearer was sent (the caller is anonymous)" if caller.token is None else "the caller's bearer was refused"
         raise UnauthorizedError(f"the catalog rejected the credential opening {table!r}: {detail}") from exc
     except (ValueError, OSError) as exc:
         if reads_as_absent(exc):
             raise NotFoundError(f"catalog does not know table {table!r}") from exc
         logger.exception("table %r is unreadable", table)
         raise ServiceUnavailableError(f"the storage backing {table!r} is unreadable right now") from exc
-
-
-async def _authorized_dataset(
-    state: StateDep,
-    table: str,
-    token: str | None,
-    *,
-    checker: object,
-    subject: str,
-    relation: str,
-    action: ViewerAuditAction,
-) -> lance.LanceDataset:
-    """Check the caller against ``table`` and return the open dataset, or raise.
-
-    The check runs BEFORE the dataset is opened, so a denied caller never causes a read of the bytes
-    they were denied — and, less obviously, cannot use the 404-vs-403 timing of a catalog resolve to
-    probe which tables exist.
-
-    Blocking Lance/S3 IO goes to the threadpool. These routes were sync `def` (FastAPI ran them
-    there automatically); awaiting the checker makes them coroutines, and a coroutine that calls
-    `lance.dataset()` inline blocks the event loop for every other request in the process.
-    """
-    obj = table_object(table)
-    if not await checker(user=subject, relation=relation, obj=obj):  # ty: ignore[call-non-callable]
-        audit(action, AuditOutcome.FAILURE, subject=subject, resource=table, relation=relation)
-        raise ForbiddenError(f"{subject} lacks {relation} on {obj}")
-    return await run_in_threadpool(_open, state, table, token)
 
 
 def _page_rows(ds: lance.LanceDataset, limit: int) -> tuple[pa.Table, bool]:
@@ -316,9 +285,7 @@ def _read_all(blob: BlobFile | BytesIO, size: int) -> bytes:
 @router.get("/pages", summary="Pages in a bronze page dataset")
 async def list_pages(
     state: StateDep,
-    checker: CheckerDep,
-    subject: CurrentSubject,
-    token: RawBearerToken,
+    caller: CallerDep,
     table: Annotated[str, Query(description="Catalog table id, e.g. acme$bronze$pages.")],
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> PageListing:
@@ -328,7 +295,7 @@ async def list_pages(
     megabytes to render a contact sheet; the browser fetches each page's bytes from ``/api/page``,
     which the ``<img>`` tag streams on demand.
     """
-    ds = await _authorized_dataset(state, table, token, checker=checker, subject=subject, relation=READ_METADATA, action=ViewerAuditAction.VIEWER_PAGES_LIST)
+    ds = await run_in_threadpool(_open, state, table, caller)
     rows, descriptors = await run_in_threadpool(_page_rows, ds, limit)
     pages: list[Page] = []
     for i in range(rows.num_rows):
@@ -360,9 +327,7 @@ async def list_pages(
 @router.get("/page", summary="One row's payload bytes")
 async def get_page(
     state: StateDep,
-    checker: CheckerDep,
-    subject: CurrentSubject,
-    token: RawBearerToken,
+    caller: CallerDep,
     table: Annotated[str, Query(description="Catalog table id, e.g. acme$bronze$pages.")],
     page_id: Annotated[int, Query(alias="id", ge=0, description="The page's `id` column value.")],
 ) -> Response:
@@ -380,7 +345,7 @@ async def get_page(
     a governed row whose payload is genuinely zero bytes is present, and this route's absence signal
     is the null above.
     """
-    ds = await _authorized_dataset(state, table, token, checker=checker, subject=subject, relation=READ_DATA, action=ViewerAuditAction.VIEWER_PAGE_READ)
+    ds = await run_in_threadpool(_open, state, table, caller)
     blob, size, media_type = await run_in_threadpool(_take_page, ds, table, page_id)
     headers = {"Cache-Control": "public, max-age=300"}
     if size > MAX_BUFFERED_BLOB_BYTES:

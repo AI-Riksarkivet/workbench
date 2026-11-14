@@ -52,7 +52,7 @@ def client() -> Iterator[TestClient]:
 def test_the_refusal_body_is_the_shared_builders_output(client: TestClient) -> None:
     """Five members, produced by the one handler every other refusal in this service goes through."""
     response = client.post(
-        "/api/flows/runs",
+        "/api/flows/projects/p1/runs",
         json={"graph": {"nodes": [{"id": "a", "kind": "quantum"}], "edges": []}, "seeds": {}},
     )
 

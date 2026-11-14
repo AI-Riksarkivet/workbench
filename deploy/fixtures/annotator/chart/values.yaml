@@ -1,6 +1,6 @@
 # The rask release this annotator sits beside. Every rask name below derives from it: the Deployment, Service and
-# ServiceAccount `<rask>-annotator` / `<rask>-sa-annotator` (the principal a project admin grants writer on a publish
-# target), and the rask objects this pod reaches by reference: `<rask>-catalog` and `<rask>-dex`.
+# ServiceAccount `<rask>-annotator` / `<rask>-sa-annotator`, and the rask object this pod reaches by reference,
+# `<rask>-catalog`.
 rask:
   release: rask
 
@@ -38,14 +38,12 @@ docs: false
 # Peers whose x-forwarded-* headers uvicorn trusts (rask's `forwardedAllowIps`); `*` is refused.
 forwardedAllowIps: 127.0.0.1
 
-# The lakehouse, by reference. The annotator reads and writes governed tables through the catalog's doors only, as the
-# person on their own token (the corpus on the credential the catalog vends them) and, for a publish, as its own
-# ServiceAccount with a token projected for `audience`, which the catalog verifies like any service's.
+# The lakehouse, by reference. The annotator reads governed tables through the catalog's doors as the person, on a token
+# it exchanges for them at the identity provider (the corpus on the credential the catalog vends them), and writes
+# annotations and publishes as the workbench's own confidential client, naming the person in each commit.
 catalog:
   # Empty derives `http://<rask>-catalog:2333`.
   url: ""
-  # The audience the catalog's door verifies a service token for (rask's `lance.identityTokens` audience `rask-catalog`).
-  audience: rask-catalog
 
 # The annotator's own state: its projects, tasks, drafts, leases and roles are Dapr actors on a state store scoped to it
 # alone, on a CloudNativePG Postgres this release renders (the CloudNativePG operator is a prerequisite: in development
@@ -89,24 +87,59 @@ otel:
   # The sidecar's trace sampling (rask's `observability.samplingRate`).
   samplingRate: "1"
 
-# The person: every request names a verified subject, and the person's own bearer is what the annotator asks the
-# catalog with. Off, it answers anonymously and says so (WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED).
+# Sign-in and authorization, the workbench's own. Every request names a person the platform's OIDC provider vouched for,
+# in a DPoP-bound token addressed to the workbench's own audience; what they may do is the workbench's own OpenFGA store.
+# Off (a local stack only), the annotator answers anonymously and every check allows, and it says so at startup
+# (WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED); a production install leaves it on.
 auth:
   enabled: true
   # Emit the authn/authz audit stream (WORKBENCH_AUDIT_ENABLED).
   audit: true
   oidc:
-    # rask's `auth.oidc.issuer`, exactly: a token is accepted only when its `iss` equals it. Required; `make k3s-fixtures`
-    # passes the DEV_ISSUER it gives Dex and rask.
+    # The provider's issuer, exactly: a token is accepted only when its `iss` equals it. Required.
     issuer: ""
-    # Where discovery is fetched; empty derives `http://<rask>-dex:5556/dex`.
+    # Where discovery and the key set are fetched when that differs from the issuer (a provider behind a proxy).
     discoveryUrl: ""
-    # rask's `auth.oidc.audience`: the zones' session carries a token for it, which this service forwards to the catalog.
-    audience: rask-lakehouse
-    # rask's `auth.oidc.connectors` as its doors render it, exactly: the idp id each Dex connector's users are principals
-    # of. The development Dex's password database `local` is `dex`.
-    connectors:
-      local: dex
+    # The workbench's own audience, which its public sign-in client requests. A token addressed to anything else,
+    # the lakehouse's among them, is refused.
+    audience: workbench
+    # The idp id the provider's subjects are principals of (`<idp-id>~<sub>`). Required.
+    idpId: ""
+    # The URL the browser addresses this service by, which each DPoP proof's `htu` names: the public origin and this
+    # release's route prefix (`route.prefix`). Required.
+    publicUrl: ""
+    # How far a DPoP proof's `iat` may lie from now, and how long its `jti` is remembered against a replay.
+    dpopWindowSeconds: 60
+    # The workbench's confidential client at the provider: it exchanges a person's token for one addressed to the
+    # lakehouse (RFC 8693) and takes its own for the writes it makes as itself. Its secret is mounted from a Secret.
+    client:
+      id: workbench-services
+      secret:
+        # The Secret holding the client's secret, which the platform's secret operator provides. Required.
+        name: ""
+        key: client-secret
+  # The lakehouse's audience: the audience of every token the annotator asks the provider for. Required.
+  lakehouseAudience: ""
+  # The lakehouse namespace holding the workbench's annotation tables (`<warehouse>$<namespace>`), which the workbench's
+  # own identity is granted to write in the lakehouse: one table per (project, dataset).
+  annotationsNamespace: workbench$annotations
+  # The workbench's own OpenFGA store, on the platform's OpenFGA, by reference.
+  fga:
+    # The platform's OpenFGA. Required.
+    apiUrl: ""
+    # The store's name: the model writer creates it, and the annotator finds it by it.
+    store: workbench
+    # The Secret holding the store's preshared key, mounted as a file; empty presents none, which only an OpenFGA
+    # authenticating nobody admits.
+    credential:
+      name: ""
+      key: preshared-key
+    # The organisations git declares: who administers each and who belongs to it, by principal key. The model writer
+    # makes the store hold exactly these, and nothing else grants an organisation role.
+    orgs: {}
+    #   acme:
+    #     admins: [keycloak~3f1c...]
+    #     members: [keycloak~9a02...]
 
 # Assist producer discovery from a Ray Serve control plane (ANNOTATOR_SERVE_DISCOVERY_URL / _PROXY_URL); empty renders
 # none, and assist answers from its registry and its mock.

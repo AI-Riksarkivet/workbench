@@ -3,8 +3,10 @@
 Edits accumulate client-side (in-memory overlay + undo/redo); one Save patches only
 the editable fields onto the current rows (geometry/provenance carried forward) and
 ``merge_insert("id")`` commits them as ONE atomic new version — the lakehouse
-"version IS the handshake". The write goes through the catalog's merge_insert door as the
-person, so the catalog governs it.
+"version IS the handshake". The rows are the project's own (`annotator.annotations.store`): the
+write goes through the catalog's doors as the workbench's own identity, after the person's
+`can_annotate` on the project, naming the person as the commit's originator. A delete naming a row
+the project's table does not hold is refused, never applied.
 """
 
 import logging
@@ -14,19 +16,19 @@ from datetime import UTC, datetime
 import pyarrow as pa
 from fastapi import APIRouter
 
-from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit
+from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit, refuse_unknown_ids
 from annotator.annotations.schema import (
-    ANNOTATIONS_TABLE,
     EDITABLE_FIELDS,
     NewAnnotation,
     SaveAnnotations,
     SaveResult,
     identity_values,
 )
-from annotator.api.security import CurrentSubject, RawBearerToken
+from annotator.api.security import MAY_ANNOTATE, AnnotationsDep, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
+from service_kit.exceptions import NotFoundError
 
 
 logger = logging.getLogger(__name__)
@@ -49,32 +51,41 @@ def new_rows(inserts: Sequence[NewAnnotation], ident: Mapping[str, object], sche
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-@router.post("/annotations/{doc_id}/{speech_id}/{chunk_id}")
+@router.post("/annotations/{doc_id}/{speech_id}/{chunk_id}", dependencies=[MAY_ANNOTATE])
 def save_annotations(
+    caller: CallerDep,
     state: StateDep,
     # The VERIFIED subject, never a header (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit": any caller could sign another
     # person's name onto annotation provenance via `X-User`). `current_subject` is `anon` with
     # OIDC off (byte-identical dev behaviour), the token's principal key with it on, 401 with no token,
     # 503 when enabled-but-unwired — the same no-header-fallback rule the projects plane got.
     author: CurrentSubject,
+    annotations: AnnotationsDep,
     doc_id: str,
     speech_id: int,
     chunk_id: int,
     body: SaveAnnotations,
-    caller_token: RawBearerToken = None,
     dataset: DatasetParam = None,
 ) -> SaveResult:
     """Flush a review delta to Lance as ONE atomic version (see module docstring)."""
-    corpus = resolve(state, dataset, caller_token)
+    corpus = resolve(state, dataset, caller)
     declared = corpus.declared
     doc_id = validate_doc_key(declared, doc_id)
-    # The version check AND the carry-forward read are of the table the wire GET served: opened through the namespace
-    # as the caller, so the 409 compares the version the client loaded against the same source.
-    ds = corpus.handle.dataset(ANNOTATIONS_TABLE)
+    # The version check AND the carry-forward read are of the table the wire GET served, the project's own, so the 409
+    # compares the version the client loaded against the same source. A project's first save creates it.
+    table = annotations(corpus.id)
+    existing = table.open()
     # REQUIRED here (#50): this path commits a merge_upsert, which UPDATES matched rows, so a save
     # that does not state what it was built from can overwrite another annotator's fields. The tag
-    # batch is insert-only and keeps the precondition optional — see check_base_version_value.
-    check_base_version_value(int(ds.version), body.base_version, required=True)
+    # batch is insert-only and keeps the precondition optional — see check_base_version_value. A table
+    # not yet made is version 0, the version the wire GET serves for it.
+    check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version, required=True)
+    if body.deletes:
+        # Only this project's rows can be deleted: an id its table does not hold is refused before anything is written.
+        if existing is None:
+            raise NotFoundError(f"annotation(s) {sorted(body.deletes)[:20]} are not this project's")
+        refuse_unknown_ids(existing, body.deletes)
+    ds = existing if existing is not None else table.open_or_create(declared, author)
 
     where = chunk_key_filter(declared, doc_id, (speech_id, chunk_id))
     current = ds.to_table(filter=where)
@@ -109,8 +120,9 @@ def save_annotations(
         parts.append(new_rows(body.inserts, ident, current.schema))
     delta = pa.concat_tables(parts)
 
-    # Writes go through the catalog's merge_insert and delete doors as the caller, so the catalog governs them.
-    writer = corpus.handle.writer(ANNOTATIONS_TABLE)
+    # Writes go through the catalog's merge_insert and delete doors as the workbench, after its own `can_annotate` check
+    # (`MAY_ANNOTATE`), naming the person in the commit; the catalog governs whether the workbench may write the table.
+    writer = table.writer(author)
     touched = 0
     if delta.num_rows:
         writer.merge_upsert(delta, "id")
@@ -120,7 +132,7 @@ def save_annotations(
         touched += len(body.deletes)
 
     result = finalize_commit(
-        corpus,
+        table,
         state.settings,
         touched=touched,
         unit_key=f"{doc_id}/{speech_id}/{chunk_id}",

@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import Depends
 
 from client_kit.media.deps import StateDep
+from search.api.security import CallerDep
 from search.services.clients import ensure_embedder, ensure_reranker
-from service_kit.governed.deps import RawBearerToken
 
 
 if TYPE_CHECKING:
@@ -28,10 +28,10 @@ if TYPE_CHECKING:
 __all__ = ["EmbedderFactoryDep", "RerankerFactoryDep", "StateDep", "get_embedder", "get_reranker"]
 
 
-def get_embedder(state: StateDep, caller_token: RawBearerToken = None) -> Callable[[], EmbeddingClient]:
+def get_embedder(caller: CallerDep, state: StateDep) -> Callable[[], EmbeddingClient]:
     """A zero-arg getter that lazily connects (then caches) the embedding client; its dimension is read off the default
     dataset as the caller."""
-    return lambda: ensure_embedder(state, caller_token)
+    return lambda: ensure_embedder(state, caller)
 
 
 def get_reranker(state: StateDep) -> Callable[[], VLLMReranker]:

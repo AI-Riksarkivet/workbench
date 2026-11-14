@@ -22,12 +22,12 @@ COLLIDING_PAIR = (("alice", "b-flows-c"), ("alice-flows-b", "c"))
 def test_distinct_pairs_never_share_a_run_id() -> None:
     """The regression: the delimiter must not be forgeable out of the fields it separates."""
     first, second = COLLIDING_PAIR
-    assert run_id_for(*first) != run_id_for(*second), "two callers derive one workflow instance id — the cross-tenant collision"
+    assert run_id_for("p1", *first) != run_id_for("p1", *second), "two callers derive one workflow instance id — the cross-tenant collision"
 
 
 def test_the_subject_still_scopes_the_key() -> None:
-    """Two callers using the SAME obvious key must not meet — the property the subject scope exists for."""
-    assert run_id_for("alice", "1") != run_id_for("bob", "1")
+    """Two callers, or two projects, using the SAME obvious key must not meet — the property the scope exists for."""
+    assert len({run_id_for("p1", "alice", "1"), run_id_for("p1", "bob", "1"), run_id_for("p2", "alice", "1")}) == 3
 
 
 def test_an_empty_field_is_not_absorbed() -> None:
@@ -36,4 +36,4 @@ def test_an_empty_field_is_not_absorbed() -> None:
     `("", "a")` and `("a", "")` are different callers with different keys; under a delimiter that can
     be empty-adjacent they are the classic second collision, one boundary case past the first.
     """
-    assert run_id_for("", "a") != run_id_for("a", "")
+    assert run_id_for("p1", "", "a") != run_id_for("p1", "a", "")

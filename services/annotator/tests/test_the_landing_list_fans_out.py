@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from annotator.api.security import current_subject, get_checker
+from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import projects as projects_ep
 from annotator.projects.models import AnnotationProject
 from service_kit.exceptions import register_handlers
@@ -84,13 +84,14 @@ def _client(
     monkeypatch.setattr(projects_ep, "_create_actor", create_actor)
     monkeypatch.setattr(projects_ep, "_tenant_actor", lambda _t: _FakeTenantActor(ids))
 
-    async def checker(*, user: str, relation: str, obj: str) -> bool:
+    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         return True
 
     app = FastAPI()
     app.include_router(projects_ep.router)
     register_handlers(app)
     app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: "gina"
     # The listing's failure answer is the assertion, not the traceback — `raise_server_exceptions`
     # would hand back the exception instead of the response the caller actually receives.

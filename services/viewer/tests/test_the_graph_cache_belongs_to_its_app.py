@@ -27,6 +27,7 @@ import pytest
 
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
+from service_kit.governed.deps import ANONYMOUS_CALLER
 from viewer.api.v1.endpoints import graph as graph_ep
 
 
@@ -78,7 +79,7 @@ def _kg_tables_exist(monkeypatch: pytest.MonkeyPatch) -> None:
         "_kg_tables",
         lambda _declared: graph_ep._KgTables(entities="kg_entities", chunks="kg_chunks", mentions="kg_mentions", relationships="kg_relationships"),
     )
-    monkeypatch.setattr(graph_ep, "dataset_handle", lambda _state, dataset=None, _caller_token=None: _Handle(dataset or "default"))
+    monkeypatch.setattr(graph_ep, "dataset_handle", lambda _state, dataset=None, _caller=None: _Handle(dataset or "default"))
 
 
 def _count_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -96,8 +97,8 @@ def test_two_apps_do_not_share_one_engine_cache(monkeypatch: pytest.MonkeyPatch)
     """A second app must build its OWN engine — it has its own registry, settings and lifetime."""
     built = _count_builds(monkeypatch)
 
-    graph_ep.get_status(AppState(settings=Settings()), dataset="isolation-corpus")
-    graph_ep.get_status(AppState(settings=Settings()), dataset="isolation-corpus")
+    graph_ep.get_status(ANONYMOUS_CALLER, AppState(settings=Settings()), dataset="isolation-corpus")
+    graph_ep.get_status(ANONYMOUS_CALLER, AppState(settings=Settings()), dataset="isolation-corpus")
 
     assert len(built) == 2, (
         f"the second app was served the first app's cached engine (builds: {built}) — one module-global dict is shared by every app in the process"
@@ -113,7 +114,7 @@ def test_tearing_an_app_down_releases_its_engines(monkeypatch: pytest.MonkeyPatc
     alive = weakref.ref(holder[0])
 
     state = AppState(settings=Settings())
-    graph_ep.get_status(state, dataset="teardown-corpus")
+    graph_ep.get_status(ANONYMOUS_CALLER, state, dataset="teardown-corpus")
 
     holder.clear()
     del state
@@ -135,14 +136,14 @@ def test_a_cold_build_for_one_dataset_does_not_block_another(monkeypatch: pytest
     monkeypatch.setattr(graph_ep, "_build_resources", _build)
     state = AppState(settings=Settings())
 
-    slow = threading.Thread(target=lambda: graph_ep.get_status(state, dataset="slow"), daemon=True)
+    slow = threading.Thread(target=lambda: graph_ep.get_status(ANONYMOUS_CALLER, state, dataset="slow"), daemon=True)
     slow.start()
     assert started.wait(_BUILD_HOLD_S), "the slow build never started"
 
     done = threading.Event()
 
     def _other() -> None:
-        graph_ep.get_status(state, dataset="other")
+        graph_ep.get_status(ANONYMOUS_CALLER, state, dataset="other")
         done.set()
 
     threading.Thread(target=_other, daemon=True).start()
@@ -169,7 +170,7 @@ def test_concurrent_first_requests_build_once(monkeypatch: pytest.MonkeyPatch) -
 
     def _request() -> None:
         gate.wait()
-        graph_ep.get_status(state, dataset="herd-corpus")
+        graph_ep.get_status(ANONYMOUS_CALLER, state, dataset="herd-corpus")
 
     threads: list[threading.Thread] = [threading.Thread(target=_request) for _ in range(2)]
     for t in threads:

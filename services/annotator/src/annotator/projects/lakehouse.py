@@ -10,20 +10,19 @@ catalog creates and emits the event. Replayed id ⇒ the catalog KEEPS the exist
 version — exactly the "existing table with this id is success" the saga relies on.
 
 The publish tags nothing. A tag in the lakehouse is a publication pointer, created and moved by an owner
-or a publisher (`can_create_tag`), and the annotator's account is neither: a service is never made the
-owner of what it creates, and its grant is writer on the target. The version the create returns, which
-the project records and whose commit names the publish as its run, is the publish's reference; blessing
-it is the tenant's act at the catalog's publish door.
+or a publisher, and the workbench's identity is neither: a service is never made the owner of what it
+creates, and its grant is writer on the target. The version the create returns, which the project records
+and whose commit names the publish as its run, is the publish's reference; blessing it is the tenant's act
+at the catalog's publish door.
 
 A create the catalog does not answer is sent again (:data:`CREATE_ATTEMPTS`), which ``mode=exist_ok``
 makes safe.
 
-**The saga publishes as the annotator's own ServiceAccount** (ADR 0171): its projected token, which the
-catalog verifies like any service's, read again on every call because the kubelet replaces it before it
-expires. A project admin grants that principal writer on the target namespace and read on its inputs
-through the catalog's grant door, and ``x-lance-originator`` names the person the publish is for, so the
-catalog tells them their run committed. The saga outlives the person's request, so it cannot use their
-token.
+**The saga publishes as the workbench's own identity**: a token addressed to the lakehouse that the
+workbench's confidential client takes with the client-credentials grant, after the annotator's own
+`can_publish` check passed. The lakehouse decides whether that identity may write the target, and
+``x-lance-originator`` names the person the publish is for, so the commit's run names them. The saga
+outlives the person's request, so it never acts on their token.
 
 `spawn_publish` is the seam the project actor's watchdog reminder calls: it schedules
 :func:`run_publish_for` on the event loop OUTSIDE the actor's turn, because the saga drives the
@@ -36,7 +35,7 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from annotator.core.config import get_annotator_settings
@@ -45,7 +44,7 @@ from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, nam
 from annotator.projects.saga import PublishOutcome, run_publish
 from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog
 from service_kit.exceptions import ServiceUnavailableError
-from service_kit.governed.machine_identity import identity_bearer
+from service_kit.governed.token_exchange import LakehouseTokens
 from service_kit.naming import CATALOG_DELIMITER
 
 
@@ -69,6 +68,17 @@ CREATE_ATTEMPTS = 3
 CREATE_BACKOFF_S = 0.5
 
 
+#: The process's token client for the lakehouse, which the lifespan built and closes (`service_kit.governed.auth_lifespan`)
+#: and hands here at startup (`use_publish_tokens`). A holder rather than an argument: the publish runs from the project
+#: actor's watchdog, which no request or app reaches.
+_PUBLISH_TOKENS: list[LakehouseTokens | None] = [None]
+
+
+def use_publish_tokens(tokens: LakehouseTokens | None) -> None:
+    """Hand the lifespan's token client to the publish saga; ``None`` publishes with no token (a local catalog)."""
+    _PUBLISH_TOKENS[0] = tokens
+
+
 def _arrow_stream_bytes(plan: PublishPlan) -> bytes:
     """The plan's rows as an Arrow-IPC stream body for the catalog's create. Explicit schema, so an
     all-sentinel publish still produces correctly-typed columns."""
@@ -90,26 +100,22 @@ class CatalogPublisher:
         base_url: str,
         *,
         delimiter: str = CATALOG_DELIMITER,
-        token_file: Path | None = None,
+        token: Callable[[], str] | None = None,
         originator: str | None = None,
     ) -> None:
         self._base_url = base_url
         self._delimiter = delimiter
-        self._token_file = token_file
+        self._token = token
         self._originator = originator
 
     def _headers(self) -> dict[str, str]:
-        """This call's headers: the annotator's own token read now, and the person the publish is for.
+        """This call's static headers: the person the publish is for.
 
-        WHO this publish is for. The token is the service's credential and the catalog authors every resulting event
-        as that service, so the originator is the only place the human survives. It authorizes nothing — the
-        notifications plane re-derives visibility per recipient at delivery — which is why it may ride beside a
-        service bearer.
+        The token is the workbench's own credential and the catalog authors every resulting event as that identity, so
+        the originator is the only place the person survives. It authorizes nothing, which is why it may ride beside a
+        service's token.
         """
-        headers = identity_bearer(self._token_file) if self._token_file is not None else {}
-        if self._originator:
-            headers["x-lance-originator"] = self._originator
-        return headers
+        return {"x-lance-originator": self._originator} if self._originator else {}
 
     async def create_table(
         self,
@@ -127,7 +133,7 @@ class CatalogPublisher:
         if source is not None and source_version is not None:
             headers[INPUTS_HEADER] = json.dumps([{"table": source.split(self._delimiter), "version": source_version}])
         catalog = NamespaceCatalogWriteTransport(
-            connect_catalog(self._base_url, token=None, delimiter=self._delimiter, headers=headers),
+            connect_catalog(self._base_url, token=self._token, delimiter=self._delimiter, headers=headers),
             table_id.split(self._delimiter),
         )
         version = await asyncio.to_thread(_create_with_retries, catalog, body, properties)
@@ -241,12 +247,14 @@ async def run_publish_for(project_id: str) -> PublishOutcome | None:
             logger.exception("could not record the missing-catalog failure for project %s", project_id)
         return None
 
-    # The saga's identity is this pod's own ServiceAccount token, read on each call. One that cannot be read fails the
-    # call it was for, which surfaces as publish_failed with the reason, and the watchdog's next tick reads it again.
+    # The saga's identity is the workbench's own confidential client, its token asked per call. A token that cannot be
+    # had fails the call it was for, which surfaces as publish_failed with the reason, and the watchdog's next tick asks
+    # again.
+    tokens = _PUBLISH_TOKENS[0]
     publisher = CatalogPublisher(
         settings.catalog_uri,
         delimiter=settings.catalog_delimiter,
-        token_file=settings.catalog_token_file,
+        token=tokens.for_service if tokens is not None else None,
         originator=subject,
     )
     return await run_publish(
