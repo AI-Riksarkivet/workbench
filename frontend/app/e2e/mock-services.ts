@@ -10,12 +10,16 @@
 // that takes no token is the signed media link's GET: the link is the permission.
 //
 // `GET /api/viewer/__calls?sub=<sub>` answers what every service recorded for one person, so a spec
-// can say each call it caused carried a valid proof.
+// can say each call it caused carried a valid proof. `POST /api/viewer/__fault?sub=<sub>&path=<path>&kind=`
+// makes one door fail (`fail`), answer that nothing is built there yet (`unbuilt`) or answer 2.5 s late
+// (`slow`), for that person only;
+// `clear` puts it back.
 import {
 	Dictionary,
 	Float16,
 	Float64,
 	Int32,
+	Int64,
 	Table,
 	Utf8,
 	tableToIPC,
@@ -29,6 +33,8 @@ export interface Call {
 	service: string;
 	method: string;
 	path: string;
+	/** The query string it carried (the viewer records it). */
+	query?: string;
 	status: number;
 	/** Why it was refused, when it was. */
 	refused?: string;
@@ -152,6 +158,26 @@ const DATASETS = {
 				{ name: 'umap', x: 'x', y: 'y', cluster: 'topic', source_column: 'v', table: 'chunks' },
 			],
 			search: { row_table: 'chunks', fts: { table: 'chunks', column: 'text' } },
+			capabilities: { graph: 'kg', topics: 'topics.tree' },
+		},
+	},
+	// A second dataset with an atlas and a graph of its own, so moving between two datasets shows each
+	// page drawing the one it is on.
+	acme$maps: {
+		tables: {
+			documents: table('documents', 1, 2, ['doc_id', 'title', 'collection', 'mime']),
+			chunks: table('chunks', 1, 2, ['doc_id', 'chunk_id', 'title', 'text']),
+		},
+		capabilities: ['search', 'atlas'],
+		declared: {
+			identity: { doc_key: 'doc_id', key_fields: ['doc_id', 'chunk_id'] },
+			document: { table: 'documents', media_blob: 'media', mime: 'mime', thumbnail: 'thumb' },
+			display: { title: ['title'], body: 'text', metadata: [] },
+			atlas: [
+				{ name: 'umap', x: 'x', y: 'y', cluster: 'topic', source_column: 'v', table: 'chunks' },
+			],
+			search: { row_table: 'chunks', fts: { table: 'chunks', column: 'text' } },
+			capabilities: { graph: 'kg' },
 		},
 	},
 	acme$notes: {
@@ -176,21 +202,6 @@ const signed = new Map<string, { doc: Doc; role: string; exp: number }>();
  *  own (`/__ttl`) to see a link expire in real time without touching another spec's. */
 const ttl = new Map<string, number>();
 
-const POINTS_ETAG = '"points-acme-letters-umap-v3"';
-
-function pointsStream(): Uint8Array {
-	const n = 60;
-	const x = Array.from({ length: n }, (_, i) => Math.cos(i / 3) * (1 + (i % 7) / 4));
-	const y = Array.from({ length: n }, (_, i) => Math.sin(i / 3) * (1 + (i % 5) / 3));
-	const cluster = Array.from({ length: n }, (_, i) => ['harbour', 'harvest', 'maps'][i % 3] ?? '');
-	const table = new Table({
-		x: vectorFromArray(x, new Float16()),
-		y: vectorFromArray(y, new Float16()),
-		cluster: vectorFromArray(cluster, new Dictionary(new Utf8(), new Int32())),
-	});
-	return tableToIPC(table, 'stream');
-}
-
 /** One chunk of a document: a row of the chunks table. */
 interface Chunk {
 	doc: Doc;
@@ -199,15 +210,139 @@ interface Chunk {
 
 const CHUNKS: Chunk[] = DOCS.flatMap((doc) => doc.chunks.map((_, chunk_id) => ({ doc, chunk_id })));
 
-/** A row of the chunks table, as the viewer and search answer it. */
+/** A row of the chunks table, as the viewer and search answer it. A chunk past a document's own is one of
+ *  the atlas's further points, a passage with no frame. */
 const chunkRow = ({ doc, chunk_id }: Chunk, score?: number) => ({
 	doc_id: doc.doc_id,
 	chunk_id,
 	title: doc.title,
-	text: doc.chunks[chunk_id] ?? '',
+	text: doc.chunks[chunk_id] ?? `Passage ${chunk_id} of ${doc.title.toLowerCase()}.`,
 	collection: doc.collection,
 	...(score === undefined ? {} : { _score: score }),
 });
+
+// ── the atlas ───────────────────────────────────────────────────────────────────────────────────
+
+type Point = Chunk & { cluster: number; x: number; y: number };
+
+/** The `umap` space's points: in `acme$letters` sixty, every chunk first, then further passages, in
+ *  three clusters; in `acme$maps` twenty-four. */
+const pointsOf = (dataset: string | null): Point[] =>
+	dataset === 'acme$maps' ? MAP_POINTS : POINTS;
+
+const POINTS: Point[] = Array.from({ length: 60 }, (_, i) => {
+	const chunk: Chunk = CHUNKS[i] ?? { doc: DOCS[i % DOCS.length]!, chunk_id: 100 + i };
+	const cluster = i % 3;
+	const angle = (i * 2.399) % (Math.PI * 2);
+	const radius = 0.4 + ((i * 7) % 10) / 12;
+	return {
+		...chunk,
+		cluster,
+		x: [-3, 3, 0][cluster]! + Math.cos(angle) * radius,
+		y: [-1, -1, 3][cluster]! + Math.sin(angle) * radius,
+	};
+});
+
+const MAP_POINTS: Point[] = Array.from({ length: 24 }, (_, i) => ({
+	doc: DOCS[2]!,
+	chunk_id: 200 + i,
+	cluster: i % 2,
+	x: Math.cos(i / 2) * (2 + (i % 3)),
+	y: Math.sin(i / 2) * (2 + (i % 3)),
+}));
+
+const pointsEtag = (dataset: string): string => `"points-${dataset.replace('$', '-')}-umap-v5"`;
+
+/** The points as the viewer's `build_points` writes them: float16 `x`/`y`, the non-doc key fields, the
+ *  stable `rowid`, the `doc` dictionary and the `cluster` codes, with `count`, `space` and `docFiles`. */
+function pointsStream(points: Point[]): Uint8Array {
+	const table = new Table({
+		x: vectorFromArray(
+			points.map((p) => p.x),
+			new Float16(),
+		),
+		y: vectorFromArray(
+			points.map((p) => p.y),
+			new Float16(),
+		),
+		chunk_id: vectorFromArray(
+			points.map((p) => p.chunk_id),
+			new Int32(),
+		),
+		rowid: vectorFromArray(
+			points.map((_, i) => BigInt(i)),
+			new Int64(),
+		),
+		doc: vectorFromArray(
+			points.map((p) => p.doc.doc_id),
+			new Dictionary(new Utf8(), new Int32()),
+		),
+		cluster: vectorFromArray(
+			points.map((p) => p.cluster),
+			new Int32(),
+		),
+	});
+	const docs = table.getChild('doc')?.data[0]?.dictionary?.toArray() as string[] | undefined;
+	table.schema.metadata.set('count', String(points.length));
+	table.schema.metadata.set('space', 'umap');
+	table.schema.metadata.set(
+		'docFiles',
+		JSON.stringify((docs ?? []).map((id) => DOCS.find((d) => d.doc_id === id)?.title ?? id)),
+	);
+	return tableToIPC(table, 'stream');
+}
+
+// ── the knowledge graph and the topics ──────────────────────────────────────────────────────────
+
+type Entity = { id: string; name: string; type: string; mentions: number; videos: number };
+type Edge = { source: string; target: string; description: string };
+
+const ENTITIES: Entity[] = [
+	{ id: 'a000000000000001', name: 'The harbour master', type: 'PERSON', mentions: 3, videos: 2 },
+	{ id: 'a000000000000002', name: 'The harbour', type: 'GEO', mentions: 4, videos: 2 },
+	{ id: 'a000000000000003', name: 'The harvest', type: 'EVENT', mentions: 1, videos: 1 },
+	{ id: 'a000000000000004', name: 'The fleet', type: 'ORG', mentions: 2, videos: 1 },
+	{ id: 'a000000000000005', name: 'Soundings', type: 'CONCEPT', mentions: 1, videos: 1 },
+];
+const EDGES: Edge[] = [
+	{ source: 'a000000000000001', target: 'a000000000000002', description: 'works at' },
+	{ source: 'a000000000000004', target: 'a000000000000002', description: 'came into' },
+	{ source: 'a000000000000005', target: 'a000000000000002', description: 'taken along' },
+	{ source: 'a000000000000003', target: 'a000000000000001', description: 'counted by' },
+];
+
+const MAP_ENTITIES: Entity[] = [
+	{ id: 'b000000000000001', name: 'The coast', type: 'GEO', mentions: 2, videos: 1 },
+	{ id: 'b000000000000002', name: 'The lighthouse', type: 'WORK', mentions: 1, videos: 1 },
+];
+const MAP_EDGES: Edge[] = [
+	{ source: 'b000000000000002', target: 'b000000000000001', description: 'stands on' },
+];
+
+/** A dataset's knowledge graph. */
+const graphOf = (dataset: string | null): { entities: Entity[]; edges: Edge[] } =>
+	dataset === 'acme$maps'
+		? { entities: MAP_ENTITIES, edges: MAP_EDGES }
+		: { entities: ENTITIES, edges: EDGES };
+
+const TOPICS = {
+	name: 'All topics',
+	children: [
+		{
+			name: 'Collections',
+			children: [
+				{ name: 'Letters', value: 3 },
+				{ name: 'Maps', value: 1 },
+			],
+		},
+		{ name: 'unclustered', value: 1 },
+	],
+};
+
+/** Who asked a door to fail or to have nothing built, by person and path. */
+type Fault = 'fail' | 'unbuilt' | 'slow';
+const faults = new Map<string, Map<string, Fault>>();
+const faultOf = (sub: string, path: string): Fault | undefined => faults.get(sub)?.get(path);
 
 function searchStream(hits: Chunk[]): Uint8Array {
 	const rows = hits.map((hit, i) => chunkRow(hit, 1 / (i + 1)));
@@ -246,6 +381,16 @@ Bun.serve({
 		const url = new URL(req.url);
 		if (url.pathname === '/__calls')
 			return json(ledger.get(url.searchParams.get('sub') ?? '') ?? []);
+		if (url.pathname === '/__fault' && req.method === 'POST') {
+			const sub = url.searchParams.get('sub') ?? '';
+			const path = url.searchParams.get('path') ?? '';
+			const kind = url.searchParams.get('kind');
+			const held = faults.get(sub) ?? new Map<string, Fault>();
+			if (kind === 'clear') held.delete(path);
+			else held.set(path, kind === 'unbuilt' || kind === 'slow' ? kind : 'fail');
+			faults.set(sub, held);
+			return json({ ok: true });
+		}
 		if (url.pathname === '/__ttl' && req.method === 'POST') {
 			ttl.set(url.searchParams.get('sub') ?? '', Number(url.searchParams.get('seconds') ?? 300));
 			return json({ ok: true });
@@ -270,7 +415,13 @@ Bun.serve({
 		const who = await authenticate('viewer', req, url);
 		if (who instanceof Response) return who;
 		const ok = (status: number): void =>
-			record(who.sub, { service: 'viewer', method: req.method, path: url.pathname, status });
+			record(who.sub, {
+				service: 'viewer',
+				method: req.method,
+				path: url.pathname,
+				query: url.search,
+				status,
+			});
 
 		if (url.pathname === '/api/datasets' && req.method === 'GET') {
 			// Who signs in picks the answer: `Nobody` is shown no dataset, `Broken` meets a viewer that fails.
@@ -423,18 +574,150 @@ Bun.serve({
 				speakers: [],
 			});
 		}
-		if (url.pathname === '/api/atlas/points' && req.method === 'GET') {
-			if (url.searchParams.get('dataset') !== 'acme$letters') {
-				ok(400);
-				return json({ detail: 'no atlas spaces declared for dataset' }, 400);
+		const fault = faultOf(who.sub, url.pathname);
+		if (fault === 'slow') await Bun.sleep(2500);
+		if (fault === 'fail') {
+			ok(500);
+			return json({ detail: 'the viewer could not read the table' }, 500);
+		}
+		if (url.pathname === '/api/atlas/status' && req.method === 'GET') {
+			ok(200);
+			const built = fault !== 'unbuilt';
+			return json({
+				projected: built,
+				rows: built ? pointsOf(dataset).length : 0,
+				space: 'umap',
+				spaces: { umap: built },
+			});
+		}
+		if (url.pathname === '/api/atlas/chunks' && req.method === 'POST') {
+			const { rowids } = (await req.json()) as { rowids: number[] };
+			ok(200);
+			return arrow(
+				searchStream(
+					rowids.flatMap((rowid) => {
+						const point = pointsOf(dataset)[rowid];
+						return point ? [point] : [];
+					}),
+				),
+			);
+		}
+		if (url.pathname === '/api/graph/status' && req.method === 'GET') {
+			ok(200);
+			const built = fault !== 'unbuilt';
+			return json({
+				built,
+				entities: built ? graphOf(dataset).entities.length : 0,
+				relations: built ? graphOf(dataset).edges.length : 0,
+				mentions: 11,
+				videos: 3,
+			});
+		}
+		if (url.pathname === '/api/graph/subgraph' && req.method === 'GET') {
+			ok(200);
+			const graph = graphOf(dataset);
+			const center = url.searchParams.get('entity_id');
+			const edges = center
+				? graph.edges.filter((e) => e.source === center || e.target === center)
+				: graph.edges;
+			const ids = new Set(center ? [center, ...edges.flatMap((e) => [e.source, e.target])] : []);
+			const nodes = graph.entities.filter((e) => !center || ids.has(e.id));
+			return json({ built: true, nodes, edges });
+		}
+		const entity = /^\/api\/graph\/entity\/([0-9a-f]{16})$/.exec(url.pathname);
+		if (entity && req.method === 'GET') {
+			const graph = graphOf(dataset);
+			const found = graph.entities.find((e) => e.id === entity[1]);
+			ok(200);
+			const linked = graph.edges.filter((e) => e.source === found?.id || e.target === found?.id);
+			return json({
+				built: true,
+				entity: found
+					? {
+							entity_id: found.id,
+							name: found.name,
+							entity_type: found.type,
+							mention_count: found.mentions,
+						}
+					: null,
+				clips: found
+					? CHUNKS.slice(0, 2).map(({ doc, chunk_id }) => ({
+							chunk_id: `${doc.doc_id}/${chunk_id}`,
+							doc_id: doc.doc_id,
+							title: doc.title,
+							start: 12 + chunk_id * 30,
+							end: 42 + chunk_id * 30,
+							text: doc.chunks[chunk_id] ?? '',
+						}))
+					: [],
+				neighbors: linked.map((e) => {
+					const out = e.source === found?.id;
+					const other = graph.entities.find((n) => n.id === (out ? e.target : e.source));
+					return {
+						entity_id: other?.id ?? '',
+						name: other?.name ?? '',
+						entity_type: other?.type ?? 'OTHER',
+						direction: out ? 'out' : 'in',
+						description: e.description,
+					};
+				}),
+				cooccur: [],
+			});
+		}
+		if (url.pathname === '/api/graph/search' && req.method === 'GET') {
+			ok(200);
+			const q = (url.searchParams.get('q') ?? '').toLowerCase();
+			return json({
+				built: true,
+				matches: graphOf(dataset)
+					.entities.filter((e) => e.name.toLowerCase().includes(q))
+					.map((e) => ({
+						entity_id: e.id,
+						name: e.name,
+						entity_type: e.type,
+						mention_count: e.mentions,
+						videos: e.videos,
+					})),
+			});
+		}
+		if (url.pathname === '/api/graph/cypher' && req.method === 'POST') {
+			const { query } = (await req.json()) as { query: string };
+			ok(200);
+			// The console answers a query it cannot run with its own error, as the viewer's does.
+			if (!/^\s*MATCH\b/i.test(query)) {
+				return json({ built: true, columns: [], rows: [], error: 'Cypher: expected MATCH' });
 			}
-			const headers = { etag: POINTS_ETAG, 'cache-control': 'private, no-cache' };
-			if (req.headers.get('if-none-match') === POINTS_ETAG) {
+			return json({
+				built: true,
+				columns: ['a.name', 'a.entity_type', 'a.mention_count'],
+				rows: graphOf(dataset).entities.map((e) => [e.name, e.type, e.mentions]),
+				error: null,
+			});
+		}
+		if (url.pathname === '/api/topics' && req.method === 'GET') {
+			ok(200);
+			const built = fault !== 'unbuilt';
+			return json({
+				built,
+				layers: 2,
+				n_chunks: CHUNKS.length,
+				hierarchy: built ? TOPICS : null,
+				noise_label: 'unclustered',
+			});
+		}
+		if (url.pathname === '/api/atlas/points' && req.method === 'GET') {
+			if ((dataset !== 'acme$letters' && dataset !== 'acme$maps') || fault === 'unbuilt') {
+				ok(400);
+				return json({ detail: 'umap 2D projection not built yet' }, 400);
+			}
+			const etag = pointsEtag(dataset);
+			const headers = { etag, 'cache-control': 'private, no-cache' };
+			if (req.headers.get('if-none-match') === etag) {
 				ok(304);
 				return new Response(null, { status: 304, headers });
 			}
 			ok(200);
-			return arrow(pointsStream(), headers);
+			return arrow(pointsStream(pointsOf(dataset)), headers);
 		}
 		ok(404);
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);

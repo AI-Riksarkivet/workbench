@@ -10,6 +10,7 @@
 	import SignedImage from '#lib/explore/components/signed-image.svelte';
 	import {
 		AudioLines,
+		Lasso,
 		ChevronLeft,
 		ChevronRight,
 		LayoutGrid,
@@ -33,7 +34,7 @@
 	import SavedViews from '#lib/explore/components/saved-views.svelte';
 	import SearchBar from '#lib/explore/components/search-bar.svelte';
 	import ColumnsMenu from '#lib/explore/components/columns-menu.svelte';
-	import { explore, PAGE_STEP, PER_PAGE } from '#lib/explore/explore.svelte.ts';
+	import { explore, MAP_ROWS_MAX, PAGE_STEP, PER_PAGE } from '#lib/explore/explore.svelte.ts';
 	import { thumbnailUrl } from '#lib/explore/media.ts';
 	import {
 		loadCols,
@@ -247,6 +248,32 @@
 				{/if}
 			</div>
 		{/if}
+		{#if explore.mapSelection}
+			<div class="flex flex-wrap items-center gap-2 px-3 pb-3 text-xs">
+				<Badge variant="secondary" class="gap-1.5 py-0.5 pr-0.5 pl-2">
+					<Lasso class="text-primary" />
+					<span>
+						Atlas selection: {explore.mapSelection.points.toLocaleString()}
+						{explore.mapSelection.points === 1 ? 'point' : 'points'}
+					</span>
+					<Button
+						variant="ghost"
+						size="icon-xs"
+						class="size-4 rounded-full"
+						title="Clear the atlas selection: back to the search"
+						aria-label="Clear atlas selection"
+						onclick={() => explore.dismissMapSelection()}
+					>
+						<X />
+					</Button>
+				</Badge>
+				{#if explore.mapSelection.points > MAP_ROWS_MAX}
+					<span class="text-muted-foreground"
+						>the first {MAP_ROWS_MAX.toLocaleString()} are listed</span
+					>
+				{/if}
+			</div>
+		{/if}
 	</div>
 
 	<div
@@ -266,7 +293,7 @@
 			{:else if explore.voiceActive}
 				<strong class="text-foreground">{hits.length}</strong>
 				{hits.length === 1 ? 'voice match' : 'voice matches'}
-				{#if explore.allLoaded}<span class="text-muted-foreground/70">· all shown</span>{/if}
+				{#if explore.allLoaded}<span class="text-muted-foreground">· all shown</span>{/if}
 			{:else if hits.length === 0}
 				No hits.
 			{:else}
@@ -274,8 +301,7 @@
 				{hits.length === 1 ? 'chunk' : 'chunks'} across
 				<strong class="text-foreground">{docCount}</strong>
 				{docCount === 1 ? 'document' : 'documents'}
-				{#if explore.allLoaded}<span class="text-muted-foreground/70">· all results shown</span
-					>{/if}
+				{#if explore.allLoaded}<span class="text-muted-foreground">· all results shown</span>{/if}
 			{/if}
 		</span>
 
@@ -509,7 +535,7 @@
 			<div
 				class="text-muted-foreground flex flex-col items-center justify-center gap-2 px-6 py-8 text-center text-sm"
 			>
-				<SearchX class="text-muted-foreground/60 size-6" />
+				<SearchX class="text-muted-foreground size-6" />
 				<p>No hits.</p>
 				<p class="text-xs">
 					{#if explore.voiceActive}

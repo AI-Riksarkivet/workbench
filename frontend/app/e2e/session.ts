@@ -33,6 +33,8 @@ export interface Call {
 	service: string;
 	method: string;
 	path: string;
+	/** The query string the call carried, as the viewer recorded it. */
+	query?: string;
 	status: number;
 	refused?: string;
 }

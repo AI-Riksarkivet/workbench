@@ -23,8 +23,10 @@
 	type Props = {
 		hit: Hit | null;
 		query?: string;
+		/** What the empty player tells the reader to do, in the words of the page it is on. */
+		idle?: string;
 	};
-	let { hit, query = '' }: Props = $props();
+	let { hit, query = '', idle = 'Click a hit to play.' }: Props = $props();
 
 	// The hit's media and frame, each a signed link (media elements send no token); undefined while
 	// being signed, or the viewer's reason when it named none.
@@ -335,7 +337,7 @@
 
 <div class="flex h-full min-h-0 flex-col gap-3 p-4">
 	{#if !hit}
-		<div class="text-muted-foreground m-auto text-sm">Click a hit to play.</div>
+		<div class="text-muted-foreground m-auto px-4 text-center text-sm">{idle}</div>
 	{:else}
 		<!-- ONE media component: the video and its synced transcript live in a
          single card, bridged by a slim "Transcript" bar that also carries the
@@ -556,9 +558,7 @@
 				>
 					<ChevronRight class="size-3.5 transition-transform {showMeta ? 'rotate-90' : ''}" />
 					<span class="font-medium">Metadata</span>
-					<span class="text-muted-foreground/70 ml-auto text-[0.7rem]"
-						>{metaRows.length} fields</span
-					>
+					<span class="text-muted-foreground ml-auto text-[0.7rem]">{metaRows.length} fields</span>
 				</button>
 				{#if showMeta}
 					<dl class="border-border grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 border-t px-3 py-2">

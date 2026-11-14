@@ -35,8 +35,3 @@ export function gpuUnsupportedReason(): Promise<string | null> {
 	})();
 	return probe;
 }
-
-/** Testing seam: forget the memoised probe. */
-export function resetGpuSupportProbe(): void {
-	probe = null;
-}

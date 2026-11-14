@@ -77,11 +77,15 @@
 	--popover: oklch(0.19 0.01 270);
 	--popover-foreground: oklch(0.985 0 0);
 	--primary: oklch(0.68 0.16 250);
-	--primary-foreground: oklch(0.985 0 0);
+	/* Dark text on the bright primary: white on it measures 2.77:1, below WCAG 2.2 AA (4.5:1); this
+	   measures 7.00:1 (the same pair rask's console ships). */
+	--primary-foreground: oklch(0.13 0.006 270);
 	--secondary: oklch(0.22 0.008 270);
 	--secondary-foreground: oklch(0.985 0 0);
 	--muted: oklch(0.22 0.008 270);
-	--muted-foreground: oklch(0.55 0.01 270);
+	/* L 0.65 clears 4.5:1 on every dark surface it is drawn on, a hovered row (--accent) included; L 0.55
+	   measured 4.13:1 on --background (the #9 D2b-2 walk). */
+	--muted-foreground: oklch(0.65 0.01 270);
 	--accent: oklch(0.26 0.01 270);
 	--accent-foreground: oklch(0.985 0 0);
 	--destructive: oklch(0.704 0.191 22.216);
@@ -96,7 +100,7 @@
 	--sidebar: oklch(0.16 0.008 260);
 	--sidebar-foreground: oklch(0.985 0 0);
 	--sidebar-primary: oklch(0.68 0.16 250);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
+	--sidebar-primary-foreground: oklch(0.13 0.006 270);
 	--sidebar-accent: oklch(0.26 0.01 270);
 	--sidebar-accent-foreground: oklch(0.985 0 0);
 	--sidebar-border: oklch(1 0 0 / 8%);

@@ -154,7 +154,7 @@
 		title="Drag to resize · double-click to reset"
 		class="group border-border bg-secondary/40 hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 relative
            flex items-center justify-center
-           transition-colors focus-visible:outline-none"
+           transition-colors focus-visible:outline-none focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset"
 		class:cursor-col-resize={!vertical}
 		class:cursor-row-resize={vertical}
 		class:border-x={!vertical}

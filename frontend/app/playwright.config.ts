@@ -24,6 +24,30 @@ export default defineConfig({
 	retries: process.env.CI ? 1 : 0,
 	reporter: process.env.CI ? 'github' : 'list',
 	use: { baseURL: EDGE, trace: 'on-first-retry', ...devices['Desktop Chrome'] },
+	// Headless Chromium offers no WebGPU adapter by default, which is the browser the atlas and the graph
+	// must refuse plainly. `webgpu` runs the specs that draw on Chromium's software adapter (SwiftShader
+	// over Vulkan, `--enable-unsafe-webgpu`), in the new headless mode (`channel: 'chromium'`), whose
+	// screenshots composite a WebGPU canvas (the headless shell's show it blank, measured 2026-11-14), so a
+	// spec reads what the renderer drew.
+	projects: [
+		{ name: 'chromium', testIgnore: /webgpu\.spec\.ts$/ },
+		{
+			name: 'webgpu',
+			testMatch: /webgpu\.spec\.ts$/,
+			use: {
+				channel: 'chromium',
+				launchOptions: {
+					args: [
+						'--enable-unsafe-webgpu',
+						'--enable-features=Vulkan',
+						'--use-vulkan=swiftshader',
+						'--use-webgpu-adapter=swiftshader',
+						'--use-angle=swiftshader',
+					],
+				},
+			},
+		},
+	],
 	webServer: [
 		{
 			command: 'bun e2e/edge.ts',

@@ -19,13 +19,9 @@
 	import { explore } from '#lib/explore/explore.svelte.ts';
 	import { serviceHealth } from '#lib/explore/service-health.svelte.ts';
 	import { titleOf } from '#lib/nav.ts';
-	import { projectOf } from '#lib/project.ts';
-	import { page } from '$app/state';
-	import { resolve } from '$app/paths';
 
 	let { data } = $props();
 	const id = $derived(data.id);
-	const project = $derived(projectOf(page.url));
 
 	let layout = $state<LayoutConfig | null>(null);
 	let session = $state.raw<WorkbenchSession | null>(null);
@@ -136,49 +132,32 @@
 
 <!-- The page's heading names the dataset; the dock's panels head themselves one level under it. -->
 <h1 class="sr-only">{id}</h1>
-{#if data.failure !== null}
-	<div class="flex flex-col gap-2 p-6">
-		<p class="text-sm" role="alert">
-			No dataset <span class="font-mono">{id}</span> that you can see: it does not exist, or the lakehouse
-			does not let you read it.
-		</p>
-		<p class="text-muted-foreground text-xs">{data.failure}</p>
-		<a
-			class="text-primary text-sm hover:underline"
-			href={project === null
-				? resolve('/datasets')
-				: resolve(`/datasets?${new URLSearchParams({ project })}`)}>All datasets</a
-		>
-	</div>
-{:else}
-	<div class="wrap">
-		{#if views}
-			<ViewSidebar {views} onselect={applyView} />
+<div class="wrap">
+	{#if views}
+		<ViewSidebar {views} onselect={applyView} />
+	{/if}
+	<div class="dock">
+		{#if unreadable}
+			<p class="note problem" role="status">
+				<span>
+					Your saved layout could not be read ({unreadable}). It has not been changed; the default
+					is shown and changes are not saved.
+				</span>
+				<Button variant="outline" size="xs" onclick={resetLayout}>Reset layout</Button>
+			</p>
+		{:else if store && !store.persistent}
+			<p class="note" role="status">
+				This browser keeps no storage for this site: the layout and views last until the tab closes.
+			</p>
 		{/if}
-		<div class="dock">
-			{#if unreadable}
-				<p class="note problem" role="status">
-					<span>
-						Your saved layout could not be read ({unreadable}). It has not been changed; the default
-						is shown and changes are not saved.
-					</span>
-					<Button variant="outline" size="xs" onclick={resetLayout}>Reset layout</Button>
-				</p>
-			{:else if store && !store.persistent}
-				<p class="note" role="status">
-					This browser keeps no storage for this site: the layout and views last until the tab
-					closes.
-				</p>
-			{/if}
-			{#if layout}
-				<!-- Each dataset mounts its panels afresh: they read the dataset's view when they mount. -->
-				{#key id}
-					<Dock bind:layout />
-				{/key}
-			{/if}
-		</div>
+		{#if layout}
+			<!-- Each dataset mounts its panels afresh: they read the dataset's view when they mount. -->
+			{#key id}
+				<Dock bind:layout />
+			{/key}
+		{/if}
 	</div>
-{/if}
+</div>
 
 <style>
 	.wrap {

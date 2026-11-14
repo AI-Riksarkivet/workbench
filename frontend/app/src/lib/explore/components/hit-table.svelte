@@ -437,12 +437,22 @@
 		</thead>
 		<tbody>
 			{#each displayedHits as hit (hitKey(hit))}
+				<!-- A row opens its hit on a click, and on Enter or Space from the keyboard: each row is a
+				     stop in the tab order, its state told by aria-selected. -->
 				<tr
-					class={'border-border/60 hover:bg-muted/60 cursor-pointer border-b ' +
+					class={'border-border/60 hover:bg-muted/60 focus-visible:ring-ring/50 cursor-pointer border-b outline-none focus-visible:ring-2 focus-visible:ring-inset ' +
 						(activeKey === hitKey(hit)
 							? 'bg-primary/15 font-medium [box-shadow:inset_3px_0_0_0_var(--color-primary)]'
 							: '')}
+					tabindex="0"
+					aria-selected={activeKey === hitKey(hit)}
 					onclick={() => onselect?.(hit)}
+					onkeydown={(event) => {
+						if (event.target !== event.currentTarget) return;
+						if (event.key !== 'Enter' && event.key !== ' ') return;
+						event.preventDefault();
+						onselect?.(hit);
+					}}
 				>
 					{#each cols as c (c.key)}
 						{@const w = colWidth(c.key)}

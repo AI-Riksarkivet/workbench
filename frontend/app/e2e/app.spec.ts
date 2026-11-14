@@ -84,7 +84,7 @@ test('the CSP is a header, strict, and the pages report no violation', async ({
 	await expect(
 		page.getByRole('list', { name: 'Search results' }).getByRole('listitem'),
 	).toHaveCount(3);
-	await expect(page.getByRole('img', { name: /Atlas of 60 points/ })).toBeVisible();
+	await expect(page.getByText('WebGPU is required (no GPU adapter available)')).toBeVisible();
 	expect(await violations()).toEqual([]);
 });
 
@@ -96,17 +96,14 @@ test('the dataset list shows what the viewer lists, each a link to its page', as
 	await page.goto('/datasets?project=acme');
 
 	const list = page.getByRole('list', { name: 'Datasets' });
-	await expect(list.getByRole('link')).toHaveCount(2);
+	await expect(list.getByRole('link')).toHaveCount(3);
 	const letters = list.getByRole('link', { name: /acme\$letters/ });
 	await expect(letters).toContainText('2 tables · 7 rows');
 	await expect(letters).toHaveAttribute('href', '/datasets/acme%24letters?project=acme');
 	await expect(page).toHaveTitle('Datasets · workbench');
 });
 
-test('a dataset page searches through Arrow, shows signed media, and reads the atlas by its ETag', async ({
-	page,
-	context,
-}) => {
+test('a dataset page searches through Arrow and shows signed media', async ({ page, context }) => {
 	const who = person('Margaret');
 	await signIn(context, who);
 	await page.goto('/datasets/acme%24letters');
@@ -132,23 +129,6 @@ test('a dataset page searches through Arrow, shows signed media, and reads the a
 		.toBeGreaterThan(0);
 	expect(await media.getAttribute('src')).toMatch(/^\/api\/viewer\/api\/signed-media\/[\w-]+$/);
 
-	await expect(
-		page.getByRole('img', { name: 'Atlas of 60 points, coloured by cluster' }),
-	).toBeVisible();
-	// A second visit revalidates the points the browser holds: the viewer runs the read again and
-	// answers 304, and no bytes travel. A reload signs in again (the tokens were in memory) and asks.
-	await page.reload();
-	await expect(
-		page.getByRole('img', { name: 'Atlas of 60 points, coloured by cluster' }),
-	).toBeVisible();
-
-	await expect
-		.poll(async () =>
-			(await callsOf(page, who))
-				.filter((call) => call.path === '/api/atlas/points')
-				.map((call) => call.status),
-		)
-		.toEqual([200, 304]);
 	const calls = await callsOf(page, who);
 	expect(calls.filter((call) => call.refused !== undefined)).toEqual([]);
 	for (const path of [
@@ -182,10 +162,24 @@ test('a search answering several rows of one document lists each row', async ({
 	expect(errors).toEqual([]);
 });
 
-test('a dataset with no atlas and no thumbnails says so', async ({ page, context }) => {
+test('a dataset with no atlas says so, and its views say why they are closed', async ({
+	page,
+	context,
+}) => {
 	await signIn(context, person('Barbara'));
 	await page.goto('/datasets/acme%24notes');
-	await expect(page.getByText('This dataset declares no atlas space.')).toBeVisible();
+	await expect(page.getByText('This dataset has no embedding map.')).toBeVisible();
+
+	const views = page.getByRole('navigation', { name: 'Dataset pages' });
+	await expect(views.getByRole('link')).toHaveCount(1);
+	const graph = views.getByRole('button', { name: /^Graph/ });
+	await expect(graph).toHaveAccessibleName('Graph');
+	await expect(graph).toHaveAccessibleDescription('this dataset declares no knowledge graph');
+	await graph.focus();
+	await page.keyboard.press('Enter');
+	await expect(page.getByRole('status').filter({ hasText: 'Graph is not available' })).toHaveText(
+		'Graph is not available: this dataset declares no knowledge graph.',
+	);
 });
 
 test('a /config.json the app cannot use is a 503 that says why, and calls no service', async ({

@@ -140,10 +140,14 @@ Two language-pure planes, as in rask; never blur them.
     what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`; its fetch seam is `#lib/api/client.ts`,
     which `@workbench/explorer-api` also calls through (`#lib/api/explorer.ts` installs it); every media element's
     link comes from one batched loader (`#lib/api/media-links.svelte.ts`); its explorer is `#lib/explore`; its dock is
-    `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). Image `.docker/frontend.dockerfile`;
-    released by `deploy/fixtures/annotator` (`app.*`) at `/`.
-  - `frontend/explorer`, `frontend/annotator`, `frontend/studio`: the old SvelteKit 2 apps, moving into `frontend/app`
-    (#9 D2b to D4); never deployable.
+    `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). A dataset's pages are its dock
+    (`/datasets/[id]`) and its views (`#lib/dataset-nav.ts`): the atlas (`#lib/atlas`, also the dock's Atlas panel), the
+    knowledge graph (`#lib/graph`) and the topic tree (`#lib/topics`). The atlas and the graph draw with WebGPU only
+    (`#lib/gpu`); a browser without it gets their plain refusal and fetches no points. Image
+    `.docker/frontend.dockerfile`; released by `deploy/fixtures/annotator` (`app.*`) at `/`.
+  - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
+    its Atlas node opens, the player), until D4 merges it with studio's flows. `frontend/annotator`, `frontend/studio`:
+    the old SvelteKit 2 apps, moving into `frontend/app` (#9 D3, D4); never deployable.
   - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `flow`, `explorer-api`,
     `engine`, `labeling`). `@workbench/ui` is read from source: its exports name `src/`, with no build step.
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),

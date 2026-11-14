@@ -29,6 +29,7 @@ import {
 	type VoiceQueryInfo,
 	type VoiceSimilarResponse,
 } from '@workbench/explorer-api';
+import { atlasRows } from '#lib/api/atlas.api.ts';
 import { documentsPage, searchHits, voiceHits } from '#lib/api/explore.api.ts';
 import { hitKey } from './utils.ts';
 import { voiceSearch, type VoiceRequest } from './voice-search.svelte.ts';
@@ -37,6 +38,8 @@ import { voiceSearch, type VoiceRequest } from './voice-search.svelte.ts';
 export const PAGE_STEP = 30;
 /** The documents one browse page lists. */
 export const PER_PAGE = 24;
+/** The rows the viewer answers for one atlas selection (`POST /api/atlas/chunks`). */
+export const MAP_ROWS_MAX = 1000;
 /** The viewer's own cap on a voice search's `n` (`voice_service._MAX_N`): paging past it grows nothing. */
 const VOICE_MAX_N = 100;
 
@@ -89,10 +92,20 @@ class Explore {
 
 	layout = $state<ResultsLayout>('list');
 	docsPage = $state(1);
+	/** The atlas selection shown as the results instead of a search: how many points it holds. The rows
+	 *  listed are its first {@link MAP_ROWS_MAX}, the most the viewer answers for one selection. */
+	mapSelection = $state<{ points: number } | null>(null);
+	#mapRowids: number[] = [];
 
 	/** Browsing documents: nothing is searched. */
 	get browsing(): boolean {
-		return !this.spec.q && !this.spec.image && !this.spec.topic && !this.voiceActive;
+		return (
+			!this.spec.q &&
+			!this.spec.image &&
+			!this.spec.topic &&
+			!this.voiceActive &&
+			this.mapSelection === null
+		);
 	}
 
 	/** The query the results are highlighted by: none for voice hits, which no text matched. */
@@ -113,6 +126,7 @@ class Explore {
 		this.error = null;
 		this.allLoaded = false;
 		this.docsPage = 1;
+		this.mapSelection = null;
 		this.#leaveVoice();
 		this.#beforeVoice = null;
 		voiceSearch.reset();
@@ -155,6 +169,7 @@ class Explore {
 		const seq = ++this.#seq;
 		this.#beforeVoice = null;
 		this.#leaveVoice();
+		this.mapSelection = null;
 		this.spec = { ...next, n: next.n ?? PAGE_STEP };
 		this.allLoaded = false;
 		if (!this.spec.q && !this.spec.image && !this.spec.topic) {
@@ -214,11 +229,45 @@ class Explore {
 		}
 	}
 
+	/** Show the rows of an atlas selection as the results, by the points' stable row ids (`points` is the
+	 *  selection's whole size, of which the viewer answers the first {@link MAP_ROWS_MAX}). */
+	async showMapSelection(rowids: number[], points: number): Promise<void> {
+		const seq = ++this.#seq;
+		this.#beforeVoice = null;
+		this.#leaveVoice();
+		this.mapSelection = { points };
+		this.#mapRowids = rowids;
+		this.loadingHits = true;
+		this.error = null;
+		try {
+			const rows = await atlasRows(rowids.slice(0, MAP_ROWS_MAX));
+			if (seq !== this.#seq) return;
+			this.hits = rows;
+			this.active = null;
+			this.allLoaded = true;
+		} catch (e) {
+			if (seq !== this.#seq) return;
+			this.hits = [];
+			this.error = failureOf(e);
+		} finally {
+			if (seq === this.#seq) this.loadingHits = false;
+		}
+	}
+
+	/** Leave the atlas selection for the search it replaced. */
+	dismissMapSelection(): void {
+		void this.runSearch(this.spec);
+	}
+
 	/** Search again for what is shown, the reader's own refresh: newer rows appear. */
 	async refresh(): Promise<void> {
 		if (this.voiceActive) {
 			const anchor = this.#voiceAnchor;
 			if (anchor) await this.runVoice(anchor, this.voiceLabel ?? undefined);
+			return;
+		}
+		if (this.mapSelection !== null) {
+			await this.showMapSelection(this.#mapRowids, this.mapSelection.points);
 			return;
 		}
 		if (this.browsing) {
@@ -320,6 +369,7 @@ class Explore {
 	}
 
 	#enterVoice(label: string | undefined): void {
+		this.mapSelection = null;
 		if (!this.voiceActive) {
 			this.#beforeVoice = { hits: this.hits, active: this.active, allLoaded: this.allLoaded };
 		}

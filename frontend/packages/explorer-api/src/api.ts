@@ -489,7 +489,7 @@ function dictColumn(vec: Vector | null): DictColumn | null {
 
 function concatInt32(vec: Vector): Int32Array {
 	const chunks = vec.data;
-	if (chunks.length === 1) return chunks[0]!.values as Int32Array;
+	if (chunks.length === 1) return (chunks[0]!.values as Int32Array).subarray(0, chunks[0]!.length);
 	let total = 0;
 	for (const d of chunks) total += d.length;
 	const out = new Int32Array(total);
@@ -564,8 +564,18 @@ async function parseAtlasPoints(
 	view: ReturnType<typeof activeView>,
 	space: AtlasSpace,
 ): Promise<AtlasPoints> {
-	const buf = await r.arrayBuffer();
-	const table = tableFromIPC(new Uint8Array(buf));
+	return decodeAtlasPoints(new Uint8Array(await r.arrayBuffer()), view, space);
+}
+
+/** Decode the viewer's `/api/atlas/points` Arrow IPC stream for `space` of `view`: the float16 bits and
+ *  their decoded coordinates, the identity keys, the stable row ids, the cluster codes and the declared
+ *  channels. Throws an {@link ApiError} on a payload missing what the map needs. */
+export function decodeAtlasPoints(
+	bytes: Uint8Array,
+	view: ReturnType<typeof activeView>,
+	space: AtlasSpace,
+): AtlasPoints {
+	const table = tableFromIPC(bytes);
 	const md = table.schema.metadata;
 
 	const count = Number(md.get('count') ?? table.numRows);
@@ -573,7 +583,7 @@ async function parseAtlasPoints(
 	const docFilesMeta = md.get('docFiles');
 
 	const doc = dictColumn(table.getChild('doc'));
-	if (!doc) throw new ApiError(500, 'malformed /api/atlas/points payload (no doc column)');
+	if (!doc) throw new ApiError(502, 'malformed /api/atlas/points payload: no doc column');
 
 	const xBits = u16Column(table.getChild('x'));
 	const yBits = u16Column(table.getChild('y'));
@@ -611,8 +621,30 @@ async function parseAtlasPoints(
 	const cluster = table.getChild('cluster');
 	if (cluster) data.cluster = int32Column(cluster);
 
-	if (!Number.isFinite(data.count) || data.x.length !== data.count) {
-		throw new ApiError(500, 'malformed /api/atlas/points payload');
+	if (!Number.isFinite(data.count) || data.count < 0) {
+		throw new ApiError(
+			502,
+			`malformed /api/atlas/points payload: count ${md.get('count')} is no row count`,
+		);
+	}
+	// Every per-point column must hold one value per point: a short one would read past its end and
+	// draw, select or open the wrong row.
+	const lengths: [string, number][] = [
+		['x', data.x.length],
+		['y', data.y.length],
+		['doc', data.doc.length],
+		...(data.rowid ? [['rowid', data.rowid.length] as [string, number]] : []),
+		...(data.cluster ? [['cluster', data.cluster.length] as [string, number]] : []),
+		...Object.entries(keys).map(([name, col]): [string, number] => [name, col.length]),
+		...Object.entries(channels).map(([name, col]): [string, number] => [name, col.codes.length]),
+	];
+	for (const [name, length] of lengths) {
+		if (length !== data.count) {
+			throw new ApiError(
+				502,
+				`malformed /api/atlas/points payload: column ${name} holds ${length} values for ${data.count} points`,
+			);
+		}
 	}
 	return data;
 }

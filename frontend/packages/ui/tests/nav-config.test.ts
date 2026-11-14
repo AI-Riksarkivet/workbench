@@ -55,7 +55,7 @@ describe('topNav', () => {
 			// trailing form, so a bare '/compute' href cost a 308 redirect round-trip on EVERY
 			// cross-zone hop (measured on all five zones, 2026-07-28) — visible as flicker over a
 			// tunnel. The href must be what the zone actually serves.
-			'/explorer/',
+			'/explorer/workflow',
 			'/annotator/',
 			'/studio/',
 		]);
@@ -241,8 +241,8 @@ describe('topNav', () => {
 		// is that every multi-surface zone panels (Studio is the one remaining plain link).
 		expect(annotate.items?.map((i) => i.title)).toEqual(['Canvas', 'Browse']);
 		expect(annotate.groups).toBeUndefined();
-		// …and Annotate is no longer buried inside Search's panel.
-		expect(search.items?.some((i) => i.href === '/annotator')).toBe(false);
+		// …and Annotate is no row of the Explorer's: the Explorer is a plain link.
+		expect(search.items).toBeUndefined();
 	});
 
 	it('Projects sits in the MAIN MENU — the top of the hierarchy, and not a second Home', () => {
@@ -344,18 +344,12 @@ describe('topNav', () => {
 		expect(groups.Lineage).toBeUndefined();
 	});
 
-	it('Explorer carries its rows too — the panel that was never pinned', () => {
-		// Compute's rows and all five Lakehouse columns are asserted above; the EXPLORER's never were,
-		// so its panel could gain or lose a row with this suite still green. The dock is the app's
-		// (`frontend/app`, a dataset's page), so the explorer offers none.
+	it('Explorer is a plain link to its one surface, the workflow editor', () => {
+		// Search, the atlas, the tree and the graph are the app's dataset pages (#9 D2b); a one-row
+		// panel would be noise, so the zone is a link, as a one-surface zone is.
 		const explorer = topNav(false).find((e) => e.title === 'Explorer')!;
-		expect(explorer.items!.map((i) => i.title)).toEqual([
-			'Search',
-			'Atlas',
-			'Tree',
-			'Graph',
-			'Workflow',
-		]);
+		expect(explorer.href).toBe('/explorer/workflow');
+		expect(explorer.items).toBeUndefined();
 	});
 
 	it('every entry is reachable: a panel with rows, or a plain link', () => {

@@ -222,7 +222,7 @@
 						<Plus /> Add
 					</Button>
 				</div>
-				<span class="text-muted-foreground/70 text-[0.7rem]">
+				<span class="text-muted-foreground text-[0.7rem]">
 					Pick a column, an operator, a value, then Add — the search re-runs immediately.
 				</span>
 				{#if columnsState === 'error'}
@@ -249,7 +249,7 @@
 							<Button
 								variant={isHidden ? 'ghost' : 'outline'}
 								size="xs"
-								class="font-mono {isHidden ? 'text-muted-foreground/60 border-dashed' : ''}"
+								class="font-mono {isHidden ? 'text-muted-foreground border-dashed' : ''}"
 								onclick={() => toggleHide(c.name)}
 								title={isHidden ? `Show '${c.name}'` : `Hide '${c.name}'`}
 							>
@@ -281,9 +281,9 @@
 					onblur={commit}
 					rows={2}
 					placeholder={wherePlaceholder}
-					class="border-input dark:bg-input/30 text-foreground placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-ring/50 mt-1.5 min-h-[2rem] w-full resize-y rounded-lg border bg-transparent px-2.5 py-1.5 font-mono text-xs transition-colors outline-none focus-visible:ring-3"
+					class="border-input dark:bg-input/30 text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 mt-1.5 min-h-[2rem] w-full resize-y rounded-lg border bg-transparent px-2.5 py-1.5 font-mono text-xs transition-colors outline-none focus-visible:ring-3"
 				></textarea>
-				<span class="text-muted-foreground/70 text-[0.7rem]">
+				<span class="text-muted-foreground text-[0.7rem]">
 					The builder above writes here. Edit directly for OR / parentheses / functions.
 				</span>
 			</details>

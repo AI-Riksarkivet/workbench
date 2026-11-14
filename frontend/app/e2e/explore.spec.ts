@@ -66,12 +66,14 @@ test('a voice search finds the speaker elsewhere, and clearing it returns to the
 	await page.getByRole('button', { name: 'Clear voice search' }).click();
 	await expect(results(page).getByRole('listitem')).toHaveCount(1);
 	const calls = await callsOf(page, who);
-	expect(calls).toContainEqual({
-		service: 'viewer',
-		method: 'GET',
-		path: '/api/voice/similar',
-		status: 200,
-	});
+	expect(calls).toContainEqual(
+		expect.objectContaining({
+			service: 'viewer',
+			method: 'GET',
+			path: '/api/voice/similar',
+			status: 200,
+		}),
+	);
 });
 
 test('a saved search is kept for the person and applied again after a reload', async ({

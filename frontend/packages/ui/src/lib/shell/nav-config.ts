@@ -240,14 +240,6 @@ const ANNOTATE_ITEMS: TopNavItem[] = [
 	},
 ];
 
-const EXPLORER_ITEMS: TopNavItem[] = [
-	{ title: 'Search', href: '/explorer/', description: 'Semantic search over the corpus.' },
-	{ title: 'Atlas', href: '/explorer/atlas', description: 'The embedding map of the corpus.' },
-	{ title: 'Tree', href: '/explorer/tree', description: 'The corpus by topic hierarchy.' },
-	{ title: 'Graph', href: '/explorer/graph', description: 'Relations between media entities.' },
-	{ title: 'Workflow', href: '/explorer/workflow', description: 'The derivation pipeline.' },
-];
-
 // NO `STUDIO_ITEMS`. Studio briefly panelled (Apps + Flows) and is a plain link again, because the
 // launcher and the animation demo were deleted: the zone is ONE surface — the flow canvas at its
 // root — and a dropdown with one row in it is noise. Same rule, opposite direction.
@@ -502,16 +494,13 @@ export function topNav(estateAdmin: boolean): TopNavEntry[] {
 			tier: 'primary',
 		},
 		{
-			// EXPLORER is the corpus read plane — the viewer. It was labelled "Search" while the
-			// directory was `media`, on the reasoning that a label should name the task rather than
-			// our folder layout. The zone is now `explorer` on every surface (path, package, image),
-			// so the label and the directory finally agree, and "explore" is the wider truth of what
-			// this zone does: search is ONE of its leaves, beside the atlas, the tree and the graph.
+			// The old explorer is ONE surface now, its workflow editor (#9 D4 moves it into the app, beside
+			// search, the atlas, the tree and the graph, which are the app's dataset pages), so it is a
+			// plain link, as a one-surface zone is.
 			title: 'Explorer',
-			href: '/explorer/',
+			href: '/explorer/workflow',
 			icon: Search,
 			match: under('/explorer'),
-			items: [...EXPLORER_ITEMS],
 		},
 		{
 			// ANNOTATE is its own microfrontend (/annotator) and its own job: the write plane over the
