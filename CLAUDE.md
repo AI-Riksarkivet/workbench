@@ -16,8 +16,16 @@ tool would:
 
 - data through stock `lance_namespace` and pylance, on the credentials the catalog vends;
 - every other call through the catalog's and lineage's doors (`docs/rask/*-openapi.json`);
-- the lakehouse's events as `docs/rask/COMMIT-EVENTS.md` describes them;
-- its permission is a scoped grant to its own identity, made at the catalog's access doors.
+- the lakehouse's events as `docs/rask/COMMIT-EVENTS.md` describes them.
+
+**Its authentication and authorization are its own and have nothing to do with rask's.** The workbench signs its users
+in and decides what each may do in the workbench (projects, tasks, flows) with its own identity setup and its own
+authorization model and store; it never asks rask's decision door or rask's OpenFGA store, and rask knows nothing of the
+workbench's users or roles. Toward a lakehouse it is one more outside client, holding whatever credential that lakehouse
+grants it.
+
+Not there yet: service-kit's `governed/decider.py` still asks rask's decision door, and its OpenFGA setup still
+provisions rask's authorization model. Replacing both with the workbench's own is spec row WB-5.
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
 names, changed freely: service-kit and storage, and the frontend packages `@workbench/ui`, `@workbench/api`,
