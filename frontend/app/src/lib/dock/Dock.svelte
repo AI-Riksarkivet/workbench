@@ -8,7 +8,7 @@
 	 *
 	 * THE PANEL RULE: the library renders only the active tab of a group and remounts a panel when it
 	 * is moved, maximized or popped out, so a panel holds nothing in component state that must survive
-	 * that. Its data lives in a module or a shared read instance (`bench.svelte.ts`, the shared reads of `#lib/api`);
+	 * that. Its data lives in a module or a shared read instance (`#lib/explore/explore.svelte.ts`, the shared reads of `#lib/api`);
 	 * scroll position is lost and that is accepted.
 	 */
 	import { HorizonLayout, type Id, type LayoutConfig, type View } from 'horizon-layout';
@@ -17,7 +17,7 @@
 	import { Button } from '@workbench/ui/button';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import AtlasPanel from './panels/AtlasPanel.svelte';
-	import MediaPanel from './panels/MediaPanel.svelte';
+	import PlayerPanel from './panels/PlayerPanel.svelte';
 	import ResultsPanel from './panels/ResultsPanel.svelte';
 	import {
 		PANELS,
@@ -77,7 +77,7 @@
 	// the library re-validates the layout whenever `views` changes.
 	const views = new SvelteMap<Id, View>([
 		['results', { title: titleOf('results'), snippet: results, tabControls: [closeTab] }],
-		['media', { title: titleOf('media'), snippet: media, tabControls: [closeTab] }],
+		['player', { title: titleOf('player'), snippet: player, tabControls: [closeTab] }],
 		['atlas', { title: titleOf('atlas'), snippet: atlas, tabControls: [closeTab] }],
 	]);
 
@@ -91,8 +91,8 @@
 {#snippet results()}
 	<div class="dock-panel" {@attach followTheme}><ResultsPanel /></div>
 {/snippet}
-{#snippet media()}
-	<div class="dock-panel" {@attach followTheme}><MediaPanel /></div>
+{#snippet player()}
+	<div class="dock-panel" {@attach followTheme}><PlayerPanel /></div>
 {/snippet}
 {#snippet atlas()}
 	<div class="dock-panel" {@attach followTheme}><AtlasPanel /></div>

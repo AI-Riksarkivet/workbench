@@ -1,5 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { fetchMe, type Me } from '#lib/api/me.api.ts';
+import { installExplorerTransport } from '#lib/api/explorer.ts';
+import { setUserStateOwner } from '#lib/explore/browser-user-state.ts';
 import { auth, initAuth, login } from '#lib/auth.svelte.ts';
 import type { LayoutLoad } from './$types';
 
@@ -21,6 +23,9 @@ export const prerender = false;
 export const load: LayoutLoad = async ({ fetch, url, untrack }) => {
 	await initAuth(fetch);
 	if (auth.configError) error(503, `Sign-in is not configured: ${auth.configError}`);
+	installExplorerTransport();
+	// Whose saved searches this tab keeps: the signed-in person; with sign-in off, the one local person.
+	setUserStateOwner(auth.enabled ? (auth.session?.sub ?? null) : 'local');
 	const path = untrack(() => url.pathname + url.search);
 	if (path.startsWith('/auth/')) return { authEnabled: auth.enabled, me: null, meError: null };
 	if (auth.enabled && !auth.session) {

@@ -1,15 +1,30 @@
 /**
- * The media-plane API base — where `/api/*` lives for the CURRENT zone.
+ * Where `/api/*` lives and how it is reached: the package's one transport seam.
  *
- * Every media/annotator fetch is same-origin against the zone's OWN BFF proxy routes
- * (`/<zone>/api/*` → viewer/search/annotator, bearer-forwarded), so the path must carry
- * the zone's base. The zones set it once at layout-module init (`setApiBase(base)` with
- * SvelteKit's `$app/paths` base); the default `''` keeps root-absolute `/api/*` for
- * unbased consumers (unit tests, the standalone dev servers before the layout runs).
- * Framework-agnostic on purpose — this package never imports `$app/*`.
+ * Two consumers install it differently, and the package names neither:
+ *
+ *  - The browser-only app installs a TRANSPORT (`setTransport`): its own fetch, which signs every call
+ *    with the tab's DPoP key and times it out, and a URL map that puts each service's path on that
+ *    service's public base (the Gateway routes the base to the service). Nothing in this package holds
+ *    a token or knows a base.
+ *  - The older apps, which still serve `/api/*` through their own proxy routes, set a BASE (`setApiBase`)
+ *    and keep the platform `fetch`.
+ *
+ * Framework-agnostic on purpose: this package never imports `$app/*`.
  */
 
+/** The fetch this package calls through: the platform's, or the one a transport installs. */
+export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** How the browser-only app reaches the services: its signed fetch, and where each path lives. */
+export interface Transport {
+	fetch: Fetcher;
+	/** The URL of a service path (`/api/search?...`, `/api/documents?...`), on that service's base. */
+	url: (path: string) => string;
+}
+
 let apiBase = '';
+let transport: Transport | null = null;
 
 /** Set the base path prefixed to every `/api/*` URL this package (and @workbench/labeling)
  *  builds — the zone's SvelteKit `base`. Idempotent; trailing slash is normalized.
@@ -27,18 +42,40 @@ export function setApiBase(b: string): void {
 				`Two zones share this module instance — the media plane's URLs cannot be per-request state.`,
 		);
 	}
+	if (next && transport) {
+		throw new Error(
+			'@workbench/explorer-api: a transport is installed, so a base would be ignored',
+		);
+	}
 	// An empty base is the default, so setting it is never meaningful — and letting it through would
 	// let an unbased consumer silently un-base a zone that had already configured itself.
 	if (next) apiBase = next;
 }
 
-/** Test-only: drop the configured base. Production code must never call this — see setApiBase. */
-export function resetApiBase(): void {
-	apiBase = '';
+/** Install the app's transport, once per page life: a second, different one is refused, since every
+ *  read already in flight was addressed through the first. */
+export function setTransport(next: Transport): void {
+	if (apiBase) {
+		throw new Error(`@workbench/explorer-api: base "${apiBase}" is set, so a transport is refused`);
+	}
+	if (transport && transport !== next) {
+		throw new Error('@workbench/explorer-api: a transport is already installed');
+	}
+	transport = next;
 }
 
-/** A root-relative media-plane URL under the configured zone base: `apiUrl('/api/health')`
- *  → `/explorer/api/health` once the media zone has called `setApiBase('/explorer')`. */
+/** Test-only: drop the configured base and transport. Production code must never call this. */
+export function resetApiBase(): void {
+	apiBase = '';
+	transport = null;
+}
+
+/** The fetch every call goes through: the installed transport's, else the platform's. A stable
+ *  function, so a caller can tell the default apart from a fetcher a test injects. */
+export const apiFetch: Fetcher = (input, init) => (transport?.fetch ?? fetch)(input, init);
+
+/** A service path's URL: on its service's base under a transport, else under the zone base
+ *  (`apiUrl('/api/health')` → `/explorer/api/health` once the zone called `setApiBase('/explorer')`). */
 export function apiUrl(path: string): string {
-	return `${apiBase}${path}`;
+	return transport ? transport.url(path) : `${apiBase}${path}`;
 }

@@ -19,7 +19,11 @@ import {
 /** Every panel the workbench can show, in the order the panel picker lists them. */
 export const PANELS = [
 	{ id: 'results', title: 'Results', keywords: ['search', 'results', 'hits', 'thumbnails'] },
-	{ id: 'media', title: 'Media', keywords: ['media', 'player', 'image', 'video'] },
+	{
+		id: 'player',
+		title: 'Player',
+		keywords: ['player', 'media', 'image', 'video', 'audio', 'transcript', 'speakers'],
+	},
 	{ id: 'atlas', title: 'Atlas', keywords: ['atlas', 'map', 'projection', 'embedding'] },
 ] as const satisfies readonly { id: string; title: string; keywords: readonly string[] }[];
 
@@ -31,8 +35,9 @@ export function isPanelId(id: string): id is PanelId {
 	return PANEL_IDS.has(id);
 }
 
-/** The arrangement a first visit opens with: Results on the left, Media above Atlas on the right. On a
- *  narrow screen (`narrow`) the three stack, so each keeps the full width. */
+/** The arrangement a first visit opens with: Results on the left, the Player above Atlas on the right.
+ *  On a narrow screen (`narrow`) the Results take most of the height, full width, and the Player and
+ *  Atlas share the rest as tabs of one pane, the Player in front: a pick opens it there. */
 export function defaultLayout(narrow = false): LayoutConfig {
 	if (narrow) {
 		return {
@@ -40,10 +45,10 @@ export function defaultLayout(narrow = false): LayoutConfig {
 				direction: 'vertical',
 				views: [
 					{ tabs: ['results'], activeTabIndex: 0 },
-					{ tabs: ['media'], activeTabIndex: 0 },
-					{ tabs: ['atlas'], activeTabIndex: 0 },
+					{ tabs: ['player', 'atlas'], activeTabIndex: 0 },
 				],
-				splitPoints: [0.5, 0.75],
+				// The most horizon-layout allows: each pane keeps at least a fifth of the height.
+				splitPoints: [0.7],
 			},
 		};
 	}
@@ -55,7 +60,7 @@ export function defaultLayout(narrow = false): LayoutConfig {
 				{
 					direction: 'vertical',
 					views: [
-						{ tabs: ['media'], activeTabIndex: 0 },
+						{ tabs: ['player'], activeTabIndex: 0 },
 						{ tabs: ['atlas'], activeTabIndex: 0 },
 					],
 					splitPoints: [0.5],

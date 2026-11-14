@@ -137,8 +137,10 @@ Two language-pure planes, as in rask; never blur them.
     server code), served by its own `serve.ts` with the strict CSP as a header. It signs in with PKCE on the
     workbench's public client (oidc-client-ts), binds the tokens to the tab with DPoP (an in-memory, non-extractable
     P-256 key), and calls each service same-origin at the public base `/config.json` names (`services`), which is also
-    what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`, its fetch seam `#lib/api/client.ts`, its
-    dock `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). Image `.docker/frontend.dockerfile`;
+    what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`; its fetch seam is `#lib/api/client.ts`,
+    which `@workbench/explorer-api` also calls through (`#lib/api/explorer.ts` installs it); every media element's
+    link comes from one batched loader (`#lib/api/media-links.svelte.ts`); its explorer is `#lib/explore`; its dock is
+    `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). Image `.docker/frontend.dockerfile`;
     released by `deploy/fixtures/annotator` (`app.*`) at `/`.
   - `frontend/explorer`, `frontend/annotator`, `frontend/studio`: the old SvelteKit 2 apps, moving into `frontend/app`
     (#9 D2b to D4); never deployable.

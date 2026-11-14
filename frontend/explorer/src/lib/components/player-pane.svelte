@@ -1,7 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { base } from '$app/paths';
 	import {
 		type Hit,
 		type DocChunk,
@@ -12,7 +9,6 @@
 		getDiarization,
 		mediaUrl,
 	} from '@workbench/explorer-api';
-	import { voiceSearch } from '$lib/voice-search.svelte';
 	import { fmtTime, hitKey } from '$lib/utils';
 	import { ChevronRight, Maximize2, Minimize2 } from '@lucide/svelte';
 	import { Button } from '@workbench/ui';
@@ -125,34 +121,6 @@
 			cancelled = true;
 		};
 	});
-
-	// Gate for the timeline's "Find this voice" buttons: the shared voiceSearch
-	// status probe (idempotent, never throws — `built` stays false on failure so
-	// the affordance simply never shows). onMount, not init, so a prerender
-	// never fetches.
-	onMount(() => {
-		voiceSearch.probe();
-	});
-
-	// "Find this voice" → queue the request on the shared voiceSearch store,
-	// then navigate to the Search page, which consumes `pending` in an $effect.
-	// A store + goto(home) — NOT a `/?voice_*` URL — because when this pane is
-	// already hosted on the Search page a same-route goto() does not remount it, and
-	// +page.svelte reads those params in onMount only; the store path works from
-	// every PlayerPane host (search, tree panel, atlas overlay, workflow
-	// inspector). External `/?voice_doc=…` deep-links still work on fresh loads.
-	const findVoice = (pick: { speaker: string } | { turnId: number }) => {
-		const h = hit;
-		if (!h) return;
-		const docId = view.docId(h);
-		// Chip label: the descriptor's display title for this row (mirrors hit-card).
-		const label = view.title(h) || undefined;
-		voiceSearch.request(
-			'speaker' in pick ? { docId, speaker: pick.speaker } : { docId, turnId: pick.turnId },
-			label,
-		);
-		void goto(`${base}/`);
-	};
 
 	// Which chunk the playhead is in. Reactive on currentTime + docChunks + hit.
 	// 1) time-based: the chunk whose [start,end) contains currentTime.
@@ -501,8 +469,6 @@
 										{chunkStart}
 										{chunkEnd}
 										onSeek={seekTo}
-										voiceEnabled={voiceSearch.built}
-										onFindVoice={findVoice}
 									/>
 								</div>
 								<div

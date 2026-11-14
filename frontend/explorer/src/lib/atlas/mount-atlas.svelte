@@ -7,9 +7,9 @@
 	 * shell owns the route layout: a vertical resizable split of [map | player]
 	 * over the current map-selection results table.
 	 *
-	 * Lance-native throughout — no DuckDB / Mosaic / parquet. Points come from
-	 * GET /api/atlas/points, selection detail from POST /api/atlas/chunks (by
-	 * stable _rowid), single playback from GET /api/atlas/chunk (all in <AtlasMap>).
+	 * Lance-native throughout — no DuckDB / Mosaic / parquet. Points, the selection's rows (by stable
+	 * _rowid) and single playback are the viewer's atlas doors, read in <AtlasMap>; this old page's
+	 * proxy to them is gone, so it reaches no viewer until the atlas moves into the app (#9 D2b-2).
 	 */
 	import AtlasMap from './AtlasMap.svelte';
 	import { ResizableSplit } from '@workbench/ui/resizable-split';

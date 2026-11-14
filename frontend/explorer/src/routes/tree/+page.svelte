@@ -6,11 +6,9 @@
 	 * hierarchy as Lance JSONB in `topics.lance`; `/api/topics` serves it. We gate
 	 * on `built` (pointing the user at the build step otherwise) and render
 	 * <TopicTreemap>. Clicking a topic opens its results in a side panel
-	 * (<TopicResultsPanel>), playable in place; "Open in Search" continues to
-	 * `/?topic=<name>` for refining.
-	 *
-	 * A dedicated route — separate from Search and Atlas, sharing only the topic
-	 * filter on `/api/search`.
+	 * (<TopicResultsPanel>), playable in place. Search moved into the app's dataset page
+	 * (`/datasets/[id]?topic=<name>`), where this page moves in #9 D2b-2; until then its "Open in
+	 * Search" link and its reads reach nothing in this old app.
 	 */
 	import { browser } from '$app/environment';
 	import { getTopics, type TopicNode } from '@workbench/explorer-api';

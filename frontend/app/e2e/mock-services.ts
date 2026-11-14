@@ -87,32 +87,75 @@ async function authenticate(
 interface Doc {
 	doc_id: string;
 	title: string;
+	collection: string;
 	mime: string;
 	hue: number;
+	/** The document's chunks: its text, a row each. */
+	chunks: string[];
 }
 
 const DOCS: Doc[] = [
-	{ doc_id: 'letter-001', title: 'A letter from the harbour', mime: 'image/svg+xml', hue: 20 },
-	{ doc_id: 'letter-002', title: 'A letter about the harvest', mime: 'image/svg+xml', hue: 140 },
-	{ doc_id: 'map-003', title: 'A map of the harbour', mime: 'image/svg+xml', hue: 260 },
+	{
+		doc_id: 'letter-001',
+		title: 'A letter from the harbour',
+		collection: 'Letters',
+		mime: 'image/svg+xml',
+		hue: 20,
+		chunks: ['The ships came into the harbour at dawn.', 'The harbour master counted twelve.'],
+	},
+	{
+		doc_id: 'letter-002',
+		title: 'A letter about the harvest',
+		collection: 'Letters',
+		mime: 'image/svg+xml',
+		hue: 140,
+		chunks: ['The harvest was late this year.'],
+	},
+	{
+		doc_id: 'map-003',
+		title: 'A map of the harbour',
+		collection: 'Maps',
+		mime: 'image/svg+xml',
+		hue: 260,
+		chunks: ['Soundings along the harbour mouth.'],
+	},
 ];
 
-/** Two datasets: one with documents, thumbnails and an atlas; one with none of them. */
+/** A table's facts as the viewer's descriptor names them. */
+const table = (name: string, rows: number, version: number, columns: string[]) => ({
+	name,
+	row_count: rows,
+	version,
+	columns: columns.map((column) => ({ name: column, arrow_type: 'string', nullable: true })),
+	indexes: [],
+});
+
+const CHUNK_ROWS = DOCS.reduce((n, d) => n + d.chunks.length, 0);
+
+/** Two datasets: one with documents, chunks, thumbnails and an atlas; one with none of them. */
 const DATASETS = {
 	acme$letters: {
-		tables: { documents: { row_count: DOCS.length, version: 3, n_columns: 5 } },
+		tables: {
+			documents: table('documents', DOCS.length, 3, ['doc_id', 'title', 'collection', 'mime']),
+			chunks: table('chunks', CHUNK_ROWS, 3, ['doc_id', 'chunk_id', 'title', 'text']),
+		},
 		capabilities: ['search', 'atlas'],
 		declared: {
-			identity: { doc_key: 'doc_id', key_fields: ['doc_id'] },
+			identity: { doc_key: 'doc_id', key_fields: ['doc_id', 'chunk_id'] },
 			document: { table: 'documents', media_blob: 'media', mime: 'mime', thumbnail: 'thumb' },
+			display: {
+				title: ['title'],
+				body: 'text',
+				metadata: [{ field: 'collection', label: 'Collection' }],
+			},
 			atlas: [
-				{ name: 'umap', x: 'x', y: 'y', cluster: 'topic', source_column: 'v', table: 'documents' },
+				{ name: 'umap', x: 'x', y: 'y', cluster: 'topic', source_column: 'v', table: 'chunks' },
 			],
-			search: { table: 'documents' },
+			search: { row_table: 'chunks', fts: { table: 'chunks', column: 'text' } },
 		},
 	},
 	acme$notes: {
-		tables: { notes: { row_count: 0, version: 1, n_columns: 2 } },
+		tables: { notes: table('notes', 0, 1, ['note_id', 'text']) },
 		capabilities: [],
 		declared: { identity: { doc_key: 'note_id', key_fields: ['note_id'] }, atlas: [] },
 	},
@@ -128,7 +171,10 @@ const picture = (doc: Doc, role: string): string =>
 	`<text x="80" y="88" font-size="16" text-anchor="middle" fill="white">${doc.doc_id} ${role}</text></svg>`;
 
 /** The signed links this viewer handed out: the link names one cell and is its own permission. */
-const signed = new Map<string, { doc: Doc; role: string }>();
+const signed = new Map<string, { doc: Doc; role: string; exp: number }>();
+/** How long a person's links serve, in seconds: 300, as the viewer's default, unless a spec shortens its
+ *  own (`/__ttl`) to see a link expire in real time without touching another spec's. */
+const ttl = new Map<string, number>();
 
 const POINTS_ETAG = '"points-acme-letters-umap-v3"';
 
@@ -145,22 +191,42 @@ function pointsStream(): Uint8Array {
 	return tableToIPC(table, 'stream');
 }
 
-function searchStream(hits: Doc[]): Uint8Array {
+/** One chunk of a document: a row of the chunks table. */
+interface Chunk {
+	doc: Doc;
+	chunk_id: number;
+}
+
+const CHUNKS: Chunk[] = DOCS.flatMap((doc) => doc.chunks.map((_, chunk_id) => ({ doc, chunk_id })));
+
+/** A row of the chunks table, as the viewer and search answer it. */
+const chunkRow = ({ doc, chunk_id }: Chunk, score?: number) => ({
+	doc_id: doc.doc_id,
+	chunk_id,
+	title: doc.title,
+	text: doc.chunks[chunk_id] ?? '',
+	collection: doc.collection,
+	...(score === undefined ? {} : { _score: score }),
+});
+
+function searchStream(hits: Chunk[]): Uint8Array {
+	const rows = hits.map((hit, i) => chunkRow(hit, 1 / (i + 1)));
+	const utf8 = (key: 'doc_id' | 'title' | 'text' | 'collection') =>
+		vectorFromArray(
+			rows.map((r) => r[key]),
+			new Utf8(),
+		);
 	const table = new Table({
-		doc_id: vectorFromArray(
-			hits.map((d) => d.doc_id),
-			new Utf8(),
+		doc_id: utf8('doc_id'),
+		chunk_id: vectorFromArray(
+			rows.map((r) => r.chunk_id),
+			new Float64(),
 		),
-		title: vectorFromArray(
-			hits.map((d) => d.title),
-			new Utf8(),
-		),
-		mime: vectorFromArray(
-			hits.map((d) => d.mime),
-			new Utf8(),
-		),
+		title: utf8('title'),
+		text: utf8('text'),
+		collection: utf8('collection'),
 		_score: vectorFromArray(
-			hits.map((_, i) => 1 / (i + 1)),
+			rows.map((r) => r._score ?? 0),
 			new Float64(),
 		),
 	});
@@ -180,12 +246,17 @@ Bun.serve({
 		const url = new URL(req.url);
 		if (url.pathname === '/__calls')
 			return json(ledger.get(url.searchParams.get('sub') ?? '') ?? []);
+		if (url.pathname === '/__ttl' && req.method === 'POST') {
+			ttl.set(url.searchParams.get('sub') ?? '', Number(url.searchParams.get('seconds') ?? 300));
+			return json({ ok: true });
+		}
 
 		// The signed link: no token, its own permission.
 		const link = /^\/api\/signed-media\/([\w-]+)$/.exec(url.pathname);
 		if (link && req.method === 'GET') {
 			const held = signed.get(link[1] ?? '');
 			if (!held) return json({ detail: 'the media URL is not this viewer’s signature' }, 403);
+			if (Date.now() / 1000 > held.exp) return json({ detail: 'the media URL expired' }, 403);
 			return new Response(picture(held.doc, held.role), {
 				headers: {
 					'content-type': 'image/svg+xml',
@@ -212,7 +283,12 @@ Bun.serve({
 			return json({
 				datasets: Object.entries(DATASETS).map(([id, d]) => ({
 					id,
-					tables: d.tables,
+					tables: Object.fromEntries(
+						Object.entries(d.tables).map(([name, t]) => [
+							name,
+							{ row_count: t.row_count, version: t.version, n_columns: t.columns.length },
+						]),
+					),
 					capabilities: d.capabilities,
 				})),
 			});
@@ -228,22 +304,123 @@ Bun.serve({
 			return json({ id, tables: DATASETS[id].tables, declared: DATASETS[id].declared });
 		}
 		if (url.pathname === '/api/signed-media' && req.method === 'POST') {
+			const date = new Date().toUTCString();
 			const body = (await req.json()) as {
 				dataset: string;
-				items: { role: string; doc_id: string }[];
+				items: { role: string; doc_id: string; keys?: number[] }[];
 			};
 			ok(200);
+			return json(
+				{
+					urls: body.items.map((item) => {
+						const doc = DOCS.find((d) => d.doc_id === item.doc_id);
+						if (!doc) return { detail: 'doc_id not found' };
+						if (item.role === 'frame' && doc.chunks[item.keys?.[0] ?? -1] === undefined) {
+							return { detail: 'no frame for that chunk' };
+						}
+						const token = crypto.randomUUID();
+						const exp = Date.now() / 1000 + (ttl.get(who.sub) ?? 300);
+						signed.set(token, { doc, role: item.role, exp });
+						return { url: `/api/signed-media/${token}`, expires_at: exp };
+					}),
+				},
+				200,
+				{ date },
+			);
+		}
+		const dataset = url.searchParams.get('dataset');
+		if (url.pathname === '/api/health' && req.method === 'GET') {
+			ok(200);
 			return json({
-				urls: body.items.map((item) => {
-					const doc = DOCS.find((d) => d.doc_id === item.doc_id);
-					if (!doc) return { detail: 'doc_id not found' };
-					const token = crypto.randomUUID();
-					signed.set(token, { doc, role: item.role });
-					return {
-						url: `/api/signed-media/${token}`,
-						expires_at: Math.floor(Date.now() / 1000) + 300,
-					};
-				}),
+				db: {
+					path: 's3://lakehouse/acme',
+					tables: ['chunks'],
+					chunks: CHUNKS.length,
+					documents: DOCS.length,
+				},
+				embed: { ok: true, url: 'http://embed' },
+				rerank: { ok: true, url: 'http://rerank' },
+			});
+		}
+		if (url.pathname === '/api/documents' && req.method === 'GET') {
+			// `Broken` meets a viewer whose documents read fails.
+			if (who.name === 'Broken') {
+				ok(503);
+				return json({ detail: 'the documents table could not be opened' }, 503);
+			}
+			if (!isDataset(dataset)) {
+				ok(404);
+				return json({ detail: 'unknown dataset' }, 404);
+			}
+			const page = Number(url.searchParams.get('page') ?? 1);
+			const perPage = Number(url.searchParams.get('per_page') ?? 24);
+			const docs =
+				dataset === 'acme$letters'
+					? DOCS.map(({ doc_id, title, collection, mime }) => ({ doc_id, title, collection, mime }))
+					: [];
+			ok(200);
+			return json({
+				total: docs.length,
+				page,
+				docs: docs.slice((page - 1) * perPage, page * perPage),
+			});
+		}
+		if (url.pathname === '/api/columns' && req.method === 'GET') {
+			ok(200);
+			return json([{ name: 'collection', type: 'string' }]);
+		}
+		// Voice tables are built for the letters only: the other dataset offers no voice search.
+		if (url.pathname === '/api/voice/status' && req.method === 'GET') {
+			ok(200);
+			const built = dataset === 'acme$letters';
+			return json({ built, turns: built ? CHUNKS.length : 0, speakers: built ? 2 : 0 });
+		}
+		if (url.pathname === '/api/voice/similar' && req.method === 'GET') {
+			const anchor = url.searchParams.get('doc_id');
+			ok(200);
+			return json({
+				query: {
+					doc_id: anchor,
+					speaker_label: 'SPEAKER_00',
+					turn_id: 0,
+					turn_start: 0,
+					turn_end: 4,
+				},
+				hits: CHUNKS.filter((c) => c.doc.doc_id !== anchor).map((c, i) => ({
+					...chunkRow(c, 1 - i / 10),
+					speaker_label: 'SPEAKER_00',
+					turn_id: i + 1,
+					turn_start: 0,
+					turn_end: 4,
+					_distance: i / 10,
+					turn_score: 0.9 - i / 10,
+				})),
+			});
+		}
+		const docChunks = /^\/api\/doc-chunks\/([^/]+)$/.exec(url.pathname);
+		if (docChunks && req.method === 'GET') {
+			const doc = DOCS.find((d) => d.doc_id === decodeURIComponent(docChunks[1] ?? ''));
+			if (!doc) {
+				ok(404);
+				return json({ detail: 'doc_id not found' }, 404);
+			}
+			ok(200);
+			return json({
+				doc_id: doc.doc_id,
+				chunks: CHUNKS.filter((c) => c.doc === doc).map((c) => ({
+					...chunkRow(c),
+					alignments: [],
+				})),
+			});
+		}
+		const diarization = /^\/api\/diarization\/([^/]+)$/.exec(url.pathname);
+		if (diarization && req.method === 'GET') {
+			ok(200);
+			return json({
+				built: false,
+				doc_id: decodeURIComponent(diarization[1] ?? ''),
+				turns: [],
+				speakers: [],
 			});
 		}
 		if (url.pathname === '/api/atlas/points' && req.method === 'GET') {
@@ -287,8 +464,30 @@ Bun.serve({
 				return json({ detail: 'the search index could not be read' }, 500);
 			}
 			ok(200);
-			if (q === 'repeated') return arrow(searchStream([DOCS[0]!, DOCS[0]!, DOCS[1]!]));
-			return arrow(searchStream(DOCS.filter((d) => d.title.toLowerCase().includes(q))));
+			// Several rows of one document: its chunks.
+			if (q === 'repeated') return arrow(searchStream(CHUNKS.slice(0, 3)));
+			const n = Number(url.searchParams.get('n') ?? 30);
+			const topic = url.searchParams.get('topic');
+			// The one predicate shape the filter builder writes over the one filterable column.
+			const where = /^collection (=|LIKE) '%?([^%']*)%?'$/.exec(
+				url.searchParams.get('where') ?? '',
+			);
+			const kept = (c: Chunk): boolean =>
+				!where ||
+				(where[1] === '='
+					? c.doc.collection === where[2]
+					: c.doc.collection.toLowerCase().includes((where[2] ?? '').toLowerCase()));
+			return arrow(
+				searchStream(
+					CHUNKS.filter(({ doc, chunk_id }) =>
+						topic
+							? doc.collection.toLowerCase() === topic.toLowerCase()
+							: `${doc.title} ${doc.chunks[chunk_id]}`.toLowerCase().includes(q),
+					)
+						.filter(kept)
+						.slice(0, n),
+				),
+			);
 		}
 		ok(404);
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);

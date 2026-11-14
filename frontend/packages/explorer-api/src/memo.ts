@@ -18,18 +18,10 @@
  * That property is what makes this safe in the browser; do not point it at an endpoint whose body can change
  * under a fixed URL.
  *
- * This is the TAB's half of the fix, and it is only half. It cannot help a refresh, a second tab or a second
- * user, each of which still paid the full 6.6 MB — so the server half lives in
- * {@link ../server-cache.ts | SharedPayloadCache}, wired into the media zone's `/api/atlas/points` route.
- *
- * An earlier version of this note argued a server cache was the wrong place, on the grounds that a shared
- * cache of authorised results needs a key derived from the subject. That reasoning was wrong, and worth
- * recording as wrong: the right key is the RESOURCE, and the authorization is simply not cached at all — it
- * runs on every request, before any byte is reachable. A subject key would be the mistake, not the fix,
- * because it would defeat the entire point (one entry serving everyone allowed to see it) while adding a
- * disclosure surface for anyone who derived it slightly wrong. What IS true is that a tab-local memo needs
- * no coherence story across the estate's `frontend.replicas: 2`; the server half accepts one cold fill per
- * replica instead, which is argued out where it is implemented.
+ * This is the tab's half. A refresh, a second tab or a second person still pays a full read: across page
+ * lives the browser's own HTTP cache answers instead, from the viewer's ETag on the points door
+ * (`private, no-cache`, revalidated on every use, RFC 9111 § 4.3.1), so the viewer's authorization runs on
+ * every read and no bytes travel when the version stands.
  */
 export class UrlMemo<T> {
 	readonly #entries = new Map<string, Promise<T>>();

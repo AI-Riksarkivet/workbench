@@ -21,6 +21,7 @@
 	"dependencies": {
 		"@lucide/svelte": "^1.26.0",
 		"@tailwindcss/vite": "^4.3.3",
+		"@workbench/explorer-api": "workspace:*",
 		"@workbench/ui": "workspace:*",
 		"apache-arrow": "^21.2.0",
 		"bits-ui": "^2.18.1",

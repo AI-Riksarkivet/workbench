@@ -6,9 +6,9 @@
 	 */
 	import { fetchDescriptor } from '#lib/api/datasets.api.ts';
 	import { atlasPoints, type AtlasPoints } from '#lib/api/atlas.api.ts';
-	import { bench } from '../bench.svelte.ts';
+	import { explore } from '#lib/explore/explore.svelte.ts';
 
-	const dataset = $derived(bench.dataset);
+	const dataset = $derived(explore.dataset);
 	const descriptor = $derived(dataset ? fetchDescriptor(dataset) : null);
 	const space = $derived(descriptor?.current?.declared.atlas[0]?.name ?? null);
 	const points = $derived(dataset && space ? atlasPoints({ dataset, space }) : null);

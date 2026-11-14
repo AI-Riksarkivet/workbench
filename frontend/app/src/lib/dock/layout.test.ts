@@ -13,11 +13,14 @@ import {
 const registry: ReadonlyMap<Id, true> = new Map(PANELS.map((p) => [p.id, true] as const));
 
 describe('the panel registry and the default layout', () => {
-	it('names each panel once, and the first visit opens every panel side by side', () => {
+	it('names each panel once, and the first visit opens every panel, side by side or stacked', () => {
 		expect(new Set(PANELS.map((p) => p.id)).size).toBe(PANELS.length);
-		const layout = defaultLayout();
-		expect(() => validateConfig(layout, registry)).not.toThrow();
-		expect(closedPanels(layout)).toEqual([]);
+		// Both arrangements the library accepts: a split under its minimum pane ratio renders no dock.
+		for (const narrow of [false, true]) {
+			const layout = defaultLayout(narrow);
+			expect(() => validateConfig(layout, registry)).not.toThrow();
+			expect(closedPanels(layout)).toEqual([]);
+		}
 	});
 });
 
@@ -28,13 +31,13 @@ describe('closing and opening a panel', () => {
 			direction: 'horizontal',
 			views: [
 				{ tabs: ['results'], activeTabIndex: 0 },
-				{ tabs: ['media'], activeTabIndex: 0 },
+				{ tabs: ['player'], activeTabIndex: 0 },
 			],
 			splitPoints: [0.55],
 		});
 		expect(closedPanels(closed)).toEqual(['atlas']);
 
-		const reopened = openPanel(closePanel(closed, 'media'), 'atlas', 'results');
+		const reopened = openPanel(closePanel(closed, 'player'), 'atlas', 'results');
 		expect(reopened.root).toEqual({ tabs: ['results', 'atlas'], activeTabIndex: 1 });
 		expect(() => validateConfig(reopened, registry)).not.toThrow();
 	});

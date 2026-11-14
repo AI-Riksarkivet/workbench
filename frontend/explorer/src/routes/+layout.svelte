@@ -10,7 +10,6 @@
 	import { explorerZoneNav } from '$lib/nav';
 	import { descriptor } from '$lib/descriptor-store.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
-	import { setUserStateOwner } from '$lib/browser-user-state';
 	import type { LayoutData } from './$types';
 
 	let { children, data }: { children: Snippet; data: LayoutData } = $props();
@@ -22,11 +21,6 @@
 	// `me` arrives RESOLVED from the server layout (#107): the navbar's final entry set is in
 	// the first paint — no skeleton pills, no per-hop entry swap (that swap WAS the shell flash).
 	const me = $derived(data.me);
-
-	// Whose saved views and layouts this tab keeps. With sign-in off there is one local person; signed out keeps none.
-	$effect.pre(() => {
-		setUserStateOwner(data.authEnabled ? (data.user?.sub ?? null) : 'local');
-	});
 
 	// The sidebar is DERIVED from the active dataset, not a static list: a corpus that declares no
 	// embedding spaces must not be offered an Atlas, and one with no knowledge graph must not be

@@ -14,8 +14,8 @@
 	 *   • lasso/cluster on the map → `crossFilter.selectedIds` fills the table
 	 *     (via the page) and can seed a search.
 	 *
-	 * Everything is Lance-native: points ← GET /api/atlas/points, selection detail
-	 * ← POST /api/atlas/chunks, single playback ← GET /api/atlas/chunk.
+	 * Everything is Lance-native, read from the viewer's atlas doors (points, the selection's rows,
+	 * single playback); this old app no longer proxies them, so the map moves into the app in #9 D2b-2.
 	 */
 	import GpuScatter from './gpu-scatter.svelte';
 	import {

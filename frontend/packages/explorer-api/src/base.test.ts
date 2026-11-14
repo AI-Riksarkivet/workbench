@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { apiUrl, resetApiBase, setApiBase } from './base';
+import { apiFetch, apiUrl, resetApiBase, setApiBase, setTransport } from './base';
 
 beforeEach(() => resetApiBase());
 
@@ -39,5 +39,31 @@ describe('the base is a per-PROCESS constant, not per-request state', () => {
 		setApiBase('/explorer');
 		setApiBase('');
 		expect(apiUrl('/api/health')).toBe('/explorer/api/health');
+	});
+});
+
+describe('a transport carries every call instead of a base', () => {
+	it('puts each path on the URL the transport maps it to, through its own fetch', async () => {
+		const seen: string[] = [];
+		setTransport({
+			url: (path) => `/svc${path}`,
+			fetch: async (input) => {
+				seen.push(input);
+				return new Response('{}');
+			},
+		});
+		expect(apiUrl('/api/health')).toBe('/svc/api/health');
+		await apiFetch(apiUrl('/api/health'));
+		expect(seen).toEqual(['/svc/api/health']);
+	});
+
+	it('is exclusive with a base, either way round', () => {
+		setTransport({ url: (path) => path, fetch: async () => new Response() });
+		expect(() => setApiBase('/explorer')).toThrow(/transport is installed/);
+		resetApiBase();
+		setApiBase('/explorer');
+		expect(() => setTransport({ url: (path) => path, fetch: async () => new Response() })).toThrow(
+			/is set, so a transport is refused/,
+		);
 	});
 });

@@ -1,24 +1,10 @@
 /**
- * The explorer's upstream DOORS — over `@workbench/api/upstream` (#93).
+ * The upstream doors the explorer's remaining pages call through (atlas and graph until #9's D2b-2,
+ * `/workflow` until D4), over `@workbench/api/upstream`: the annotator's projects plane, its media plane, and the viewer's graph
+ * console, each with the signed-in session's bearer. `ANNOTATOR_PROJECTS_API` falls back to
+ * `ANNOTATOR_API`, one service in any real deploy.
  *
- * This zone carried THREE verbatim copies of the transport ladder (`catalog.remote.ts`,
- * `projects.remote.ts`, `labeling.remote.ts`), two of the write gate and two of the `typedAs`
- * cast. The implementation now lives once in `@workbench/api/upstream`; what stays here is only what
- * cannot move — `getRequestEvent` is app-bound, and the zone's base URLs and gate stance are its
- * own.
- *
- * THREE doors because the zone speaks to three planes: the catalog (user-state + identity, OIDC
- * bearer only), and the annotator's projects and media planes — the projects/task plane may live
- * on a DIFFERENT annotator than the media plane (cluster actors + a locally-seeded corpus), the
- * dev seam the deleted routes carried; `ANNOTATOR_PROJECTS_API` falls back to `ANNOTATOR_API`,
- * one service in any real deploy.
- *
- * One deliberate change rides the migration: a 200 whose body is not JSON used to either pass as
- * data or throw across the remote boundary; the shared producer answers it as a 502 contract
- * drift, which the callers' failure branches already render.
- *
- * `$lib/server/` on purpose (home's `catalog-fetch.ts` precedent): SvelteKit's illegal-import
- * check makes the server-only boundary structural.
+ * `$lib/server/` on purpose: SvelteKit's illegal-import check makes the server-only boundary structural.
  */
 
 import { getRequestEvent } from '$app/server';
@@ -26,7 +12,6 @@ import { env } from '$env/dynamic/private';
 import type { ApiResult } from '@workbench/api/client';
 import { upstreamJSON } from '@workbench/api/upstream';
 
-export const CATALOG_API = env.CATALOG_API ?? 'http://localhost:2333';
 const VIEWER_API = env.VIEWER_API ?? 'http://localhost:8101';
 const PROJECTS_API = env.ANNOTATOR_PROJECTS_API ?? env.ANNOTATOR_API ?? 'http://localhost:8103';
 const ANNOTATOR_API = env.ANNOTATOR_API ?? 'http://localhost:8103';

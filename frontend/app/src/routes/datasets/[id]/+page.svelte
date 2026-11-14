@@ -1,8 +1,11 @@
 <script lang="ts">
 	/**
-	 * One dataset: a dock of the workbench's panels over it (Results, Media, Atlas). The arrangement is
+	 * One dataset: a dock of the workbench's panels over it (Results, Player, Atlas). The arrangement is
 	 * restored once, autosaved after every change, and can be saved as a named view; where both are kept
 	 * is `#lib/dock/store.ts`'s decision alone (this browser, per person).
+	 *
+	 * The page also hosts what every panel shares and none owns: the health poll the search modes read,
+	 * and the keyboard's `/` and Escape.
 	 */
 	import { onMount } from 'svelte';
 	import type { LayoutConfig } from 'horizon-layout';
@@ -13,7 +16,8 @@
 	import { defaultLayout } from '#lib/dock/layout.ts';
 	import { startWorkbench, type WorkbenchSession } from '#lib/dock/session.ts';
 	import { openWorkbenchStore } from '#lib/dock/store.ts';
-	import { fetchDescriptor } from '#lib/api/datasets.api.ts';
+	import { explore } from '#lib/explore/explore.svelte.ts';
+	import { serviceHealth } from '#lib/explore/service-health.svelte.ts';
 	import { titleOf } from '#lib/nav.ts';
 	import { projectOf } from '#lib/project.ts';
 	import { page } from '$app/state';
@@ -22,8 +26,6 @@
 	let { data } = $props();
 	const id = $derived(data.id);
 	const project = $derived(projectOf(page.url));
-
-	const descriptor = $derived(fetchDescriptor(id));
 
 	let layout = $state<LayoutConfig | null>(null);
 	let session = $state.raw<WorkbenchSession | null>(null);
@@ -35,6 +37,26 @@
 	const store = $derived(session?.store ?? null);
 	const autosave = $derived(session?.autosave ?? null);
 	const views = $derived(session?.views ?? null);
+
+	/** `/` focuses the search box; Escape closes the open item. Neither while typing in a field. */
+	function onKeydown(event: KeyboardEvent): void {
+		const target = event.target as HTMLElement | null;
+		const typing =
+			!!target &&
+			(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+		if (typing) return;
+		if (event.key === '/') {
+			const box = document.querySelector<HTMLInputElement>('input[type="search"]');
+			if (!box) return;
+			event.preventDefault();
+			box.focus();
+			box.select();
+		} else if (event.key === 'Escape' && explore.active) {
+			explore.active = null;
+		}
+	}
+
+	onMount(() => serviceHealth.subscribe());
 
 	onMount(() => {
 		let left = false;
@@ -106,26 +128,21 @@
 		layout = fresh;
 		void views?.refresh();
 	}
-
-	const message = (err: unknown): string =>
-		typeof err === 'object' && err !== null && 'body' in err
-			? String((err as { body: { message?: unknown } }).body.message)
-			: String(err);
 </script>
 
 <svelte:head><title>{titleOf(id, 'Datasets')}</title></svelte:head>
 <!-- Leaving or reloading the page writes a save the debounce still holds. -->
-<svelte:window onpagehide={() => autosave?.flush()} />
+<svelte:window onpagehide={() => autosave?.flush()} onkeydown={onKeydown} />
 
 <!-- The page's heading names the dataset; the dock's panels head themselves one level under it. -->
 <h1 class="sr-only">{id}</h1>
-{#if descriptor.error && !descriptor.current}
+{#if data.failure !== null}
 	<div class="flex flex-col gap-2 p-6">
 		<p class="text-sm" role="alert">
 			No dataset <span class="font-mono">{id}</span> that you can see: it does not exist, or the lakehouse
 			does not let you read it.
 		</p>
-		<p class="text-muted-foreground text-xs">{message(descriptor.error)}</p>
+		<p class="text-muted-foreground text-xs">{data.failure}</p>
 		<a
 			class="text-primary text-sm hover:underline"
 			href={project === null
@@ -154,7 +171,10 @@
 				</p>
 			{/if}
 			{#if layout}
-				<Dock bind:layout />
+				<!-- Each dataset mounts its panels afresh: they read the dataset's view when they mount. -->
+				{#key id}
+					<Dock bind:layout />
+				{/key}
 			{/if}
 		</div>
 	</div>

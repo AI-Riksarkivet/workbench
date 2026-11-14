@@ -79,11 +79,11 @@ test('the CSP is a header, strict, and the pages report no violation', async ({
 	expect(response).not.toBeNull();
 
 	await page.getByRole('link', { name: /acme\$letters/ }).click();
-	await page.getByRole('searchbox').or(page.getByLabel('Search this dataset')).fill('harbour');
-	await page.getByRole('button', { name: 'Search' }).click();
+	await page.getByRole('searchbox').fill('harbour');
+	await page.getByRole('button', { name: 'Search', exact: true }).click();
 	await expect(
 		page.getByRole('list', { name: 'Search results' }).getByRole('listitem'),
-	).toHaveCount(2);
+	).toHaveCount(3);
 	await expect(page.getByRole('img', { name: /Atlas of 60 points/ })).toBeVisible();
 	expect(await violations()).toEqual([]);
 });
@@ -98,7 +98,7 @@ test('the dataset list shows what the viewer lists, each a link to its page', as
 	const list = page.getByRole('list', { name: 'Datasets' });
 	await expect(list.getByRole('link')).toHaveCount(2);
 	const letters = list.getByRole('link', { name: /acme\$letters/ });
-	await expect(letters).toContainText('1 tables · 3 rows');
+	await expect(letters).toContainText('2 tables · 7 rows');
 	await expect(letters).toHaveAttribute('href', '/datasets/acme%24letters?project=acme');
 	await expect(page).toHaveTitle('Datasets · workbench');
 });
@@ -112,18 +112,20 @@ test('a dataset page searches through Arrow, shows signed media, and reads the a
 	await page.goto('/datasets/acme%24letters');
 	await expect(page).toHaveTitle('acme$letters · Datasets · workbench');
 
-	await page.getByLabel('Search this dataset').fill('harbour');
-	await page.getByRole('button', { name: 'Search' }).click();
+	await page.getByRole('searchbox').fill('harbour');
+	await page.getByRole('button', { name: 'Search', exact: true }).click();
 	const results = page.getByRole('list', { name: 'Search results' });
-	await expect(results.getByRole('listitem')).toHaveCount(2);
-	const thumbnail = results.getByRole('img', { name: 'Thumbnail of letter-001' });
-	await expect(thumbnail).toBeVisible();
+	await expect(results.getByRole('listitem')).toHaveCount(3);
+	// Each card's thumbnail and its chunk's frame, signed in one batch and loaded same-origin.
+	const thumbnail = results.getByRole('listitem').first().locator('img').first();
 	await expect
 		.poll(() => thumbnail.evaluate((img: HTMLImageElement) => img.naturalWidth))
 		.toBeGreaterThan(0);
 
-	await results.getByRole('button', { name: /letter-001/ }).click();
-	const media = page.getByRole('img', { name: 'Media of letter-001' });
+	await results.getByRole('button', { name: /The ships came into the harbour/ }).click();
+	const media = page.getByRole('region', { name: 'Player' }).getByRole('img', {
+		name: 'A letter from the harbour',
+	});
 	await expect(media).toBeVisible();
 	await expect
 		.poll(() => media.evaluate((img: HTMLImageElement) => img.naturalWidth))
@@ -152,10 +154,14 @@ test('a dataset page searches through Arrow, shows signed media, and reads the a
 	for (const path of [
 		'/api/search',
 		'/api/signed-media',
+		'/api/documents',
 		'/api/datasets/acme%24letters/descriptor',
 	]) {
 		expect(calls.some((call) => call.path === path && call.status === 200)).toBe(true);
 	}
+	// The thumbnails, frames and media of one search went as ONE batch, not one request per image.
+	const batches = calls.filter((call) => call.path === '/api/signed-media');
+	expect(batches.length).toBeLessThanOrEqual(3);
 });
 
 test('a search answering several rows of one document lists each row', async ({
@@ -167,8 +173,8 @@ test('a search answering several rows of one document lists each row', async ({
 	await signIn(context, person('Ada'));
 	await page.goto('/datasets/acme%24letters');
 
-	await page.getByLabel('Search this dataset').fill('repeated');
-	await page.getByRole('button', { name: 'Search' }).click();
+	await page.getByRole('searchbox').fill('repeated');
+	await page.getByRole('button', { name: 'Search', exact: true }).click();
 
 	await expect(
 		page.getByRole('list', { name: 'Search results' }).getByRole('listitem'),

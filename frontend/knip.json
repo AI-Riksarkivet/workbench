@@ -20,7 +20,6 @@
 			"entry": [
 				"src/**/*.remote.ts",
 				"src/**/*.server.ts",
-				"server.ts",
 				"e2e/**/warmup.setup.ts",
 				"e2e/**/mock-*.ts"
 			]

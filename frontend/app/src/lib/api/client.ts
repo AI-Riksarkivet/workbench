@@ -20,6 +20,10 @@ import type { WriteKey } from '../write-key.svelte.ts';
 /** Per-request timeout for a read: a hung service must not stack reads. */
 const FETCH_TIMEOUT_MS = 8000;
 
+/** A read that carries a file (an image or a voice clip to search by) uploads it and runs its encoder
+ *  first, which the first call after a service restart loads: given longer than a plain read. */
+const UPLOAD_TIMEOUT_MS = 30_000;
+
 /** A write's timeout: a write given up on may land anyway, so it is waited for, and a page tells the
  *  person only that it is NOT CONFIRMED when no answer came. */
 const WRITE_TIMEOUT_MS = 120_000;
@@ -84,6 +88,17 @@ function timeoutSignal(ms: number = FETCH_TIMEOUT_MS): AbortSignal {
 	return controller.signal;
 }
 
+/** {@link authorizedFetch} given up after a read's timeout: the fetch the explorer's client calls
+ *  through (`@workbench/explorer-api`'s transport), so none of its reads can hang a panel. A request
+ *  with a body is a read that uploads, given {@link UPLOAD_TIMEOUT_MS}. */
+export function timedFetch(input: string, init: RequestInit = {}): Promise<Response> {
+	const uploads = init.body !== undefined && init.body !== null;
+	return authorizedFetch(input, {
+		...init,
+		signal: init.signal ?? timeoutSignal(uploads ? UPLOAD_TIMEOUT_MS : FETCH_TIMEOUT_MS),
+	});
+}
+
 /** A fetch outcome that keeps the HTTP status — `status: 0` is UNREACHABLE (no answer came), `n` is an
  *  answer with the service's `detail`, and `502` is contract drift (a body that fails its schema). */
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; detail: string };
@@ -112,6 +127,7 @@ export async function readJSON<T>(
 	schema: v.GenericSchema<unknown, T>,
 	upstream: string,
 	init: RequestInit = {},
+	onResponse?: (res: Response) => void,
 ): Promise<ApiResult<T>> {
 	let res: Response;
 	try {
@@ -120,6 +136,7 @@ export async function readJSON<T>(
 		return { ok: false, status: 0, detail: `${upstream} is unreachable (${String(err)})` };
 	}
 	if (!res.ok) return failure(res, upstream);
+	onResponse?.(res);
 	let body: unknown;
 	try {
 		body = await res.json();
@@ -134,6 +151,21 @@ export async function readJSON<T>(
 	return read.success
 		? { ok: true, data: read.output }
 		: { ok: false, status: 502, detail: `${upstream} contract drift: ${v.summarize(read.issues)}` };
+}
+
+/** {@link readJSON} with the answer's `Date` (RFC 9110 § 6.6.1): the server's clock when it answered,
+ *  which an absolute time in the body is read against. */
+export async function readJSONDated<T>(
+	url: string,
+	schema: v.GenericSchema<unknown, T>,
+	upstream: string,
+	init: RequestInit = {},
+): Promise<ApiResult<{ body: T; date: string | null }>> {
+	let date: string | null = null;
+	const result = await readJSON(url, schema, upstream, init, (res) => {
+		date = res.headers.get('date');
+	});
+	return result.ok ? { ok: true, data: { body: result.data, date } } : result;
 }
 
 /** The binary sibling of {@link readJSON}: the response's bytes (an Arrow IPC stream) and its ETag. */

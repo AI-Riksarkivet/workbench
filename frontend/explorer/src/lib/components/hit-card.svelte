@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { base } from '$app/paths';
 	import {
 		type Hit,
 		thumbnailUrl,
@@ -10,10 +8,9 @@
 	} from '@workbench/explorer-api';
 	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { features } from '$lib/feature-flags.svelte';
-	import { voiceSearch } from '$lib/voice-search.svelte';
 	import { audioPreview } from '$lib/audio-preview.svelte';
 	import { fmtTime, queryTerms, makeHighlighter, cn, hitKey } from '$lib/utils';
-	import { AudioLines, Play, Pause } from '@lucide/svelte';
+	import { Play, Pause } from '@lucide/svelte';
 	import { Badge } from '@workbench/ui';
 
 	type Props = {
@@ -73,27 +70,6 @@
 					'Confidence bands are still calibrating.'
 			: '',
 	);
-
-	/** Query-by-example: rank everywhere this hit's voice speaks. A voice hit
-	 *  anchors on its exact matched turn; a text hit anchors on whoever speaks
-	 *  at the chunk's midpoint — with the chunk start as a one-shot fallback,
-	 *  since the midpoint can land in a mid-speech diarization gap (ASR chunks
-	 *  and diarized turns disagree at boundaries). Auto-applies: the request
-	 *  queues on the shared store, and the Search page consumes it. */
-	function findVoice() {
-		const label = title;
-		if (voice) voiceSearch.request({ docId, turnId: voice.turn_id }, label);
-		else {
-			const t = view.time(hit);
-			const mid = t ? (t.start + t.end) / 2 : 0;
-			const start = t ? t.start : 0;
-			voiceSearch.request({ docId, t: mid }, label, { docId, t: start });
-		}
-		// Only +page.svelte consumes `pending`, but HitCard also renders on /tree
-		// (topic results panel) — navigate like player-pane does. goto(home) is a
-		// no-op-safe same-route navigation when the Search page is already up.
-		void goto(`${base}/`);
-	}
 </script>
 
 {#snippet voiceMeta()}
@@ -223,17 +199,6 @@
 		</button>
 		<div class="absolute top-1.5 right-1.5 z-[2] flex gap-1">
 			{@render playButton('bg-black/60 text-white enabled:hover:bg-primary')}
-			{#if voiceSearch.built}
-				<button
-					type="button"
-					title="Find this voice — everywhere this speaker talks, across videos"
-					aria-label="Find this voice"
-					onclick={findVoice}
-					class="hover:bg-primary focus-visible:ring-ring inline-flex size-6 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
-				>
-					<AudioLines class="size-3.5" />
-				</button>
-			{/if}
 		</div>
 	</div>
 {:else}
@@ -298,17 +263,6 @@
 			{@render playButton(
 				'border border-border bg-card text-muted-foreground shadow-sm enabled:hover:text-primary',
 			)}
-			{#if voiceSearch.built}
-				<button
-					type="button"
-					title="Find this voice — everywhere this speaker talks, across videos"
-					aria-label="Find this voice"
-					onclick={findVoice}
-					class="border-border bg-card text-muted-foreground hover:text-primary focus-visible:ring-ring inline-flex size-6 items-center justify-center rounded-md border opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
-				>
-					<AudioLines class="size-3.5" />
-				</button>
-			{/if}
 		</div>
 	</div>
 {/if}

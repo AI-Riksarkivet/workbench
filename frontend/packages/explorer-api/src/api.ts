@@ -13,7 +13,7 @@ import { tableFromIPC, type Vector } from 'apache-arrow';
 import { UrlMemo } from './memo';
 import * as v from 'valibot';
 
-import { apiUrl } from './base';
+import { apiFetch, apiUrl, type Fetcher } from './base';
 import {
 	activeTable,
 	activeView,
@@ -28,7 +28,7 @@ import {
 
 export type { Alignment, Row, SearchMode } from './descriptor';
 export { activeView, registerView, relevanceOf, setFanoutCorpora, viewForHit } from './descriptor';
-export { apiUrl, setApiBase } from './base';
+export { apiUrl, setApiBase, setTransport, type Fetcher, type Transport } from './base';
 
 /** Legacy alias — a search/browse result row. Field access goes through the
  *  active {@link DatasetView}; this stays for import compatibility. */
@@ -223,7 +223,7 @@ function appendCommonSearchParams(
 
 /** Run a search. POST + multipart when an image is attached; GET otherwise. The RESPONSE is Arrow IPC
  *  in both shapes (the transport ruling's second promotion) — the request surface is unchanged. */
-export async function search(spec: SearchSpec, fetcher: typeof fetch = fetch): Promise<Row[]> {
+export async function search(spec: SearchSpec, fetcher: Fetcher = apiFetch): Promise<Row[]> {
 	const n = String(spec.n ?? 30);
 	const mode = spec.mode ?? 'fts';
 
@@ -259,7 +259,7 @@ const ChunkAlignmentsSchema = v.object({ alignments: v.array(AlignmentSchema) })
  *  Path arity follows the dataset's identity key fields. */
 export async function getChunkAlignments(
 	keys: (string | number)[],
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<Alignment[]> {
 	const path = keys.map((k) => encodeURIComponent(String(k))).join('/');
 	const r = await fetcher(apiUrl(`/api/chunk-alignments/${path}${datasetSuffix()}`));
@@ -283,16 +283,13 @@ const docChunksCache = new Map<string, Promise<DocChunks>>();
 
 /** A document's chunks, ordered by declared start. Lazy-fetched when a row
  *  opens so playback past the selected chunk still has its aligned track. */
-export async function getDocChunks(
-	docId: string,
-	fetcher: typeof fetch = fetch,
-): Promise<DocChunks> {
+export async function getDocChunks(docId: string, fetcher: Fetcher = apiFetch): Promise<DocChunks> {
 	const suffix = datasetSuffix();
 	const fetchOnce = async (): Promise<DocChunks> => {
 		const r = await fetcher(apiUrl(`/api/doc-chunks/${encodeURIComponent(docId)}${suffix}`));
 		return asJson(r, DocChunksSchema);
 	};
-	if (fetcher !== fetch) return fetchOnce();
+	if (fetcher !== apiFetch) return fetchOnce();
 	const cacheKey = `${activeView().id}/${docId}`;
 	const cached = docChunksCache.get(cacheKey);
 	if (cached) {
@@ -331,7 +328,7 @@ export type DiarizationResponse = v.InferOutput<typeof DiarizationResponseSchema
 
 export async function getDiarization(
 	docId: string,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<DiarizationResponse> {
 	const r = await fetcher(
 		apiUrl(`/api/diarization/${encodeURIComponent(docId)}${datasetSuffix()}`),
@@ -360,7 +357,7 @@ const HealthSchema = v.object({
 });
 export type Health = v.InferOutput<typeof HealthSchema>;
 
-export async function getHealth(fetcher: typeof fetch = fetch): Promise<Health> {
+export async function getHealth(fetcher: Fetcher = apiFetch): Promise<Health> {
 	const r = await fetcher(apiUrl('/api/health'));
 	return asJson(r, HealthSchema);
 }
@@ -379,7 +376,7 @@ export type DocumentsResponse = v.InferOutput<typeof DocumentsResponseSchema>;
 export async function listDocuments(
 	page = 1,
 	perPage = 24,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<DocumentsResponse> {
 	const suffix = activeView().datasetParam();
 	const ds = suffix ? `&dataset=${encodeURIComponent(suffix)}` : '';
@@ -391,7 +388,7 @@ export async function listDocuments(
 const ColumnSchema = v.object({ name: v.string(), type: v.string() });
 export type ColumnInfo = v.InferOutput<typeof ColumnSchema>;
 
-export async function listColumns(fetcher: typeof fetch = fetch): Promise<ColumnInfo[]> {
+export async function listColumns(fetcher: Fetcher = apiFetch): Promise<ColumnInfo[]> {
 	const r = await fetcher(apiUrl(`/api/columns${datasetSuffix()}`));
 	return asJson(r, v.array(ColumnSchema));
 }
@@ -404,7 +401,7 @@ import {
 } from './descriptor';
 
 /** List the datasets the backend serves (id + table stats + capabilities). */
-export async function listDatasets(fetcher: typeof fetch = fetch) {
+export async function listDatasets(fetcher: Fetcher = apiFetch) {
 	const r = await fetcher(apiUrl('/api/datasets'));
 	return asJson(r, DatasetsResponseSchema).then((d) => d.datasets);
 }
@@ -413,7 +410,7 @@ export async function listDatasets(fetcher: typeof fetch = fetch) {
 export async function getDatasetView(
 	datasetId: string,
 	isDefault: boolean,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<DatasetView> {
 	const r = await fetcher(apiUrl(`/api/datasets/${encodeURIComponent(datasetId)}/descriptor`));
 	if (!r.ok) throw await apiErrorFrom(r);
@@ -444,7 +441,7 @@ export type AtlasStatus = v.InferOutput<typeof AtlasStatusSchema>;
 
 export async function getAtlasStatus(
 	space: AtlasSpace,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<AtlasStatus> {
 	const ds = activeView().datasetParam();
 	const q = ds ? `&dataset=${encodeURIComponent(ds)}` : '';
@@ -539,7 +536,7 @@ function numberColumn(vec: Vector | null): number[] {
  *  active view, so the reader names no corpus column. */
 export async function getAtlasPoints(
 	space: AtlasSpace,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<AtlasPoints> {
 	const view = activeView();
 	const ds = view.datasetParam();
@@ -554,7 +551,7 @@ export async function getAtlasPoints(
 
 	// An injected fetcher means a test or a probe: never serve it a memo, or a stub returning 502 would be
 	// handed a cached success and the test would assert nothing.
-	return fetcher === fetch ? atlasMemo.run(url, load) : load();
+	return fetcher === apiFetch ? atlasMemo.run(url, load) : load();
 }
 
 /** Three projections: enough that toggling between spaces is free — the measured waste — without letting a
@@ -623,7 +620,7 @@ async function parseAtlasPoints(
 /** Full row for one point (detail pane + playback), looked up by identity keys. */
 export async function getAtlasChunk(
 	keys: (string | number)[],
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<Row> {
 	const path = keys.map((k) => encodeURIComponent(String(k))).join('/');
 	const r = await fetcher(apiUrl(`/api/atlas/chunk/${path}${datasetSuffix()}`));
@@ -634,7 +631,7 @@ export async function getAtlasChunk(
  *  is why the response is Arrow IPC (the transport ruling's first promotion) rather than `list[dict]`. */
 export async function getAtlasChunks(
 	rowids: number[],
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<Row[]> {
 	const ds = activeView().datasetParam();
 	const url = ds ? `/api/atlas/chunks?dataset=${encodeURIComponent(ds)}` : '/api/atlas/chunks';
@@ -670,7 +667,7 @@ const TopicsResponseSchema = v.object({
 });
 export type TopicsResponse = v.InferOutput<typeof TopicsResponseSchema>;
 
-export async function getTopics(fetcher: typeof fetch = fetch): Promise<TopicsResponse> {
+export async function getTopics(fetcher: Fetcher = apiFetch): Promise<TopicsResponse> {
 	return asJson(await fetcher(apiUrl(`/api/topics${datasetSuffix()}`)), TopicsResponseSchema);
 }
 
@@ -690,7 +687,7 @@ export const GraphStatusSchema = v.object({
 });
 export type GraphStatus = v.InferOutput<typeof GraphStatusSchema>;
 
-export async function getGraphStatus(fetcher: typeof fetch = fetch): Promise<GraphStatus> {
+export async function getGraphStatus(fetcher: Fetcher = apiFetch): Promise<GraphStatus> {
 	return asJson(await fetcher(apiUrl(`/api/graph/status${datasetSuffix()}`)), GraphStatusSchema);
 }
 
@@ -728,7 +725,7 @@ export type GraphSearchResponse = v.InferOutput<typeof GraphSearchResponseSchema
 
 export async function searchGraphEntities(
 	q: string,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<GraphSearchResponse> {
 	const ds = activeView().datasetParam();
 	const dsq = ds ? `&dataset=${encodeURIComponent(ds)}` : '';
@@ -785,7 +782,7 @@ export type GraphEntityResponse = v.InferOutput<typeof GraphEntityResponseSchema
 
 export async function getGraphEntity(
 	entityId: string,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<GraphEntityResponse> {
 	if (!isEntityId(entityId)) throw new ApiError(400, `invalid entity id: ${entityId}`);
 	return asJson(
@@ -820,7 +817,7 @@ export type GraphSubgraphResponse = v.InferOutput<typeof GraphSubgraphResponseSc
 export async function getGraphSubgraph(
 	entityId?: string,
 	limit = 150,
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<GraphSubgraphResponse> {
 	const params = new URLSearchParams({ limit: String(limit) });
 	if (entityId !== undefined) {
@@ -843,7 +840,7 @@ const VoiceStatusSchema = v.object({
 });
 export type VoiceStatus = v.InferOutput<typeof VoiceStatusSchema>;
 
-export async function getVoiceStatus(fetcher: typeof fetch = fetch): Promise<VoiceStatus> {
+export async function getVoiceStatus(fetcher: Fetcher = apiFetch): Promise<VoiceStatus> {
 	return asJson(await fetcher(apiUrl(`/api/voice/status${datasetSuffix()}`)), VoiceStatusSchema);
 }
 
@@ -895,7 +892,7 @@ export type VoiceAnchor = { docId: string } & (
 export async function voiceSimilar(
 	anchor: VoiceAnchor,
 	opts: { n?: number | undefined; excludeSameDoc?: boolean | undefined } = {},
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<VoiceSimilarResponse> {
 	const params = new URLSearchParams({ doc_id: anchor.docId });
 	if ('turnId' in anchor) params.set('turn_id', String(anchor.turnId));
@@ -912,7 +909,7 @@ export async function voiceSimilar(
 export async function voiceSimilarUpload(
 	file: File,
 	opts: { n?: number | undefined } = {},
-	fetcher: typeof fetch = fetch,
+	fetcher: Fetcher = apiFetch,
 ): Promise<VoiceSimilarResponse> {
 	const params = new URLSearchParams();
 	if (opts.n !== undefined) params.set('n', String(opts.n));
