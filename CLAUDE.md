@@ -143,11 +143,15 @@ Two language-pure planes, as in rask; never blur them.
     `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). A dataset's pages are its dock
     (`/datasets/[id]`) and its views (`#lib/dataset-nav.ts`): the atlas (`#lib/atlas`, also the dock's Atlas panel), the
     knowledge graph (`#lib/graph`) and the topic tree (`#lib/topics`). The atlas and the graph draw with WebGPU only
-    (`#lib/gpu`); a browser without it gets their plain refusal and fetches no points. Image
+    (`#lib/gpu`); a browser without it gets their plain refusal and fetches no points. The annotator's project plane
+    is `/projects` and `/projects/[project]` (`#lib/projects`, its calls `#lib/api/projects.api.ts`): a project's
+    read answers the reader's `permissions`, and a page offers only what its door would let through; a dataset's
+    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. Image
     `.docker/frontend.dockerfile`; released by `deploy/fixtures/annotator` (`app.*`) at `/`.
   - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
     its Atlas node opens, the player), until D4 merges it with studio's flows. `frontend/annotator`, `frontend/studio`:
-    the old SvelteKit 2 apps, moving into `frontend/app` (#9 D3, D4); never deployable.
+    the old SvelteKit 2 apps, moving into `frontend/app` (#9 D3, D4); never deployable. The annotator's project pages
+    are in the app (D3a); its canvas, data manager and browse follow (D3b, D3c).
   - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `flow`, `explorer-api`,
     `engine`, `labeling`). `@workbench/ui` is read from source: its exports name `src/`, with no build step.
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),

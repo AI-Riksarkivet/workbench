@@ -1,4 +1,4 @@
-import { Database } from '@lucide/svelte';
+import { ClipboardList, Database } from '@lucide/svelte';
 import type { PageNav, PageNavLeaf } from '#lib/shell/nav-config.ts';
 
 /**
@@ -16,20 +16,24 @@ const seg =
 		norm(p) === href || norm(p).startsWith(`${href}/`);
 
 const DATASETS = { title: 'Datasets', path: '/datasets', icon: Database } as const;
+const PROJECTS = { title: 'Projects', path: '/projects', icon: ClipboardList } as const;
 
 /** The sidebar, its hrefs made by `link` (which resolves a path and carries the reader's project). */
 export function appSidebar(link: (path: string) => string): PageNav {
-	const datasets: PageNavLeaf = {
-		title: DATASETS.title,
-		href: link(DATASETS.path),
-		match: seg(DATASETS.path),
-		icon: DATASETS.icon,
-	};
-	return { groups: [{ items: [datasets] }] };
+	const leaf = (page: typeof DATASETS | typeof PROJECTS): PageNavLeaf => ({
+		title: page.title,
+		href: link(page.path),
+		match: seg(page.path),
+		icon: page.icon,
+	});
+	return { groups: [{ items: [leaf(DATASETS), leaf(PROJECTS)] }] };
 }
 
 /** Every path that is a page of its own, with the name the sidebar gives it, for the breadcrumb. */
-export const PAGE_NAMES: ReadonlyMap<string, string> = new Map([[DATASETS.path, DATASETS.title]]);
+export const PAGE_NAMES: ReadonlyMap<string, string> = new Map([
+	[DATASETS.path, DATASETS.title],
+	[PROJECTS.path, PROJECTS.title],
+]);
 
 /** The `<title>` of a page named `name`. */
 export const titleOf = (...names: string[]): string => [...names, 'workbench'].join(' · ');

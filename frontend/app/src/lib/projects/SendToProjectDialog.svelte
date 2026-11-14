@@ -1,0 +1,250 @@
+<script lang="ts">
+	/**
+	 * Send a selection to a project: the rows a dataset's search answered, or the rows a region of its atlas selected.
+	 * Each becomes an item of the project, appended to one still taking items (draft or labeling) or to a new project
+	 * created around the selection, optionally labelled as one class of the project's labels. The project's own door
+	 * decides: `can_send_items` on it, and the dataset must be one the reader can read.
+	 */
+	import { resolve } from '$app/paths';
+	import { Button } from '@workbench/ui/button';
+	import { Dialog } from '@workbench/ui/dialog';
+	import { Input } from '@workbench/ui/input';
+	import { createProject, fetchProject, listProjects, sendItems } from '#lib/api/projects.api.ts';
+	import { sendItemsFor, sendRefusal, type SendSource } from './send.ts';
+
+	let {
+		open = $bindable(false),
+		keys,
+		total,
+		from,
+		origin,
+		orgs,
+		project = null,
+	}: {
+		open?: boolean;
+		/** The selection's key paths (`doc/…`), as the dataset's descriptor joins them. */
+		keys: string[];
+		/** How many rows the selection holds, listed or not: more than `keys` is a partial selection, refused. */
+		total: number;
+		from: SendSource;
+		/** Which surface the selection is from, said in the title. */
+		origin: 'search' | 'atlas';
+		/** The organisations the reader belongs to: whose projects are offered, and where a new one is made. */
+		orgs: string[];
+		/** The project the page works in (`?project=`), offered first. */
+		project?: string | null;
+	} = $props();
+
+	// Only the projects the reader may send items to, as the store answers it (`?can=can_send_items`).
+	const reads = $derived(
+		open
+			? orgs.map((org) => ({ org, read: listProjects({ tenant: org, can: 'can_send_items' }) }))
+			: [],
+	);
+	/** Of those, only projects still taking items: a send is legal in draft and labeling alone. */
+	const taking = $derived(
+		reads.flatMap(({ org, read }) =>
+			read.current?.ok
+				? read.current.data.projects
+						.filter((p) => p.state === 'draft' || p.state === 'labeling')
+						.map((p) => ({ id: p.project_id, name: p.title || p.slug, org }))
+				: [],
+		),
+	);
+	const failed = $derived(
+		reads.flatMap(({ org, read }) =>
+			read.current && !read.current.ok ? [`${org}: ${read.current.detail}`] : [],
+		),
+	);
+	const loading = $derived(reads.some(({ read }) => read.current === undefined));
+
+	/** The page's project when the reader may send to it; otherwise the reader chooses. */
+	let chosen = $derived<string>(taking.some((p) => p.id === project) ? (project ?? '') : '');
+	const chosenRead = $derived(chosen ? fetchProject({ projectId: chosen }) : null);
+	/** The chosen project's labels, to send the selection as one of them. */
+	const labels = $derived(
+		chosenRead?.current?.ok
+			? chosenRead.current.data.project.ontology.classes.map((c) => c.name)
+			: [],
+	);
+	/** The label to send as, one of the chosen project's: a new choice of project starts with none. */
+	let label = $derived.by((): string => {
+		void chosen;
+		return '';
+	});
+	let newSlug = $state('');
+	let newTitle = $state('');
+	let newOrg = $derived(orgs[0] ?? '');
+	let sending = $state(false);
+	let error = $state('');
+	let done = $state<{ projectId: string; sent: number; created: number } | null>(null);
+
+	const refusal = $derived(sendRefusal({ fetched: keys.length, total }));
+	const count = $derived(`${total.toLocaleString()} item${total === 1 ? '' : 's'}`);
+
+	async function sendTo(projectId: string): Promise<void> {
+		sending = true;
+		error = '';
+		const result = await sendItems({ projectId, items: sendItemsFor(keys, from, label) });
+		sending = false;
+		// The door's own words: a 403 names the missing role, a 409 a project no longer taking items.
+		if (result.ok) done = { projectId, sent: result.data.sent, created: result.data.created };
+		else error = result.detail;
+	}
+
+	async function createAndSend(): Promise<void> {
+		const slug = newSlug.trim();
+		if (!slug || !newOrg || sending) return;
+		sending = true;
+		error = '';
+		const created = await createProject({ tenant: newOrg, slug, title: newTitle.trim() });
+		sending = false;
+		if (!created.ok) {
+			error = created.detail;
+			return;
+		}
+		// The new project is now the chosen one, read back from the list, so a send that fails is retried by sending
+		// alone: the project is not created twice.
+		await listProjects({ tenant: newOrg, can: 'can_send_items' }).refresh();
+		chosen = created.data.project_id;
+		newSlug = '';
+		newTitle = '';
+		await sendTo(created.data.project_id);
+	}
+
+	function reset(next: boolean): void {
+		open = next;
+		if (next) return;
+		done = null;
+		error = '';
+	}
+
+	/** What a send did, and nothing it did not. */
+	function outcome(sent: number, created: number): string {
+		const items = `${sent} item${sent === 1 ? '' : 's'}`;
+		if (created === sent) return `Sent ${items}.`;
+		const already = sent - created;
+		return `Sent ${items}: ${created} new, ${already} already in the project.`;
+	}
+
+	const projectHref = (id: string): string =>
+		`${resolve('/projects/[project]', { project: encodeURIComponent(id) })}?${new URLSearchParams({ project: id })}`;
+</script>
+
+<Dialog.Root bind:open={() => open, reset}>
+	<Dialog.Content class="sm:max-w-md" data-testid="send-to-project">
+		<Dialog.Title>Send {count} to a project</Dialog.Title>
+		<Dialog.Description>
+			From {origin === 'atlas' ? 'the atlas selection' : 'the search results'} on
+			<span class="font-mono break-all">{from.dataset}</span>. Each becomes an item of the project;
+			where it came from travels with it.
+		</Dialog.Description>
+
+		{#if done}
+			<div class="flex flex-col gap-2 text-sm" role="status" data-testid="send-done">
+				<p>
+					{outcome(done.sent, done.created)}
+				</p>
+				<!-- `projectHref` resolves the route id. -->
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+				<a class="w-fit underline underline-offset-2" href={projectHref(done.projectId)}
+					>Open the project</a
+				>
+			</div>
+		{:else if refusal}
+			<p class="text-sm" role="alert" data-testid="send-refused">{refusal}</p>
+		{:else}
+			<form
+				class="flex flex-col gap-3 text-sm"
+				onsubmit={(e) => {
+					e.preventDefault();
+					if (chosen) void sendTo(chosen);
+				}}
+			>
+				<label class="flex flex-col gap-1">
+					<span>Project</span>
+					<select
+						class="border-input bg-background focus-visible:ring-ring/50 h-9 rounded-lg border px-2 outline-none focus-visible:ring-3"
+						bind:value={chosen}
+						data-testid="send-project"
+					>
+						<option value="">{loading ? 'Reading the projects…' : 'Choose a project'}</option>
+						{#each taking as p (p.id)}
+							<option value={p.id}>{p.name} ({p.org})</option>
+						{/each}
+					</select>
+				</label>
+				{#if !loading && taking.length === 0 && failed.length === 0}
+					<p class="text-muted-foreground">No project is taking items: create one below.</p>
+				{/if}
+				{#each failed as reason, i (`${i}:${reason}`)}
+					<p class="text-destructive break-words">The projects could not be read: {reason}</p>
+				{/each}
+				{#if labels.length > 0}
+					<label class="flex flex-col gap-1">
+						<span>Label every item as</span>
+						<select
+							class="border-input bg-background focus-visible:ring-ring/50 h-9 rounded-lg border px-2 outline-none focus-visible:ring-3"
+							bind:value={label}
+						>
+							<option value="">No label: send them blank</option>
+							{#each labels as name (name)}
+								<option value={name}>{name}</option>
+							{/each}
+						</select>
+					</label>
+				{/if}
+				<Button type="submit" class="w-fit" disabled={sending || !chosen}>
+					{sending ? 'Sending…' : `Send ${count}`}
+				</Button>
+			</form>
+
+			<form
+				class="border-border flex flex-col gap-2 border-t pt-3 text-sm"
+				onsubmit={(e) => {
+					e.preventDefault();
+					void createAndSend();
+				}}
+			>
+				<p class="text-muted-foreground">Or create a project around this selection:</p>
+				{#if orgs.length > 1}
+					<label class="flex flex-col gap-1">
+						<span>Organisation</span>
+						<select
+							class="border-input bg-background focus-visible:ring-ring/50 h-9 rounded-lg border px-2 outline-none focus-visible:ring-3"
+							bind:value={newOrg}
+						>
+							{#each orgs as org (org)}
+								<option value={org}>{org}</option>
+							{/each}
+						</select>
+					</label>
+				{/if}
+				<div class="flex flex-col gap-2 sm:flex-row">
+					<label class="flex flex-1 flex-col gap-1">
+						<span>Slug</span>
+						<Input bind:value={newSlug} placeholder="letters-2026" pattern="[a-z0-9-]+" required />
+					</label>
+					<label class="flex flex-1 flex-col gap-1">
+						<span>Title</span>
+						<Input bind:value={newTitle} placeholder="Letters" />
+					</label>
+				</div>
+				<Button
+					type="submit"
+					variant="outline"
+					class="w-fit"
+					disabled={sending || !newSlug.trim() || !newOrg}
+				>
+					Create and send {count}
+				</Button>
+			</form>
+		{/if}
+
+		{#if error}
+			<p class="text-destructive text-sm break-words" role="alert" data-testid="send-error">
+				{error}
+			</p>
+		{/if}
+	</Dialog.Content>
+</Dialog.Root>

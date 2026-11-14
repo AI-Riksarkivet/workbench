@@ -9,7 +9,8 @@ export const MeSchema = v.object({
 	name: v.nullish(v.string()),
 	email: v.nullish(v.string()),
 	estate_admin: v.boolean(),
-	projects: v.array(v.object({ project: v.string(), role: v.picklist(['admin', 'member']) })),
+	/** The organisations the person belongs to, and whether they administer each. */
+	orgs: v.array(v.object({ org: v.string(), role: v.picklist(['admin', 'member']) })),
 });
 export type Me = v.InferOutput<typeof MeSchema>;
 

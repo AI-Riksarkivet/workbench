@@ -113,7 +113,7 @@ class _FakeTask:
 
 def _client(project: _FakeProject, task: _FakeTask, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
-        return relation == "can_send_items"
+        return relation in {"can_view", "can_send_items"}
 
     monkeypatch.setattr(ev, "_project_proxy", lambda _p: project)
     monkeypatch.setattr(ev, "_task_proxy", lambda _t: task)

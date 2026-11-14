@@ -8,20 +8,24 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { indexRows, keyString, rowFor, rowKeyFor, rowKeysFor, rowText } from './corpus-rows';
+import { indexRows, keyString, rowFor, rowKeyFor, rowKeysFor, rowText } from './corpus-rows.ts';
 
 const task = (keys: string[]) => ({ source: { keys } });
 const KEY_FIELDS = ['doc_id', 'speech_id', 'chunk_id'];
 
 describe('turning a task key-path into the viewer address', () => {
-	it('splits the doc key from the positional numeric rest', () => {
-		expect(rowKeyFor(['vol-1', '3', '7'])).toEqual({ doc_id: 'vol-1', keys: [3, 7] });
+	it('splits the doc key from the numeric rest of the key path the task was sent with', () => {
+		expect(rowKeyFor(['vol-1/3/7'])).toEqual({ doc_id: 'vol-1', keys: [3, 7] });
+	});
+
+	it('decodes each part, as the explorer percent-encodes them', () => {
+		expect(rowKeyFor(['vol%2F1/3'])).toEqual({ doc_id: 'vol/1', keys: [3] });
 	});
 
 	it('refuses a NON-NUMERIC segment rather than sending NaN', () => {
 		// NaN would render into the server's predicate and match nothing, while the request still
 		// looked legitimate — an empty result that reads as "this row has no corpus data".
-		expect(rowKeyFor(['vol-1', 'three'])).toBeNull();
+		expect(rowKeyFor(['vol-1/three'])).toBeNull();
 	});
 
 	it('refuses an empty key-path', () => {
@@ -37,13 +41,13 @@ describe('the keys a PAGE asks for', () => {
 	it('asks once for a row two consensus replicas share', () => {
 		// N replicas of one item carry the SAME key-path. Fetching per task would ask the viewer for
 		// the same row N times on every page turn.
-		const keys = rowKeysFor([task(['a', '1']), task(['a', '1']), task(['b', '2'])]);
+		const keys = rowKeysFor([task(['a/1']), task(['a/1']), task(['b/2'])]);
 
 		expect(keys).toHaveLength(2);
 	});
 
 	it('skips a task whose key-path cannot be addressed, without dropping the rest', () => {
-		const keys = rowKeysFor([task(['a', '1']), task([]), task(['b', 'x']), task(['c', '3'])]);
+		const keys = rowKeysFor([task(['a/1']), task([]), task(['b/x']), task(['c/3'])]);
 
 		expect(keys).toEqual([
 			{ doc_id: 'a', keys: [1] },
@@ -62,8 +66,8 @@ describe('associating returned rows back to tasks', () => {
 		];
 		const index = indexRows(rows, KEY_FIELDS);
 
-		expect(rowFor(task(['a', '1', '0']), index)?.year).toBe(1893);
-		expect(rowFor(task(['b', '2', '0']), index)?.year).toBe(1912);
+		expect(rowFor(task(['a/1/0']), index)?.year).toBe(1893);
+		expect(rowFor(task(['b/2/0']), index)?.year).toBe(1912);
 	});
 
 	it('returns null for a task whose row did NOT come back', () => {
@@ -71,7 +75,7 @@ describe('associating returned rows back to tasks', () => {
 		// and a short response must read as "no corpus columns" rather than as an error.
 		const index = indexRows([{ doc_id: 'a', speech_id: 1, chunk_id: 0 }], KEY_FIELDS);
 
-		expect(rowFor(task(['gone', '9', '9']), index)).toBeNull();
+		expect(rowFor(task(['gone/9/9']), index)).toBeNull();
 	});
 
 	it('does not index a row missing part of its own key', () => {

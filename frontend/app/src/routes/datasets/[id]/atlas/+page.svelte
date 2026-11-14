@@ -8,7 +8,13 @@
 	 * Wide, the map and the player sit side by side over the table. Below a tablet's width (sized by the
 	 * page, not the window) the map takes the top and the table and the player share the rest as tabs.
 	 */
+	import { page } from '$app/state';
+	import { Inbox } from '@lucide/svelte';
 	import type { Hit } from '@workbench/explorer-api';
+	import { Button } from '@workbench/ui/button';
+	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
+	import { selectionKeys } from '#lib/projects/send.ts';
+	import { projectOf } from '#lib/project.ts';
 	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { ResizableSplit } from '@workbench/ui/resizable-split';
 	import AtlasMap from '#lib/atlas/AtlasMap.svelte';
@@ -42,6 +48,9 @@
 		shown = shown.includes(key) ? shown.filter((k) => k !== key) : [...shown, key];
 		persistCols(COLS_KEY, shown);
 	}
+
+	let sendOpen = $state(false);
+	const view = activeView();
 
 	function onSelectionHits(hits: Hit[], total: number): void {
 		rows = hits;
@@ -92,7 +101,17 @@
 						Lasso a region, or pick a cluster in the legend, to list its rows.
 					{/if}
 				</span>
-				<div class="ml-auto">
+				<div class="ml-auto flex items-center gap-2">
+					{#if selected > 0}
+						<Button
+							variant="outline"
+							size="xs"
+							data-testid="send-to-project-open"
+							onclick={() => (sendOpen = true)}
+						>
+							<Inbox /> Send to a project
+						</Button>
+					{/if}
 					<ColumnsMenu columns={offered} {shown} ontoggle={toggleColumn} />
 				</div>
 			</div>
@@ -187,3 +206,13 @@
 		</ResizableSplit>
 	{/if}
 </div>
+
+<SendToProjectDialog
+	bind:open={sendOpen}
+	keys={selectionKeys(rows, (h) => view.keyPath(h))}
+	total={selected}
+	from={{ dataset: view.id, version: view.rowTableVersion, mediaKind: view.mediaKind }}
+	origin="atlas"
+	orgs={(data.me?.orgs ?? []).map((o) => o.org)}
+	project={projectOf(page.url)}
+/>

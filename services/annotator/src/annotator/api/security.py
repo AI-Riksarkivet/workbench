@@ -13,7 +13,7 @@ the person in the commit (`annotator.annotations.commit`).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Annotated, Any
 
 from fastapi import Depends, Query, Request
@@ -22,7 +22,7 @@ from annotator.annotations.store import ProjectAnnotations
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from service_kit.exceptions import ServiceUnavailableError
 from service_kit.governed.deps import ANONYMOUS_SUBJECT, FgaChecker, make_auth_deps
-from service_kit.governed.fga import Authorizer
+from service_kit.governed.fga import Authorizer, Grant
 from service_kit.governed.identity import Caller
 from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
 
@@ -42,6 +42,9 @@ __all__ = [
     "authenticate",
     "current_subject",
     "get_checker",
+    "require_view",
+    "unseen_project",
+    "unseen_task",
 ]
 
 SettingsDep = Annotated[AnnotatorSettings, Depends(get_annotator_settings)]
@@ -84,6 +87,29 @@ ServiceTokenDep = Annotated[LakehouseTokens | None, Depends(service_token)]
 
 #: The project a corpus read or an annotation write is made for, named by the request: its roles decide.
 ProjectParam = Annotated[str, Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$", description="The project this annotation work is for")]
+
+
+def unseen_project(project_id: str) -> str:
+    """The one refusal a person who may not view a project gets from any of its doors: the same words whether the project
+    exists, which state it is in and what was asked, so no door is an oracle of either. It names no relation and no state."""
+    return f"No project {project_id} that you can see"
+
+
+def unseen_task(task_id: str) -> str:
+    """`unseen_project`'s words for a task: a task that does not exist reads as one the caller may not view."""
+    return f"No task {task_id} that you can see"
+
+
+async def require_view(checker: FgaChecker, subject: str, obj: str, refusal: str, contextual: Iterable[Grant] = ()) -> None:
+    """``can_view`` on ``obj``, asked before anything about the object is read: refused, the caller learns ``refusal`` and
+    nothing else (404, as for an object that does not exist)."""
+    from annotator.audit_actions import AnnotatorAuditAction
+    from service_kit.exceptions import NotFoundError
+    from service_kit.governed.audit import AuditOutcome, audit
+
+    if not await checker(user=subject, relation="can_view", obj=obj, contextual=contextual):
+        audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=obj, relation="can_view")
+        raise NotFoundError(refusal)
 
 
 def project_gate(relation: str) -> Any:

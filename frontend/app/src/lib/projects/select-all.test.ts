@@ -11,8 +11,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { selectAllPrompt, selectionOf } from './select-all';
-import type { TaskDetail } from './types';
+import { selectAllPrompt, selectionOf } from './select-all.ts';
+import type { TaskDetail } from './types.ts';
 
 const task = (id: string) => ({ task_id: id }) as TaskDetail;
 

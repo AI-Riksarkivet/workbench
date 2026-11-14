@@ -8,8 +8,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { annotatorMetrics } from './metrics.js';
-import type { TaskDetail } from './types.js';
+import { annotatorMetrics } from './metrics.ts';
+import type { TaskDetail } from './types.ts';
 
 function task(over: Partial<TaskDetail> = {}): TaskDetail {
 	return {

@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as events_ep
 from annotator.api.v1.endpoints.project_events import router
+from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
@@ -75,6 +76,9 @@ def _app(monkeypatch: pytest.MonkeyPatch, task_actor: _FakeTaskActor, settings: 
     app.dependency_overrides[current_subject] = lambda: "gina"
     state = AppState(settings=settings)
     app.dependency_overrides[get_state] = lambda: state
+    catalog = {"MEDIA_CATALOG_URI": settings.catalog_uri} if settings.catalog_uri else {"MEDIA_CATALOG_DIR": str(settings.catalog_dir)}
+    annotator = AnnotatorSettings.model_validate(catalog)
+    app.dependency_overrides[get_annotator_settings] = lambda: annotator
     return app
 
 
@@ -118,13 +122,9 @@ def test_a_known_dataset_sends_normally(monkeypatch: pytest.MonkeyPatch, catalog
     assert len(task_actor.seeded) == 1
 
 
-def test_an_UNVERIFIABLE_catalog_lets_the_send_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Not being able to check is not evidence of a problem.
-
-    If the catalog cannot be consulted at all, refusing every send would take the labeling
-    plane down for a guard rather than a gate — the canvas still reports the real 404 at read, and
-    removal still exists. This is the one place the check yields.
-    """
+def test_an_unverifiable_catalog_refuses_the_send_and_seeds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whether the sender may read what they send is a check, and a check that did not run proves nothing: the send fails
+    closed (503) and is tried again once the catalog answers."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed = probe.getsockname()[1]
@@ -135,5 +135,5 @@ def test_an_UNVERIFIABLE_catalog_lets_the_send_through(monkeypatch: pytest.Monke
 
     r = client.post("/projects/p1/items", json=_items("acme$anything"))
 
-    assert r.status_code == 201, r.text
-    assert len(task_actor.seeded) == 1
+    assert r.status_code == 503, r.text
+    assert task_actor.seeded == []

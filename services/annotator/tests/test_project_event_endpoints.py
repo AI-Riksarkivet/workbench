@@ -8,6 +8,7 @@ The actors are faked, so these prove the HTTP contract without a sidecar.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -94,7 +95,8 @@ def _app(project: _FakeProject, *, grant: set[str], seen: list[dict[str, Any]], 
 
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         seen.append({"user": user, "relation": relation, "obj": obj})
-        return relation in grant
+        # Every role views the project (`model.fga`: each rung implies `viewer`).
+        return relation in grant or (relation == "can_view" and bool(grant))
 
     app = FastAPI()
     register_handlers(app)
@@ -144,12 +146,12 @@ def test_publish_asks_the_projects_own_role_and_nothing_of_the_lakehouse(wired: 
     r = client.post("/projects/p1/events", json={"event": "publish"})
 
     assert r.status_code == 200, r.text
-    assert [(c["relation"], c["obj"]) for c in seen] == [("can_publish", "project:p1")]
+    assert [(c["relation"], c["obj"]) for c in seen] == [("can_view", "project:p1"), ("can_publish", "project:p1")]
     assert project.fired, "the transition never reached the actor"
 
 
 def test_publish_without_the_projects_publish_role_is_403(wired: Any) -> None:
-    client, project, _t, _seen = wired(set())
+    client, project, _t, _seen = wired({"can_view"})
 
     r = client.post("/projects/p1/events", json={"event": "publish"})
 
@@ -179,15 +181,47 @@ def test_a_non_publish_edge_checks_the_permission_the_table_declares(wired: Any)
     client, _p, _t, seen = wired({"can_manage"})
     r = client.post("/projects/p1/events", json={"event": "open"})
     assert r.status_code == 200, r.text
-    assert seen == [{"user": SUBJECT, "relation": "can_manage", "obj": "project:p1"}]
+    assert seen == [{"user": SUBJECT, "relation": rel, "obj": "project:p1"} for rel in ("can_view", "can_manage")]
 
 
-def test_an_edge_absent_from_the_table_is_409(wired: Any) -> None:
-    client, _p, _t, _seen = wired({"can_manage"})
-    r = client.post("/projects/p1/events", json={"event": "archive"})
-    assert r.status_code == 200, r.text  # frozen -> archived IS legal
-    r2 = client.post("/projects/p1/events", json={"event": "freeze"})
-    assert r2.status_code == 409, "archived -> freeze is not in the table"
+@pytest.mark.parametrize("state", [pytest.param(ProjectState.FROZEN, id="illegal-edge"), pytest.param(None, id="absent-project")])
+def test_an_illegal_or_absent_target_is_409_to_a_viewer(wired: Any, state: ProjectState | None) -> None:
+    client, project, _t, _seen = wired({"can_view"})
+    project.state = state
+
+    r = client.post("/projects/p1/events", json={"event": "freeze"})
+
+    assert r.status_code == 409, r.text
+    assert project.fired == []
+
+
+def test_a_stranger_learns_nothing_of_a_project_from_its_events(wired: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Which relation an event needs, and whether it is legal, depend on the project's state: to someone who may not view
+    the project, every state, an absent project and one that names no publish warehouse answer the same bytes for
+    every event, naming no relation and no state."""
+    client, project, _t, _seen = wired(set())
+
+    def answer(event: str) -> tuple[int, bytes]:
+        r = client.post("/projects/p1/events", json={"event": event})
+        return r.status_code, r.content
+
+    answers = set()
+    for state in (ProjectState.LABELING, ProjectState.FROZEN, ProjectState.PUBLISH_FAILED, None):
+        project.state = state
+        answers |= {answer(event) for event in ("freeze", "publish", "publish_succeeded")}
+    project.state = ProjectState.FROZEN
+    stored = project.get
+
+    async def without_warehouse() -> dict[str, Any] | None:
+        return {**(await stored() or {}), "tenant": ""}
+
+    monkeypatch.setattr(project, "get", without_warehouse)
+    answers.add(answer("publish"))
+
+    assert len(answers) == 1
+    status, body = answers.pop()
+    assert (status, json.loads(body)["detail"]) == (404, "No project p1 that you can see")
+    assert project.fired == []
 
 
 @pytest.mark.parametrize("event", ["publish_succeeded"])
@@ -203,14 +237,6 @@ def test_a_system_only_project_edge_is_refused_over_http(wired: Any, event: str)
     assert project.fired == [], "a system-only edge reached the actor over HTTP"
 
 
-def test_an_absent_project_is_409_not_500(monkeypatch: pytest.MonkeyPatch) -> None:
-    project = _FakeProject(state=None)
-    monkeypatch.setattr(ev, "_project_proxy", lambda _p: project)
-    seen: list[dict[str, Any]] = []
-    client = TestClient(_app(project, grant=ALL_PUBLISH_DOORS, seen=seen))
-    assert client.post("/projects/p1/events", json={"event": "publish"}).status_code == 409
-
-
 # --------------------------------------------------------------------------------------------------
 # Send
 # --------------------------------------------------------------------------------------------------
@@ -224,10 +250,15 @@ def _item(task_id: str) -> dict[str, Any]:
     }
 
 
-def test_send_without_the_permission_writes_nothing(wired: Any) -> None:
+@pytest.mark.parametrize(
+    "state", [pytest.param(ProjectState.LABELING, id="open"), pytest.param(ProjectState.FROZEN, id="frozen"), pytest.param(None, id="absent")]
+)
+def test_send_without_the_permission_is_403_whatever_the_project_is_and_writes_nothing(wired: Any, state: ProjectState | None) -> None:
+    """The roles are asked before the project is read, so a refusal says nothing of whether it exists or which state it is in."""
     client, project, task, _seen = wired(set(), state=ProjectState.LABELING)
+    project.state = state
     r = client.post("/projects/p1/items", json={"items": [_item("t0")]})
-    assert r.status_code == 403
+    assert (r.status_code, r.json()["detail"]) == (404, "No project p1 that you can see")
     assert task.seeded == [] and project.sent == []
 
 
@@ -239,8 +270,8 @@ def test_send_without_the_permission_writes_nothing(wired: Any) -> None:
 def test_a_sender_cannot_fabricate_state_or_provenance(wired: Any) -> None:
     """The defect this replaces: `items` was a full `Task`, so a sender could supply
     `state=accepted`, `submitted_by` and `reviewed_by` — manufacturing reviewed work with forged
-    provenance and walking it straight into a publish. The request model now accepts only `source`
-    and `media`; every provenance field takes its server-side default."""
+    provenance and walking it straight into a publish. The request model accepts only `source`
+    and `media`'s kind; every provenance field takes its server-side default."""
     client, _p, task, _seen = wired({"can_send_items"}, state=ProjectState.LABELING)
 
     r = client.post(
@@ -262,6 +293,9 @@ def test_a_sender_cannot_fabricate_state_or_provenance(wired: Any) -> None:
     seeded = task.seeded[0]
     assert seeded["state"] == "unassigned", "a sender dictated the task state"
     assert seeded["submitted_by"] is None and seeded["reviewed_by"] is None, "a sender forged provenance"
+    # `_item` names a media link: an item never stores one, since a link a sender supplies would serve without the
+    # reader's own read. The viewer signs a task's picture from its key.
+    assert seeded["media"] == {"kind": "image", "width": None, "height": None}
 
 
 def test_send_captures_review_required_from_the_project(wired: Any) -> None:

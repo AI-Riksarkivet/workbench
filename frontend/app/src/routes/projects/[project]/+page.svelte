@@ -1,0 +1,332 @@
+<script lang="ts">
+	/**
+	 * One project: its queue (claim, annotate, review), its settings (what is labelled, and who holds which role) and
+	 * its publish. The project and its task details are read together and refreshed together after every action, so the
+	 * queue a reviewer looks at and the publish precondition beside it come from the same answer.
+	 *
+	 * What the reader may do comes with the project's read (`permissions`, from the workbench's store): an action the
+	 * reader's role does not allow is not offered, and the door refuses it regardless.
+	 */
+	import { page } from '$app/state';
+	import { login } from '#lib/auth.svelte.ts';
+	import { linkWith } from '#lib/project.ts';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as Tabs from '@workbench/ui/tabs';
+	import { ArrowLeft, Inbox, Pencil, RefreshCw } from '@lucide/svelte';
+	import { fetchProject, fireProjectEvent, listTasks } from '#lib/api/projects.api.ts';
+	import AdjudicationPanel from '#lib/projects/AdjudicationPanel.svelte';
+	import AnnotatorMetrics from '#lib/projects/AnnotatorMetrics.svelte';
+	import EditOntologyDialog from '#lib/projects/EditOntologyDialog.svelte';
+	import MembersPanel from '#lib/projects/MembersPanel.svelte';
+	import PublishPanel from '#lib/projects/PublishPanel.svelte';
+	import SendItemsDialog from '#lib/projects/SendItemsDialog.svelte';
+	import TaskQueue from '#lib/projects/TaskQueue.svelte';
+	import {
+		ANNOTATOR_HINT,
+		EVENT_LABELS,
+		projectStateVariant,
+		roleSummary,
+	} from '#lib/projects/presentation.ts';
+	import type { LegalEvent } from '#lib/projects/types.ts';
+	import LoadFailure from '#lib/shell/load-failure.svelte';
+	import { titleOf } from '#lib/nav.ts';
+
+	let { data } = $props();
+
+	const projectId = $derived(page.params.project ?? '');
+	const me = $derived(data.me?.sub ?? null);
+
+	const detailRead = $derived(fetchProject({ projectId }));
+	const listingRead = $derived(listTasks({ projectId, details: true }));
+	const answer = $derived(detailRead.current);
+	const detail = $derived(answer?.ok ? answer.data : null);
+	const listing = $derived(listingRead.current?.ok ? listingRead.current.data : null);
+	const held = $derived(new Set(detail?.permissions ?? []));
+
+	function refresh(): void {
+		void detailRead.refresh();
+		void listingRead.refresh();
+	}
+
+	// Past `frozen` a publish is being prepared against the answer set, so nothing may still change what this project
+	// will publish: editing the ontology and removing an item are both that. The doors enforce each on their own.
+	const stillMutable = $derived(
+		detail?.project.state === 'draft' || detail?.project.state === 'labeling',
+	);
+
+	// The publish saga narrates its steps onto the project document, which moves no other signal: while the project is
+	// publishing, it is read again every 2 s, and not at all once it settles.
+	$effect(() => {
+		if (detail?.project.state !== 'publishing') return;
+		const timer = setInterval(refresh, 2000);
+		return () => clearInterval(timer);
+	});
+
+	/** The header's transitions: what the project's state allows and the reader's role permits, except publish (the
+	 *  Publish tab confirms it) and send (its dialog takes the items). */
+	const legal = $derived(
+		(detail?.legal_events ?? []).filter((e: LegalEvent) => held.has(e.permission)),
+	);
+	const headerEvents = $derived(legal.filter((e) => e.event !== 'publish' && e.event !== 'send'));
+	const canSend = $derived(legal.some((e) => e.event === 'send'));
+	const canPublish = $derived((detail?.legal_events ?? []).some((e) => e.event === 'publish'));
+
+	let notice = $state('');
+	let sendOpen = $state(false);
+	let ontologyOpen = $state(false);
+	let firing = $state(false);
+
+	async function fireProject(event: string): Promise<void> {
+		if (firing) return;
+		firing = true;
+		notice = '';
+		const result = await fireProjectEvent({ projectId, event });
+		firing = false;
+		if (result.ok) refresh();
+		// The door's words: a 403 names the missing role, a 409 the illegal edge.
+		else notice = result.detail;
+	}
+
+	const name = $derived(detail ? detail.project.title || detail.project.slug : projectId);
+	// Back keeps this project as the reader's (`?project=`), as every in-app link does.
+	const back = $derived(linkWith(projectId)('/projects'));
+
+	// A 401 is a session that ended, not a project that is hidden: the reader signs in again and comes back here.
+	$effect(() => {
+		if (answer && !answer.ok && answer.status === 401)
+			void login(page.url.pathname + page.url.search);
+	});
+</script>
+
+<svelte:head><title>{titleOf(name, 'Projects')}</title></svelte:head>
+
+{#key projectId}
+	{#if answer === undefined}
+		<h1 class="sr-only">{projectId}</h1>
+		<p class="text-muted-foreground p-6 text-sm" role="status">Reading the project…</p>
+	{:else if !answer.ok && answer.status === 401}
+		<h1 class="sr-only">{projectId}</h1>
+		<p class="text-muted-foreground p-6 text-sm" role="status">
+			Your session ended: signing you in again…
+		</p>
+	{:else if !answer.ok && (answer.status === 403 || answer.status === 404)}
+		<!-- A 403 and a 404 read the same: the annotator keeps a project's existence to those who may view it. -->
+		<div class="flex flex-col gap-1 p-6 text-sm" data-testid="project-unseen">
+			<h1 class="text-lg font-semibold">No project {projectId} that you can see</h1>
+			<p class="text-muted-foreground">It does not exist, or you hold no role on it.</p>
+			<p class="text-muted-foreground break-words">Details: {answer.detail}</p>
+			<!-- `back` resolves the path through `linkWith`, with the reader's project after it. -->
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+			<a class="mt-2 w-fit underline underline-offset-2" href={back}>Back to the projects</a>
+		</div>
+	{:else if !answer.ok}
+		<h1 class="sr-only">{projectId}</h1>
+		<LoadFailure
+			what="The project could not be read."
+			detail={answer.detail}
+			hint={ANNOTATOR_HINT}
+			onretry={refresh}
+		/>
+	{:else if detail}
+		{@const project = detail.project}
+		<div class="flex w-full min-w-0 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
+			<header class="flex flex-wrap items-start justify-between gap-3">
+				<div class="flex min-w-0 items-start gap-2">
+					<Button variant="ghost" size="icon-sm" href={back} aria-label="Back to the projects">
+						<ArrowLeft class="size-4" />
+					</Button>
+					<div class="min-w-0">
+						<h1 class="flex flex-wrap items-center gap-2 text-2xl font-semibold break-words">
+							{name}
+							<Badge variant={projectStateVariant(project.state)}
+								>{project.state.replace('_', ' ')}</Badge
+							>
+						</h1>
+						<p class="text-muted-foreground font-mono text-xs break-all">
+							{project.tenant} / {project.slug}
+						</p>
+						<p class="text-muted-foreground text-xs" data-testid="reader-role">
+							{roleSummary(detail.permissions)}
+						</p>
+					</div>
+				</div>
+				<div class="flex flex-wrap items-center gap-2">
+					<Button variant="outline" size="sm" onclick={refresh}>
+						<RefreshCw class="size-3.5" /> Refresh
+					</Button>
+					{#if canSend}
+						<Button variant="outline" size="sm" onclick={() => (sendOpen = true)}>
+							<Inbox class="size-3.5" />
+							{EVENT_LABELS['send']}
+						</Button>
+					{/if}
+					{#each headerEvents as event (event.event)}
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={firing}
+							onclick={() => void fireProject(event.event)}
+						>
+							{EVENT_LABELS[event.event] ?? event.event}
+						</Button>
+					{/each}
+				</div>
+			</header>
+
+			{#if project.description}
+				<p class="text-muted-foreground max-w-3xl text-sm">{project.description}</p>
+			{/if}
+			{#if project.instructions}
+				<div
+					class="bg-muted/40 max-w-3xl rounded-md border px-3 py-2 text-sm"
+					data-testid="instructions"
+				>
+					<h2 class="text-muted-foreground text-xs font-medium uppercase">Instructions</h2>
+					<p class="mt-1 whitespace-pre-line">{project.instructions}</p>
+				</div>
+			{/if}
+			{#if notice}
+				<p class="text-destructive text-sm break-words" role="alert">{notice}</p>
+			{/if}
+
+			<Tabs.Root value="labeling">
+				<Tabs.List>
+					<Tabs.Trigger value="labeling" data-testid="tab-labeling">Labeling</Tabs.Trigger>
+					<Tabs.Trigger value="settings" data-testid="tab-settings">Settings</Tabs.Trigger>
+					<Tabs.Trigger value="publish" data-testid="tab-publish">Publish</Tabs.Trigger>
+				</Tabs.List>
+
+				<Tabs.Content
+					value="labeling"
+					class="flex min-w-0 flex-col gap-4 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
+				>
+					{#if listingRead.current && !listingRead.current.ok}
+						<LoadFailure
+							what="The project's items could not be read."
+							detail={listingRead.current.detail}
+							hint={ANNOTATOR_HINT}
+							onretry={() => void listingRead.refresh()}
+						/>
+					{:else if !listing}
+						<p class="text-muted-foreground text-sm" role="status">Reading the items…</p>
+					{:else}
+						<AnnotatorMetrics tasks={listing.details ?? []} />
+						<TaskQueue
+							{projectId}
+							permissions={detail.permissions}
+							droppable={stillMutable && held.has('can_manage')}
+							tasks={listing.details ?? []}
+							{me}
+							consensusN={project.consensus_n ?? 1}
+							adjudications={project.adjudications ?? {}}
+							onchanged={refresh}
+						/>
+						{#if listing.next_cursor}
+							<p class="text-warning text-xs" role="status">
+								The first {(listing.details ?? []).length.toLocaleString()} of {listing.total.toLocaleString()}
+								items are listed.
+							</p>
+						{/if}
+					{/if}
+				</Tabs.Content>
+
+				<Tabs.Content
+					value="settings"
+					class="flex max-w-3xl flex-col gap-4 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
+				>
+					{#if project.ontology.kind}
+						<div class="flex items-center gap-1.5 text-sm" data-testid="task-kind-chip">
+							<span class="text-muted-foreground text-xs">Task type:</span>
+							<Badge>{project.ontology.kind}</Badge>
+						</div>
+					{/if}
+					{#if project.ontology.classes.length > 0}
+						<div class="flex flex-wrap items-center gap-1.5 text-sm" data-testid="label-taxonomy">
+							<span class="text-muted-foreground text-xs">Labels:</span>
+							{#each project.ontology.classes as labelClass (labelClass.name)}
+								<Badge variant={labelClass.required ? 'default' : 'outline'}>
+									{labelClass.name}
+									{#if labelClass.tools.length > 0}
+										<span class={labelClass.required ? '' : 'text-muted-foreground'}
+											>· {labelClass.tools.join('/')}</span
+										>
+									{/if}
+									{#if labelClass.required}
+										<span>· required</span>
+									{/if}
+								</Badge>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-muted-foreground text-sm">
+							No labels are defined: any label may be drawn.
+						</p>
+					{/if}
+					{#if stillMutable && held.has('can_manage')}
+						<div>
+							<Button
+								variant="outline"
+								size="sm"
+								data-testid="edit-ontology-trigger"
+								onclick={() => (ontologyOpen = true)}
+							>
+								<Pencil class="size-3.5" />
+								{project.ontology.classes.length > 0 ? 'Edit the labels' : 'Define the labels'}
+							</Button>
+						</div>
+					{/if}
+					{#if project.ontology.relations.length > 0}
+						<div class="flex flex-wrap items-center gap-1.5 text-sm" data-testid="relations">
+							<span class="text-muted-foreground text-xs">Relations:</span>
+							{#each project.ontology.relations as rel (rel.name)}
+								<Badge variant="outline">{rel.name}</Badge>
+							{/each}
+						</div>
+					{/if}
+					{#if held.has('can_manage')}
+						<MembersPanel {projectId} />
+					{:else}
+						<p class="text-muted-foreground text-sm" data-testid="members-not-shown">
+							Who holds a role on this project is shown to its managers.
+						</p>
+					{/if}
+				</Tabs.Content>
+
+				<Tabs.Content
+					value="publish"
+					class="flex max-w-3xl flex-col gap-3 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
+				>
+					<PublishPanel
+						{project}
+						{listing}
+						{canPublish}
+						mayPublish={held.has('can_publish')}
+						onchanged={refresh}
+					/>
+					<AdjudicationPanel
+						{projectId}
+						tasks={listing?.details ?? []}
+						adjudications={project.adjudications ?? {}}
+						mayManage={held.has('can_manage')}
+						onchanged={refresh}
+					/>
+					{#if (listing?.missing?.length ?? 0) > 0}
+						<p class="text-warning text-xs">
+							{listing?.missing?.length} item(s) are listed but hold no state: sending them again repairs
+							them.
+						</p>
+					{/if}
+				</Tabs.Content>
+			</Tabs.Root>
+		</div>
+
+		<SendItemsDialog {projectId} bind:open={sendOpen} onsent={refresh} />
+		<EditOntologyDialog
+			{projectId}
+			ontology={project.ontology}
+			bind:open={ontologyOpen}
+			onsaved={refresh}
+		/>
+	{/if}
+{/key}

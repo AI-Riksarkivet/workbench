@@ -13,8 +13,9 @@
 
 	let { children, data }: { children: Snippet; data: LayoutData } = $props();
 
-	// Every in-app link carries the reader's project (`?project=`), so it survives navigation.
-	const link = $derived(linkWith(projectOf(page.url)));
+	// Every in-app link carries the reader's project (`?project=`), so it survives navigation; on a project's own page
+	// the project is the one its path names.
+	const link = $derived(linkWith(page.params.project ?? projectOf(page.url)));
 	const pageNav = $derived(appSidebar(link));
 
 	/** Up-to-two-letter initials for the avatar. */

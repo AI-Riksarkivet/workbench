@@ -37,11 +37,25 @@ from tests.openfga import OpenFgaStore
 
 
 class _Actor:
+    """The project and tenant actors, holding the one project a test creates."""
+
+    def __init__(self) -> None:
+        self.doc: dict[str, Any] | None = None
+
     async def create(self, doc: dict[str, Any]) -> dict[str, Any]:
+        self.doc = doc
         return doc
 
-    async def register(self, _payload: dict[str, Any]) -> dict[str, Any]:
+    async def get(self) -> dict[str, Any] | None:
+        return self.doc
+
+    async def register(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.registered = [*getattr(self, "registered", []), str(payload["project_id"])]
         return {}
+
+    async def list_projects(self) -> dict[str, Any]:
+        ids = getattr(self, "registered", [])
+        return {"project_ids": ids, "total": len(ids)}
 
 
 class _Door:
@@ -65,8 +79,9 @@ def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path:
         tmp_path, ["acme", "media", "chunks"], pa.table({"doc_id": [DOC]}), descriptor={"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}}
     )
     openfga_store.write(("user:keycloak~olga", "admin", "org:acme"), ("user:keycloak~alice", "member", "org:acme"))
-    monkeypatch.setattr(projects, "_create_actor", lambda _p: _Actor())
-    monkeypatch.setattr(projects, "_tenant_actor", lambda _t: _Actor())
+    actor = _Actor()
+    monkeypatch.setattr(projects, "_create_actor", lambda _p: actor)
+    monkeypatch.setattr(projects, "_tenant_actor", lambda _t: actor)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -177,6 +192,39 @@ def test_a_project_member_cannot_write_or_delete_another_projects_annotations_of
 def test_me_is_the_persons_standing_in_each_organisation_the_store_holds(door: _Door) -> None:
     by_admin, by_member, by_stranger = (door.as_(person).get("/me").json() for person in ("olga", "alice", "mallory"))
 
-    assert (by_admin["estate_admin"], by_admin["projects"]) == (True, [{"project": "acme", "role": "admin"}])
-    assert (by_member["estate_admin"], by_member["projects"]) == (False, [{"project": "acme", "role": "member"}])
-    assert (by_stranger["sub"], by_stranger["estate_admin"], by_stranger["projects"]) == ("keycloak~mallory", False, [])
+    assert (by_admin["estate_admin"], by_admin["orgs"]) == (True, [{"org": "acme", "role": "admin"}])
+    assert (by_member["estate_admin"], by_member["orgs"]) == (False, [{"org": "acme", "role": "member"}])
+    assert (by_stranger["sub"], by_stranger["estate_admin"], by_stranger["orgs"]) == ("keycloak~mallory", False, [])
+
+
+def test_a_projects_page_names_what_its_reader_may_do_there(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """The project's read answers the caller's own permissions on it, from the store, so a page offers an action only to
+    someone the door that runs it would let through; the door still checks on its own."""
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(("user:keycloak~fay", "annotator", f"project:{project}"), ("user:keycloak~rita", "reviewer", f"project:{project}"))
+
+    held = {person: door.as_(person).get(f"/projects/{project}") for person in ("alice", "olga", "rita", "fay", "mallory")}
+
+    owner = ["can_administer", "can_annotate", "can_claim", "can_manage", "can_publish", "can_review", "can_send_items"]
+    assert {person: r.json()["permissions"] for person, r in held.items() if r.status_code == 200} == {
+        "alice": owner,
+        "olga": owner,
+        "rita": ["can_annotate", "can_claim", "can_review", "can_send_items"],
+        "fay": ["can_annotate", "can_claim", "can_send_items"],
+    }
+    assert (held["mallory"].status_code, held["mallory"].json()["detail"]) == (404, f"No project {project} that you can see")
+
+
+def test_a_listing_narrowed_to_sending_names_only_the_projects_the_caller_may_send_to(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """An org member views every project of the org and may send to none they hold no role on: `?can=can_send_items`
+    lists only those the store says they may send items to."""
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(
+        ("user:keycloak~fay", "annotator", f"project:{project}"), ("user:keycloak~fay", "member", "org:acme"), ("user:keycloak~vic", "member", "org:acme")
+    )
+
+    def listed(person: str, **query: str) -> list[str]:
+        r = door.as_(person).get("/projects", params={"tenant": "acme", **query})
+        return [p["project_id"] for p in r.json()["projects"]]
+
+    assert (listed("vic"), listed("vic", can="can_send_items"), listed("fay", can="can_send_items")) == ([project], [], [project])

@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep
+from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep, require_view, unseen_task
 from annotator.api.v1.responses import DraftImport
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.projects.actor import AnnotationTaskActorInterface
@@ -154,6 +154,17 @@ async def _authorize(checker: Checker, subject: str, permission: str, task_id: s
         raise ForbiddenError(f"{subject} lacks {permission} on {obj}")
 
 
+async def _viewed(actor: AnnotationTaskActorInterface, checker: Checker, subject: str, task_id: str) -> dict[str, Any]:
+    """The task, once the caller may view it: a task that does not exist and one they may not view answer the same
+    refusal (`unseen_task`), before any state or relation is named, since a task id is guessable (`{group}-r{k}`)."""
+    task = await actor.get()
+    if task is None:
+        raise NotFoundError(unseen_task(task_id))
+    edge = Grant(user=f"project:{task['project_id']}", relation="project", object=f"task:{task_id}")
+    await require_view(checker, subject, f"task:{task_id}", unseen_task(task_id), contextual=[edge])
+    return task
+
+
 async def _verified_project_state(project_id: str, event: str) -> ProjectState | None:
     """§5.2 rule 5 — nothing escapes a published project — and the observation the actor is handed.
 
@@ -208,15 +219,15 @@ async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: Checke
     The permission comes from the transition table, so adding an edge to `TASK_EDGES` automatically
     gates it — there is no per-route ladder here to forget to update.
     """
+    actor = _proxy(task_id)
+    # VIEW FIRST: the relation an event needs depends on the task's state, so nothing below is said to someone who may
+    # not view the task.
+    current = await _viewed(actor, checker, subject, task_id)
     if payload.event in SYSTEM_ONLY_EVENTS:
         raise ForbiddenError(f"{payload.event} is caused by the system, not by a principal, and cannot be fired over HTTP")
 
-    actor = _proxy(task_id)
-    current = await actor.get()
-    if current is None:
-        raise ConflictError(f"task {task_id} has not been sent into a project")
-
     state = TaskState(current["state"])
+    project_id = str(current["project_id"])
     try:
         _target, permission = task_transition(state, payload.event)
     except IllegalTransition as exc:
@@ -224,7 +235,6 @@ async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: Checke
     if permission is None:  # unreachable via SYSTEM_ONLY_EVENTS, kept so a new None edge fails closed
         raise ForbiddenError(f"{payload.event} requires no principal permission and is not exposed")
 
-    project_id = str(current["project_id"])
     await _authorize(checker, subject, permission, task_id, project_id, AnnotatorAuditAction.TASK_TRANSITION, event=payload.event)
     # An assignee is the subject the assigned person's own token will prove ([[LH-063]]): with authentication on that
     # is a principal, so a bare name, which no token proves, is refused rather than stored for nobody to claim.
@@ -295,10 +305,7 @@ async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: Checke
 async def get_task(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject) -> Task:
     """Read one task. The task is fetched FIRST to learn which project to authorize against, then the
     check runs before anything is returned — the fetch is not the disclosure, the return is."""
-    task = await _proxy(task_id).get()
-    if task is None:
-        raise ConflictError(f"task {task_id} has not been sent into a project")
-    await _authorize(checker, subject, "can_view", task_id, str(task["project_id"]), AnnotatorAuditAction.TASK_VIEW)
+    task = await _viewed(_proxy(task_id), checker, subject, task_id)
     return Task.model_validate(task)
 
 
@@ -307,9 +314,7 @@ async def save_draft(task_id: TaskId, payload: SaveDraftRequest, checker: Checke
     """Replace the whole shape set in one keyed write. `base_revision` is the etag — a mismatch is a
     409, which is how two tabs of one annotator are stopped from silently clobbering each other."""
     actor = _proxy(task_id)
-    current = await actor.get()
-    if current is None:
-        raise ConflictError(f"task {task_id} has not been sent into a project")
+    current = await _viewed(actor, checker, subject, task_id)
     await _authorize(checker, subject, "can_annotate", task_id, str(current["project_id"]), AnnotatorAuditAction.TASK_SAVE_DRAFT)
 
     # A draft is only writable while the task is CLAIMED. Without this an ACCEPTED task's shapes
@@ -367,9 +372,7 @@ async def import_annotations(task_id: TaskId, request: Request, checker: Checker
     already-reviewed task than a manual edit can.
     """
     actor = _proxy(task_id)
-    current = await actor.get()
-    if current is None:
-        raise ConflictError(f"task {task_id} has not been sent into a project")
+    current = await _viewed(actor, checker, subject, task_id)
     await _authorize(checker, subject, "can_annotate", task_id, str(current["project_id"]), AnnotatorAuditAction.TASK_IMPORT)
 
     project_state = await _verified_project_state(str(current["project_id"]), "import")
@@ -441,10 +444,7 @@ async def import_annotations(task_id: TaskId, request: Request, checker: Checker
 @router.get("/{task_id}/draft")
 async def get_draft(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject) -> Draft:
     actor = _proxy(task_id)
-    task = await actor.get()
-    if task is None:
-        raise ConflictError(f"task {task_id} has not been sent into a project")
-    await _authorize(checker, subject, "can_view", task_id, str(task["project_id"]), AnnotatorAuditAction.TASK_VIEW_DRAFT)
+    await _viewed(actor, checker, subject, task_id)
     draft = await actor.get_draft()
     if draft is None:
         raise NotFoundError(f"task {task_id} has no draft")

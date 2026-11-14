@@ -13,8 +13,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { bulkActions, NOT_BULK, targetsFor } from './bulk-events';
-import type { TaskDetail } from './types';
+import { bulkActions, NOT_BULK, targetsFor } from './bulk-events.ts';
+import type { TaskDetail } from './types.ts';
 
 function task(id: string, state: string, events: string[]): TaskDetail {
 	return {

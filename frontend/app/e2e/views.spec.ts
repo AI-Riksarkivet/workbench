@@ -186,14 +186,30 @@ test('another dataset’s graph is that dataset’s, and a late answer for the f
 	await page.getByRole('searchbox', { name: 'Search entities' }).fill('harbour');
 	// The entity answers 2.5 s late; the reader moves to another dataset before it does.
 	await fault(page, who, '/api/graph/entity/a000000000000001', 'slow');
+	const late = page.waitForResponse(
+		(res) => res.url().includes('/api/graph/entity/a000000000000001'),
+		{
+			timeout: 10_000,
+		},
+	);
 	await page.getByRole('button', { name: /The harbour master/ }).click();
+	const mapsOverview = page.waitForResponse(
+		(res) => res.url().includes('/api/graph/subgraph') && res.url().includes('dataset=acme%24maps'),
+	);
 	await gotoInPage(page, '/datasets/acme%24maps/graph');
+	// The second dataset's graph has loaded before its entities are searched.
+	await mapsOverview;
 	await expect(page).toHaveURL(/\/datasets\/acme%24maps\/graph/);
 
 	await page.getByRole('searchbox', { name: 'Search entities' }).fill('the');
 	await expect(page.getByRole('button', { name: /The coast/ })).toBeVisible();
 	await expect(page.getByRole('button', { name: /The harbour/ })).toHaveCount(0);
-	await page.waitForTimeout(3000);
+	// The first dataset's answer arrives while the second's page is up, and draws nothing on it.
+	await late;
+	// The answer has been handed to the page: two frames later, anything it would draw is drawn.
+	await page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+	);
 	await expect(page.getByRole('complementary', { name: 'The harbour master' })).toHaveCount(0);
 	const subgraphs = (await callsOf(page, who)).filter((c) => c.path === '/api/graph/subgraph');
 	expect(subgraphs.at(-1)?.query).toContain('dataset=acme%24maps');

@@ -11,8 +11,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { afterVerdict, neighbours } from './quick-view';
-import type { TaskDetail } from './types';
+import { afterVerdict, neighbours } from './quick-view.ts';
+import type { TaskDetail } from './types.ts';
 
 const t = (id: string) => ({ task_id: id }) as TaskDetail;
 const page = [t('a'), t('b'), t('c')];

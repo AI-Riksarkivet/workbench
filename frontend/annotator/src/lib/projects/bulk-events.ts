@@ -21,7 +21,7 @@ import type { TaskDetail } from './types';
  *   forty items would be a review that says nothing about any of them.
  * - `save_draft` belongs to the canvas, not to a queue row.
  */
-export const NOT_BULK: readonly string[] = ['assign', 'request_changes', 'save_draft'];
+const NOT_BULK: readonly string[] = ['assign', 'request_changes', 'save_draft'];
 
 /**
  * Display order for the bulk buttons.

@@ -45,6 +45,10 @@ class ProjectDetail(BaseModel):
 
     project: AnnotationProject
     legal_events: list[LegalEvent]
+    #: The project permissions the CALLER holds, of those its pages gate an action on (`projects.READER_PERMISSIONS`),
+    #: from the workbench's store: a page offers an action only to someone its door would let through, and the door
+    #: still checks on its own.
+    permissions: list[str]
 
 
 class TaskDetail(Task):

@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject
+from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, require_view, unseen_project
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.corpus import input_tables
@@ -43,7 +43,7 @@ from annotator.projects.ontology import LabelOntology, ShapeLike, membership_vio
 from annotator.projects.project_actor import AnnotationProjectActorInterface
 from annotator.projects.publish import namespace_for
 from client_kit.media.deps import StateDep
-from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError
+from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Grant
 from service_kit.governed.token_exchange import LakehouseCaller
@@ -186,6 +186,11 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
     The permission comes from `PROJECT_EDGES`; `publish` additionally crosses the lakehouse doors.
     The every-task-terminal precondition is enforced by the actor, not here.
     """
+    obj = f"project:{project_id}"
+    # VIEW FIRST, before the project is read: which relation an event needs depends on the project's state, and every
+    # answer below (absent, illegal from this state, no publish warehouse, the relation a 403 names) says something of
+    # it. Someone who may not view the project gets one refusal whatever the project is.
+    await require_view(checker, subject, obj, unseen_project(project_id))
     if payload.event in SYSTEM_ONLY_EVENTS:
         raise ForbiddenError(f"{payload.event} is fired by the publish saga, not by a principal, and cannot be posted over HTTP")
 
@@ -207,9 +212,9 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
             target = payload.target_namespace or namespace_for(publish_warehouse_of(current), DEFAULT_TARGET_TIER)
         except ValueError as exc:
             raise ConflictError(f"annotation project {project_id} names no publish warehouse: {exc}") from exc
-        await _check(checker, subject, "can_publish", f"project:{project_id}", AnnotatorAuditAction.PROJECT_PUBLISH)
+        await _check(checker, subject, "can_publish", obj, AnnotatorAuditAction.PROJECT_PUBLISH)
     elif permission is not None:
-        await _check(checker, subject, permission, f"project:{project_id}", AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
+        await _check(checker, subject, permission, obj, AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
 
     try:
         # `target_namespace` rides along so the actor can PIN it with the publish token — the saga
@@ -331,17 +336,15 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller:
     project this is meant to prevent, and it costs ZERO seeded task actors to refuse here — the same
     argument the project-state check above makes.
 
-    An UNVERIFIABLE source lets the send through. If the catalog cannot be consulted
-    at all, refusing every send would take the whole labeling plane down for a check that is a guard,
-    not a gate — the canvas still reports the real 404 at read, and removal still exists. Not being
-    able to check is not evidence of a problem.
+    An UNVERIFIABLE source refuses the send (503): the check is whether the sender may read what they send, and a check
+    that did not run proves nothing (zero trust fails closed). The sender tries again once the catalog answers.
     """
     names = sorted({item.source.where for item in payload.items if item.source.where})
     if not names:
         return {}  # every item takes the backend default, which resolves by construction
     found = input_tables(state, names, caller)
     if found is None:
-        return {}
+        raise ServiceUnavailableError("the catalog could not be consulted about the items' datasets, so nothing was sent: try again")
     if unseen := [name for name in names if name not in found]:
         raise ConflictError(f"dataset(s) {unseen} do not exist or cannot be read — an item naming one could never be opened, claimed or completed")
     return found
@@ -425,6 +428,9 @@ async def send_items(
     become terminal — `may_publish` false for the life of the project, for a prefix of the send.
     Now a refusal writes no index entry at all.
     """
+    # The roles first: the refusals below say whether the project exists and which state it is in.
+    await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
+    await _check(checker, subject, "can_send_items", f"project:{project_id}", AnnotatorAuditAction.PROJECT_SEND)
     project = await _project_proxy(project_id).get()
     if project is None:
         raise ConflictError(f"annotation project {project_id} does not exist")
@@ -432,7 +438,6 @@ async def send_items(
         # Checked here as well as in the actor so a refusal costs zero seeded task actors — the
         # actor's own refusal would fire only after the first `seed` had already landed.
         raise ConflictError(f"project {project_id} is {project['state']} — items may only be sent while it is draft or labeling")
-    await _check(checker, subject, "can_send_items", f"project:{project_id}", AnnotatorAuditAction.PROJECT_SEND)
 
     # REFUSE an item whose media dataset does not resolve. Deliberately after the role check: the
     # refusal can name the datasets that DO exist, which is what makes it actionable and also what
@@ -583,7 +588,7 @@ async def list_project_tasks(
     queue UI needs the rest. A task whose actor holds no state is reported in ``missing`` rather
     than silently dropped or a 500 — the index can lead its actors after a half-completed send.
     """
-    await _check(checker, subject, "can_view", f"project:{project_id}", AnnotatorAuditAction.PROJECT_LIST_TASKS)
+    await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
     listing = await _project_proxy(project_id).list_tasks()
     # Against the MEMBER, not the string. A StrEnum compares equal to its value so the old form still
     # worked, but comparing to a literal here would leave the enum decorative — a renamed member

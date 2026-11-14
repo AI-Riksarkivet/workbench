@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { PROJECT_TEMPLATES, templateById } from './templates';
+import { PROJECT_TEMPLATES, templateById } from './templates.ts';
 
 const TOOLS = new Set([
 	'bbox',

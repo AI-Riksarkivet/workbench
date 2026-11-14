@@ -26,6 +26,7 @@ import {
 	vectorFromArray,
 } from 'apache-arrow';
 import { athOf, readToken, verifyProof } from './dpop';
+import { orgsOf, projectsDoor } from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
 /** One call as a service saw it. */
@@ -793,10 +794,12 @@ Bun.serve({
 				sub: who.sub,
 				name: who.name,
 				email: who.email,
-				estate_admin: false,
-				projects: [{ project: 'acme', role: 'member' }],
+				estate_admin: orgsOf(who.sub).some((o) => o.role === 'admin'),
+				orgs: orgsOf(who.sub),
 			});
 		}
+		const projects = await projectsDoor(req, url, who.sub, ok, faultOf(who.sub, url.pathname));
+		if (projects) return projects;
 		ok(404);
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);
 	},

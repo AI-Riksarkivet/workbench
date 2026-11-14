@@ -75,11 +75,10 @@ MediaKind = Literal["image", "audio", "video", "text"]
 
 
 class MediaRef(BaseModel):
-    """Resolved at send time — the shape the annotator zone's `MediaUnit` already consumes."""
+    """What kind of media an item is, and its size when known. It names no link: a task's picture is signed by the viewer
+    from the item's key, on the reader's own read, and a link a sender stored would serve without it."""
 
     kind: MediaKind
-    image_url: str | None = None
-    media_url: str | None = None
     width: int | None = None
     height: int | None = None
 

@@ -9,14 +9,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { PROJECT_TEMPLATES } from './templates.js';
+import { PROJECT_TEMPLATES } from './templates.ts';
 import {
 	type TaskDraft,
 	draftClassFromWire,
 	draftToOntology,
 	draftToYaml,
 	parseTaskYaml,
-} from './task-yaml.js';
+} from './task-yaml.ts';
 
 const DRAFT: TaskDraft = {
 	kind: 'ocr-layout',

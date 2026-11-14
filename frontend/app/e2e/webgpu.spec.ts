@@ -227,3 +227,36 @@ async function gotoInPage(page: Page, path: string): Promise<void> {
 		await page.evaluate(() => (window as unknown as { __sameDocument?: boolean }).__sameDocument),
 	).toBe(true);
 }
+
+test('an atlas selection is sent to a project whole, each item from the dataset and keyed as its row', async ({
+	page,
+	context,
+}) => {
+	const who = person('Annotator');
+	await signIn(context, who);
+	await page.goto('/datasets/acme%24letters/atlas?project=letters');
+	await expect(page.getByText('60 pts')).toBeVisible();
+	await page.getByRole('button', { name: 'Select cluster #0, 20 points' }).click();
+	await expect(page.getByRole('status').filter({ hasText: '20 rows' })).toBeVisible();
+	await page.getByRole('button', { name: 'Send to a project' }).click();
+	const dialog = page.getByTestId('send-to-project');
+	await expect(dialog.getByTestId('send-project')).toHaveValue('letters');
+	const posted = page.waitForRequest((req) =>
+		req.url().endsWith('/api/annotator/projects/letters/items'),
+	);
+
+	await dialog.getByRole('button', { name: /^Send \d+ items$/ }).click();
+
+	const items = (
+		(await posted).postDataJSON() as { items: { source: { where: string; keys: string[] } }[] }
+	).items;
+	expect(items.length).toBeGreaterThan(0);
+	expect(
+		items.every(
+			(item) =>
+				item.source.where === 'acme$letters' && /^[^/]+\/\d+$/.test(item.source.keys[0] ?? ''),
+		),
+	).toBe(true);
+	await expect(dialog.getByTestId('send-done')).toContainText(`Sent ${items.length} items`);
+	expect((await callsOf(page, who)).filter((call) => call.refused !== undefined)).toEqual([]);
+});

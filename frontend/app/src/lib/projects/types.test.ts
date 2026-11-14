@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import * as v from 'valibot';
 
-import { ProjectDetailSchema, TaskListingSchema } from './types.js';
+import { ProjectDetailSchema, TaskListingSchema } from './types.ts';
 
 describe('ProjectDetailSchema', () => {
 	it('decodes the detail read with legal_events', () => {
@@ -24,6 +24,7 @@ describe('ProjectDetailSchema', () => {
 				{ event: 'open', to: 'labeling', permission: 'can_manage' },
 				{ event: 'publish', to: 'publishing', permission: 'can_publish' },
 			],
+			permissions: ['can_manage', 'can_publish'],
 		});
 		expect(detail.project.state).toBe('frozen');
 		expect(detail.legal_events.map((e) => e.event)).toContain('publish');
@@ -34,6 +35,7 @@ describe('ProjectDetailSchema', () => {
 			v.parse(ProjectDetailSchema, {
 				project: { project_id: 'p1', tenant: 'acme', slug: 'vasa', state: 'exploded' },
 				legal_events: [],
+				permissions: [],
 			}),
 		).toThrow();
 	});

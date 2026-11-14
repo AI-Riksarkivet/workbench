@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { formatLease, leaseView } from './lease.js';
+import { formatLease, leaseView } from './lease.ts';
 
 const NOW = new Date('2026-07-31T12:00:00Z');
 

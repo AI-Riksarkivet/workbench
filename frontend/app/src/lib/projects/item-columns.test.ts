@@ -21,9 +21,9 @@ import {
 	matchesText,
 	mediaText,
 	predictedLabels,
-} from './item-columns';
-import { TaskDetailSchema } from './types';
-import type { TaskDetail } from './types';
+} from './item-columns.ts';
+import { TaskDetailSchema } from './types.ts';
+import type { TaskDetail } from './types.ts';
 
 function task(over: Partial<TaskDetail> = {}): TaskDetail {
 	return {

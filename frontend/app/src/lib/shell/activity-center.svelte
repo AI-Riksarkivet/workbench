@@ -99,7 +99,7 @@
 				{#if unread > 0}
 					<span
 						data-slot="activity-count"
-						class="bg-destructive absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[0.625rem] leading-none font-semibold text-white tabular-nums"
+						class="bg-destructive absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[0.625rem] leading-none text-destructive-foreground font-semibold tabular-nums"
 					>
 						{badge}
 					</span>

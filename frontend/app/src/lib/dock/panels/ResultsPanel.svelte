@@ -7,9 +7,14 @@
 	 * What must survive a remount lives in `explore` (the dock's first invariant); the table's columns,
 	 * widths and wrap and the grid's column count are the reader's preferences, kept in this browser.
 	 */
+	import { page } from '$app/state';
 	import SignedImage from '#lib/explore/components/signed-image.svelte';
+	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
+	import { selectionKeys } from '#lib/projects/send.ts';
+	import { projectOf } from '#lib/project.ts';
 	import {
 		AudioLines,
+		Inbox,
 		Lasso,
 		ChevronLeft,
 		ChevronRight,
@@ -53,6 +58,12 @@
 	const activeKey = $derived(active ? hitKey(active) : null);
 	const gridHighlight = $derived(makeHighlighter(queryTerms(explore.resultsQuery)));
 	const docCount = $derived(new Set(hits.map((h) => ds.docId(h))).size);
+
+	// Send to project: the rows the search answered, or the atlas selection shown as rows (all of it, listed or not).
+	let sendOpen = $state(false);
+	const sendKeys = $derived(selectionKeys(hits, (h) => ds.keyPath(h)));
+	const sendTotal = $derived(explore.mapSelection?.points ?? hits.length);
+	const orgs = $derived((page.data.me?.orgs ?? []).map((o: { org: string }) => o.org));
 
 	const documents = $derived(explore.browsing ? explore.documents() : null);
 	const docs = $derived(documents?.current?.docs ?? []);
@@ -306,6 +317,17 @@
 		</span>
 
 		<div class="ml-auto flex items-center gap-2">
+			{#if !explore.browsing && hits.length > 0}
+				<Button
+					variant="outline"
+					size="xs"
+					data-testid="send-to-project-open"
+					aria-label="Send to a project"
+					onclick={() => (sendOpen = true)}
+				>
+					<Inbox /><span class="hidden @2xl:inline">Send to a project</span>
+				</Button>
+			{/if}
 			{#if explore.layout === 'table' && explore.browsing}
 				<ColumnsMenu columns={DOC_COLUMNS} shown={docTableCols} ontoggle={toggleDocCol} />
 			{:else if explore.layout === 'table'}
@@ -603,3 +625,13 @@
 		{/if}
 	</div>
 </section>
+
+<SendToProjectDialog
+	bind:open={sendOpen}
+	keys={sendKeys}
+	total={sendTotal}
+	from={{ dataset: ds.id, version: ds.rowTableVersion, mediaKind: ds.mediaKind }}
+	origin={explore.mapSelection ? 'atlas' : 'search'}
+	{orgs}
+	project={projectOf(page.url)}
+/>

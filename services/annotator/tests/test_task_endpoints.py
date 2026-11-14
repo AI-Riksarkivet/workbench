@@ -19,6 +19,7 @@ version of this file's subject, and the ORIGINAL tests asserted the buggy behavi
 
 from __future__ import annotations
 
+import json
 import struct
 from typing import Any
 
@@ -74,11 +75,13 @@ class _FakeActor:
         return self.draft
 
 
-def _app(*, allow: bool, seen: list[dict[str, Any]] | None = None) -> FastAPI:
+def _app(*, allow: bool | set[str], seen: list[dict[str, Any]] | None = None) -> FastAPI:
+    """`allow` is every relation (True), none (False: a stranger), or the relations the caller holds."""
+
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
-        return allow
+        return allow if isinstance(allow, bool) else relation in allow
 
     app = FastAPI()
     register_handlers(app)
@@ -149,9 +152,8 @@ def test_every_edge_checks_the_permission_the_table_declares(state: TaskState, e
     r = client.post("/tasks/t1/events", json={"event": event})
 
     assert r.status_code == 200, r.text
-    assert seen, f"{event} from {state} was not authorized at all"
-    assert seen[0]["relation"] == expected
-    assert seen[0]["user"] == SUBJECT, "the check must use the VERIFIED subject"
+    assert [c["relation"] for c in seen[:2]] == ["can_view", expected], f"{event} from {state} was not authorized as the table says"
+    assert seen[1]["user"] == SUBJECT, "the check must use the VERIFIED subject"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -201,20 +203,42 @@ def test_an_annotator_cannot_waive_review_from_the_request_body(monkeypatch: pyt
     assert "review_required" not in actor.fired[0], "the request body reached the actor's submit decision"
 
 
-def test_a_denied_check_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_viewer_without_the_edges_relation_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
     actor = _FakeActor(_task())
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=False))
+    client = TestClient(_app(allow={"can_view"}))
     r = client.post("/tasks/t1/events", json={"event": "claim"})
     assert r.status_code == 403
     assert actor.fired == [], "the actor was invoked despite the check failing"
 
 
-def test_an_edge_absent_from_the_table_is_409_not_500(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_edge_absent_from_the_table_is_409_to_a_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
     actor = _FakeActor(_task(state=TaskState.UNASSIGNED))
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+    client = TestClient(_app(allow={"can_view"}))
+
     assert client.post("/tasks/t1/events", json={"event": "accept"}).status_code == 409
+
+
+def test_a_stranger_learns_nothing_of_a_task_whether_it_exists_or_which_state_it_is_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Task ids are guessable (`{group}-r{k}`): to someone who may not view a task, an absent one and a real one in any
+    state answer the same bytes, on the read and on an event alike, and no relation or state is named."""
+    tasks = {
+        "t1": _FakeActor(_task(state=TaskState.UNASSIGNED)),
+        "t2": _FakeActor(_task(task_id="t2", state=TaskState.CLAIMED, assignee="dave")),
+        "t3": _FakeActor(_task(task_id="t3", state=TaskState.IN_REVIEW, submitted_by="dave")),
+        "nope": _FakeActor(None),
+    }
+    monkeypatch.setattr(tasks_ep, "_proxy", lambda t: tasks[t])
+    client = TestClient(_app(allow=False))
+
+    reads = {client.get(f"/tasks/{t}").content.replace(t.encode(), b"<id>") for t in tasks}
+    claims = {client.post(f"/tasks/{t}/events", json={"event": "claim"}).content.replace(t.encode(), b"<id>") for t in tasks}
+    statuses = {client.get(f"/tasks/{t}").status_code for t in tasks} | {client.post(f"/tasks/{t}/events", json={"event": "claim"}).status_code for t in tasks}
+
+    assert len(reads | claims) == 1 and statuses == {404}
+    assert json.loads(next(iter(reads)))["detail"] == "No task <id> that you can see"
+    assert all(actor.fired == [] for actor in tasks.values())
 
 
 # --------------------------------------------------------------------------------------------------
@@ -286,25 +310,6 @@ def test_a_draft_save_by_a_non_holder_is_403(monkeypatch: pytest.MonkeyPatch) ->
     assert actor.drafts == []
 
 
-def test_an_unsent_task_is_409_rather_than_a_500(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(None)
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
-    assert client.post("/tasks/t1/events", json={"event": "claim"}).status_code == 409
-
-
-def test_reading_a_task_authorizes_before_returning_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task())
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow=False, seen=seen))
-
-    r = client.get("/tasks/t1")
-
-    assert r.status_code == 403
-    assert seen[0] == {"user": SUBJECT, "relation": "can_view", "obj": "task:t1"}
-
-
 # --------------------------------------------------------------------------------------------------
 # §5.2 rule 5 — nothing escapes a published project
 # --------------------------------------------------------------------------------------------------
@@ -369,7 +374,7 @@ def test_release_is_refused_to_a_non_holder_without_can_manage(monkeypatch: pyte
 
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         seen.append({"relation": relation})
-        return relation == "can_annotate"  # holds the rung, but is not a manager
+        return relation in {"can_view", "can_annotate"}  # holds the rung, but is not a manager
 
     app = FastAPI()
     register_handlers(app)
@@ -569,12 +574,12 @@ def test_an_import_requires_can_annotate(_live_project: Any, monkeypatch: pytest
     actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
     seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow=False, seen=seen))
+    client = TestClient(_app(allow={"can_view"}, seen=seen))
 
     r = client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
 
     assert r.status_code == 403, r.text
-    assert seen[0]["relation"] == "can_annotate"
+    assert seen[1]["relation"] == "can_annotate"
     assert actor.drafts == []
 
 

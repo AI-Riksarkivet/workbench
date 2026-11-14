@@ -29,10 +29,13 @@
 	--accent: oklch(0.94 0.008 250);
 	--accent-foreground: oklch(0.205 0.006 270);
 	--destructive: oklch(0.577 0.245 27.325);
+	--destructive-foreground: oklch(0.985 0 0);
 	--border: oklch(0.915 0.006 260);
 	--input: oklch(0.905 0.008 260);
 	--ring: oklch(0.45 0.18 250);
-	--success: oklch(0.65 0.2 145);
+	/* Each pair 4.5:1 or better (WCAG 2.2 1.4.3), and the colour as text on the background too: white on a dark green,
+	   dark text on the amber. */
+	--success: oklch(0.5 0.14 145);
 	--success-foreground: oklch(0.985 0 0);
 	--warning: oklch(0.75 0.18 75);
 	--warning-foreground: oklch(0.16 0.006 270);
@@ -89,13 +92,15 @@
 	--accent: oklch(0.26 0.01 270);
 	--accent-foreground: oklch(0.985 0 0);
 	--destructive: oklch(0.704 0.191 22.216);
+	--destructive-foreground: oklch(0.16 0.006 270);
 	--border: oklch(1 0 0 / 8%);
 	--input: oklch(1 0 0 / 12%);
 	--ring: oklch(0.68 0.16 250);
-	--success: oklch(0.65 0.2 145);
-	--success-foreground: oklch(0.985 0 0);
+	/* On the dark surfaces the colours are light, with dark text on them. */
+	--success: oklch(0.72 0.17 145);
+	--success-foreground: oklch(0.16 0.006 270);
 	--warning: oklch(0.75 0.18 75);
-	--warning-foreground: oklch(0.985 0 0);
+	--warning-foreground: oklch(0.16 0.006 270);
 	/* Sidebar — reuses the old rail's dark bg for visual continuity */
 	--sidebar: oklch(0.16 0.008 260);
 	--sidebar-foreground: oklch(0.985 0 0);
@@ -127,6 +132,7 @@
 	--color-accent: var(--accent);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
 	--color-border: var(--border);
 	--color-input: var(--input);
 	--color-ring: var(--ring);

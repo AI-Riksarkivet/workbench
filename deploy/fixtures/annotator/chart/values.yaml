@@ -22,11 +22,19 @@ route:
   # The annotator's public base: each door below is published at `<prefix><door>` and rewritten to the service's own
   # `<door>`, so the base is what the browser's DPoP proofs name (`auth.oidc.publicUrl` is the origin and this prefix)
   # and what the app's `/config.json` names as the annotator. Only these doors are published: the job and actor
-  # callbacks stay inside the cluster.
+  # callbacks stay inside the cluster. Every route under them verifies the person's DPoP-bound token and proof
+  # (`services/annotator/tests/test_every_browser_route_verifies_the_person.py`) and asks the project's role for its
+  # action in the workbench's own store.
   prefix: /api/annotator
   doors:
+    # who the reader is, and their organisations
     - /me
+    # a project's annotations, tags and versions (`?project=`)
     - /api/annotations
+    # the project plane: projects, their members, events, adjudications, items and task listing
+    - /projects
+    # one task: its events (claim, submit, review, ...), its draft and imports
+    - /tasks
   # rask's `route.parentRefs`. Required while `enabled`.
   parentRefs: []
   # rask's `route.hostnames`.

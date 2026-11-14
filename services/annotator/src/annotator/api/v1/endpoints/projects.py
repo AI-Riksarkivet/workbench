@@ -14,12 +14,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Path, Query, status
 from pydantic import BaseModel, Field
 
-from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject
+from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, require_view, unseen_project
 from annotator.api.v1.responses import LegalEvent, ProjectDetail, ProjectListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.projects.machines import legal_project_events
@@ -50,6 +51,10 @@ LIST_RELATION = "can_list_projects"
 _LISTING_FANOUT: Final[int] = 16
 
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
+
+#: The project permissions a project's read answers the caller holds: each one an action on its pages is gated on
+#: (`service_kit/governed/auth/model.fga`). `can_view` is implied by the read itself.
+READER_PERMISSIONS: Final[tuple[str, ...]] = ("can_administer", "can_manage", "can_publish", "can_review", "can_annotate", "can_claim", "can_send_items")
 
 
 class CreateProjectRequest(BaseModel):
@@ -170,8 +175,20 @@ async def _undo_create(project_id: str) -> None:
         logger.exception("could not discard project %s after a failed create — its document is orphaned in the actor state store", project_id)
 
 
+class ListedFor(StrEnum):
+    """An action a listing can be narrowed to: only the projects the caller may take it on."""
+
+    SEND_ITEMS = "can_send_items"
+
+
 @router.get("")
-async def list_projects(tenant: Annotated[str, Query(min_length=1)], checker: CheckerDep, subject: CurrentSubject) -> ProjectListing:
+async def list_projects(
+    tenant: Annotated[str, Query(min_length=1)],
+    checker: CheckerDep,
+    authz: AuthorizerDep,
+    subject: CurrentSubject,
+    can: ListedFor | None = None,
+) -> ProjectListing:
     """The tenant's projects — A1's landing read.
 
     Gated on tenant MEMBERSHIP, and a refusal is a 403, never an empty 200: "you may not look"
@@ -190,6 +207,12 @@ async def list_projects(tenant: Annotated[str, Query(min_length=1)], checker: Ch
         raise ForbiddenError(f"{subject} lacks {LIST_RELATION} on {parent}")
 
     listing = await _tenant_actor(tenant).list_projects()
+    ids = [str(project_id) for project_id in listing["project_ids"]]
+    if can is not None and authz is not None:
+        # `?can=` narrows the list to the projects the caller holds that relation on, asked of the store in one call, so
+        # a page offers a project only to someone its door would let act on it.
+        held = set(await authz.list_objects(user=subject, relation=can.value, object_type="project"))
+        ids = [project_id for project_id in ids if f"project:{project_id}" in held]
     gate = asyncio.Semaphore(_LISTING_FANOUT)
 
     async def _document(project_id: str) -> dict[str, Any] | None:
@@ -200,7 +223,7 @@ async def list_projects(tenant: Annotated[str, Query(min_length=1)], checker: Ch
     # propagates the first failure rather than collecting it, which is deliberate: a listing that
     # silently omits a project the caller may see is indistinguishable from one that was deleted, so
     # an unreachable actor must be an error and not a shorter page.
-    docs = await asyncio.gather(*(_document(str(project_id)) for project_id in listing["project_ids"]))
+    docs = await asyncio.gather(*(_document(project_id) for project_id in ids))
     projects = [doc for doc in docs if doc is not None]
     return ProjectListing(projects=[AnnotationProject.model_validate(doc) for doc in projects], total=len(projects))
 
@@ -214,14 +237,17 @@ async def get_project(project_id: ProjectId, checker: CheckerDep, subject: Curre
     machine that drifts. Each event carries the permission that gates it, so the UI can explain a
     disabled action — while the ACTUAL gate stays server-side on the event POST.
     """
-    if not await checker(user=subject, relation="can_view", obj=f"project:{project_id}"):
-        audit(AnnotatorAuditAction.ANNOTATION_PROJECT_GET, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation="can_view")
-        raise ForbiddenError(f"{subject} lacks can_view on project:{project_id}")
+    await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
     doc = await _create_actor(project_id).get()
     if doc is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
     project = AnnotationProject.model_validate(doc)
-    return ProjectDetail(project=project, legal_events=[LegalEvent.model_validate(e) for e in legal_project_events(project.state)])
+    held = await asyncio.gather(*(checker(user=subject, relation=relation, obj=f"project:{project_id}") for relation in READER_PERMISSIONS))
+    return ProjectDetail(
+        project=project,
+        legal_events=[LegalEvent.model_validate(e) for e in legal_project_events(project.state)],
+        permissions=sorted(relation for relation, allowed in zip(READER_PERMISSIONS, held, strict=True) if allowed),
+    )
 
 
 class UpdateOntologyRequest(BaseModel):

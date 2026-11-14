@@ -8,6 +8,7 @@
 	import { resolve } from '$app/paths';
 	import { Button } from '@workbench/ui/button';
 	import { fetchDatasets } from '#lib/api/datasets.api.ts';
+	import { listProjects } from '#lib/api/projects.api.ts';
 	import { linkWith, projectOf } from '#lib/project.ts';
 	import { titleOf } from '#lib/nav.ts';
 
@@ -21,7 +22,16 @@
 	// The project rides every link (`?project=`).
 	const projectQuery = $derived(project === null ? '' : `?${new URLSearchParams({ project })}`);
 	const datasets = $derived(fetchDatasets());
-	const projects = $derived(data.me?.projects.map((p) => p.project) ?? []);
+	// The projects the reader can see, across their organisations: the one chosen is what a send from this
+	// dataset's search or atlas goes into, and what every link keeps (`?project=`).
+	const projectReads = $derived((data.me?.orgs ?? []).map((o) => listProjects({ tenant: o.org })));
+	const projects = $derived(
+		projectReads.flatMap((read) =>
+			read.current?.ok
+				? read.current.data.projects.map((p) => ({ id: p.project_id, name: p.title || p.slug }))
+				: [],
+		),
+	);
 
 	const rows = (tables: Record<string, { row_count: number }>): number =>
 		Object.values(tables).reduce((sum, t) => sum + t.row_count, 0);
@@ -55,10 +65,10 @@
 				onchange={chooseProject}
 			>
 				<option value="">No project</option>
-				{#each projects as id (id)}
-					<option value={id}>{id}</option>
+				{#each projects as p (p.id)}
+					<option value={p.id}>{p.name}</option>
 				{/each}
-				{#if project !== null && !projects.includes(project)}
+				{#if project !== null && !projects.some((p) => p.id === project)}
 					<option value={project} disabled>{project} (none you belong to)</option>
 				{/if}
 			</select>

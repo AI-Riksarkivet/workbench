@@ -20,7 +20,7 @@ router = APIRouter(tags=["identity"])
 
 class OrgStanding(BaseModel):
     #: The organisation (the tenant its projects name).
-    project: str
+    org: str
     role: Literal["admin", "member"]
 
 
@@ -29,27 +29,27 @@ class Me(BaseModel):
     name: str | None = None
     email: str | None = None
     estate_admin: bool
-    projects: list[OrgStanding]
+    orgs: list[OrgStanding]
 
 
 @router.get("/me")
 async def me(caller: CurrentToken, authz: AuthorizerDep) -> Me:
     """The caller and their organisations; anonymous, with every role, when authentication and authorization are off."""
     if caller is None:
-        return Me(sub="anon", estate_admin=authz is None, projects=[])
+        return Me(sub="anon", estate_admin=authz is None, orgs=[])
     claims = caller.claims.model_extra or {}
     admin: list[str] = []
     member: list[str] = []
     if authz is not None:
         admin = await authz.list_objects(user=caller.subject, relation="can_administer", object_type="org")
         member = await authz.list_objects(user=caller.subject, relation="can_list_projects", object_type="org")
-    standing: list[OrgStanding] = [OrgStanding(project=org.removeprefix("org:"), role="admin") for org in admin]
-    standing += [OrgStanding(project=org.removeprefix("org:"), role="member") for org in member if org not in admin]
-    standing.sort(key=lambda s: s.project)
+    standing: list[OrgStanding] = [OrgStanding(org=org.removeprefix("org:"), role="admin") for org in admin]
+    standing += [OrgStanding(org=org.removeprefix("org:"), role="member") for org in member if org not in admin]
+    standing.sort(key=lambda s: s.org)
     return Me(
         sub=caller.subject,
         name=claims.get("name") if isinstance(claims.get("name"), str) else None,
         email=claims.get("email") if isinstance(claims.get("email"), str) else None,
         estate_admin=bool(admin),
-        projects=standing,
+        orgs=standing,
     )

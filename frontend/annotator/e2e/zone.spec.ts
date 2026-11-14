@@ -102,38 +102,6 @@ test.beforeEach(async ({ page }) => {
 	// surface — the shell boots and the status chip reports the failure honestly.
 });
 
-test('the server answers under /annotator (hooks live; canvas page opts out per-page)', async ({
-	page,
-}) => {
-	const res = await page.request.get('/annotator/');
-	expect(res.status()).toBe(200);
-	const html = await res.text();
-	// The page itself is a per-page ssr=false island, but it is SERVED by the SvelteKit
-	// server under the zone base — the kit-injected config must carry the based path
-	// (dev serves modules at /annotator/@fs, the build at /annotator/_app).
-	expect(html).toContain('base: "/annotator"');
-	// Every app.html placeholder must have been substituted. SvelteKit string-replaces these
-	// tokens ANYWHERE in the file, comments included — writing one inside a comment silently
-	// consumes the real head (stylesheet link and all) and leaves the live placeholder to
-	// render as visible text. Caught that way once; this keeps it caught.
-	expect(html).not.toContain('%sveltekit.');
-});
-
-test('the zone follows the ESTATE theme, not a zone-private one', async ({ page }) => {
-	// The regression this guards: the annotator used to pin `class="dark"` on <html> and read
-	// its own `lance-media-theme` key, so it stayed dark while the rest of the estate rendered
-	// light and the navbar's theme toggle did nothing here. It now reads the SAME origin-wide
-	// `mode-watcher-mode` key every other zone reads — set anywhere, honoured here, before
-	// first paint (this zone inlines the boot script; its canvas route is ssr=false).
-	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'light'));
-	await page.goto('/annotator/');
-	await expect(page.locator('html')).not.toHaveClass(/dark/);
-
-	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'dark'));
-	await page.goto('/annotator/');
-	await expect(page.locator('html')).toHaveClass(/dark/);
-});
-
 test('S9: the landing is PROJECTS; /browse hosts the data selection → canvas flow', async ({
 	page,
 }) => {

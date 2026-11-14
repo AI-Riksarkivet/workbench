@@ -61,7 +61,8 @@ def _app(*, grant: set[str], seen: list[dict[str, Any]] | None = None) -> FastAP
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
-        return relation in grant
+        # Every role views the project (`model.fga`: each rung implies `viewer`).
+        return relation in grant or (relation == "can_view" and bool(grant))
 
     app = FastAPI()
     app.include_router(projects_ep.router)
@@ -148,9 +149,10 @@ def test_get_project_carries_legal_events_from_the_machine_tables(wired: Any) ->
     assert seen[0] == {"user": "gina", "relation": "can_view", "obj": "project:p1"}
 
 
-def test_get_project_without_can_view_is_403(wired: Any) -> None:
+def test_a_project_the_reader_may_not_view_reads_as_one_that_does_not_exist(wired: Any) -> None:
     client, _tenant, _seen = wired(grant=set(), projects={"p1": _doc("p1")})
-    assert client.get("/projects/p1").status_code == 403
+    r = client.get("/projects/p1")
+    assert (r.status_code, r.json()["detail"]) == (404, "No project p1 that you can see")
 
 
 def test_get_missing_project_is_404(wired: Any) -> None:

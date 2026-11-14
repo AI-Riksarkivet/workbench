@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { previewModel } from './task-preview.js';
-import type { TaskDraft } from './task-yaml.js';
+import { previewModel } from './task-preview.ts';
+import type { TaskDraft } from './task-yaml.ts';
 
 const cls = (over: Partial<TaskDraft['classes'][number]>): TaskDraft['classes'][number] => ({
 	name: 'x',
