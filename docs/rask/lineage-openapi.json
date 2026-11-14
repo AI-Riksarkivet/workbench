@@ -1,0 +1,1264 @@
+{
+  "components": {
+    "schemas": {
+      "Derived": {
+        "description": "Every table derived from ``table`` that the caller may see, nearest first.\n\n``complete`` is false when the walk stopped at its depth with tables still to follow, or when a derived table is\nhidden from the caller, so an answer that is not everything says so.",
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "derived": {
+            "items": {
+              "$ref": "#/components/schemas/DerivedTable"
+            },
+            "title": "Derived",
+            "type": "array"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "uuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid"
+          }
+        },
+        "required": [
+          "table",
+          "derived",
+          "complete"
+        ],
+        "title": "Derived",
+        "type": "object"
+      },
+      "DerivedTable": {
+        "description": "A table derived from the source, and how many derivation hops from it: 1 for a table a run wrote from the source.\n\n``table`` is the name the table's newest edge was recorded under, and ``uuid`` the uuid the catalog keys it by, or\n``None`` for a table whose events named none.",
+        "properties": {
+          "depth": {
+            "title": "Depth",
+            "type": "integer"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "uuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid"
+          }
+        },
+        "required": [
+          "table",
+          "depth"
+        ],
+        "title": "DerivedTable",
+        "type": "object"
+      },
+      "DlqBacklog": {
+        "description": "The outbox saturation snapshot + the visible at-risk events (#83).\n\n``depth`` / ``oldest_age_seconds`` are the RAW system-health signal (the same numbers the\n``outbox.depth`` gauge alerts on); ``events`` is the governed subset the caller may see (\u2264 depth when\nper-dataset filtering drops events for datasets outside the caller's reach), capped at ``limit``.",
+        "properties": {
+          "depth": {
+            "title": "Depth",
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DlqEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "oldest_age_seconds": {
+            "title": "Oldest Age Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "depth",
+          "oldest_age_seconds",
+          "events",
+          "limit"
+        ],
+        "title": "DlqBacklog",
+        "type": "object"
+      },
+      "DlqEvent": {
+        "description": "One staged-but-not-yet-drained lineage event in the transactional outbox (#83 ops view).\n\nA file's presence in the outbox means \"committed write, lineage not yet confirmed delivered\" \u2014 the\nat-risk set the relay drains. ``parseable=False`` marks a poison object (the relay would drop it): its\nrun_id is the filename, the rest is unknown. A catalog DDL change (a ``DatasetEvent``) names no run, so it\nlists under its staged key too, with its event time and dataset but no type, job or inputs.",
+        "properties": {
+          "event_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Time"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job"
+          },
+          "outputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outputs",
+            "type": "array"
+          },
+          "parseable": {
+            "default": true,
+            "title": "Parseable",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "DlqEvent",
+        "type": "object"
+      },
+      "DlqReplayResponse": {
+        "description": "The result of re-ingesting one staged event (#83): recorded under its key, then dropped.",
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "run_id"
+        ],
+        "title": "DlqReplayResponse",
+        "type": "object"
+      },
+      "EventRecord": {
+        "description": "One ingested OpenLineage event, Marquez-style (summary + the full event with facets).",
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "event": {
+            "additionalProperties": true,
+            "title": "Event",
+            "type": "object"
+          },
+          "event_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Time"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job"
+          },
+          "namespace_uuids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Namespace Uuids",
+            "type": "array"
+          },
+          "outputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outputs",
+            "type": "array"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "table_uuids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Table Uuids",
+            "type": "array"
+          },
+          "unresolved_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Tables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "seq",
+          "event"
+        ],
+        "title": "EventRecord",
+        "type": "object"
+      },
+      "Events": {
+        "description": "A page of the ingested OpenLineage events: oldest first after ``since``, else newest first.\n\n``next_cursor`` after ``?since=``: the ``since`` to pass next, never ``None``; equal to the one sent when\nnothing new is visible. Without ``since`` it pages OLDER as ``?after=`` (keyset over ``seq``), and\n``None`` means no rows below this page.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/EventRecord"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "oldest_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Seq"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "Events",
+        "type": "object"
+      },
+      "FeedProjection": {
+        "description": "A page of the run feed with no per-dataset filter ([[CTL-021]]).\n\nThe cursors and the floor mean exactly what they mean on :class:`Events`, so a walk over either\nbehaves the same; what differs is reach (every warehouse) and width (``ProjectedEvent.event``).",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectedEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "oldest_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Seq"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "FeedProjection",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Liveness": {
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/LivenessStatus",
+            "default": "ok"
+          }
+        },
+        "title": "Liveness",
+        "type": "object"
+      },
+      "LivenessStatus": {
+        "enum": [
+          "ok"
+        ],
+        "title": "LivenessStatus",
+        "type": "string"
+      },
+      "ParkedRuns": {
+        "description": "The runs whose deliveries the parking route keeps, each with how many, for the estate admin ([[LH-148]]).",
+        "properties": {
+          "runs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Runs",
+            "type": "object"
+          }
+        },
+        "title": "ParkedRuns",
+        "type": "object"
+      },
+      "ProjectedEvent": {
+        "description": "One feed row as the unfiltered projection serves it: its seq, and the event cut to what targeting reads.",
+        "properties": {
+          "event": {
+            "additionalProperties": true,
+            "title": "Event",
+            "type": "object"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "event"
+        ],
+        "title": "ProjectedEvent",
+        "type": "object"
+      },
+      "Readiness": {
+        "properties": {
+          "components": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Components",
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadinessStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "Readiness",
+        "type": "object"
+      },
+      "ReadinessStatus": {
+        "enum": [
+          "starting",
+          "ready",
+          "degraded",
+          "unhealthy",
+          "shutting_down"
+        ],
+        "title": "ReadinessStatus",
+        "type": "string"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "OIDC bearer token",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Lance Lineage Service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/admin/dlq": {
+      "get": {
+        "description": "The outbox saturation snapshot + the visible at-risk events (oldest first, capped at ``limit``).\n\n``depth``/``oldest_age_seconds`` are the raw system-health signal; ``events`` is the per-dataset-governed\nsubset the caller may see. Requires an authenticated principal when FGA is on (else the raw depth would\nleak to an anonymous caller); the event list is then filtered by dataset visibility.",
+        "operationId": "list_dlq_admin_dlq_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DlqBacklog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Dlq",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/dlq/parked": {
+      "get": {
+        "description": "The runs whose deliveries the parking route keeps, each with how many, for the estate admin ([[LH-148]]).",
+        "operationId": "list_parked_admin_dlq_parked_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParkedRuns"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Parked",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/dlq/parked/{run_id}/replay": {
+      "post": {
+        "description": "Re-present the deliveries of ``run_id`` the parking route kept, once their cause is fixed ([[LH-148]]).\n\nEach kept CloudEvent goes through the subscription's own ingest (``handle_cloud_event`` under\n:func:`enforce_bus_authz`: the signature over the bytes that arrived, and what the stamped author may record), so\nthis admits nothing the bus refuses, however trusted the operator is. It writes to the feed directly and publishes\nnothing: the run's subscribers heard the original publish, and the feed is what was missing it. Each delivery is\njudged on its own feed row: one the feed then holds is RECOVERED and no longer kept, and one it still lacks stays\nkept, so a run whose START landed while its COMPLETE is still refused keeps the COMPLETE.\n\nThe estate admin's door (:func:`require_parks_replayer`, asked before any kept row is read, so it names no run to\nanyone else).\n\nRaises:\n    TransactionNotFoundError: No delivery of the run is kept.\n    InvalidInputError: A delivery is still refused on re-presentation; it stays kept, and those recovered with it\n        are no longer kept.\n    ServiceUnavailableError: A re-presentation met an outage (an authorization or key-store answer it could not\n        read); what it could not judge stays kept.",
+        "operationId": "replay_parked_admin_dlq_parked__run_id__replay_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DlqReplayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replay Parked",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/dlq/{run_id}/replay": {
+      "post": {
+        "description": "Re-ingest one staged event on demand, re-publish it, then drop it \u2014 the manual twin of the reconcile relay's drain.\n\nA replay IS a re-ingest, so it carries the SAME authz as a fresh ingest, twice over: the relay's gate on\nthe staged bytes (:func:`enforce_bus_authz` \u2014 signature and stamped author) and the ingest door's on the\noperator (:func:`enforce_output_authz` \u2014 ``can_write_data`` on the outputs, ``can_get_metadata`` on the\ninputs, fail-closed). The record is idempotent: every feed row and edge is written under its key. The\nstaged bytes are re-published\nto the lineage topic exactly as the relay re-publishes them, so subscribers hear of the event as well as\nthe feed. The drop is only reached on success \u2014 a failed re-ingest or re-publish leaves the object\nstaged for the relay to retry, and a failed re-publish answers 503 because the feed is already\nrepaired.\n\nNon-disclosure (audit 2026-07-20): replay must not become an oracle for events ``list_dlq`` hid. So a\nrun whose datasets the caller cannot SEE (or an unparseable poison object, which the governed list also\nhides) returns the SAME 404 as a missing run \u2014 never a distinct 422 or a 403 echoing hidden dataset\nnames. Only an event the caller could have listed reaches ``enforce_output_authz``.",
+        "operationId": "replay_dlq_admin_dlq__run_id__replay_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DlqReplayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replay Dlq",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/lineage": {
+      "post": {
+        "description": "Ingest one OpenLineage event \u2014 a ``RunEvent``, or a ``DatasetEvent`` for a change no job performed.\n\nPARSED HERE RATHER THAN BY THE SIGNATURE, so this door and the bus door share ONE discriminator\n(`models.parse_event`). Declaring the body as `RunEvent` is what made a static event 422 before\nany handler ran: [[LIN-004]] moved catalog DDL onto `DatasetEvent` and taught only the bus. The\ncatalog's HTTP emitter is best-effort, so every create it sent lost its provenance in silence \u2014\nmeasured 2026-09-24, three creates, `{\"events\":[]}` in the durable feed, and a governance\nassertion reading `expected lineage creator=..., got None`.\n\nA body that is neither shape raises `RequestValidationError`, which `install_problem_handlers`\nrenders exactly as FastAPI's own 422 \u2014 the wire answer for a malformed payload is unchanged.\n\nThis is the OpenLineage HTTP-transport default path, so any OpenLineage producer\n(our emitter, Airflow, Spark, dbt, \u2026) configured with ``OPENLINEAGE_URL`` pointed\nhere ingests with no glue \u2014 the lightweight-Marquez contract.\n\nWhen OIDC is enabled the ``CurrentToken`` dependency requires a verified bearer token\n(401 otherwise), :func:`~lineage.api.fga_deps.enforce_author` binds the run author to that\ntoken's subject (no self-asserted identity), and :func:`~lineage.api.fga_deps.enforce_output_authz`\nrequires ``can_write_data`` on every output dataset (a producer can't record provenance for a table\nit can't write). Both are no-ops when auth is off.",
+        "operationId": "ingest_event_api_v1_lineage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "A RunEvent, or a DatasetEvent for a dataset change no job performed.",
+                "oneOf": [
+                  {
+                    "additionalProperties": true,
+                    "description": "An OpenLineage run event (START/RUNNING/COMPLETE/FAIL/ABORT) with its inputs and outputs.",
+                    "properties": {
+                      "eventTime": {
+                        "title": "Eventtime",
+                        "type": "string"
+                      },
+                      "eventType": {
+                        "title": "Eventtype",
+                        "type": "string"
+                      },
+                      "inputs": {
+                        "items": {
+                          "additionalProperties": true,
+                          "description": "An OpenLineage dataset (a Lance table / source); ``name`` is the catalog id.\n\n``facets`` carries the standard OpenLineage dataset facets; lineage reads ``version`` (which Lance\nversion a run produced or read), the catalog's ``rask_lance`` facet (the ref an input was read on) and\n``columnLineage`` (whose upstreams the ingest authorizer checks).\n\nThe spec splits dataset metadata across THREE slots, by the facet's base type: plain\n``DatasetFacet``s ride ``facets``, ``InputDatasetFacet``s ride ``inputFacets`` on an input, and\n``OutputDatasetFacet``s ride ``outputFacets`` on an output. The official ``openlineage-python`` client\n(and therefore Spark/Airflow/dbt/Marquez producers) serialises the typed facets into the typed slots,\nNOT into ``facets``; :meth:`facet` looks in all three.",
+                          "properties": {
+                            "facets": {
+                              "additionalProperties": true,
+                              "title": "Facets",
+                              "type": "object"
+                            },
+                            "name": {
+                              "title": "Name",
+                              "type": "string"
+                            },
+                            "namespace": {
+                              "title": "Namespace",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "namespace",
+                            "name"
+                          ],
+                          "title": "Dataset",
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "title": "Inputs",
+                        "type": "array"
+                      },
+                      "job": {
+                        "additionalProperties": true,
+                        "description": "The job that produced a run, on whatever engine its producer ran.\n\n``facets`` carries the standard ``ownership`` (who owns the job) and ``jobType``\n(``processingType`` BATCH/STREAMING, ``integration`` the producer's engine, ``jobType`` = ETL /\nTRANSFORMATION) facets.",
+                        "properties": {
+                          "facets": {
+                            "additionalProperties": true,
+                            "title": "Facets",
+                            "type": "object"
+                          },
+                          "name": {
+                            "title": "Name",
+                            "type": "string"
+                          },
+                          "namespace": {
+                            "title": "Namespace",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "namespace",
+                          "name"
+                        ],
+                        "title": "Job",
+                        "type": "object"
+                      },
+                      "outputs": {
+                        "items": {
+                          "additionalProperties": true,
+                          "description": "An OpenLineage dataset (a Lance table / source); ``name`` is the catalog id.\n\n``facets`` carries the standard OpenLineage dataset facets; lineage reads ``version`` (which Lance\nversion a run produced or read), the catalog's ``rask_lance`` facet (the ref an input was read on) and\n``columnLineage`` (whose upstreams the ingest authorizer checks).\n\nThe spec splits dataset metadata across THREE slots, by the facet's base type: plain\n``DatasetFacet``s ride ``facets``, ``InputDatasetFacet``s ride ``inputFacets`` on an input, and\n``OutputDatasetFacet``s ride ``outputFacets`` on an output. The official ``openlineage-python`` client\n(and therefore Spark/Airflow/dbt/Marquez producers) serialises the typed facets into the typed slots,\nNOT into ``facets``; :meth:`facet` looks in all three.",
+                          "properties": {
+                            "facets": {
+                              "additionalProperties": true,
+                              "title": "Facets",
+                              "type": "object"
+                            },
+                            "name": {
+                              "title": "Name",
+                              "type": "string"
+                            },
+                            "namespace": {
+                              "title": "Namespace",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "namespace",
+                            "name"
+                          ],
+                          "title": "Dataset",
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "title": "Outputs",
+                        "type": "array"
+                      },
+                      "producer": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "title": "Producer"
+                      },
+                      "run": {
+                        "additionalProperties": true,
+                        "description": "A single run of a job. ``facets.rask_author`` carries the OIDC sub when present.",
+                        "properties": {
+                          "facets": {
+                            "additionalProperties": true,
+                            "title": "Facets",
+                            "type": "object"
+                          },
+                          "runId": {
+                            "title": "Runid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "runId"
+                        ],
+                        "title": "Run",
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "eventType",
+                      "eventTime",
+                      "run",
+                      "job"
+                    ],
+                    "title": "RunEvent",
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "description": "An OpenLineage ``DatasetEvent`` \u2014 a dataset change that no job performed.\n\nThe spec calls it \"A Dataset sent within static metadata events\", which is exactly a catalog DDL\nchange: there is no run to name and nothing executed. Its ``\"not\": { \"required\": [\"job\", \"run\"] }``\nrefuses the two TOGETHER rather than either alone \u2014 `required` is satisfied only when every listed\nproperty is present, so a payload carrying just one passes the schema. This model refuses EITHER,\ndeliberately stricter: one of them is enough to make a static change look like something that ran, and\na forwarded graph backend records a run and a job for an operation nobody performed.\n\nTHE FORBIDDEN MEMBERS ARE REFUSED RATHER THAN IGNORED. ``extra=\"allow\"`` keeps this model\nforward-compatible with spec fields it does not read yet, and that same tolerance would accept a\n``run`` as an unread extra \u2014 re-admitting the phantom run through the new door while every test here\npassed.\n\nIt answers ``run_id`` / ``inputs`` / ``outputs`` so the ingest authorizer needs no second\nimplementation: a static change amends no run and reads no input, and the dataset it changed is the\noutput the write check gates on.",
+                    "properties": {
+                      "dataset": {
+                        "additionalProperties": true,
+                        "description": "An OpenLineage dataset (a Lance table / source); ``name`` is the catalog id.\n\n``facets`` carries the standard OpenLineage dataset facets; lineage reads ``version`` (which Lance\nversion a run produced or read), the catalog's ``rask_lance`` facet (the ref an input was read on) and\n``columnLineage`` (whose upstreams the ingest authorizer checks).\n\nThe spec splits dataset metadata across THREE slots, by the facet's base type: plain\n``DatasetFacet``s ride ``facets``, ``InputDatasetFacet``s ride ``inputFacets`` on an input, and\n``OutputDatasetFacet``s ride ``outputFacets`` on an output. The official ``openlineage-python`` client\n(and therefore Spark/Airflow/dbt/Marquez producers) serialises the typed facets into the typed slots,\nNOT into ``facets``; :meth:`facet` looks in all three.",
+                        "properties": {
+                          "facets": {
+                            "additionalProperties": true,
+                            "title": "Facets",
+                            "type": "object"
+                          },
+                          "name": {
+                            "title": "Name",
+                            "type": "string"
+                          },
+                          "namespace": {
+                            "title": "Namespace",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "namespace",
+                          "name"
+                        ],
+                        "title": "Dataset",
+                        "type": "object"
+                      },
+                      "eventTime": {
+                        "title": "Eventtime",
+                        "type": "string"
+                      },
+                      "producer": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "title": "Producer"
+                      }
+                    },
+                    "required": [
+                      "eventTime",
+                      "dataset"
+                    ],
+                    "title": "DatasetEvent",
+                    "type": "object"
+                  }
+                ],
+                "title": "OpenLineage event",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "title": "Response Ingest Event Api V1 Lineage Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ingest Event",
+        "tags": [
+          "ingest"
+        ]
+      }
+    },
+    "/events": {
+      "get": {
+        "description": "The ingested OpenLineage events \u2014 newest first, or FORWARD from ``since`` for a follower.\n\n**Following (LH-472).** ``since=<seq>`` returns the events with a larger seq, oldest first, and\n``next_cursor`` is always the ``since`` to pass next; it equals the one passed when nothing new has\ncommitted. Seq order is commit order (a row's stable Lance row id, assigned when its commit lands; see\n``lineage.services.provenance``), so a follower that always passes\n``next_cursor`` back reads every row it may see exactly once. ``table=`` keeps the rows naming the table that id\nnames now, under every name it has had ([[LH-522]]); ``namespace=`` the rows naming a table directly in that\nnamespace. Each resolves to its uuid as the caller sees it, and a name that resolves to none keeps the rows\nnaming it, or a table under it. The contract a pipeline polls is ``docs/COMMIT-EVENTS.md``.\n\n**Durable** (a Lance table the catalog keeps, shared by every replica) and **governed**: when auth is\non the feed is filtered like the per-dataset reads \u2014 an event is shown only if the caller\n``can_get_metadata`` on *every* dataset it references (and a dataset-less event is hidden), so the\naudit feed never discloses a table outside the caller's reach. Auth off \u2192 pass-through. (#22)\n\nPagination (additive, defaults = the old behavior): ``after`` = keyset cursor (the previous\npage's ``next_cursor``); ``limit`` \u2264 500 (server-capped); ``summary=true`` drops the full\n``event`` payload from the read itself. The governance filter ALWAYS runs before the slice \u2014\npagination can never disclose a hidden row's CONTENT. ``next_cursor`` is a WINDOW FLOOR, not\nnecessarily a visible row's seq (on a hidden-dense page it is the fetch window's last seq \u2014\nexclusive, so the hidden row itself is never returned; bare seq numbers were already inferable\nfrom gaps in the pre-pagination feed, so this adds no new disclosure class \u2014 reviewed\n2026-07-11).",
+        "operationId": "get_events_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "table",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Table"
+            }
+          },
+          {
+            "in": "query",
+            "name": "namespace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Namespace"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "summary",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Summary",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Events"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Events",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/events/projection": {
+      "get": {
+        "description": "The run feed WITHOUT the per-dataset filter, for a notifier walking it ([[CTL-021]]).\n\nWHY A SECOND DOOR RATHER THAN A FLAG ON THE FIRST. `/events` is governed per dataset, which is\nright for a person: an event naming a table you cannot see must not disclose it. It is wrong for a\nSERVICE that has to reconcile the whole estate, and the wrongness is silent in both directions:\nmeasured on this estate 2026-09-09, a run that demonstrably exists answered **404** to a service\nprincipal, and its inputs answered **200 with an empty list**. A walker sees \"nothing here\", and an\nestate with no work looks identical to an estate it cannot see.\n\nTHE SERVICE IS NOT THE DISCLOSURE BOUNDARY, and that is what makes this sound rather than a hole.\nA reconciler reads the feed to decide whom to TELL; the telling is gated per subject at delivery\n(`can_be_notified`) and again at render (`can_get_metadata`), which are the checks that protect a\nperson's inbox. Filtering the reconciler's own view protects nobody and only guarantees it cannot\nfind the events it exists to catch.\n\nGATED ON `can_read_event_feed` AT THE ROOT OBJECT, a rung of its own: `event_reader`, which the\nchart grants the reconciler by name, or the estate owner. Each row carries only\n:func:`targeting_view`, because the holder reads the feed to address people and needs nothing more.\n\nThe cursors are `/events`' own: `since` follows FORWARD, oldest first, and `next_cursor` is the\n`since` to pass next; `after` pages OLDER. `oldest_seq` is reported here too: a follower whose cursor\nfalls below it lost a window to the prune, which is the one signal that distinguishes \"caught up\"\nfrom \"rows went past me\". There is no `summary`: the summary drops the payload, and the payload is\nthe only place a run id lives.",
+        "operationId": "get_events_projection_events_projection_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Events Projection",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/livez": {
+      "get": {
+        "operationId": "livez_livez_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Livez",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/tables/{name}/derived": {
+      "get": {
+        "description": "Every table derived from ``name`` the caller may see, nearest first, to ``depth`` hops.\n\n``name`` resolves to the uuid of the table it names now, and the walk starts there, so it follows what the table\nfed under every name it has had ([[LH-522]]). It starts from the name too, which an outside producer's event keys\nthe table by when its credential could not resolve it: an erasure that reaches further than the table's own\nhistory is the safe direction. ``complete`` is false when the walk stopped short or a derived table is hidden from\nthe caller.",
+        "operationId": "get_derived_tables__name__derived_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 20,
+              "minimum": 1,
+              "title": "Depth",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Derived"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Derived",
+        "tags": [
+          "query"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "."
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v5.0.0"
+hooks = [
+  # A patch's blank context line is one space; bun refuses a hunk these two have stripped.
+  { id = "trailing-whitespace", exclude = "^frontend/patches/" },
+  { id = "end-of-file-fixer", exclude = "^frontend/patches/" },
+  # deploy/ fixtures may hold multi-document manifests and Helm templates.
+  { id = "check-yaml", exclude = "^deploy/" },
+  { id = "check-toml" },
+  { id = "check-added-large-files", exclude = "(^|/)(uv\\.lock|bun\\.lock)$|^docs/rask/" },
+  { id = "check-merge-conflict" },
+]
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.15.13"
+hooks = [
+  { id = "ruff-format" },
+  { id = "ruff", args = ["--fix"] },
+]
+
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.3.0"
+
+[[repos.hooks]]
+id = "conventional-pre-commit"
+stages = ["commit-msg"]
+args = ["feat", "fix", "docs", "refactor", "test", "chore", "perf", "ci", "build", "revert"]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "ty-check"
+name = "ty type check"
+# The ty the root lock pins, the same one `make typecheck` and `dagger call lint` run; VIRTUAL_ENV unset so a worktree
+# resolves its own workspace.
+entry = "env -u VIRTUAL_ENV uv run --frozen ty check"
+language = "system"
+pass_filenames = false
+files = "\\.py$"
+stages = ["pre-commit"]
+
+[[repos.hooks]]
+id = "no-co-authored-by-claude"
+name = "reject Co-Authored-By Claude"
+entry = "sh -c '! grep -qi \"co-authored-by.*claude\" \"$1\"' --"
+language = "system"
+stages = ["commit-msg"]

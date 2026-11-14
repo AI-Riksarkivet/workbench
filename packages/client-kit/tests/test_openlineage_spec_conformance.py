@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
+from lineage.models import ColumnUpstream, Dataset
 
 from client_kit.lancekit import openlineage as lancekit_ol
-from lineage.models import ColumnUpstream, Dataset
 
 
 _SPEC_PATH = Path(__file__).resolve().parents[3] / "tests" / "data" / "openlineage-2-0-2.json"

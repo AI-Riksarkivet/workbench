@@ -1,7 +1,7 @@
 [project]
-name = "rask-workspace"
+name = "workbench"
 version = "0.1.0"
-description = "rask monorepo — uv workspace root (no entry points; deployables build via `uv sync --package <name>`)."
+description = "Workbench uv workspace root (no entry points; deployables build via `uv sync --package <name>`)."
 requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = []
@@ -14,10 +14,9 @@ build-backend = "hatchling.build"
 bypass-selection = true
 
 [tool.uv.workspace]
-# Language-pure directories, so globs are both possible and safe: every dir under packages/ and
-# services/ carries a pyproject.toml. The JS plane lives in frontend/ with its own bun workspace.
-# NOTE: runners/* are deliberately NOT members — sealed model envs whose heavy pins
-# (CUDA torch, model SDKs) must never enter the services' resolution.
+# Language-pure directories, so the globs are safe: every directory under packages/ and services/ carries a
+# pyproject.toml. The JS plane is frontend/, a bun workspace of its own. runners/* are not members: a runner is a sealed
+# model environment with its own lock, whose pins (CUDA torch, model SDKs) must never enter the services' resolution.
 members = ["packages/*", "services/*"]
 
 [dependency-groups]
@@ -25,189 +24,49 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.25",
     "pytest-cov>=7.0",
-    # [server] adds the ThreadedMotoServer that tests/integration/test_moto_s3.py drives
-    # (it needs flask); rask's own suites only ever used the [s3] mock.
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.6",
     "moto[s3,server]>=5.0",
-    # The OpenLineage spec gate (tests/unit/test_openlineage_spec_conformance.py) needs the
-    # client for the authoritative facet _schemaURLs, and jsonschema to validate hand-built
-    # RunEvents against the vendored 2-0-2 core schema. jsonschema resolves as a moto
-    # transitive today — declared because the gate depends on it directly.
-    "openlineage-python>=1.50.0",
-    # respx — the prescribed way to test an outbound HTTPX boundary (writing-python's testing
-    # reference). It intercepts at the TRANSPORT, so an assertion is about the request that would
-    # actually reach the upstream, not about whether our own function was called with the arguments
-    # we then assert it was called with.
     "respx>=0.21",
-    # The bus client the operator-mode NATS rig drives (tests/e2e-py/nats_auth_rig.py): the suite publishes
-    # and subscribes as each bus user directly, because the claim is what the broker admits.
-    "nats-py>=2.15",
-    "jsonschema>=4.26",
-    "duckdb>=1.4",
     "requests>=2.32",
     "ruff",
     "ty",
-    "datasets>=4.8.4",
-    "pylance>=13.0.0",
-    "lancedb>=0.40.0",
-    # The third stock client criterion 2 reads a governed table through (tests/e2e-py/test_the_catalog_is_correct.py):
-    # a distributed read resolves the table through the catalog's namespace, as lancedb's open does.
-    "lance-ray>=0.5.0",
-    # pytest-timeout — the only tool that can DIAGNOSE a hung suite in Dagger, which is where this
-    # suite hangs and a developer box does not. Two dead ends were paid for before it was added, and
-    # both are properties of the environment rather than of the bug:
-    #   · Dagger buffers a `WithExec`'s stdout until the exec COMPLETES, so a run that never finishes
-    #     yields no output at all — not a partial progress line, not the name of the test it stopped
-    #     on. SIGINT gives nothing either.
-    #   · Arming `faulthandler.dump_traceback_later()` from a root conftest does not survive: pytest's
-    #     own faulthandler plugin calls `cancel_dump_traceback_later()` between tests, so it would
-    #     need `-p no:faulthandler` alongside it.
-    # `--timeout-method=thread` dumps every thread's stack and fails the run, so the next hang names
-    # itself instead of being bisected by hand again. Wired into `.dagger/test.go`'s two lanes rather
-    # than into `addopts`: a global ceiling would also bound the model-loading `slow` suites, whose
-    # honest runtime nobody here can measure.
-    "pytest-timeout>=2.3",
-    "pytest-xdist>=3.6",
 ]
 
 [tool.ruff]
 line-length = 160
-# A vulture whitelist is, BY DESIGN, a file of bare names — that is how vulture marks a symbol as
-# used. Every line is an undefined reference to any linter or type checker; it is not real code and
-# is never imported. lance-ns excludes it from ty for the same reason.
-#
-# `lance_docs/` is vendored upstream text (`lance_docs/PROVENANCE.md`): its bytes are the release's, so
-# formatting the Python blocks inside its Markdown would make the copy disagree with the tag it names.
-#
-# `docs/audits/` keeps a measurement script exactly as it was run against a store: it is the evidence the
-# audit's numbers rest on, and it talks to the store raw on purpose (no `storage.s3_client`, a direct
-# `lance.write_dataset`), so production's code-shape bans do not describe it and a reformat would change it.
-extend-exclude = [".vulture-whitelist.py", "lance_docs", "docs/audits"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "S", "C4", "SIM", "RUF", "C901", "RET", "PERF", "FURB", "A", "ANN"]
 ignore = ["S101", "S104", "ANN001", "ANN003", "ANN204", "RET504"]
-# Code-shape rules live here, not in a test that reads source: TID251 enforces the bans in
-# [tool.ruff.lint.flake8-tidy-imports.banned-api] below at every import and attribute use, and FAST001
-# refuses a `response_model=` that restates the route's own return annotation (the parameter exists to
-# say the wire shape DIFFERS from the return type). FAST001 does not fire in a module that postpones
-# annotations (`from __future__ import annotations`; measured on ruff 0.15.13 and 0.16.0), which is 56
-# of the 78 route modules on 2026-09-29, so it guards only the other 22.
 extend-select = ["TID251", "FAST001"]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests legitimately hardcode fixture credentials (S105/S106/S107), drive live endpoints without a
-# client timeout (S113), and use tmp paths (S108) — that is what a fixture IS. rask already exempted
-# S101/ANN2xx here; the lance-ns suites needed the rest of the same family. TID251 is exempt in the
-# tests and scripts trees because both sit outside the platform seams the banned-api rules guard.
-"**/tests/**" = ["TID251", "S101", "S105", "S106", "S107", "S108", "S113", "ANN201", "ANN202", "ANN401", "S608", "S607", "S603", "RUF001"]
-# The media pipeline shells out to ffmpeg/ffprobe with LIST-form argv (never shell=True), which is
-# the safe form S603 cannot distinguish from an unsafe one. Scoped to the two trees that decode
-# media rather than silenced globally.
-# ---- incoming lance-ns trees: rule families lance-ns never enabled -------------------------
-# lance-ns lints with select = [E,F,I,UP,B,SIM,C4] at line-length 110; rask adds W,S,RUF,C901,RET,
-# PERF,FURB,A,ANN at 160, so the freshly-copied trees carry rules their authors never ran. Why each
-# surviving rule is scoped rather than fixed:
-#   A002   — `filter=`, `id=`, `type=` are the LanceDB/lance-namespace PUBLIC parameter names;
-#            renaming them would break the call contract with the library.
-#   ANN401 — `Any` at the boundaries of pyarrow/lance/dapr, none of which ship precise stubs.
-#   RUF002/3 — typographically correct prose (MINUS SIGN, MULTIPLICATION SIGN, EN DASH) in docstrings
-#            and comments; "fixing" it degrades the writing.
-#   RUF100 — the directives it flags are `# noqa: BLE001` (41) and `# noqa: ANN001` (33), each
-#            carrying a written reason on its own line. They are dead only because rask selects
-#            neither BLE nor ANN001, so honouring RUF100 would delete 74 rationale comments to
-#            satisfy a rule about comments. The honest fix is to SELECT `BLE` — which fires 171
-#            further sites estate-wide (measured 2026-09-09) and so is not a lakehouse change.
-#   the rest — C901/E501/PERF401/RUF012/RUF043/SIM108/S608: real, small, and per-glob below.
-#
-# NARROWED PER GLOB 2026-09-09 (§ Q3-37, `open_lakehouse_diff_left.md`), by the same measurement that
-# narrowed `governed/**`: each list holds ONLY the rules with a site in that tree, so adding one back
-# requires naming the site. The 21-rule form suppressed FIVE security rules across the whole lakehouse
-# plane — S110 (try-except-pass), S112 (try-except-continue), S310 (suspicious URL open), S324
-# (insecure hash) and S608 (SQL injection) — and measured rule by rule, four of them had no site
-# anywhere in these six trees and S608 has exactly one, in lineage. A rule suppressing nothing while
-# reading as an accepted exemption is the worst of both: it buys no silence and it pre-forgives the
-# next occurrence. The out-of-scope globs below keep the 21-rule form under the owner's 2026-09-07
-# lakehouse-first ruling; narrowing them needs the same per-tree measurement, not a copied list.
-"services/catalog/**" = ["A002", "ANN401", "RUF002", "RUF003", "RUF043", "RUF100", "C901", "PERF401", "E501"]
-"services/lineage/**" = ["ANN401", "RUF002", "RUF003", "RUF100", "C901", "S608", "E501"]
-"services/maintenance/**" = ["ANN401", "RUF100", "C901", "PERF401", "E501"]
+"**/tests/**" = [
+    "TID251", "A002", "ANN002", "ANN201", "ANN202", "ANN401", "C901", "E501", "PERF401",
+    "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100",
+    "S101", "S105", "S106", "S107", "S108", "S110", "S112", "S113", "S310", "S324", "S603", "S607", "S608", "SIM108",
+]
+"scripts/**" = ["TID251"]
 "services/viewer/**" = ["A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
 "services/search/**" = ["A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
 "services/annotator/**" = ["A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
-# The gate-3 (R19) port of packages/common into service-kit moved the files verbatim, so the same
-# scoped exemption travels with them: the governed/lakehouse/lancekit/media/schemas subtrees plus the
-# four flat modules ported to the base (obs, openlineage, dapr_publish, control_events).
-# packages/common is deleted; its per-file-ignores entry died with it.
-# NARROWED 2026-08-22, and this row is now a DEBT LIST rather than a blanket. `governed/` is the
-# AUTHORIZATION KERNEL, and the 21-rule form suppressed four SECURITY rules there — S110
-# (try-except-pass), S112 (try-except-continue), S324 (insecure hash) and S608 (SQL injection) — none
-# of which fires today. Measured rule by rule: only these four have any site at all, so the other
-# seventeen were suppressing nothing while reading as an accepted exemption for the whole subtree.
-# That mattered because the same subtree was ALSO outside the CI lint scope until this commit
-# (.dagger/checks.go linted `services tests` only), so no automated check read the kernel for the
-# rule classes it most needs. Adding a rule back here now requires saying which site needs it.
+"services/viewer/src/viewer/services/clips.py" = ["S603"]
+"services/viewer/src/viewer/services/audio_prep.py" = ["S603"]
+"services/annotator/src/annotator/projects/proxies.py" = ["TID251"]  # ActorProxy: the proxies module
 "packages/service-kit/src/service_kit/governed/**" = ["ANN401", "ANN202", "C901", "PERF401"]
-# The kernel's measured sites, one file each (2026-11-02, every module under packages/lakehouse-kit/src): the
-# typographic minus sign in `lance_session`'s prose, the two loops PERF401 reads as a comprehension, and the four files
-# whose `# noqa: BLE001` / `SLF001` directives carry their written reason (RUF100, as the note above records).
-"packages/lakehouse-kit/src/lakehouse_kit/lance_session.py" = ["RUF002"]
-"packages/lakehouse-kit/src/lakehouse_kit/object_records.py" = ["PERF401"]
-"packages/lakehouse-kit/src/lakehouse_kit/quality.py" = ["PERF401"]
-"packages/lakehouse-kit/src/lakehouse_kit/commit_turns.py" = ["RUF100"]
-"packages/lakehouse-kit/src/lakehouse_kit/compaction_gate.py" = ["RUF100"]
-"packages/lakehouse-kit/src/lakehouse_kit/features.py" = ["RUF100"]
-"packages/lakehouse-kit/src/lakehouse_kit/history_fences.py" = ["RUF100"]
+"packages/service-kit/src/service_kit/draining.py" = ["TID251"]  # signal: the drain seam
+"packages/service-kit/src/service_kit/arrow_ipc.py" = ["TID251"]  # arrow ipc: the validating decoder
 "packages/client-kit/src/client_kit/lancekit/reader.py" = ["A002"]  # `filter=` is the lance dataset API's own parameter name
 "packages/client-kit/src/client_kit/lancekit/catalog.py" = ["A002"]  # `filter=` is the lance dataset API's own parameter name
 "packages/client-kit/src/client_kit/lancekit/**" = ["ANN401", "C901", "PERF401"]
-# No ANN exemption under media/: `dataset_handle` is the entry point every media and annotator route
-# passes through to reach a dataset, and an untyped return there is an `Any` in every one of them.
 "packages/client-kit/src/client_kit/media/**" = ["E501"]
-# `schemas/**` had the same 21-rule row and NOT ONE of them fired under it — a row that suppressed
-# nothing while implying the subtree needed suppressing. Deleted 2026-08-22 rather than narrowed.
-# `service_kit/obs.py` measured identically and went the same way 2026-09-10.
-"packages/lakehouse-kit/src/lakehouse_kit/dapr_publish.py" = ["ANN401"]
-# TID251: a sealed runner is where a model framework and a workload's own Lance writes belong, outside
-# the platform seams the banned-api rules guard (htr and dummy carry their own ruff config and never
-# read this map).
-"runners/**" = ["TID251", "A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
-# The encoder stub, a self-contained script on the Ray images.
-"scripts/gen_openapi.py" = ["A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
-"tests/**" = ["TID251", "A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501", "S101", "S105", "S106", "S107", "S108", "S113", "S603", "S607"]
-"scripts/**" = ["TID251"]
-"services/viewer/src/viewer/services/clips.py" = ["S603"]
-"services/viewer/src/viewer/services/audio_prep.py" = ["S603"]
-"scripts/harvest_ead.py" = ["ANN", "RET503", "B007"]
-# ---- TID251: the sanctioned sites of the banned-api rules ---------------------------------------
-# A dedicated seam module IS the sanctioned site, so it takes a per-file ignore. Every other sanctioned
-# use takes a LINE-level `# noqa: TID251` at its call site, never a per-file ignore: a per-file ignore
-# waives every ban in the file. Measured: with annotator's projects endpoint per-file-ignored (it is
-# sanctioned for grant_on_create), a raw ActorProxy planted in the same file went unflagged, and
-# maintenance's rebuild may grant tuples but must never revoke them, which only a line-level exemption
-# can express.
 "packages/storage/src/storage/client.py" = ["TID251"]  # boto3: the S3 client seam
 "packages/storage/src/storage/sts.py" = ["TID251"]  # boto3: the STS client seam
-"packages/service-kit/src/service_kit/draining.py" = ["TID251"]  # signal: the drain seam
-"packages/service-kit/src/service_kit/arrow_ipc.py" = ["TID251"]  # arrow ipc: the validating decoder
-"packages/lakehouse-kit/src/lakehouse_kit/lancekit/reader.py" = ["TID251", "A002"]  # decode_arrow_response: the /query reader; `filter=` is the request's own field
-"services/annotator/src/annotator/projects/proxies.py" = ["TID251"]  # ActorProxy: the proxies module
-"services/notifications/src/notifications/proxies.py" = ["TID251"]  # ActorProxy + encode_subject: the proxies module
 
-# The code-shape bans. Each message names the seam a caller goes through instead; the sanctioned sites
-# are the per-file ignores above and the line-level `# noqa: TID251` at each call site.
-# Five `dataclasses.dataclass` noqa lines are DEBT against the Pydantic-only rule, not sanctioned uses:
-# lakehouse_kit/idempotency.py, catalog/api/idempotency.py, catalog/core/lineage_emit.py,
-# maintenance/services/credentials.py and maintenance/services/sweep.py.
-# services/viewer RESTATES this whole map in its own pyproject.toml: a nested banned-api table replaces
-# the root one rather than merging with it (measured, ruff 0.16.0), so a ban added here is added there too.
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses.dataclass".msg = "Structured values are pydantic BaseModel (CLAUDE.md, writing-python)."
 "boto3".msg = "Build S3/STS clients through storage.s3_client / storage.sts_client: a raw boto3 client carries no timeouts."
-"lance.write_dataset".msg = "Lance is written only at the registered write doors (the catalog dataplane)."
-"lance.fragment.write_fragments".msg = "Lance is written only at the registered write doors (the catalog dataplane)."
-"catalog.services.warehouses.put_warehouse".msg = "An unconditional registry put lifts a quarantine; write through the conditional (CAS) path."
-"catalog.services.projects.put_project".msg = "An unconditional registry put lifts a quarantine; write through the conditional (CAS) path."
-"lakehouse_kit.dapr_publish.publish_event".msg = "A publish site is registered deliberately (a line-level noqa): a direct publish skips the outbox or the bounded timeout."
 "signal.signal".msg = "SIGTERM is taken only by service_kit.draining; a second handler replaces the drain."
 "pyarrow.ipc.open_stream".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
 "pyarrow.ipc.open_file".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
@@ -220,21 +79,6 @@ extend-select = ["TID251", "FAST001"]
 "pyarrow.RecordBatchStreamReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
 "pyarrow.RecordBatchFileReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
 "pyarrow.feather".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"service_kit.arrow_ipc.decode_arrow_response".msg = "Only the catalog /query reader may skip the size bound."
-"dapr.actor.ActorProxy".msg = "Build an actor proxy through the service's proxies module: it translates the wire method names."
-"notifications.subjects.encode_subject".msg = "An inbox actor id is derived only in notifications.proxies."
-"service_kit.governed.fga.write_tuples".msg = "Tuple grants happen only at the registered granting sites."
-"service_kit.governed.fga.grant_on_create".msg = "Tuple grants happen only at the registered granting sites."
-"service_kit.governed.fga.seed_ownership".msg = "Tuple grants happen only at the registered granting sites."
-"service_kit.governed.fga.provision".msg = "Only the registered bootstrap may provision an OpenFGA store/model."
-"service_kit.governed.fga.delete_tuples".msg = "Tuple revokes happen only at the registered revoking sites."
-"service_kit.governed.fga.revoke_object_tuples".msg = "Tuple revokes happen only at the registered revoking sites."
-"service_kit.governed.fga.commit_unless_changed".msg = "Arbitrated tuple writes happen only at the registered sites."
-"service_kit.governed.fga.hierarchy_edge_tuples".msg = "Hierarchy edges are seeded only by fga.py."
-"torch".msg = "No model framework in a shared seam: models live in sealed runners/."
-"pyannote".msg = "No model framework in a shared seam: models live in sealed runners/."
-"nats".msg = "No service talks to the broker directly: events ride Dapr pub/sub."
-"ray_kit.await_success".msg = "Poll a Ray job through the shared submit-or-reattach kernel."
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
@@ -245,37 +89,15 @@ indent-style = "space"
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
-# COMPLETE, and it is meant to stay that way: every first-party import name on disk is here — the
-# seven code-shipping packages (client_kit, lakehouse_kit, lineage_kit, ray_cluster_env, ray_kit, service_kit, storage) and
-# the services. A missing name is not a metadata gap: ruff sorts that module into
-# the THIRD-PARTY block, so `from catalog.core.config import ...` sat beside `import httpx` in every
-# file that imported it.
-#
-# This list carried nine of the names for a long time, and the comment here explained why: adding
-# the missing ten turns one I001 into hundreds, because a name changes which block ruff sorts it into
-# and every importer of it re-sorts. That was true — the pass measured 465 I001s across 391 files —
-# and it is why the fix was always "do it as a PASS": add every name, then
-# `uvx ruff check --select I --fix` once. Done 2026-08-30 (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit").
-#
-# ADD A NEW MEMBER'S IMPORT NAME HERE IN THE SAME CHANGE that creates it (adding-a-package.md step 4).
-# One name at a time is cheap; ten at once is a repo-wide re-sort.
+# Every first-party import name: one missing sorts into the third-party block. Add or remove a name in the change that
+# adds or deletes its member.
 known-first-party = [
     "annotator",
-    "catalog",
     "client_kit",
-    "compute",
     "flows",
-    "lakehouse_kit",
-    "lineage",
-    "lineage_kit",
-    "maintenance",
-    "notifications",
-    "ray_cluster_env",
-    "ray_kit",
     "search",
     "service_kit",
     "storage",
-    "table_maintenance",
     "viewer",
 ]
 
@@ -284,89 +106,27 @@ error-on-warning = true
 
 [tool.ty.environment]
 python-version = "3.13"
-# `tests/e2e-py` is a FLAT helper directory, not a package: its own conftest puts it on `sys.path` so
-# the live suites can `import topology` / `import liveness` by bare name. A unit test exercising one of
-# those helpers makes the same insert at runtime, and without this ty resolves the import against the
-# repo root only and calls it unresolved — a diagnostic about the checker's search path rather than
-# about the code, and exactly the kind that gets silenced with the `type: ignore` this estate bans.
-extra-paths = ["tests/e2e-py"]
 
 [tool.ty.src]
-# ty otherwise walks these and reports on code we neither own nor can fix:
-#   .venv        — third-party site-packages (lance, ray.serve) — 38 diagnostics
-#   runners/     — sealed model envs, deliberately outside the fleet's resolution
-exclude = [
-    # A vulture whitelist is a file of BARE NAMES by design — every line is an unresolved
-    # reference to a type checker. lance-ns excludes it for the same reason.
-    # Globbed, not bare: a bare name matches only the ROOT copy, and a git worktree under
-    # .claude/worktrees carries its own — which is how 199 diagnostics from a sibling branch
-    # once blocked every commit in this repo.
-    "**/.vulture-whitelist.py",
-    "**/.venv",
-    "**/node_modules",
-    # A worktree is a COMPLETE second checkout living inside this one. Walking it type-checks
-    # another branch's code — including its `runners/`, which the entry below only excludes at
-    # the root — and reports failures nobody on this branch can fix.
-    "**/.claude/worktrees",
-    "runners",
-    # foreign code, regenerated on upgrade, gitignored for the same reason.
-    "api",
-]
+exclude = ["**/.venv", "**/node_modules", "**/.claude/worktrees", "runners"]
 
 [tool.pytest.ini_options]
-# tests/e2e-py holds the LIVE suites (they need a deployed stack): collectable here so they can
-# never silently vanish from the gate (tests/unit/test_e2e_collection_gate.py asserts it), but
-# excluded from offline runs via `-m "not e2e"` (make test / test-slow), the same way `slow` is.
-# tests/e2e-py/conftest.py force-applies the e2e marker to every item collected under it.
-# GLOBS, so a workspace member's `tests/` is collected the moment it exists: with an explicit list,
-# adding the directory is a separate act from adding the file, and a suite outside the list is green by
-# absence (measured 2026-08-09: three landed regression suites in services/catalog and services/lineage
-# had never run). pytest expands a glob in `testpaths` (measured, pytest 9.1.1).
-testpaths = ["packages/*/tests", "services/*/tests", "tests/unit", "tests/integration", "tests/e2e-py"]
-# NO `--cov` HERE. It ran on EVERY pytest invocation in the estate and nothing read the result: no
-# `fail_under`, no xml report, no artifact upload, no threshold in `ci.yml` or `.dagger/` — so the
-# measurement was pure cost on the merge path and on every local run. `make coverage` computes it when
-# somebody wants it, against a denominator that is now correct (see [tool.coverage.run] below).
+# Globbed, so a member's tests/ runs the moment it exists; a new top-level tests/<x>/ is added here by hand.
+testpaths = ["packages/*/tests", "services/*/tests"]
 addopts = "--import-mode=importlib"
-# A parametrize over an empty list is a collection error, never a skip: a test whose cases come off a walk (the routes,
-# the rendered chart) that finds nothing asserts nothing, and as a skip it reads as one more line in the summary. Measured
-# 2026-10-31 over all 5,083 collected tests: one module hit it, the maintenance-verb owner gate, whose walk found no route.
+pythonpath = ["."]
 empty_parameter_set_mark = "fail_at_collect"
+strict_markers = true
 markers = [
-    "slow: marks tests requiring real models or long runtimes (deselect with '-m \"not slow\"')",
-    "e2e: live end-to-end suites needing a running/deployed stack (deselect with '-m \"not e2e\"'; run via make e2e-ci / the per-suite targets)",
-    # per-suite selectors used by the e2e make targets (e.g. `pytest -m cas`); all of them ALSO carry e2e
-    "annotator: the annotator driven from its own release through the lakehouse's public doors (XC-167): its own roles, a person's annotation through the catalog, a publish as its own account (needs LANCE_E2E_ANNOTATOR_URL)",
-    "byo_branch: a stock client's commits on a branch on the live estate, each staged on the table's vended credential and judged at version/create (LH-490)",
-    "byo_erasure: an erasure drill on the live estate: the obligation recorded, a bring-your-own job's rewrites through version/create, the catalog's verification (LH-493)",
-    "byo_pipeline: a bring-your-own pipeline end to end on the live estate: stock writes, provenance, the tag gate, the commit feed (LH-478)",
-    "cas: object-store conditional-write (CAS) e2e",
-    "chaos: criterion 5's dependency-outage drills (XC-095): each takes one dependency of the release down, so they are deselected unless the run passes --chaos",
-    "compaction: compaction/GC sweep e2e",
-    "edge: each public /api prefix reaches its service through the cluster Gateway and is refused there anonymously (needs RASK_E2E_EDGE_URL)",
-    "media_catalog: annotator/catalog live-mode e2e",
-    "nats_auth: operator-mode NATS admits each bus client only to its own subjects (run by `dagger call nats-auth`, which provides the broker, nsc and daprd)",
-    "observability: observability (OTLP/Greptime) e2e",
-    "phase1: Phase 1's acceptance (XC-090): one drive of the bring-your-own scenario (`byo_scenario`), its own claims, and one module per criterion read off that drive; criterion 1, provenance, is XC-091, criterion 2, the catalog, is XC-092, criterion 4, events, is XC-094, and criterion 5, resilience, is XC-095, whose drills also carry `chaos`; criterion 3, no engine, is the import contracts `make lint-imports` runs, on a release the e2e-stack lane installs with no engine",
-    "rustfs_provisioning: the scoped-users hook's provisioning script against a real RustFS (run by `dagger call rustfs-provisioning`, which binds a throwaway store; XC-163)",
-    "soak: Phase 1's soak (XC-090): a drive an acceptance run kept with --keep-drive, read again a day later; deselected unless the run names that drive with --soak",
-    "track_a: Track A acceptance e2e (tier contract, gate/publish symmetry, branch isolation) against a live catalog",
+    "e2e: suites needing a running stack and a reachable rask lakehouse (deselect with '-m \"not e2e\"')",
+    "slow: tests that load a model or a large fixture",
+    "annotator: the annotator's suites against a live stack",
+    "media_catalog: the media services against a live catalog",
 ]
 
 [tool.coverage.run]
 branch = true
-# The two workspace directories, read with `[tool.coverage.report] include_namespace_packages` below.
-# Every member is a src-layout project with no `__init__.py` between the workspace directory and its
-# package, so without that flag coverage.py's unexecuted-file discovery prunes the tree at the first
-# directory lacking one and the denominator becomes "files some test happened to import" (measured on
-# a single package's test run: 3 files discovered, against 427 with the src roots named). With it,
-# discovery walks every member: measured 2026-09-29 with coverage 7.15.2 on one package's test run,
-# all 545 tracked `src/**/*.py` files and no other file, and a new member joins the denominator with no
-# edit here.
 source = ["services", "packages"]
-# `**/__init__.py` is not omitted: several members keep real implementation in `__init__.py` (an app
-# factory, a route table), and omitting the marker files deleted 409 statements across 69 files from
-# the report. An empty marker contributes 0 statements and costs nothing.
 omit = ["**/tests/*"]
 
 [tool.coverage.report]

@@ -17,7 +17,7 @@ from lance_namespace import QueryTableRequest
 
 from client_kit.lancekit.absence import reads_as_absent
 from client_kit.lancekit.catalog import CatalogVersion, NamespaceCatalogTransport, connect_catalog
-from service_kit.arrow_ipc import decode_arrow_response  # noqa: TID251 - the client's /query reader, as the lakehouse's is
+from service_kit.arrow_ipc import decode_arrow_response
 from service_kit.exceptions import NotFoundError
 
 

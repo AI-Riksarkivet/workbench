@@ -1,0 +1,73 @@
+{
+  "enabledPlugins": {
+    "writing-python@ra-skills": true,
+    "writing-typescript@ra-skills": true,
+    "fastapi@ra-skills": true,
+    "testing-python@ra-skills": true,
+    "python-infrastructure@ra-skills": true,
+    "otel@ra-skills": true,
+    "dagger@ra-skills": true,
+    "dockerfile@ra-skills": true,
+    "zensical-setup@ra-skills": true,
+    "zensical-authoring@ra-skills": true,
+    "toolkit-skills@claude-code-toolkit": true,
+    "mcp-essentials@claude-code-toolkit": true,
+    "analytics@claude-code-toolkit": true,
+    "astral@astral-sh": true,
+    "svelte-skills@svelte-skills-kit": true,
+    "redis-development@claude-plugins-official": true,
+    "hf-cli@huggingface-skills": true,
+    "huggingface-trackio@huggingface-skills": true,
+    "shadcn-svelte@ra-skills": true,
+    "playwright-cli@ra-skills": true,
+    "gsap@ra-skills": true,
+    "architecture-diagram@ra-skills": true,
+    "svelte-flow@ra-skills": true,
+    "dapr-skills@diagrid-labs": true,
+    "mattpocock-skills@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "ra-skills": {
+      "source": {
+        "source": "github",
+        "repo": "AI-Riksarkivet/ra-skills"
+      }
+    },
+    "claude-code-toolkit": {
+      "source": {
+        "source": "github",
+        "repo": "spences10/claude-code-toolkit"
+      }
+    },
+    "astral-sh": {
+      "source": {
+        "source": "github",
+        "repo": "astral-sh/claude-code-plugins"
+      }
+    },
+    "svelte-skills-kit": {
+      "source": {
+        "source": "github",
+        "repo": "spences10/svelte-skills-kit"
+      }
+    },
+    "huggingface-skills": {
+      "source": {
+        "source": "github",
+        "repo": "huggingface/skills"
+      }
+    },
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "diagrid-labs": {
+      "source": {
+        "source": "github",
+        "repo": "diagrid-labs/dapr-skills"
+      }
+    }
+  }
+}

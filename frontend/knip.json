@@ -8,7 +8,25 @@
 		"make"
 	],
 	"workspaces": {
-		"microfrontends/*": {
+		"explorer": {
+			"entry": [
+				"src/**/*.remote.ts",
+				"src/**/*.server.ts",
+				"server.ts",
+				"e2e/**/warmup.setup.ts",
+				"e2e/**/mock-*.ts"
+			]
+		},
+		"annotator": {
+			"entry": [
+				"src/**/*.remote.ts",
+				"src/**/*.server.ts",
+				"server.ts",
+				"e2e/**/warmup.setup.ts",
+				"e2e/**/mock-*.ts"
+			]
+		},
+		"studio": {
 			"entry": [
 				"src/**/*.remote.ts",
 				"src/**/*.server.ts",
@@ -23,14 +41,6 @@
 			],
 			"project": [
 				"src/**/*.{ts,js,svelte}"
-			]
-		},
-		"packages/zone-contract": {
-			"entry": [
-				"src/**/*.test.ts"
-			],
-			"project": [
-				"src/**/*.ts"
 			]
 		},
 		"packages/engine": {

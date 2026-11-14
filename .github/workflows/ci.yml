@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'branch' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [lint, test, frontend-check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/dagger
+      - name: dagger call ${{ matrix.gate }}
+        env:
+          DAGGER_NO_NAG: "1"
+        run: dagger call ${{ matrix.gate }}
