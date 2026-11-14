@@ -236,6 +236,8 @@ class RunJob(RunRequest):
 
     serve_url: str
     serve_timeout: float = 180.0
+    #: Where the service's Serve credential is mounted; the path rides the job, the token is read at each call.
+    serve_token_file: str | None = None
     #: The project the run belongs to: its roles decide who may read and stop it.
     project: str
 
@@ -335,3 +337,26 @@ class NodeJob(BaseModel):
     serve_url: str
     #: Per-call budget in seconds, carried for the same reason as the origin.
     serve_timeout: float = 180.0
+    #: Where the service's Serve credential is mounted, carried for the same reason; the token is read at the call.
+    serve_token_file: str | None = None
+
+
+class InferenceTooLargeError(DomainError):
+    """An inference body over the door's ceiling, by its declared length or by what it carried."""
+
+    status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    title = "Payload Too Large"
+
+
+class ServeAppHasNoIngressError(DomainError):
+    """Serve answered 405: the app at that route has no HTTP handler, so a POST can never reach it."""
+
+    status_code = HTTPStatus.NOT_IMPLEMENTED
+    title = "Not Implemented"
+
+
+class ServeUpstreamError(DomainError):
+    """Serve answered the inference with an error of its own."""
+
+    status_code = HTTPStatus.BAD_GATEWAY
+    title = "Bad Gateway"

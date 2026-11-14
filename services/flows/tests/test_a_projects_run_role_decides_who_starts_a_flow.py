@@ -6,10 +6,15 @@ written as the annotator's create and members doors write them. Every outbound H
 router that passes only the identity provider: nothing in the path asks a lakehouse what a person may do.
 
 Project p1: carol owns it, fay annotates, gus views it. Fay annotates project p2 too.
+
+The studio's inference door spends the same compute a flow's model node does, so it takes the same run role, and calls
+Serve as the service, with the service's own token, at the app and path the request names and nowhere else on the Serve
+host.
 """
 
 from collections.abc import Iterator
 
+import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
@@ -34,7 +39,15 @@ class _Person:
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider, openfga_store: OpenFgaStore) -> Iterator[TestClient]:
+def outbound(oidc_provider: Provider) -> Iterator[respx.MockRouter]:
+    """Every outbound call the app makes: the identity provider passes, anything else must be routed by the test."""
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as router:
+        router.route(host="127.0.0.1", port=int(oidc_provider.issuer.rsplit(":", 1)[1])).pass_through()
+        yield router
+
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider, openfga_store: OpenFgaStore, outbound: respx.MockRouter) -> Iterator[TestClient]:
     for name, value in {
         "WORKBENCH_OIDC_ENABLED": "true",
         "WORKBENCH_OIDC_ISSUER": oidc_provider.issuer,
@@ -55,10 +68,8 @@ def client(monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider, openfga_sto
         ("user:keycloak~fay", "annotator", "project:p2"),
     )
     app = make_service_app(title="flows", routers=[router], lifespan=make_lifespan)
-    with respx.mock(assert_all_mocked=True, assert_all_called=False) as outbound:
-        outbound.route(host="127.0.0.1", port=int(oidc_provider.issuer.rsplit(":", 1)[1])).pass_through()
-        with TestClient(app) as test_client:
-            yield test_client
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 def _start(client: TestClient, person: _Person, project: str) -> tuple[int, dict[str, object]]:
@@ -90,3 +101,30 @@ def test_a_run_is_read_by_its_projects_read_role_and_by_no_other_project(client:
     assert (by_viewer.status_code, by_viewer.json()["project"]) == (200, "p1")
     assert by_stranger.status_code == 403
     assert as_another_project.status_code == 404
+
+
+def test_inference_takes_the_run_role_and_reaches_only_the_named_app(client: TestClient, oidc_provider: Provider, outbound: respx.MockRouter) -> None:
+    serve = outbound.post("http://serve.invalid:8000/gemma/v1/chat", params={"name": "page-1"}).respond(
+        200, content=b"<alto/>", headers={"content-type": "application/xml"}
+    )
+    fay, gus = _Person(oidc_provider, "fay"), _Person(oidc_provider, "gus")
+    door = "/api/flows/projects/p1/infer"
+
+    answers: list[httpx.Response] = []
+
+    def infer(person: _Person, query: str) -> tuple[int, bytes]:
+        answer = client.post(f"{door}?{query}", content=b"\xff\xd8page", headers={**person.headers("POST", door), "content-type": "image/jpeg"})
+        answers.append(answer)
+        return answer.status_code, answer.content
+
+    inferred = infer(fay, "app=gemma&path=/v1/chat&name=page-1")
+    by_viewer = infer(gus, "app=gemma&path=/v1/chat&name=page-1")
+    escaping = infer(fay, "app=gemma&path=/v1/../admin")
+
+    assert inferred == (200, b"<alto/>")
+    assert serve.call_count == 1
+    assert serve.calls.last.request.content == b"\xff\xd8page"
+    assert serve.calls.last.request.headers["authorization"] == "Bearer flows-sa-token"
+    assert (answers[0].headers["content-type"], answers[0].headers["x-content-type-options"]) == ("application/xml", "nosniff")
+    assert by_viewer[0] == 403
+    assert escaping[0] == 400

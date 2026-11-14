@@ -28,6 +28,10 @@ from fastapi.routing import APIRoute
 EXEMPT: dict[tuple[str, str], str] = {
     ("GET", "/livez"): "process liveness — dependency-free by contract",
     ("GET", "/readyz"): "readiness — lifecycle-gated, no corpus content",
+    ("GET", "/api/signed-media/{token}"): (
+        "a media element sends no token: the URL's signature, minted by the gated signing door after the person's own "
+        "read of the cell, is its credential, and the viewer reads exactly that cell as itself"
+    ),
     ("GET", "/api/health"): (
         "recorded ALWAYS-200 contract (the 2026-07-28 red-dot regression) — authentication is SOFT: an absent "
         "token reads the corpus facts anonymously, which the lakehouse refuses, and the probe still answers"

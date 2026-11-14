@@ -56,6 +56,13 @@ class AppState(BaseModel):
     # byte ceiling without re-measuring every entry. The atlas payload is `bytes`, so the size is
     # EXACT rather than the estimate the search cache has to make.
     points_cache: dict[tuple[str, str, int], tuple[bytes, int]] = Field(default_factory=dict)
+    # The build of each payload in flight, so callers asking for the same cold payload at once await one build
+    # (viewer.api.v1.endpoints.atlas); only the app's event loop touches it and `points_cache`.
+    points_flights: dict[tuple[str, str, int], Any] = Field(default_factory=dict)
+    # The viewer's own opens of the tables its signed media URLs name (viewer.services.signed_media.ServiceReads), made on
+    # first use under the lock.
+    service_reads: Any | None = None
+    service_reads_lock: Any = Field(default_factory=threading.Lock)
     # Version-keyed search result cache (search.services.result_cache): keyed
     # (dataset, table-version signature, query hash) → (the query's hits, their
     # approximate byte size — carried so eviction can honour the byte ceiling

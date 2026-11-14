@@ -5,11 +5,8 @@
  * Two upstreams, one process (their paths never collide, so `SEARCH_API` and `ANNOTATOR_PROJECTS_API`
  * both point here):
  *
- *   - the SEARCH service — `GET/POST /api/search`. It stays a `+server.ts` (the POST carries a File),
- *     but its RESPONSE is Arrow IPC now, and the encoder lives in the zone. Mocking the SERVICE rather
- *     than the browser fetch is what makes the promotion testable at all: a `page.route` stub would
- *     replace the very route under test, so the suite would prove nothing about the bytes the zone
- *     actually sends. Seed rows here and the real route encodes them.
+ *   - the SEARCH service — `GET/POST /api/search`, which answers its hits as one Arrow IPC stream of
+ *     rows. A spec seeds the rows as JSON and this answers them on the service's wire (`arrow-rows.ts`).
  *   - the ANNOTATOR's projects plane — `/projects*`, which the send-to-project dialog now reaches
  *     through `projects.remote.ts` instead of a BFF passthrough.
  *
@@ -25,6 +22,7 @@
  * parallel, and every test in it resets its own world in `beforeEach`. A second seeding file would have
  * to key by something — which is exactly why the reason is written down here rather than assumed.
  */
+import { rowsToArrowIPC } from './arrow-rows';
 import { MOCK_SERVICES_PORT } from './ports';
 
 type Body = Record<string, unknown>;
@@ -72,8 +70,14 @@ Bun.serve({
 		// Prometheus' `status: "success"` — and key-presence detection turned every such body into
 		// `new Response(body, {status: 'success'})`, which throws RangeError and answers HTTP 500. The
 		// sibling mocks all fixed this after it bit them; this one was missed.
-		return h && typeof h === 'object' && typeof h.status === 'number'
-			? json(h.body ?? {}, h.status)
-			: json(hit);
+		if (h && typeof h === 'object' && typeof h.status === 'number')
+			return json(h.body ?? {}, h.status);
+		if (url.pathname === '/api/search' && Array.isArray(hit)) {
+			const bytes = rowsToArrowIPC(hit as Record<string, unknown>[]);
+			return new Response(bytes.slice().buffer as ArrayBuffer, {
+				headers: { 'content-type': 'application/vnd.apache.arrow.stream' },
+			});
+		}
+		return json(hit);
 	},
 });

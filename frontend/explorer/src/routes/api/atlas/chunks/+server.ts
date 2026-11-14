@@ -1,18 +1,14 @@
 import { env } from '$env/dynamic/private';
-import { makeArrowRowsProxy } from '$lib/server/rows-arrow';
+import { KEEP_API_PREFIX, makeBackendProxy } from '@workbench/api/bff';
 
-// Explicit POST route: the atlas selection's batched row fetch (`{ rowids }` → rows) — a read spelled
-// as a POST (the rowid list outgrows a query string). Bearer-forwarding, fail-closed without a session
-// on an auth-enabled stack; GETs ride the /api catch-all.
-//
-// The RESPONSE is Arrow IPC (the transport ruling's first promotion): a lasso hands back up to 1000 full
-// corpus rows, which was the estate's clearest `list[dict]` offender. The request shape is unchanged and
-// so is every credential; only the success body is columnar now, decoded in `@workbench/explorer-api` with the
-// same `tableFromIPC` the atlas projection beside it already uses.
+// Explicit POST route: the atlas selection's batched row fetch (`{ rowids }` → rows), a read spelled as
+// a POST because the rowid list outgrows a query string. Fail-closed without a session on an
+// auth-enabled stack; GETs ride the /api catch-all. The viewer answers one Arrow IPC stream of rows
+// (`service_kit.arrow_rows`), forwarded as it came.
 const VIEWER_API = env.VIEWER_API ?? 'http://localhost:8101';
 
-export const POST = makeArrowRowsProxy({
+export const POST = makeBackendProxy({
 	backendUrl: VIEWER_API,
-	path: '/api/atlas/chunks',
+	stripPrefix: KEEP_API_PREFIX,
 	requireSession: true,
 });

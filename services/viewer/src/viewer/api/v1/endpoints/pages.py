@@ -49,10 +49,11 @@ from client_kit.lancekit.blobs import is_blob_field
 from client_kit.lancekit.catalog import bounded, connect_namespace, translate_catalog_errors
 from client_kit.lancekit.predicate import eq
 from client_kit.media.deps import StateDep
+from client_kit.media.state import AppState
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import CallerDep
-from viewer.api.v1.endpoints.media import MAX_BUFFERED_BLOB_BYTES, _handle_size, _stream_handle
+from viewer.api.v1.endpoints.media import MAX_BUFFERED_BLOB_BYTES, _handle_size, _stream_handle, served_media_type
 
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,7 @@ def sniff_media_type(payload: bytes) -> str:
     return "application/octet-stream"
 
 
-def _open(state: StateDep, table: str, caller: LakehouseCaller) -> lance.LanceDataset:
+def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lance.LanceDataset:
     """Open a catalog table by its id (``acme$bronze$pages``), through the namespace as the caller.
 
     THROUGH THE CATALOG, never a caller-supplied URI. Taking an ``s3://`` parameter would let a caller point this
@@ -295,7 +296,7 @@ async def list_pages(
     megabytes to render a contact sheet; the browser fetches each page's bytes from ``/api/page``,
     which the ``<img>`` tag streams on demand.
     """
-    ds = await run_in_threadpool(_open, state, table, caller)
+    ds = await run_in_threadpool(open_page_table, state, table, caller)
     rows, descriptors = await run_in_threadpool(_page_rows, ds, limit)
     pages: list[Page] = []
     for i in range(rows.num_rows):
@@ -345,9 +346,10 @@ async def get_page(
     a governed row whose payload is genuinely zero bytes is present, and this route's absence signal
     is the null above.
     """
-    ds = await run_in_threadpool(_open, state, table, caller)
-    blob, size, media_type = await run_in_threadpool(_take_page, ds, table, page_id)
-    headers = {"Cache-Control": "public, max-age=300"}
+    ds = await run_in_threadpool(open_page_table, state, table, caller)
+    blob, size, sniffed = await run_in_threadpool(_take_page, ds, table, page_id)
+    media_type, safety = served_media_type(sniffed)
+    headers = {"Cache-Control": "public, max-age=300", **safety}
     if size > MAX_BUFFERED_BLOB_BYTES:
         return StreamingResponse(
             _stream_handle(blob, size),

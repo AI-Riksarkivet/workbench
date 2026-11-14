@@ -77,6 +77,28 @@ def _public_url(request: Request, settings: Any) -> str:
     return f"{public_url.rstrip('/')}{path}"
 
 
+#: The principal key the lakehouse sees this service read as, on its own client-credentials token.
+SERVICE_SUBJECT: Final = "workbench-service"
+
+
+def lakehouse_service_caller(request: Request, settings: Any) -> LakehouseCaller:
+    """This service as the lakehouse reads it: its own client-credentials token (`LakehouseTokens.for_service`), or no
+    token on a local directory catalog, which authenticates nobody. No person's token is held or used.
+
+    Raises:
+        ServiceUnavailableError: the service reads a lakehouse catalog and names no confidential client.
+    """
+    tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
+    if tokens is None:
+        if getattr(settings, "catalog_uri", None):
+            raise ServiceUnavailableError(
+                "this service names no confidential client to read the lakehouse as itself: set WORKBENCH_OIDC_CLIENT_ID, "
+                "WORKBENCH_OIDC_CLIENT_SECRET_FILE and WORKBENCH_LAKEHOUSE_AUDIENCE"
+            )
+        return LakehouseCaller(subject=SERVICE_SUBJECT)
+    return LakehouseCaller(subject=SERVICE_SUBJECT, token=tokens.for_service)
+
+
 class AuthDeps:
     """The dependencies one service's routes annotate with."""
 
@@ -196,4 +218,14 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
     )
 
 
-__all__ = ["ALLOW_ALL", "ANONYMOUS_CALLER", "ANONYMOUS_SUBJECT", "AuthDeps", "FgaChecker", "LakehouseCaller", "make_auth_deps"]
+__all__ = [
+    "ALLOW_ALL",
+    "ANONYMOUS_CALLER",
+    "ANONYMOUS_SUBJECT",
+    "SERVICE_SUBJECT",
+    "AuthDeps",
+    "FgaChecker",
+    "LakehouseCaller",
+    "lakehouse_service_caller",
+    "make_auth_deps",
+]

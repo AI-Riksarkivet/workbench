@@ -99,7 +99,7 @@ def _open(client: LanceNamespace, table_id: list[str], session: lance.Session) -
     return bounded(lambda: lance.dataset(namespace_client=client, table_id=table_id, session=session))
 
 
-def _reusable_until(storage_options: Mapping[str, str] | None) -> float:
+def reusable_until(storage_options: Mapping[str, str] | None) -> float:
     """The monotonic deadline an open made on ``storage_options`` may be reused until.
 
     A vend that expires says when, in ``expires_at_millis`` (`lance_docs/ns_catalog/spec.yaml` §
@@ -148,7 +148,7 @@ class DatasetHandle(BaseModel):
     def dataset(self, table: str) -> lance.LanceDataset:
         """One table at its latest version, opened through the namespace on the storage options DescribeTable vends.
 
-        The open is this caller's and is reused until shortly before its vend expires (:func:`_reusable_until`): a reuse
+        The open is this caller's and is reused until shortly before its vend expires (:func:`reusable_until`): a reuse
         asks the store for the latest version (``latest_version``, a manifest listing on the same vended credential) and
         no DescribeTable, so a read does not mint a store session per request. What a reuse returns is a copy at the
         latest version, never the cached object moved, so concurrent readers do not see each other's checkout.
@@ -234,7 +234,7 @@ class DatasetHandle(BaseModel):
 
     def _remember(self, key: tuple[str, str], table: lance.LanceDataset | lancedb.table.Table, storage_options: Mapping[str, str] | None) -> None:
         with self._opened_lock:
-            self._opened[key] = _Opened(table=table, until=_reusable_until(storage_options))
+            self._opened[key] = _Opened(table=table, until=reusable_until(storage_options))
 
 
 def table_dataset(handle: DatasetHandle, table: str) -> lance.LanceDataset:

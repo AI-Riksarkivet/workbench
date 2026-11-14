@@ -30,6 +30,7 @@ from flows.models import (
     Payload,
     RunState,
 )
+from flows.serve_auth import ServeCredentialError, serve_authorization
 
 
 log = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ async def dispatch(
     client: httpx.AsyncClient,
     serve_url: str,
     serve_timeout: float = 180.0,
+    serve_token_file: str | None = None,
     idempotency_key: str = "",
 ) -> Payload:
     """Execute one node — a ROUTER, one line per kind.
@@ -163,7 +165,15 @@ async def dispatch(
         case "prompt":
             return _prompt(node, inputs)
         case "model":
-            return await _call_serve(node, inputs, client=client, serve_url=serve_url, serve_timeout=serve_timeout, idempotency_key=idempotency_key)
+            return await _call_serve(
+                node,
+                inputs,
+                client=client,
+                serve_url=serve_url,
+                serve_timeout=serve_timeout,
+                serve_token_file=serve_token_file,
+                idempotency_key=idempotency_key,
+            )
         case "mcp":
             return _mcp(node)
         # The pure-CPU arms run OFF the loop: caller-supplied regex (and the DOTALL scans inside
@@ -315,6 +325,7 @@ async def run_node(job: NodeJob, *, client: httpx.AsyncClient, idempotency_key: 
             idempotency_key=idempotency_key,
             serve_url=job.serve_url,
             serve_timeout=job.serve_timeout,
+            serve_token_file=job.serve_token_file,
         )
     except NodeError as exc:
         return NodeResult(state=NodeRunState(status="failed", ms=_elapsed_ms(started), error=str(exc)))
@@ -346,6 +357,7 @@ async def execute(
     client: httpx.AsyncClient,
     serve_url: str,
     serve_timeout: float = 180.0,
+    serve_token_file: str | None = None,
 ) -> RunState:
     """Run the whole graph inline, wave by wave, and return the finished RunState.
 
@@ -378,6 +390,7 @@ async def execute(
                 seed=seeds.get(node_id),
                 serve_url=serve_url,
                 serve_timeout=serve_timeout,
+                serve_token_file=serve_token_file,
             )
             for node_id in runnable
         ]
@@ -400,6 +413,7 @@ async def _call_serve(
     client: httpx.AsyncClient,
     serve_url: str,
     serve_timeout: float,
+    serve_token_file: str | None = None,
     idempotency_key: str = "",
 ) -> Payload:
     app = node.config.get("app")
@@ -414,8 +428,12 @@ async def _call_serve(
         # Serve's /htrflow ingress reads ?name= as the page key it stamps into the ALTO it returns.
         params["name"] = name
 
+    try:
+        credential = serve_authorization(serve_token_file)
+    except ServeCredentialError as exc:
+        raise NodeError(str(exc)) from exc
     content_type = "text/plain; charset=utf-8" if payload.kind == "text" else "application/octet-stream"
-    headers = {"content-type": content_type}
+    headers = {"content-type": content_type, **credential}
     if idempotency_key:
         # DWF-ACT-002. `run_node` is retried by NODE_RETRY, and this POST is the side effect: a model
         # that charges, writes, or enqueues sees the same work twice with no way to tell. The header is

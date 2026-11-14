@@ -142,17 +142,16 @@ async function asJson<T>(r: Response, schema: v.GenericSchema<T>): Promise<T> {
 
 const HitsArraySchema = v.array(RowSchema) as v.GenericSchema<Row[]>;
 
-/** Schema-metadata key naming the columns the encoder carried as JSON text. Mirrors
- *  `microfrontends/explorer/src/lib/server/rows-arrow.ts`, which is the only writer of this payload. */
+/** Schema-metadata key naming the columns the encoder carried as JSON text: the search and viewer
+ *  services write this payload (`service_kit.arrow_rows`). */
 const JSON_COLUMNS_KEY = 'json_columns';
 
 /**
  * Decode an Arrow IPC row payload — the `api/search` and `api/atlas/chunks` responses.
  *
- * Both used to be `list[dict]` JSON; a lasso selection alone is up to 1000 full corpus rows, which is
- * what motivated the promotion. The zone encodes a column per field and records in the schema metadata
- * which columns hold JSON text (nested/structured/mixed values — `alignments`, `tags`, a struct column
- * a corpus declares); everything else is a native Arrow column.
+ * A lasso selection alone is up to 1000 full corpus rows. The services encode a column per field and
+ * record in the schema metadata which columns hold JSON text (nested/structured/mixed values —
+ * `alignments`, `tags`, a struct column a corpus declares); everything else is a native Arrow column.
  *
  * NULL CELLS ARE OMITTED, not set to null. A column is rectangular, so a key that was simply absent from
  * one row arrives as that row's null — and `RowSchema` spells its envelope fields `v.optional(...)`,

@@ -27,7 +27,7 @@ import lance
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from lance.blob import BlobFile
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
 from client_kit.lancekit.descriptor import DocumentBinding
@@ -59,6 +59,27 @@ MAX_BUFFERED_BLOB_BYTES = 1 << 20
 
 #: Both derivative routes are cacheable for a day; the media route deliberately is not.
 _DERIVATIVE_CACHE = {"Cache-Control": "public, max-age=86400"}
+
+#: A media type's essence as RFC 9110 § 8.3.1 spells it (``type/subtype``, tokens only), so nothing else reaches a header.
+_MEDIA_TYPE = re.compile(r"^(image|audio|video|application)/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$")
+
+
+def served_media_type(mime: str) -> tuple[str, dict[str, str]]:
+    """The type a stored payload is served as, and the headers that keep a browser from reading it as anything else.
+
+    A payload's type comes from the data, which any writer of the table chose, so a type a browser would run (HTML,
+    SVG, JavaScript, XML) must never be served inline from this origin. Only ``image/*`` but SVG, ``audio/*``,
+    ``video/*`` and ``application/pdf`` go out as themselves; anything else is ``application/octet-stream`` with
+    ``Content-Disposition: attachment`` (RFC 6266 § 4.2). Every answer carries ``X-Content-Type-Options: nosniff``
+    (WHATWG Fetch § X-Content-Type-Options), so the browser does not sniff past the declared type (WHATWG MIME Sniffing
+    § 7).
+    """
+    essence = mime.split(";", 1)[0].strip().lower()
+    inline = bool(_MEDIA_TYPE.match(essence)) and essence != "image/svg+xml" and (not essence.startswith("application/") or essence == "application/pdf")
+    if inline:
+        return essence, {"X-Content-Type-Options": "nosniff"}
+    return "application/octet-stream", {"X-Content-Type-Options": "nosniff", "Content-Disposition": "attachment"}
+
 
 #: The frame-index column of a frames table. A reserved contract name (like
 #: ``_rowid``), not corpus knowledge: frame keys are identity.key_fields plus
@@ -122,20 +143,21 @@ def blob_response(blob: BlobFile, *, mime: str, empty_detail: str) -> Response:
     — re-taking it here would double that on the common path to save passing one argument.
     """
     size = _handle_size(blob)
+    media_type, safety = served_media_type(mime)
     if size > MAX_BUFFERED_BLOB_BYTES:
         return StreamingResponse(
             _stream_handle(blob, size),
-            media_type=mime,
+            media_type=media_type,
             # Known exactly from the probe, so the caller gets a progress bar rather than a chunked
             # stream of unknown length. Safe to declare because the generator owns this handle: the
             # bytes it yields and the size measured here come from the same open blob.
-            headers={**_DERIVATIVE_CACHE, "Content-Length": str(size)},
+            headers={**_DERIVATIVE_CACHE, **safety, "Content-Length": str(size)},
         )
     with blob as f:
         data = f.read(size)
     if not data:
         raise NotFoundError(empty_detail)
-    return Response(content=data, media_type=mime, headers=_DERIVATIVE_CACHE)
+    return Response(content=data, media_type=media_type, headers={**_DERIVATIVE_CACHE, **safety})
 
 
 def _stream_handle(blob: BlobFile | BytesIO, size: int) -> Iterator[bytes]:
@@ -273,6 +295,53 @@ def _frames_binding(handle: DatasetHandle) -> tuple[str, str, str | None] | None
     return table, blob_column, mime_column
 
 
+class FrameRow(BaseModel):
+    """One chunk's frame: the frames table opened as the caller, its blob column, the frame's stable row id and its mime."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    table: str
+    ds: lance.LanceDataset
+    column: str
+    row: int
+    mime: str
+
+
+def frame_row(handle: DatasetHandle, doc_id: str, keys: tuple[int, ...], frame_idx: int) -> FrameRow:
+    """Resolve a chunk's ``frame_idx``-th frame (0 is the representative one) in the frames table; 404 until extracted.
+
+    The key fields after the doc key map positionally onto ``keys``.
+    """
+    declared = handle.descriptor.declared
+    doc_id = validate_doc_key(declared, doc_id)
+    binding = _frames_binding(handle)
+    if binding is None:
+        raise NotFoundError("frame not extracted yet")
+    table, blob_column, mime_column = binding
+    ds = table_dataset(handle, table)
+
+    # frame_idx is matched in Python, NOT in the SQL predicate. With a scalar
+    # (BTREE) index on the frames table's doc key, the combination of
+    # `with_row_id=True` + a multi-clause filter that *also* constrains
+    # frame_idx trips a Lance planner bug that silently returns 0 rows (the row
+    # is there — verified via a filter without the frame_idx clause). Keying on
+    # the identity fields in SQL and selecting frame_idx here sidesteps it; a
+    # chunk has only a handful of frames, so the extra rows are negligible.
+    columns = [FRAME_INDEX_COLUMN] + ([mime_column] if mime_column else [])
+    keyed = ds.to_table(columns=columns, filter=chunk_key_filter(declared, doc_id, keys), with_row_id=True)
+    row = next(
+        (i for i in range(keyed.num_rows) if keyed.column(FRAME_INDEX_COLUMN)[i].as_py() == int(frame_idx)),
+        None,
+    )
+    if row is None:
+        raise NotFoundError("frame not extracted yet")
+    mime = "image/jpeg"
+    if mime_column is not None:
+        mime_cell = keyed.column(mime_column)[row]
+        mime = mime_cell.as_py() if mime_cell.is_valid else "image/jpeg"
+    return FrameRow(table=table, ds=ds, column=blob_column, row=int(keyed.column("_rowid")[row].as_py()), mime=mime)
+
+
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
@@ -316,39 +385,8 @@ def chunk_frame(
     ``frame_idx`` selects which frame when a chunk was sampled multiple times
     (0 = the representative frame). The path params map positionally onto the
     descriptor's identity key fields (doc key first)."""
-    handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
-    doc_id = validate_doc_key(declared, doc_id)
-    binding = _frames_binding(handle)
-    if binding is None:
-        raise NotFoundError("frame not extracted yet")
-    table, blob_column, mime_column = binding
-    ds = table_dataset(handle, table)
-
-    # frame_idx is matched in Python, NOT in the SQL predicate. With a scalar
-    # (BTREE) index on the frames table's doc key, the combination of
-    # `with_row_id=True` + a multi-clause filter that *also* constrains
-    # frame_idx trips a Lance planner bug that silently returns 0 rows (the row
-    # is there — verified via a filter without the frame_idx clause). Keying on
-    # the identity fields in SQL and selecting frame_idx here sidesteps it; a
-    # chunk has only a handful of frames, so the extra rows are negligible.
-    columns = [FRAME_INDEX_COLUMN] + ([mime_column] if mime_column else [])
-    keyed = ds.to_table(
-        columns=columns,
-        filter=chunk_key_filter(declared, doc_id, (group_id, chunk_id)),
-        with_row_id=True,
-    )
-    row = next(
-        (i for i in range(keyed.num_rows) if keyed.column(FRAME_INDEX_COLUMN)[i].as_py() == int(frame_idx)),
-        None,
-    )
-    if row is None:
-        raise NotFoundError("frame not extracted yet")
-    rowid = keyed.column("_rowid")[row].as_py()
-    mime = "image/jpeg"
-    if mime_column is not None:
-        mime_cell = keyed.column(mime_column)[row]
-        mime = mime_cell.as_py() if mime_cell.is_valid else "image/jpeg"
+    frame = frame_row(dataset_handle(state, dataset, caller), doc_id, (group_id, chunk_id), frame_idx)
+    ds, blob_column, rowid, mime = frame.ds, frame.column, frame.row, frame.mime
     try:
         blob = ds.take_blobs(blob_column, ids=[rowid])[0]
     except Exception as e:
@@ -450,7 +488,7 @@ def media(caller: CallerDep, doc_id: str, request: Request, state: StateDep, dat
     if rowid is None:
         raise NotFoundError("doc_id not found")
 
-    mime = _cell_value(ds, doc_key, doc_id, binding.mime, "application/octet-stream")
+    mime, safety = served_media_type(_cell_value(ds, doc_key, doc_id, binding.mime, "application/octet-stream"))
     try:
         total = payload_size(ds, binding.media_blob, rowid)
     except OSError as exc:
@@ -462,13 +500,14 @@ def media(caller: CallerDep, doc_id: str, request: Request, state: StateDep, dat
     if range_hdr:
         rng = parse_range(range_hdr, total)
         if rng is RangeVerdict.UNSATISFIABLE:
-            return Response(status_code=416, headers={"Content-Range": f"bytes */{total}"})
+            return Response(status_code=416, headers={**safety, "Content-Range": f"bytes */{total}"})
         if isinstance(rng, ByteRange):
             return StreamingResponse(
                 stream_blob_range(ds, binding.media_blob, rowid, start=rng.start, end=rng.end),
                 status_code=206,
                 media_type=mime,
                 headers={
+                    **safety,
                     "Content-Length": str(rng.end - rng.start + 1),
                     "Content-Range": f"bytes {rng.start}-{rng.end}/{total}",
                     "Accept-Ranges": "bytes",
@@ -481,6 +520,7 @@ def media(caller: CallerDep, doc_id: str, request: Request, state: StateDep, dat
         stream_blob_range(ds, binding.media_blob, rowid, start=0, end=total - 1),
         media_type=mime,
         headers={
+            **safety,
             "Content-Length": str(total),
             "Accept-Ranges": "bytes",
             "Cache-Control": "no-store",

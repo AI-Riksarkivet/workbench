@@ -34,6 +34,18 @@ if [ -z "${MEDIA_CATALOG_URI:-}" ]; then
   mkdir -p "$MEDIA_CATALOG_DIR"
 fi
 
+# Development credentials, in files as a deployment mounts them: the viewer's media-URL signing key (32 random bytes,
+# base64), made once per host, and the token flows presents to Serve. A local Serve verifies no token, so the dev one is
+# a placeholder; a deployment mounts a projected ServiceAccount token with audience `serve`.
+DEV_SECRETS="${TMPDIR:-/tmp}/workbench-dev-secrets"
+mkdir -p "$DEV_SECRETS" && chmod 700 "$DEV_SECRETS"
+if [ ! -s "$DEV_SECRETS/media-url-key" ]; then
+  (umask 077 && openssl rand -base64 32 > "$DEV_SECRETS/media-url-key")
+fi
+[ -s "$DEV_SECRETS/serve-token" ] || (umask 077 && echo "dev-unverified" > "$DEV_SECRETS/serve-token")
+export VIEWER_MEDIA_URL_KEY_FILE="${VIEWER_MEDIA_URL_KEY_FILE:-$DEV_SECRETS/media-url-key}"
+export WORKBENCH_FLOWS_SERVE_TOKEN_FILE="${WORKBENCH_FLOWS_SERVE_TOKEN_FILE:-$DEV_SECRETS/serve-token}"
+
 # PORT_OFFSET shifts every port so a second fleet can run on one host without
 # colliding (e.g. another user already holds the defaults): PORT_OFFSET=1000 →
 # compute :9804, viewer :9101, …

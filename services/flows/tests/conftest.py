@@ -14,6 +14,8 @@ than inputs the suite depends on:
 * `WORKBENCH_FLOWS_SERVE_URL` — an address that is never dialled. Every Serve call is intercepted by respx
   at the TRANSPORT, so a real origin here would be a lie about what is mocked; `.invalid` is the
   reserved TLD (RFC 2606), so an escaped call fails as a DNS error instead of reaching something.
+* `WORKBENCH_FLOWS_SERVE_TOKEN_FILE` — a file holding a token, as the projected ServiceAccount token is mounted, so a
+  Serve call carries a credential (`flows.serve_auth`).
 * `DAPR_GRPC_PORT` removed — with it set, the lifespan imports `flows.workflow`, builds a gRPC worker
   for a sidecar that is not there, and routes every run through the durable lane. `test_workflow.py`
   drives that lane directly instead; these suites are about the inline one.
@@ -23,13 +25,17 @@ gateway suite pins it where it IS load-bearing — against the flows app's real 
 """
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _flows_env() -> Iterator[None]:
+def _flows_env(tmp_path: Path) -> Iterator[None]:
+    token = tmp_path / "serve-token"
+    token.write_text("flows-sa-token")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("WORKBENCH_FLOWS_SERVE_URL", "http://serve.invalid:8000")
+        mp.setenv("WORKBENCH_FLOWS_SERVE_TOKEN_FILE", str(token))
         mp.delenv("DAPR_GRPC_PORT", raising=False)
         yield

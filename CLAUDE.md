@@ -46,6 +46,9 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse |
 | `ANNOTATOR_ANNOTATIONS_NAMESPACE` | the lakehouse namespace that holds every project's annotation tables (`workbench$annotations`) |
 | `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned |
+| `VIEWER_MEDIA_URL_KEY_FILE` | a credential: the mounted file holding the viewer's media-URL signing key, base64 of at least 32 random bytes (`openssl rand -base64 32`), read on every use; unset or short, the signing door answers 503 |
+| `VIEWER_MEDIA_URL_TTL_SECONDS` | how long a signed media URL serves its cell: default 300, from 10 to 3600 |
+| `WORKBENCH_FLOWS_SERVE_TOKEN_FILE` | a credential: the mounted projected ServiceAccount token (audience `serve`) flows presents to Ray Serve, read on every call; unset, every call to Serve is refused |
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
 names, changed freely: service-kit, and the frontend packages `@workbench/ui`, `@workbench/api`,
@@ -123,6 +126,10 @@ Two language-pure planes, as in rask; never blur them.
   share). Every dataset is a catalog namespace opened through lance-namespace as the caller, on the credentials the
   catalog vends: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
+  - The viewer serves media to `<img>` and `<video>`, which send no token, through short signed URLs
+    (`viewer.api.v1.endpoints.signed_media`): `POST /api/signed-media` (DPoP) resolves each cell by the person's own
+    read and signs it with the key in `VIEWER_MEDIA_URL_KEY_FILE`; `GET /api/signed-media/{token}` reads exactly that
+    cell, at that version, as the viewer's own identity (the link is the permission), sandboxed and immutable.
 - `runners/assist`: the annotator's assist model server, a sealed environment with its own `uv.lock`; not a workspace
   member, so its model pins never enter the services' resolution.
 - `frontend/`: the bun workspace root (`package.json`, `bun.lock`, `knip.json`, oxlint/oxfmt config, `patches/`).

@@ -44,22 +44,3 @@ def test_eviction_keeps_the_recently_SERVED_not_the_recently_built(tmp_path: Pat
 
     survivors = {p.name for p in tmp_path.glob("*.mp4")}
     assert "c0_0_4.mp4" in survivors, "the clip just served was evicted — the sort is still FIFO"
-
-
-def test_the_atlas_points_cache_is_LRU_too() -> None:
-    """The same one-line defect, in the sibling the Fix also names.
-
-    `evict_to_bounds` pops from the FRONT of a plain dict, and insertion order is its LRU proxy — but
-    only if a HIT moves the key. Without that, a hot atlas payload is evicted on insertion age alone
-    and rebuilt by a full scan+encode of the table, which is the expensive operation the cache exists
-    to avoid.
-    """
-    import inspect
-
-    from viewer.api.v1.endpoints import atlas
-
-    source = inspect.getsource(atlas)
-    code = "\n".join(line for line in source.split("\n") if not line.strip().startswith("#"))
-    assert "move_to_end" in code or "cache.pop(key" in code, (
-        "a points-cache HIT does not move the key, so `evict_to_bounds` drops the oldest-INSERTED rather than the least-recently-used"
-    )

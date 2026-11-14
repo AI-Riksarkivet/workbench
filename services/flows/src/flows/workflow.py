@@ -87,6 +87,7 @@ def flow_run_workflow(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]) -> G
                     seed=request.seeds.get(node_id),
                     serve_url=request.serve_url,
                     serve_timeout=request.serve_timeout,
+                    serve_token_file=request.serve_token_file,
                 ),
                 retry_policy=NODE_RETRY,
             )

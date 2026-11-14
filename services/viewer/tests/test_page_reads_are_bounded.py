@@ -122,7 +122,7 @@ class _CountingScanner:
 class _CountingDataset:
     """The real dataset, wrapped, accumulating payload bytes materialised by each read path.
 
-    Delegates by `__getattr__` so `_open`, `schema` and everything else stay on the real object — the
+    Delegates by `__getattr__` so `open_page_table`, `schema` and everything else stay on the real object — the
     point is to measure the production code path, not to replace it.
     """
 
@@ -175,7 +175,7 @@ def _app() -> FastAPI:
 
 @pytest.fixture
 def counted(dataset_path: Path, monkeypatch: pytest.MonkeyPatch) -> _CountingDataset:
-    """Route `_open` at the counting wrapper, leaving `_resolve` and `_open` themselves real."""
+    """Route `open_page_table` at the counting wrapper, leaving `_resolve` and `open_page_table` themselves real."""
     counter = _CountingDataset(lance.dataset(namespace_client=namespace_client(dataset_path), table_id=TABLE.split("$")))
     monkeypatch.setattr(pg.lance, "dataset", lambda *_a, **_kw: counter)
     return counter

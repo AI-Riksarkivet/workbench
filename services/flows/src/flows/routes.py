@@ -18,7 +18,8 @@ import uuid
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Path
+import httpx
+from fastapi import APIRouter, Header, Path, Query, Request, Response
 from pydantic import BaseModel, ValidationError
 
 from flows import executor, security
@@ -30,14 +31,19 @@ from flows.metrics import DURABLE, INLINE, record_run
 from flows.models import (
     CatalogResponse,
     FlowGraph,
+    InferenceTooLargeError,
     RunJob,
     RunRefused,
     RunRefusedError,
     RunRequest,
     RunState,
+    ServeAppHasNoIngressError,
+    ServeUpstreamError,
     ValidateResponse,
 )
+from flows.serve_auth import ServeCredentialError, serve_authorization
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError
+from service_kit.exceptions import ValidationError as BadRequestError
 
 
 log = logging.getLogger(__name__)
@@ -187,6 +193,7 @@ async def create_run(
             seeds=request.seeds,
             serve_url=settings.serve_url,
             serve_timeout=settings.serve_timeout,
+            serve_token_file=settings.serve_token_file,
             project=project,
         )
         try:
@@ -231,6 +238,7 @@ async def create_run(
             client=http,
             serve_url=settings.serve_url,
             serve_timeout=settings.serve_timeout,
+            serve_token_file=settings.serve_token_file,
         )
         state = state.model_copy(update={"project": project})
 
@@ -377,3 +385,83 @@ def _remember(runs: dict[str, RunState], state: RunState, max_runs: int) -> None
     runs[state.run_id] = state
     while len(runs) > max_runs:
         runs.pop(next(iter(runs)))
+
+
+#: The most bytes one inference carries: a page scan is a few MB.
+MAX_INFER_BYTES = 25 * 1024 * 1024
+#: The most bytes of Serve's answer this door relays; an ALTO page or a chat completion is far below it.
+MAX_INFER_ANSWER_BYTES = 25 * 1024 * 1024
+
+#: A path within a Serve app: slash-separated segments of URL-safe characters, so the door reaches only the app it
+#: names. An OpenAI-compatible app answers under `/v1/...`, which a bare app route cannot reach.
+SERVE_PATH = r"^(/[A-Za-z0-9._~-]+)*/?$"
+
+ServeApp = Annotated[str, Query(pattern=executor.APP_PATTERN.pattern, max_length=63, description="The Serve app's route prefix.")]
+ServePath = Annotated[str, Query(pattern=SERVE_PATH, max_length=512, description="The path within the app.")]
+PageName = Annotated[str, Query(max_length=256, description="The page key Serve stamps into what it answers.")]
+
+
+async def _bounded_body(request: Request) -> bytes:
+    """The request body, refused past :data:`MAX_INFER_BYTES` by its declared length or by what it carries."""
+    if int(request.headers.get("content-length") or 0) > MAX_INFER_BYTES:
+        raise InferenceTooLargeError(f"the body is larger than {MAX_INFER_BYTES // (1024 * 1024)} MB")
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_INFER_BYTES:
+            raise InferenceTooLargeError(f"the body is larger than {MAX_INFER_BYTES // (1024 * 1024)} MB")
+    if not body:
+        raise BadRequestError("the request carries no bytes to infer on")
+    return bytes(body)
+
+
+@router.post("/projects/{project}/infer")
+async def infer(
+    project: ProjectId,
+    request: Request,
+    http: HttpDep,
+    settings: FlowsSettingsDep,
+    subject: security.CurrentSubject,
+    checker: security.CheckerDep,
+    app: ServeApp = "htrflow",
+    path: ServePath = "",
+    name: PageName = "",
+) -> Response:
+    """Run one payload through a live Ray Serve app, for the studio's sandbox: bytes in, the app's answer out.
+
+    It spends compute, so it takes the project's run role, as starting a flow does. Serve is called as this service, with
+    its own projected ServiceAccount token (`flows.serve_auth`), at its own ingress (`WORKBENCH_FLOWS_SERVE_URL`), and
+    only at the app and path the query names, each held to its alphabet with no ``.`` or ``..`` segment, so the door
+    cannot reach anything else on the Serve host. Serve's answer is relayed with its own type and
+    ``X-Content-Type-Options: nosniff``, read in full up to :data:`MAX_INFER_ANSWER_BYTES` before it is relayed.
+
+    Refusals: 413 past the size ceiling, 400 on an empty body, 503 when this service has no Serve credential or Serve
+    cannot be reached, 501 when the app has no HTTP ingress (Serve answers 405), and 502 on any other error Serve
+    answers or an answer past the ceiling.
+    """
+    await security.require(checker, subject, security.RUN, project, FlowsAuditAction.FLOWS_INFER)
+    if any(segment in (".", "..") for segment in path.split("/")):
+        raise BadRequestError("a Serve app path may not hold a '.' or '..' segment")
+    try:
+        credential = serve_authorization(settings.serve_token_file)
+    except ServeCredentialError as exc:
+        raise ServiceUnavailableError(str(exc)) from exc
+    body = await _bounded_body(request)
+    url = f"{settings.serve_url.rstrip('/')}/{app}{path}"
+    headers = {"content-type": request.headers.get("content-type") or "application/octet-stream", **credential}
+    try:
+        async with http.stream("POST", url, content=body, params={"name": name} if name else None, headers=headers, timeout=settings.serve_timeout) as answer:
+            if answer.status_code == 405:
+                raise ServeAppHasNoIngressError(f"the Serve app '{app}' has no HTTP ingress: deploy an app that accepts POST")
+            if answer.status_code >= 400:
+                raise ServeUpstreamError(f"Serve answered {answer.status_code} for the app '{app}'")
+            content = bytearray()
+            async for chunk in answer.aiter_bytes():
+                content.extend(chunk)
+                if len(content) > MAX_INFER_ANSWER_BYTES:
+                    raise ServeUpstreamError(f"Serve's answer is larger than {MAX_INFER_ANSWER_BYTES // (1024 * 1024)} MB")
+            media_type = answer.headers.get("content-type", "application/octet-stream")
+    except httpx.RequestError as exc:
+        log.warning("serve unreachable for inference", extra={"app": app, "error": type(exc).__name__})
+        raise ServiceUnavailableError(f"Serve is unreachable at {settings.serve_url}") from exc
+    return Response(content=bytes(content), media_type=media_type, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

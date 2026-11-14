@@ -1,21 +1,16 @@
 import { env } from '$env/dynamic/private';
-import { makeArrowRowsProxy } from '$lib/server/rows-arrow';
+import { KEEP_API_PREFIX, makeBackendProxy } from '@workbench/api/bff';
 
-// Same-origin proxy to the SEARCH service. GET is the text search; POST is the SAME query surface with
-// an image attached (multipart query-by-example) — a read spelled as a POST, so it gets its own explicit
-// route (no blanket write proxy) and, like every non-GET here, fails closed without a signed-in user on
-// an auth-enabled stack.
-//
-// That multipart POST is also why this stays a `+server.ts` at all: a remote function cannot carry a
-// File. What DID move is the response — the same `Row[]` payload kind as the atlas selection, now Arrow
-// IPC (the transport ruling's second promotion, taken for transport uniformity rather than for n≤100's
-// bytes). Errors stay JSON: the client reads `detail` out of them.
+// Same-origin proxy to the SEARCH service. GET is the text search; POST is the same query surface with
+// an image attached (multipart query-by-example), and like every non-GET here it fails closed without a
+// signed-in user on an auth-enabled stack. The service answers its hits as one Arrow IPC stream of rows
+// (`service_kit.arrow_rows`), which this forwards as it came.
 const SEARCH_API = env.SEARCH_API ?? 'http://localhost:8102';
 
-export const GET = makeArrowRowsProxy({ backendUrl: SEARCH_API, path: '/api/search' });
+export const GET = makeBackendProxy({ backendUrl: SEARCH_API, stripPrefix: KEEP_API_PREFIX });
 
-export const POST = makeArrowRowsProxy({
+export const POST = makeBackendProxy({
 	backendUrl: SEARCH_API,
-	path: '/api/search',
+	stripPrefix: KEEP_API_PREFIX,
 	requireSession: true,
 });

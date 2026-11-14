@@ -6,6 +6,7 @@ three), and only service-local knobs (VIEWER_*) are prefixed.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 
@@ -31,6 +32,12 @@ class ViewerSettings(Settings, OidcSettings, LakehouseTokenSettings):
     #: A setting rather than a literal because a hard-coded endpoint does not survive multi-env
     #: deploys (`fastapi` references/anti-patterns.md).
     voiceprint_serve_url: str = Field(default="", alias="VIEWER_VOICEPRINT_SERVE_URL")
+
+    #: The mounted file holding the key media URLs are signed with (`viewer.services.signed_media`), read on each use so
+    #: a rotated key signs and verifies from the next request. Unset, the signing door answers 503.
+    media_url_key_file: Path | None = Field(default=None, alias="VIEWER_MEDIA_URL_KEY_FILE")
+    #: How long a signed media URL serves its object.
+    media_url_ttl_seconds: int = Field(default=300, ge=10, le=3600, alias="VIEWER_MEDIA_URL_TTL_SECONDS")
 
 
 @lru_cache

@@ -39,6 +39,10 @@ class FlowsSettings(GovernedAuthSettings, BaseSettings):
     #: pipeline, not a token stream — the models zone's own inference route allows 180 s.
     serve_timeout: float = Field(default=180.0, alias="WORKBENCH_FLOWS_SERVE_TIMEOUT")
 
+    #: The mounted file holding this service's projected ServiceAccount token for Serve (audience ``serve``), read on
+    #: every call (`flows.serve_auth`). Unset, every call to Serve is refused rather than sent without an identity.
+    serve_token_file: str | None = Field(default=None, alias="WORKBENCH_FLOWS_SERVE_TOKEN_FILE")
+
     #: How many finished runs stay readable at `GET /flows/runs/{id}`. The store is a process-local
     #: dict (v0), so this is a memory bound, not a retention policy — oldest is evicted first.
     max_runs: int = Field(default=200, alias="WORKBENCH_FLOWS_MAX_RUNS")

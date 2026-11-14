@@ -11,7 +11,8 @@ knows the corpus:
   parse-free): f16 coords, per-point keys, ``DICTIONARY<int32, utf8>``
   categorical channels, int64 ``rowid``, per-doc labels in ``docFiles``
   metadata. Serialization lives in :mod:`viewer.services.points`; the bytes
-  are memoized on ``state.points_cache`` keyed (dataset, space, version).
+  are memoized on ``state.points_cache`` keyed (dataset, space, version),
+  built once per key however many callers ask cold, and revalidated by ETag.
 * ``GET /chunk/..`` / ``POST /chunks`` — full hits for one chunk / a lasso
   selection (detail pane + playback), the latter addressed by ``_rowid``.
 * ``POST /chunks/by-key`` — the same full hits addressed BY KEY, for callers
@@ -20,11 +21,14 @@ knows the corpus:
   at, so a task cannot carry one (#60).
 """
 
+import asyncio
+import hashlib
 import logging
 from typing import Annotated, Any
 
 import lance
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Header, Query, Response
+from starlette.concurrency import run_in_threadpool
 
 from client_kit.lancekit.alignments import parse_alignments_json
 from client_kit.lancekit.descriptor import AtlasSpace, Declared
@@ -33,9 +37,11 @@ from client_kit.lancekit.predicate import and_, eq, isin, or_
 from client_kit.lancekit.registry import DatasetHandle, table_dataset
 from client_kit.media.cache_bounds import evict_to_bounds
 from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
+from client_kit.media.state import AppState, dataset_handle
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
+from service_kit.arrow_rows import arrow_rows_response
 from service_kit.exceptions import NotFoundError, ValidationError
+from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import AUTHENTICATED, CallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.api.v1.endpoints.media import FRAME_INDEX_COLUMN
@@ -54,6 +60,9 @@ _POINTS_CACHE_MAX = 12
 
 #: Rows per caption-attach scan when decorating a selection with frame captions.
 _FRAME_CAPTION_BATCH_SIZE = 500
+
+#: A shared projection payload: (dataset, space, table version).
+type PointsKey = tuple[str, str, int]
 
 SpaceParam = Annotated[str | None, Query(description="Projection space to read (first declared when omitted).")]
 
@@ -106,49 +115,78 @@ def atlas_status(caller: CallerDep, state: StateDep, space: SpaceParam = None, d
 
 
 @router.get("/points", dependencies=[AUTHENTICATED])
-def atlas_points(caller: CallerDep, state: StateDep, space: SpaceParam = None, dataset: DatasetParam = None) -> Response:
-    """One Apache Arrow IPC stream for the scatter renderer (coords + codes + keys)."""
+async def atlas_points(
+    caller: CallerDep,
+    state: StateDep,
+    space: SpaceParam = None,
+    dataset: DatasetParam = None,
+    if_none_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    """One Apache Arrow IPC stream for the scatter renderer (coords + codes + keys).
+
+    The payload is one per (dataset, space, table version) and is shared by every caller, so it is reached only after
+    the caller's own read of the table: the dataset is resolved and the table opened and counted as the caller, and a
+    caller the catalog refuses gets that refusal, never the shared bytes. It carries an ETag of that key and
+    ``Cache-Control: private, no-cache``: a browser keeps it and revalidates on each use, which runs the caller's read
+    again and answers 304 while the version stands, and no shared cache stores what the catalog gates per person.
+    """
+    declared, requested, ds, key = await run_in_threadpool(_read_as_caller, state, caller, space, dataset)
+    etag = _points_etag(key)
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if if_none_match is not None and etag in (tag.strip() for tag in if_none_match.split(",")):
+        return Response(status_code=304, headers=headers)
+    body = await _points_payload(state, declared, requested, ds, key)
+    return Response(content=body, media_type=ARROW_STREAM_MEDIA_TYPE, headers=headers)
+
+
+def _read_as_caller(
+    state: AppState, caller: LakehouseCaller, space: str | None, dataset: str | None
+) -> tuple[Declared, AtlasSpace, lance.LanceDataset, PointsKey]:
+    """The caller's own read of the space's table: resolved, opened and counted as them, or their refusal."""
     handle = dataset_handle(state, dataset, caller)
     declared = handle.descriptor.declared
     requested = _space(declared, space)
     ds = table_dataset(handle, requested.table)
     if _built_rows(ds, requested) == 0:
         raise ValidationError(f"{requested.name} 2D projection not built yet")
+    return declared, requested, ds, (handle.id, requested.name, ds.version)
 
-    # Memoize on (dataset, space, table version): the scan+encode is identical
-    # until the table is rewritten (version bump) or the backend restarts. The
-    # cache lives on AppState (per app instance), never module-global.
-    cache = state.points_cache
-    key = (handle.id, requested.name, ds.version)
-    entry = cache.get(key)
-    body = entry[0] if entry is not None else None
+
+def _points_etag(key: PointsKey) -> str:
+    """The strong ETag of one (dataset, space, table version) payload: the same bytes for as long as the version stands."""
+    return '"' + hashlib.sha256("\x00".join(map(str, key)).encode()).hexdigest()[:32] + '"'
+
+
+async def _points_payload(state: AppState, declared: Declared, space: AtlasSpace, ds: lance.LanceDataset, key: PointsKey) -> bytes:
+    """The memoized payload for ``key``, built at most once however many callers ask for it cold at the same time.
+
+    Single flight: the first cold caller starts the build as a task of its own, and every caller for that key, the first
+    included, awaits the same task, so a waiter holds no thread while the build runs in the threadpool, and a caller that
+    goes away does not cancel it for the others. A failure reaches every waiter and is not cached; the flight ends with
+    the build, so the next call builds again. Only this event loop touches the cache and the flights. A hit moves its key
+    to the back, so `evict_to_bounds` drops the least recently used.
+    """
+    entry = state.points_cache.pop(key, None)
     if entry is not None:
-        # A HIT MOVES THE KEY. `evict_to_bounds` pops from the FRONT of a plain dict and insertion order
-        # is its LRU proxy — but only if reads participate. Without this the eviction is FIFO: a hot
-        # atlas payload is dropped on insertion age alone and rebuilt by a full scan+encode of the
-        # table, which is precisely the work this cache exists to avoid. Same one-line defect the clip
-        # cache had, in the sibling that shares its eviction.
-        cache[key] = cache.pop(key)
-    if body is None:
-        body = build_points(declared, requested, ds)
-        # TWO BOUNDS. The count is the lookup bound; the BYTE total is what decides whether the pod
-        # survives, and this cache had only the first — `while len(cache) >= 12` under a comment
-        # acknowledging "each is multi-MB". Twelve keys is one space per declared embedding across
-        # four corpora, i.e. reachable today, and at ~100 MB per Arrow payload that is 1.2 GB in a
-        # one-replica pod. Shared with `search_cache`'s eviction so the twins cannot diverge again.
-        evict_to_bounds(
-            cache,
-            max_entries=_POINTS_CACHE_MAX,
-            max_bytes=state.settings.points_cache_bytes,
-            incoming_bytes=len(body),
-        )
-        cache[key] = (body, len(body))
+        state.points_cache[key] = entry
+        return entry[0]
+    flight: asyncio.Task[bytes] | None = state.points_flights.get(key)
+    if flight is None:
+        flight = asyncio.ensure_future(_build_points(state, declared, space, ds, key))
+        state.points_flights[key] = flight
+        # A build every caller abandoned still ends, and its failure is read here rather than reported as never retrieved.
+        flight.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(flight)
 
-    return Response(
-        content=body,
-        media_type=ARROW_STREAM_MEDIA_TYPE,
-        headers={"Cache-Control": "public, max-age=300"},
-    )
+
+async def _build_points(state: AppState, declared: Declared, space: AtlasSpace, ds: lance.LanceDataset, key: PointsKey) -> bytes:
+    try:
+        body = await run_in_threadpool(build_points, declared, space, ds)
+        evict_to_bounds(state.points_cache, max_entries=_POINTS_CACHE_MAX, max_bytes=state.settings.points_cache_bytes, incoming_bytes=len(body))
+        state.points_cache[key] = (body, len(body))
+        return body
+    finally:
+        state.points_flights.pop(key, None)
 
 
 def _hit_columns(declared: Declared, present: set[str]) -> list[str]:
@@ -294,8 +332,9 @@ def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dat
 
 
 @router.post("/chunks", dependencies=[AUTHENTICATED])
-def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset: DatasetParam = None) -> list[dict[str, Any]]:
-    """Full hits for a lasso/box/legend selection, addressed by ``_rowid``.
+def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset: DatasetParam = None) -> Response:
+    """Full hits for a lasso/box/legend selection, addressed by ``_rowid``: one Arrow IPC stream of rows
+    (`service_kit.arrow_rows`), since a selection is up to 1000 full corpus rows.
 
     A flat ``_rowid IN (...)`` predicate lets Lance fetch exactly the selected
     rows by address (~one random-access take, not a filtered full scan), so a
@@ -309,9 +348,9 @@ def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset:
         raise NotFoundError("no row table declared for dataset")
     rowids = body.rowids[:1000]
     if not rowids:
-        return []
+        return arrow_rows_response([])
     ds = table_dataset(handle, declared.search.row_table)
     columns = _hit_columns(declared, set(ds.schema.names))
     csv = ",".join(str(int(r)) for r in rowids)
     rows = ds.to_table(columns=columns, filter=f"_rowid IN ({csv})").to_pylist()
-    return _finalize_hits(handle, rows)
+    return arrow_rows_response(_finalize_hits(handle, rows))

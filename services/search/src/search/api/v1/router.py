@@ -20,7 +20,7 @@ objects.
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from pydantic import ValidationError as PydanticValidationError
 from starlette.concurrency import run_in_threadpool
 
@@ -37,6 +37,7 @@ from search.services.similar import SimilarSpec, drop_seed, key_predicate, seed_
 from search.services.spec import PostSearchSpec, SearchMode, SearchSpec
 from search.services.target import resolve_target
 from search.services.vector import vector_search
+from service_kit.arrow_rows import arrow_rows_response
 from service_kit.exceptions import DomainError, ValidationError
 from service_kit.governed.token_exchange import LakehouseCaller
 
@@ -124,6 +125,18 @@ def search_get(
     get_reranker: RerankerFactoryDep,
     # FAN-OUT: `?corpus=a&corpus=b`. Each corpus is read as the caller, and one the lakehouse refuses is skipped.
     corpus: FanOut = None,
+) -> Response:
+    """The hits, one Arrow IPC stream of rows (`service_kit.arrow_rows`)."""
+    return arrow_rows_response(_search_rows(caller, request, state, get_embedder, get_reranker, corpus))
+
+
+def _search_rows(
+    caller: LakehouseCaller,
+    request: Request,
+    state: AppState,
+    get_embedder: Any,
+    get_reranker: Any,
+    corpus: list[str] | None,
 ) -> list[dict[str, Any]]:
     spec = _spec_from_query(request)
     if corpus is not None:
@@ -234,7 +247,8 @@ async def search_post(
     image: Annotated[UploadFile | None, File()] = None,
     dataset: Annotated[str | None, Query(description="Dataset id (the configured default when omitted)")] = None,
     table: Annotated[str | None, Query(description="Searchable table name (the corpus default when omitted)")] = None,
-) -> list[dict[str, Any]]:
+) -> Response:
+    """The same hits as the GET for a query that carries an image, one Arrow IPC stream of rows."""
     image_bytes = None
     if image is not None:
         # Bound the read so a large multipart part can't be buffered whole
@@ -252,10 +266,11 @@ async def search_post(
     # would filter by the right table's fields and then SEARCH the default one.
     spec = spec.model_copy(update={"table": table})
     if not spec.q and not spec.q_vec and not image_bytes and not filters.get(TOPIC_FILTER):
-        return []
+        return arrow_rows_response([])
     # The cache lookup does blocking version reads and run_search makes blocking
     # vLLM (httpx) + Lance calls — offload the whole cached path off the event loop.
-    return await run_in_threadpool(_cached_search, state, handle, spec, filters, image_bytes, get_embedder, get_reranker)
+    hits = await run_in_threadpool(_cached_search, state, handle, spec, filters, image_bytes, get_embedder, get_reranker)
+    return arrow_rows_response(hits)
 
 
 def _run_similar(state: AppState, spec: SimilarSpec, dataset: str | None, table: str | None, caller: LakehouseCaller) -> list[dict[str, Any]]:
