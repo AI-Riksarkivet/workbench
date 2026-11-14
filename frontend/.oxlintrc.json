@@ -36,7 +36,7 @@
 		// Flags exactly the links the MFE estate REQUIRES: a cross-zone <a> must not carry this
 		// zone's base (it targets another app) and carries data-sveltekit-reload instead. The real
 		// hazard — a cross-zone link that soft-navigates — is gated from the other side by
-		// @rask/zone-contract's cross-zone-reload test.
+		// @workbench/zone-contract's cross-zone-reload test.
 		"svelte/no-navigation-without-base": "off",
 		"svelte/no-goto-without-base": "off",
 		// Every hit is a RUNTIME-COMPUTED geometry value (LayerChart marks, GSAP transforms,

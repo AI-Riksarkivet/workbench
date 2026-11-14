@@ -10,7 +10,7 @@
 
 <script lang="ts">
 	// The design-system single-select, built on the bits-ui@2 headless primitive (keyboard nav, typeahead,
-	// focus + portal positioning come from bits-ui). It keeps the exact API @rask/ui's Select exposed
+	// focus + portal positioning come from bits-ui). It keeps the exact API @workbench/ui's Select exposed
 	// (value/options/placeholder/ariaLabel/disabled) so the migrated apps/web components port by swapping only
 	// the import. The listbox is PORTALLED — only the open select's options mount — which is what the e2e
 	// drives (getByLabel(trigger) to open, then getByRole('option')). Styled with the shadcn design tokens.

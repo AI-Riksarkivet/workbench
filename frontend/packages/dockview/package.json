@@ -1,5 +1,5 @@
 {
-	"name": "@rask/dockview",
+	"name": "@workbench/dockview",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -26,13 +26,13 @@
 	},
 	"dependencies": {
 		"@lucide/svelte": "^1.26.0",
-		"@rask/api": "workspace:*",
+		"@workbench/api": "workspace:*",
 		"dockview": "^7.0.4"
 	},
 	"devDependencies": {
-		"@rask/config": "workspace:*",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@types/node": "^26.1.1",
+		"@workbench/config": "workspace:*",
 		"svelte": "^5.56.8",
 		"svelte-check": "^4.7.3",
 		"typescript": "^6.0.3",

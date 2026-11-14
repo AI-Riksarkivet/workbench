@@ -14,7 +14,7 @@
  * a 404 the rail itself creates, which is the failure mode `/annotator/projects` had.
  */
 
-import type { ZoneNavLeaf } from '@rask/ui/shell';
+import type { ZoneNavLeaf } from '@workbench/ui/shell';
 import { describe, expect, it } from 'vitest';
 
 import { ANNOTATOR_ZONE_NAV } from './nav';

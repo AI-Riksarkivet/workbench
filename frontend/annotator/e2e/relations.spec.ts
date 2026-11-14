@@ -230,7 +230,7 @@ test('the link is DRAWN on the canvas — an edge reaches the engine, not just t
 	// What this test does NOT claim: that the right pixels are lit. This zone's delete spec records
 	// why — a WebGL drawing buffer is not preserved after present, so screenshots of it prove
 	// nothing. The draw CALL is pinned by relations.test.ts (5 tests, verified failing without the
-	// push) and the draw MATH by @rask/engine's link-path.test.ts (verified failing on a flipped
+	// push) and the draw MATH by @workbench/engine's link-path.test.ts (verified failing on a flipped
 	// arrowhead). This pins that the two meet in a real browser without throwing.
 	expect(thrown, `the canvas threw while drawing the edge: ${thrown.join(' | ')}`).toEqual([]);
 });

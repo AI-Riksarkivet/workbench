@@ -1,12 +1,12 @@
 /**
- * Serve discovery for the Model node — a remote `query()` over @rask/api's
+ * Serve discovery for the Model node — a remote `query()` over @workbench/api's
  * `serveApplications`, passing `getRequestEvent().fetch` (the compute zone's
  * pattern: request-scoped fetch resolves the relative `/api/serve/*` URL via
  * this zone's `handleFetch` gateway rewrite). Read-only introspection; the
  * gateway's `/api/serve` row is GET-only by design.
  */
 import { getRequestEvent, query } from '$app/server';
-import { serveApplications } from '@rask/api';
+import { serveApplications } from '@workbench/api';
 import type { ServeAppsResult } from '../serve-contract';
 
 /** Live Serve apps, reduced for the picker. Refreshed on demand (mount + the

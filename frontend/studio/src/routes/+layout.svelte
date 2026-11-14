@@ -6,10 +6,9 @@
 	import { page } from '$app/state';
 	import { ModeWatcher } from 'mode-watcher';
 	import { Toaster } from 'svelte-sonner';
-	import { AppShell } from '@rask/ui/shell';
+	import { AppShell } from '@workbench/ui/shell';
 	import { STUDIO_ZONE_NAV } from '$lib/nav';
-	import { onMount, type Snippet } from 'svelte';
-	import { dismiss, markSeen, readInboxFeed, readInboxState } from '$lib/live/inbox.remote';
+	import type { Snippet } from 'svelte';
 	import NodeLibrary from '$lib/flows/NodeLibrary.svelte';
 	let { children, data }: { children: Snippet; data: LayoutServerData } = $props();
 
@@ -21,73 +20,10 @@
 	// singleton — and its localStorage read — into any other route.
 	const onCanvasPage = $derived(page.url.pathname.replace(/\/$/, '').endsWith('/studio'));
 
-	// The navbar's notification bell (@rask/ui's NotificationCenter, mounted by AppShell). The shell owns
-	// the surface and never fetches — the zone owns the transport, the inbox remote functions below.
-
-	// The read state the bell binds: per SUBJECT for the rows the inbox holds (durable, via
-	// `$lib/live/inbox.remote`), per TAB for the rest. Unbound, the component remembers only per tab —
-	// a FAILED run you had already dealt with comes back unread on the next reload.
-	let seen = $state<string[]>([]);
-	let dismissed = $state<string[]>([]);
-
-	// The bell's rows. `null` = un-wired (no session, no notifications service) and the bell has no
-	// inbox to render — the auth-off dev shape this zone runs in under
-	// `make dev-zone ZONE=studio`.
-	// The query OBJECT, held once — not a $state snapshot refilled by re-calling the query.
-	// Re-calling a remote `query()` hands back the CACHED value, so a `readInboxFeed()` after a write
-	// re-read exactly what was already there and the badge never moved. `.refresh()` is the only thing
-	// that re-fetches, and `.current` is how its value is read back — the estate's one polling idiom
-	// (`compute/src/routes/+page.svelte`), which is also flicker-free because the previous value stays
-	// readable while the next is in flight.
-	let inboxQuery = $state<ReturnType<typeof readInboxFeed> | null>(null);
-	const inbox = $derived(inboxQuery?.current ?? null);
-
-	onMount(() => {
-		// Seeded on mount, never during render: a remote read touched
-		// during render makes the SERVER hold the page until it answers.
-		inboxQuery = readInboxFeed();
-		// UNION, not replace — anything this tab marked while the read was in flight stays marked.
-		void readInboxState()
-			.then((state) => {
-				if (!state) return;
-				seen = [...new Set([...seen, ...state.seen])];
-				dismissed = [...new Set([...dismissed, ...state.dismissed])];
-			})
-			.catch(() => {
-				/* the per-tab fallback stands — a bell that cannot persist still has to ring */
-			});
-	});
-	// The two writes are optimistic and best-effort: the local set moves first so the badge never waits
-	// on a round trip, and a refused write leaves this tab consistent with itself (repaired on the next
-	// reload, where the seeded set is missing it and the following close sends it again).
-	const notifications = $derived({
-		// `undefined`, never `[]`, when the inbox did not answer: an EMPTY inbox is a fact worth
-		// rendering ("nothing addressed to you"), while an ABSENT one means this stack has no inbox to
-		// speak of and the bell must not claim otherwise by showing an empty Inbox tab.
-		inbox: inbox?.rows,
-		inboxUnread: inbox?.unread,
-		seen,
-		dismissed,
-		onseen: (next: string[]) => {
-			seen = next;
-			void markSeen(next)
-				// The badge is the server's count, so a write that changed something has to move it —
-				// otherwise the row greys out and the number beside it does not.
-				.then(() => inboxQuery?.refresh())
-				.catch(() => {});
-		},
-		ondismiss: (notificationId: string, next: string[]) => {
-			dismissed = next;
-			void dismiss(notificationId)
-				.then(() => inboxQuery?.refresh())
-				.catch(() => {});
-		},
-	});
-
 	// Animate soft client-side navs via the View Transitions API. onNavigate
 	// registers a callback and is SSR-safe; the document check guards browsers
 	// without support. Cross-document MFE navs are handled by the `@view-transition`
-	// rule in the shared @rask/ui tokens stylesheet.
+	// rule in the shared @workbench/ui tokens stylesheet.
 	onNavigate((navigation) => {
 		if (!document.startViewTransition) return;
 		return new Promise((resolve) => {
@@ -107,7 +43,7 @@
 	<Toaster />
 {/if}
 
-<!-- The shared AppShell (one grouped sidebar) from @rask/ui — identical to every
+<!-- The shared AppShell (one grouped sidebar) from @workbench/ui — identical to every
      other microfrontend, zero drift. `base` (=/studio) frames the breadcrumb. -->
 <AppShell
 	pathname={page.url.pathname}
@@ -117,7 +53,6 @@
 	meLoading={false}
 	project={data.activeProject ? { name: data.activeProject } : undefined}
 	zoneNav={STUDIO_ZONE_NAV}
-	{notifications}
 	sidebarContent={onCanvasPage ? nodeLibrary : undefined}
 >
 	{@render children()}

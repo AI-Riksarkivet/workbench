@@ -28,17 +28,17 @@
  *
  * `./styles.css` is the vendor sheet's `--xy-*` theme mapped onto the OKLCH tokens — imported per zone
  * in `app.css` under `layer(base)`, immediately after `@xyflow/svelte/dist/style.css`, exactly as
- * `@rask/dockview/styles.css` is. It lives here and not in `@rask/ui` for the same reason dockview's
+ * `@workbench/dockview/styles.css` is. It lives here and not in `@workbench/ui` for the same reason dockview's
  * does not: the design system carries no vendor-canvas bindings.
  *
  * What does NOT belong here: domain graphs. The FGA builders are lakehouse access logic, the workflow EDITOR is
  * media's. The binding stays domain-free.
  *
- * One domain graph is not in a zone either, and it is not an exception to that rule: `@rask/ui/hierarchy`
+ * One domain graph is not in a zone either, and it is not an exception to that rule: `@workbench/ui/hierarchy`
  * (project › warehouse › namespace › table) draws on `StaticFlow` from the DESIGN SYSTEM, because two zones
- * render it and zones may not import each other. The direction is what matters — @rask/ui depends on this
+ * render it and zones may not import each other. The direction is what matters — @workbench/ui depends on this
  * package, never the reverse — so the binding is still domain-free and the stylesheet still ships from here.
- * That subpath is @rask/ui's only vendor-canvas consumer; nothing else there pulls @xyflow/svelte.
+ * That subpath is @workbench/ui's only vendor-canvas consumer; nothing else there pulls @xyflow/svelte.
  */
 export { default as GraphCanvas } from './GraphCanvas.svelte';
 export { default as StaticFlow } from './StaticFlow.svelte';

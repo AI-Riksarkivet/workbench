@@ -1,7 +1,7 @@
 """The flows HTTP surface: `/flows/catalog`, `/flows/validate`, `/flows/runs[/{run_id}]`.
 
 Mounted under `settings.api_prefix` by `make_service_app`, so the deployed paths are
-`/api/flows/...` (the chart sets `RASK_API_PREFIX=/api`, and `scripts/dev-micro.sh` matches it) —
+`/api/flows/...` (the chart sets `WORKBENCH_API_PREFIX=/api`, and `scripts/dev-micro.sh` matches it) —
 which is exactly what the cluster route's `/api/flows` rule forwards unrewritten. A router prefix of
 `/flows` with an api_prefix of `/api/v1` would serve `/api/v1/flows/...` and every call through the
 route would 404; that trap has already been paid for once in this estate (the ingest row's `/v1`).

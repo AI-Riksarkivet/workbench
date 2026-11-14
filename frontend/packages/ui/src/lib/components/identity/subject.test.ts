@@ -36,7 +36,7 @@ describe('subjectDisplay', () => {
 });
 
 describe('the Subject component contract (#87)', () => {
-	it('is exported from @rask/ui/identity, not from grants-panel', () => {
+	it('is exported from @workbench/ui/identity, not from grants-panel', () => {
 		// The concern is estate-wide identity display — FGA subjects, control-event actors, a
 		// dropped-by stamp. Parking it under grants-panel is what let two of four surfaces keep
 		// rendering raw OIDC subs while the fix was believed complete. Asserted on the SOURCE rather

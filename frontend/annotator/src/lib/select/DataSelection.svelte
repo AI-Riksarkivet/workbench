@@ -13,10 +13,10 @@
 		listDocuments,
 		type Document,
 		type DocumentsResponse,
-	} from '@rask/explorer-api';
-	import { setActiveView, type DatasetView } from '@rask/explorer-api/descriptor';
-	import { Button } from '@rask/ui/button';
-	import { Select } from '@rask/ui/select';
+	} from '@workbench/explorer-api';
+	import { setActiveView, type DatasetView } from '@workbench/explorer-api/descriptor';
+	import { Button } from '@workbench/ui/button';
+	import { Select } from '@workbench/ui/select';
 	import DocTile from './DocTile.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';

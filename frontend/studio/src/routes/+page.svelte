@@ -7,7 +7,7 @@
 	 *  library — what can I add; the CANVAS is the graph — how is it wired; the RIGHT panel is the
 	 *  inspector — what did the selected node actually produce. The split is resizable and its ratio
 	 *  persists, so a user who works mostly in the canvas keeps their layout. */
-	import { ResizableSplit } from '@rask/ui/resizable-split';
+	import { ResizableSplit } from '@workbench/ui/resizable-split';
 	import FlowsCanvas from '$lib/flows/FlowsCanvas.svelte';
 	import FlowsInspector from '$lib/flows/FlowsInspector.svelte';
 </script>

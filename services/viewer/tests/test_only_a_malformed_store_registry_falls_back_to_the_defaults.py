@@ -1,4 +1,4 @@
-"""The viewer's store registry answers a malformed ``RASK_STORES`` value with its defaults, and nothing else.
+"""The viewer's store registry answers a malformed ``WORKBENCH_STORES`` value with its defaults, and nothing else.
 
 A malformed env value is what the fallback is for. A fault in the registry's own code must propagate instead, or a
 broken registry would be indistinguishable from an unset one and the browser would list the wrong stores.

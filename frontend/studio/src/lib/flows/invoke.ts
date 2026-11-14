@@ -12,7 +12,7 @@ import type { FlowPayload } from './types';
 import type { InvokeRequest } from './executor';
 
 /** Human message for the BFF's failure reasons (same vocabulary as the models
- *  zone's inference playground — the two proxies share one @rask/api helper). */
+ *  zone's inference playground — the two proxies share one @workbench/api helper). */
 function failureMessage(
 	status: number,
 	reason: string | undefined,
@@ -59,7 +59,7 @@ export async function invokeServe(req: InvokeRequest): Promise<FlowPayload> {
 		let reason: string | undefined;
 		let detail: string | undefined;
 		try {
-			// Two failure shapes, both load-bearing (see @rask/api/serve-proxy): thrown
+			// Two failure shapes, both load-bearing (see @workbench/api/serve-proxy): thrown
 			// kit error()s (401/413/400) answer `{ message }`, upstream problems answer
 			// `{ reason, detail }`. Normalise here or a 401 renders as a bare status.
 			// Parsed, not cast (#94): a non-string field degrades to the status line, never NaN-ish UI.

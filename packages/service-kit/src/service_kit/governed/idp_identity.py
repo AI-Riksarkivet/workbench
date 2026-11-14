@@ -4,7 +4,7 @@ ADR 0159 D5. Dex brokers every upstream identity provider behind one issuer, and
 with the upstream user id (`IDTokenSubject{user_id, conn_id}`, measured on the dev Dex v2.42.0 2026-10-16), so a grant
 keyed on `sub` is lost when a connector is renamed, and every connector's users share one namespace. The door keys on
 `federated_claims` instead, which Dex puts in the id token and the access token alike when the client asks for the
-`federated:id` scope (measured the same day): the connector id picks the idp id from `RASK_OIDC_CONNECTORS`, and the
+`federated:id` scope (measured the same day): the connector id picks the idp id from `WORKBENCH_OIDC_CONNECTORS`, and the
 upstream user id is the subject. A renamed connector is one more entry naming the same idp id.
 
 A Dex client signed in with the client-credentials grant (Dex v2.46.0 and later) is the machine `dex-client~<client

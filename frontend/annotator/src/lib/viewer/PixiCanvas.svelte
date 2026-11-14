@@ -2,10 +2,10 @@
 	import { browser } from '$app/environment';
 	import { onMount, setContext } from 'svelte';
 	import { Application } from 'pixi.js';
-	import { ArrowDataPlugin } from '@rask/engine';
-	import { ImagePlugin } from '@rask/engine';
-	import { InteractionManager } from '@rask/engine';
-	import type { PixiContext } from '@rask/engine';
+	import { ArrowDataPlugin } from '@workbench/engine';
+	import { ImagePlugin } from '@workbench/engine';
+	import { InteractionManager } from '@workbench/engine';
+	import type { PixiContext } from '@workbench/engine';
 	import type { Snippet } from 'svelte';
 
 	let {

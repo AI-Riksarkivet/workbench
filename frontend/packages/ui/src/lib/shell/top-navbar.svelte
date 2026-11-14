@@ -3,7 +3,6 @@
 	import { navigationMenuTriggerStyle } from '../components/navigation-menu/index.js';
 	import { Skeleton } from '../components/skeleton/index.js';
 	import NavbarUser from './navbar-user.svelte';
-	import NotificationCenter from './notification-center.svelte';
 	import { cn } from '../utils/cn.js';
 	import { IsMobile, SHELL_COLLAPSE_BREAKPOINT } from '../hooks/is-mobile.svelte.js';
 	import { ChevronDown, Menu } from '@lucide/svelte';
@@ -17,7 +16,6 @@
 		zoneOf,
 		type Me,
 		type NavUser,
-		type NotificationFeed,
 		type TopNavEntry,
 		type TopNavItem,
 	} from './nav-config.js';
@@ -43,7 +41,6 @@
 		meLoading = false,
 		authEnabled = false,
 		user = null,
-		notifications = null,
 		class: className,
 	}: {
 		pathname?: string;
@@ -53,10 +50,6 @@
 		meLoading?: boolean;
 		authEnabled?: boolean;
 		user?: NavUser | null;
-		/** The zone's run feed for the notification bell. `null` (the default) renders NO bell — a zone
-		 *  opts in by passing its runs, so a zone that has not wired the feed shows nothing rather than
-		 *  a permanently empty surface. */
-		notifications?: NotificationFeed | null;
 		class?: string;
 	} = $props();
 
@@ -406,22 +399,9 @@
 	     halves. Either way its own contents stay hard right and at their natural size. -->
 	<div class={cn('flex items-center', centred ? 'flex-1 justify-end' : 'ml-auto shrink-0')}>
 		{#if meLoading}
-			<!-- size-8 = the resolved NavbarUser trigger (Button size="icon") — same box, no shift. The
-			     bell reserves nothing: a zone with no feed has no bell, so reserving its width would
-			     shift the account control on every load in every zone that has not wired a feed. -->
+			<!-- size-8 = the resolved NavbarUser trigger (Button size="icon") — same box, no shift. -->
 			<Skeleton class="size-8 rounded-full" />
 		{:else}
-			{#if notifications}
-				<!-- The subject's inbox, beside the account cluster and in the same box size. -->
-				<NotificationCenter
-					inbox={notifications.inbox}
-					inboxUnread={notifications.inboxUnread}
-					seen={notifications.seen}
-					dismissed={notifications.dismissed}
-					onseen={notifications.onseen}
-					ondismiss={notifications.ondismiss}
-				/>
-			{/if}
 			<NavbarUser {user} {authEnabled} {pathname} />
 		{/if}
 	</div>

@@ -2,16 +2,16 @@
  * The media zone's stylesheet — the ESTATE design system, nothing zone-private.
  *
  * Palette, radius, typography and the shadcn semantic names all come from
- * `@rask/ui/styles/tokens.css`, exactly like every other zone. This file used
+ * `@workbench/ui/styles/tokens.css`, exactly like every other zone. This file used
  * to carry a forked copy of those tokens (lance-audio's indigo-on-near-black palette, a 0.375rem radius and a
  * 13.5px body scale), which is why the zone read as a different product
  * once it moved under the shared shell. Do not re-fork it: a token that
- * belongs to the design language belongs in @rask/ui.
+ * belongs to the design language belongs in @workbench/ui.
  * ──────────────────────────────────────────────────────────────────── */
 
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import '@rask/ui/styles/tokens.css';
+@import '@workbench/ui/styles/tokens.css';
 /* Svelte Flow's stylesheet, ONCE for the zone and under `base` so Tailwind utilities still win over
    it (svelte-flow rule 3 — importing it per component lands it in that component's layer instead). */
 @import '@xyflow/svelte/dist/style.css' layer(base);
@@ -19,22 +19,22 @@
    overridden. Without this the Controls widget and every edge label render in the library's light-mode
    hex on a dark canvas — a white blob. This zone mounts THREE Svelte Flow canvases (diagram/Flow,
    workflow/FlowPane, workflow/WorkflowCanvas), all of which had it. */
-@import '@rask/flow/styles.css' layer(base);
+@import '@workbench/flow/styles.css' layer(base);
 
 /* Tailwind 4 + Vite auto-discovery isn't reliable for .svelte under Bun;
  * point it at the source roots explicitly (paths relative to this file). */
 @source './lib';
 @source './routes';
 @source './app.html';
-/* Scan the shared @rask/ui component library so its Tailwind classes are generated —
+/* Scan the shared @workbench/ui component library so its Tailwind classes are generated —
    Tailwind 4 ignores node_modules by default. */
-/* @rask/dockview: the vendor sheet plus the --dv-* → OKLCH token mapping, in ONE import and under
+/* @workbench/dockview: the vendor sheet plus the --dv-* → OKLCH token mapping, in ONE import and under
    `base` — dockview ships 124 KB of unlayered CSS whose selectors would otherwise out-specify the
    Tailwind utilities a panel's own content is styled with. This zone mounts the estate's dock at
    /explorer/workbench; without this the grid never lays out and the panels stack as bare text.
    The dock JS itself is dynamically imported by that route; this stylesheet is not, because
    deferring 10 KB of gzipped CSS buys a flash of unstyled dock. */
-@import '@rask/dockview/styles.css' layer(base);
+@import '@workbench/dockview/styles.css' layer(base);
 @source '../../../packages/ui/dist';
 
 /* ── the one media-only token ──────────────────────────────────────────

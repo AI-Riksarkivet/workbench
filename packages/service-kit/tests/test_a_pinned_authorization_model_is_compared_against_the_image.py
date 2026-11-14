@@ -5,7 +5,7 @@ knowing that this image's `model.json` and the pinned model have diverged.
 `model.json`, and the store's newest model lost `warehouse#event_stager` — every door needing that
 relation then ERRORED ("object relation does not exist") rather than denying, which the fail-closed
 wrapper renders as "authorization service unavailable". The row's remaining half is the operator
-posture that prevents it outright: pin `RASK_FGA_STORE_ID` + `RASK_FGA_MODEL_ID`, and
+posture that prevents it outright: pin `WORKBENCH_FGA_STORE_ID` + `WORKBENCH_FGA_MODEL_ID`, and
 `build_fga_client` never calls `provision` at all.
 
 THAT POSTURE IS THE SAME FAILURE FROM THE OTHER SIDE, and nothing announced it. A pinned boot never

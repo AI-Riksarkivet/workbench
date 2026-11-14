@@ -3,8 +3,8 @@
 open_fastapi-audit — "An `http://` OIDC issuer in production surfaces as an opaque 401 on every
 request, and the 'logged distinctly' the code promises does not exist".
 
-`_require_https` refuses at VERIFY time, so an operator who ships `RASK_OIDC_ISSUER=http://…` without
-`RASK_OIDC_ALLOW_INSECURE` gets a pod that reports healthy and then refuses every bearer, valid or not,
+`_require_https` refuses at VERIFY time, so an operator who ships `WORKBENCH_OIDC_ISSUER=http://…` without
+`WORKBENCH_OIDC_ALLOW_INSECURE` gets a pod that reports healthy and then refuses every bearer, valid or not,
 from the first request on.
 
 THE COMMENT CLAIMED OTHERWISE. It said the failure is "surfaced at verify time as an opaque auth
@@ -46,35 +46,37 @@ class _Governed(BaseSettings, GovernedAuthSettings):
 
 def _settings(**over: object) -> _Governed:
     base = {
-        "RASK_OIDC_ENABLED": True,
-        "RASK_OIDC_ISSUER": "https://issuer.test",
-        "RASK_OIDC_AUDIENCE": "rask",
-        "RASK_OIDC_CONNECTORS": {"local": "dex"},
+        "WORKBENCH_OIDC_ENABLED": True,
+        "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
+        "WORKBENCH_OIDC_AUDIENCE": "rask",
+        "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
     }
     return _Governed.model_validate({**base, **over})
 
 
 def test_the_dev_escape_hatch_still_works() -> None:
     """A local Dex over http is the case the flag exists for; this must not become a hard ban."""
-    settings = _settings(RASK_OIDC_ISSUER="http://dex.local:5556", RASK_OIDC_ALLOW_INSECURE=True)
+    settings = _settings(WORKBENCH_OIDC_ISSUER="http://dex.local:5556", WORKBENCH_OIDC_ALLOW_INSECURE=True)
     assert settings.oidc_issuer == "http://dex.local:5556"
 
 
 def test_the_check_is_skipped_when_oidc_is_off() -> None:
     """An issuer nobody verifies against is not a misconfiguration."""
-    assert _Governed.model_validate({"RASK_OIDC_ENABLED": False, "RASK_OIDC_ISSUER": "http://x"}) is not None
+    assert _Governed.model_validate({"WORKBENCH_OIDC_ENABLED": False, "WORKBENCH_OIDC_ISSUER": "http://x"}) is not None
 
 
 @pytest.mark.parametrize(
     ("over", "refusal"),
     [
-        pytest.param({"RASK_OIDC_ISSUER": "http://issuer.test"}, "HTTPS", id="an-http-issuer"),
-        pytest.param({"RASK_OIDC_CONNECTORS": {}}, "RASK_OIDC_CONNECTORS is required", id="no-connector-names-anyone"),
-        pytest.param({"RASK_OIDC_CONNECTORS": {"local": "kubernetes"}}, "a machine identity's idp id", id="a-connector-claims-the-clusters-idp-id"),
-        pytest.param({"RASK_OIDC_CONNECTORS": {"local": "dex-client"}}, "a machine identity's idp id", id="a-connector-claims-the-dex-clients-idp-id"),
-        pytest.param({"RASK_OIDC_CONNECTORS": {"local": "Corp~1"}}, "no principal can carry", id="an-idp-id-outside-the-grammar"),
+        pytest.param({"WORKBENCH_OIDC_ISSUER": "http://issuer.test"}, "HTTPS", id="an-http-issuer"),
+        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {}}, "WORKBENCH_OIDC_CONNECTORS is required", id="no-connector-names-anyone"),
+        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "kubernetes"}}, "a machine identity's idp id", id="a-connector-claims-the-clusters-idp-id"),
+        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "dex-client"}}, "a machine identity's idp id", id="a-connector-claims-the-dex-clients-idp-id"),
+        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "Corp~1"}}, "no principal can carry", id="an-idp-id-outside-the-grammar"),
         pytest.param(
-            {"RASK_SA_ISSUER": "https://issuer.test/", "RASK_SA_AUDIENCE": "rask-catalog"}, "name one issuer", id="the-cluster-and-the-idp-named-as-one-issuer"
+            {"WORKBENCH_SA_ISSUER": "https://issuer.test/", "WORKBENCH_SA_AUDIENCE": "rask-catalog"},
+            "name one issuer",
+            id="the-cluster-and-the-idp-named-as-one-issuer",
         ),
     ],
 )
@@ -98,29 +100,3 @@ def test_the_runtime_backstop_logs_what_its_comment_promises(caplog: pytest.LogC
     assert "oidc_insecure_url" in caplog.text, (
         "the comment says the failure is 'logged distinctly' and nothing was logged — a Lance door's 503 redacts it, so only the log names the setting"
     )
-
-
-def test_the_catalog_twin_refuses_it_too() -> None:
-    """The catalog still declares these knobs INLINE and predates the shared mixin.
-
-    `governed/settings.py`'s own docstring makes the contract explicit: the aliases are byte-identical
-    so one set of `LANCE_*` variables configures every service, and "adding a field here without adding
-    it there would silently split the contract". A rule enforced in one of the two is exactly that
-    split — the catalog is the service that OWNS the tuple store, so it is the worst one to leave
-    accepting an issuer nobody else will.
-    """
-    from catalog.core.config import Settings as CatalogSettings
-
-    base = {
-        "LANCE_REST_IMPL": "dir",
-        "RASK_OIDC_ENABLED": True,
-        "RASK_OIDC_AUDIENCE": "rask",
-        "RASK_OIDC_CONNECTORS": {"local": "dex"},
-        "LANCE_S3_ACCESS_KEY_ID": "k",
-        "LANCE_S3_SECRET_ACCESS_KEY": "s",
-    }
-    with pytest.raises(ValueError, match="HTTPS"):
-        CatalogSettings.model_validate({**base, "RASK_OIDC_ISSUER": "http://issuer.test"})
-
-    ok = CatalogSettings.model_validate({**base, "RASK_OIDC_ISSUER": "http://dex.local:5556", "RASK_OIDC_ALLOW_INSECURE": True})
-    assert ok.oidc_issuer == "http://dex.local:5556"

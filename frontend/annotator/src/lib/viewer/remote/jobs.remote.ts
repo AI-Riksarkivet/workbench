@@ -1,14 +1,14 @@
 import { command, query } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
+import type { ApiResult } from '@workbench/api/client';
 import { SIGN_IN_REQUIRED, annotatorJSON, signedOut } from '$lib/server/doors';
-import type { JobResult } from '@rask/labeling/jobs';
+import type { JobResult } from '@workbench/labeling/jobs';
 
 // Batch labeling jobs — submit a producer over a chunk-level selection, then poll it
 // (the transport ruling, area 4). Both `/api/jobs/apply` and the `/api/jobs/[...path]` status proxy are
 // deleted; these two functions are what they carried.
 //
-// SHARED-SEAM NOTE: `@rask/labeling/jobs` still owns this wire shape for the MEDIA zone, which mounts
+// SHARED-SEAM NOTE: `@workbench/labeling/jobs` still owns this wire shape for the MEDIA zone, which mounts
 // its own `/api/jobs/apply` route and reaches it through the shared browser client. That package is
 // framework-agnostic by contract (it never imports `$app/*`), so it cannot host a remote function;
 // this zone's copy is the annotator's transport, and the `JobResult` contract stays imported from
@@ -25,7 +25,7 @@ const ScopeSchema = v.variant('level', [
 ]);
 
 /** The wire scope (`{level, keys, where}` — always all three keys), mirroring the flattening the
- *  shared client does. Kept here rather than imported because `@rask/labeling/jobs` keeps it private
+ *  shared client does. Kept here rather than imported because `@workbench/labeling/jobs` keeps it private
  *  to its own fetch. */
 function scopePayload(s: v.InferOutput<typeof ScopeSchema>): {
 	level: string;

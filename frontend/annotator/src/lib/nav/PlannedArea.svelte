@@ -17,7 +17,7 @@
 	// is a fact about the repo — so it is a route, not a disabled link, and it can explain itself at
 	// length where a tooltip cannot.
 	import { Construction } from '@lucide/svelte';
-	import { Badge } from '@rask/ui/badge';
+	import { Badge } from '@workbench/ui/badge';
 
 	let {
 		title,

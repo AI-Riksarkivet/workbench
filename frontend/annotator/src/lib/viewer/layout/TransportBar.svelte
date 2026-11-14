@@ -27,7 +27,7 @@
 		SkipBack,
 		SkipForward,
 	} from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 
 	import { fmtTime, frameIndex } from '../transport';
 

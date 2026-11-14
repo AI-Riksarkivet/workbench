@@ -19,6 +19,8 @@ type Workbench struct{}
 const (
 	// The uv image the dockerfiles' builder stages use, pinned by digest.
 	UvImage = "ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:7820aa74c8a3147ab13553c127432656969548971fbe350ba46a975b59dd42b2"
+	// The Rust the images build no-wheel packages with (.docker/media.dockerfile's RUST_TOOLCHAIN).
+	RustToolchain = "1.90.0"
 	// The bun the frontend workspace's lock was written by.
 	BunImage = "oven/bun:1.4.2"
 )
@@ -56,6 +58,16 @@ func (m *Workbench) python(src *dagger.Directory) *dagger.Container {
 		WithMountedCache("/root/.cache/uv", dag.CacheVolume("workbench-uv")).
 		WithEnvVariable("UV_LINK_MODE", "copy").
 		WithEnvVariable("UV_PROJECT_ENVIRONMENT", "/opt/venv").
+		// The toolchain .docker/media.dockerfile builds with, for the packages with no wheel for the engine's platform:
+		// lance-graph 0.5.4 publishes none for aarch64, so uv builds it from Rust (pinned as the image pins it).
+		WithMountedCache("/var/cache/apt", dag.CacheVolume("workbench-apt")).
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gcc", "g++",
+			"libc6-dev", "make", "cmake", "pkg-config", "protobuf-compiler", "libprotobuf-dev", "libssl-dev"}).
+		WithEnvVariable("RUSTUP_HOME", "/opt/rustup").
+		WithEnvVariable("CARGO_HOME", "/opt/cargo").
+		WithEnvVariable("PATH", "/opt/cargo/bin:$PATH", dagger.ContainerWithEnvVariableOpts{Expand: true}).
+		WithExec([]string{"sh", "-c", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain " + RustToolchain}).
 		WithDirectory("/src", src).
 		WithWorkdir("/src").
 		WithExec([]string{"uv", "sync", "--frozen", "--all-packages"})

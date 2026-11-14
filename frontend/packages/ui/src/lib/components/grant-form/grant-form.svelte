@@ -30,7 +30,7 @@
 <script lang="ts">
 	// THE grant/revoke form. One implementation, and that is the point of the file.
 	//
-	// It existed twice — here in `@rask/ui`'s GrantsPanel and again in the lakehouse's AccessGraph —
+	// It existed twice — here in `@workbench/ui`'s GrantsPanel and again in the lakehouse's AccessGraph —
 	// and on 2026-08-16 three separate defects were found and fixed IN BOTH COPIES on the same day:
 	// a denial message naming the wrong gate, buttons that ignored permission entirely (#143), and a
 	// form that invited a subject id which can never match a signed-in user. Each was one bug that had

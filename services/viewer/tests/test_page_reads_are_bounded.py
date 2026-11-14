@@ -192,11 +192,11 @@ def _app() -> FastAPI:
 
     settings = ViewerSettings.model_validate(
         {
-            "RASK_FGA_ENABLED": True,
-            "RASK_OIDC_ENABLED": True,
-            "RASK_OIDC_ISSUER": "https://issuer.test",
-            "RASK_OIDC_AUDIENCE": "rask",
-            "RASK_OIDC_CONNECTORS": {"local": "dex"},
+            "WORKBENCH_FGA_ENABLED": True,
+            "WORKBENCH_OIDC_ENABLED": True,
+            "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
+            "WORKBENCH_OIDC_AUDIENCE": "rask",
+            "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
         }
     )
     app.dependency_overrides[get_viewer_settings] = lambda: settings

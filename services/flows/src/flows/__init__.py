@@ -7,7 +7,7 @@ present, which is what makes an in-cluster run durable.
 
 Fleet layout (`make_service_app` + flat modules + an injectable lifespan), like `compute`. The public
 namespace is `/api/flows`; the cluster route forwards that rule unrewritten because this app mounts its
-routers under `RASK_API_PREFIX` (`/api` in the chart and in `dev-micro.sh`) itself.
+routers under `WORKBENCH_API_PREFIX` (`/api` in the chart and in `dev-micro.sh`) itself.
 """
 
 from flows import health, routes

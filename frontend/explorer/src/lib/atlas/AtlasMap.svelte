@@ -26,10 +26,10 @@
 		type AtlasPoints,
 		type AtlasSpace,
 		type Hit,
-	} from '@rask/explorer-api';
+	} from '@workbench/explorer-api';
 	import { crossFilter, buildKeyIndex, hitKey, type ColorBy } from './cross-filter.svelte';
 	import { gpuUnsupportedReason } from './gpu-support';
-	import { activeView } from '@rask/explorer-api/descriptor';
+	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { buildGrid, nearestIndex, type SpatialGrid } from './atlas-grid';
 	import { hexToRgb, hueRgb, buildHuePalette, type Rgb } from './atlas-colors';
 	import { indicesInPolygon, type Pt } from './atlas-geometry';
@@ -47,11 +47,11 @@
 	} from './atlas-legend';
 	// The canvas is this component's own WebGPU renderer; only the overlay CONTROLS
 	// use the shared design system, so the map chrome matches the rest of the estate.
-	import { Button } from '@rask/ui';
-	import { Select } from '@rask/ui/select';
-	import type { SelectOption } from '@rask/ui/select';
+	import { Button } from '@workbench/ui';
+	import { Select } from '@workbench/ui/select';
+	import type { SelectOption } from '@workbench/ui/select';
 	import { Loader2, Lasso, X, Hand, Settings2 } from '@lucide/svelte';
-	import { useColorMode } from '@rask/ui/color-mode';
+	import { useColorMode } from '@workbench/ui/color-mode';
 
 	let {
 		active = $bindable(null),

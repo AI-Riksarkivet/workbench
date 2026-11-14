@@ -1,9 +1,9 @@
 import { command } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
-import { parsed } from '@rask/api/upstream';
+import type { ApiResult } from '@workbench/api/client';
+import { parsed } from '@workbench/api/upstream';
 import { sessionGate, viewerJSON } from '$lib/server/doors';
-import { GraphCypherResponseSchema, type GraphCypherResponse } from '@rask/explorer-api';
+import { GraphCypherResponseSchema, type GraphCypherResponse } from '@workbench/explorer-api';
 
 // The knowledge-graph Cypher console, in the zone's remote-function dialect (the transport ruling, area 3)
 // — same name, same response shape at the call site, transport only. The deleted `api/graph/cypher`
@@ -15,7 +15,7 @@ import { GraphCypherResponseSchema, type GraphCypherResponse } from '@rask/explo
 // text would replay the previous result instead of re-executing it. The route was a POST for the same
 // reason its comment gives — a user-authored query is the closest thing the read plane has to a write.
 //
-// The valibot parse MOVES here from the browser (`runGraphCypher` in @rask/explorer-api parsed the same
+// The valibot parse MOVES here from the browser (`runGraphCypher` in @workbench/explorer-api parsed the same
 // schema after the fetch); none is invented.
 export const runGraphCypher = command(
 	v.object({

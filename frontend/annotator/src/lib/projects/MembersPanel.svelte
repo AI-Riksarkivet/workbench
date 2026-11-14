@@ -7,11 +7,11 @@
 	// `can_manage`-gated server-side on READ as well as write: who has access to a thing names the
 	// people worth phishing.
 	import { Trash2, UserPlus } from '@lucide/svelte';
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import { Subject } from '@rask/ui/identity';
-	import { Input } from '@rask/ui/input';
-	import { Select } from '@rask/ui/select';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import { Subject } from '@workbench/ui/identity';
+	import { Input } from '@workbench/ui/input';
+	import { Select } from '@workbench/ui/select';
 
 	import { fetchMembers, grantMember, revokeMember } from './remote/projects.remote';
 

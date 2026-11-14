@@ -7,7 +7,7 @@
 	//
 	// A shell, deliberately. `{#if open}` means the form MOUNTS on open, so its fields seed from the
 	// stored ontology through ordinary `$state(initial)` rather than an effect that assigns state.
-	import { Dialog } from '@rask/ui/dialog';
+	import { Dialog } from '@workbench/ui/dialog';
 
 	import OntologyForm from './OntologyForm.svelte';
 	import type { Project } from './types.js';

@@ -8,7 +8,7 @@
  * to pay for all three and still could not share a store.
  */
 import { createContext } from 'svelte';
-import { search, type Hit, type SearchSpec } from '@rask/explorer-api';
+import { search, type Hit, type SearchSpec } from '@workbench/explorer-api';
 
 export class Bench {
 	spec = $state<SearchSpec>({ q: '', n: 100, mode: 'fts' });

@@ -1,6 +1,6 @@
 import { FolderTree, LayoutDashboard, Map, Search, Share2, Workflow } from '@lucide/svelte';
-import { exact, seg, type ZoneNav } from '@rask/ui/shell';
-import type { DatasetView } from '@rask/explorer-api/descriptor';
+import { exact, seg, type ZoneNav } from '@workbench/ui/shell';
+import type { DatasetView } from '@workbench/explorer-api/descriptor';
 
 // The explorer zone's OWN sidebar routes (the shared shell renders exactly what a zone passes — the
 // cross-zone list lives in the top navbar). Hrefs are absolute domain paths: the zone is served

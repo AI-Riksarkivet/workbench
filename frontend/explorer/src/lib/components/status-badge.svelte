@@ -5,7 +5,7 @@
 	// than a zone-private widget.
 	import { Popover } from 'bits-ui';
 	import { Activity } from '@lucide/svelte';
-	import { Button, buttonVariants, cn } from '@rask/ui';
+	import { Button, buttonVariants, cn } from '@workbench/ui';
 	import { serviceHealth } from '$lib/service-health.svelte';
 
 	// The poll moved into a zone-wide store. This badge was the ONLY reader of /api/health, which is how

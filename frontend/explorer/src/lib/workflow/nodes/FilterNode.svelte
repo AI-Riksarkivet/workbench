@@ -4,7 +4,7 @@
 	 *  inputs are built from the descriptor's declared filterable fields, so the
 	 *  node names no corpus column. */
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { activeView } from '@rask/explorer-api';
+	import { activeView } from '@workbench/explorer-api';
 	import { graph } from '$lib/workflow/graph.svelte';
 	import { FIELD_CLASS } from './field';
 	import NodeShell from './NodeShell.svelte';

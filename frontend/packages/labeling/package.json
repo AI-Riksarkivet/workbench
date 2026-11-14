@@ -1,5 +1,5 @@
 {
-	"name": "@rask/labeling",
+	"name": "@workbench/labeling",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -18,7 +18,7 @@
 		"apache-arrow": "^21.2.0"
 	},
 	"devDependencies": {
-		"@rask/config": "workspace:*",
+		"@workbench/config": "workspace:*",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.10"
 	}

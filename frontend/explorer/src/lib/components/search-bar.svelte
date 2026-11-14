@@ -1,14 +1,14 @@
 <script lang="ts">
-	// Chrome on the estate design system: @rask/ui Button + Select (the same primitives
-	// the data/admin zones use). Input stays on @rask/ui — @rask/ui does not export one.
-	import { Button } from '@rask/ui';
-	import { Select } from '@rask/ui/select';
-	import { Input } from '@rask/ui/input';
-	import type { SelectOption } from '@rask/ui/select';
+	// Chrome on the estate design system: @workbench/ui Button + Select (the same primitives
+	// the data/admin zones use). Input stays on @workbench/ui — @workbench/ui does not export one.
+	import { Button } from '@workbench/ui';
+	import { Select } from '@workbench/ui/select';
+	import { Input } from '@workbench/ui/input';
+	import type { SelectOption } from '@workbench/ui/select';
 	import FilterPopover from './filter-popover.svelte';
 	import HelpPopover from './help-popover.svelte';
 	import SearchSettings from './search-settings.svelte';
-	import { activeView, type SearchSpec, type SearchMode } from '@rask/explorer-api';
+	import { activeView, type SearchSpec, type SearchMode } from '@workbench/explorer-api';
 	import { untrack } from 'svelte';
 	import { voiceSearch } from '$lib/voice-search.svelte';
 	import { serviceHealth } from '$lib/service-health.svelte';

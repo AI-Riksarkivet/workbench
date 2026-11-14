@@ -22,7 +22,7 @@
  * plain JSON of bounded size, so the comparison is cheap and, unlike a flag, self-correcting: drag a
  * panel away and back, and the marker clears itself.
  */
-import type { DockView, DockViewsStore } from '@rask/api/dock-views';
+import type { DockView, DockViewsStore } from '@workbench/api/dock-views';
 import type { LayoutRead } from './types';
 
 /** JSON with SORTED object keys, recursively — the divergence baseline's serializer. dockview's

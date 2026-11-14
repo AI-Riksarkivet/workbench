@@ -1,8 +1,8 @@
 import { command, query } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
+import type { ApiResult } from '@workbench/api/client';
 import { SIGN_IN_REQUIRED, annotatorJSON, signedOut } from '$lib/server/doors';
-import type { AssistShape } from '@rask/labeling/annotations-client';
+import type { AssistShape } from '@workbench/labeling/annotations-client';
 
 // Interactive AI-assist over ONE unit — GroundingDINO text / SAM region → predicted shapes
 // (the transport ruling, area 4). The `/api/assist/[...path]` proxy is deleted; this command is the

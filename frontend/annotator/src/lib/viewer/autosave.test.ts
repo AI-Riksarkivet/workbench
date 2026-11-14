@@ -40,7 +40,7 @@ vi.mock('$lib/labeling/review-selection.svelte', () => ({
 	reviewSelection: { taskId: null, total: 0 },
 }));
 vi.mock('$lib/projects/draft-sync', () => ({ syncTaskDraft: async () => null }));
-vi.mock('@rask/labeling/annotations-client', async (orig) => {
+vi.mock('@workbench/labeling/annotations-client', async (orig) => {
 	const actual = (await orig()) as Record<string, unknown>;
 	return {
 		...actual,

@@ -22,7 +22,7 @@ const ANNOTATOR = (args.annotator ?? 'http://127.0.0.1:8103').replace(/\/$/, '')
 const PORT = Number(args.port ?? 5176);
 
 // (The old AUTH_GATE cookie-presence gate is gone: the build runs the real
-// @rask/api/bff makeSessionHandle via hooks.server.ts — the login gate + session
+// @workbench/api/bff makeSessionHandle via hooks.server.ts — the login gate + session
 // hydration are the app's own, identical to the estate zones.)
 
 // Only `/api/annotations` still leaves the app as a BFF route — the assist and jobs planes became

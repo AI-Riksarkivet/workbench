@@ -11,10 +11,10 @@
 	// renderer reads the module-level active view, so a soft nav would leave the previous corpus's
 	// descriptor in place while the URL claimed otherwise.
 	import { Database } from '@lucide/svelte';
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import * as Popover from '@rask/ui/popover';
-	import { listDatasets } from '@rask/explorer-api';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as Popover from '@workbench/ui/popover';
+	import { listDatasets } from '@workbench/explorer-api';
 
 	import {
 		datasetChoices,

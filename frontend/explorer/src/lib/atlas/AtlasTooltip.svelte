@@ -9,8 +9,8 @@
 	 * memoised in a tiny LRU keyed by point index. Absolutely positioned
 	 * (bg-card/85 backdrop-blur) to match the toolbar/legend overlays.
 	 */
-	import { getAtlasChunk, type AtlasPoints } from '@rask/explorer-api';
-	import { activeView } from '@rask/explorer-api/descriptor';
+	import { getAtlasChunk, type AtlasPoints } from '@workbench/explorer-api';
+	import { activeView } from '@workbench/explorer-api/descriptor';
 
 	let {
 		pts,

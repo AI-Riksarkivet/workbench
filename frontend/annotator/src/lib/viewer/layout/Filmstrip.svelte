@@ -15,7 +15,7 @@
 	// Anchors, not buttons: a hop is a real URL, so it stays middle-clickable and reload-restorable,
 	// exactly like the arrows. Same-zone, so no `data-sveltekit-reload`.
 	import { base } from '$app/paths';
-	import { cn } from '@rask/ui/utils';
+	import { cn } from '@workbench/ui/utils';
 
 	import { taskCanvasHref, type StreamTask } from '../task-stream';
 	import MediaThumb from './MediaThumb.svelte';

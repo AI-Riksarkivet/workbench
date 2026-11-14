@@ -6,7 +6,7 @@
  * by a wire schema nobody could exercise (`dataset_version`, silently stripped for weeks).
  */
 
-import type { ApiResult } from '@rask/api/client';
+import type { ApiResult } from '@workbench/api/client';
 import * as v from 'valibot';
 
 import { MAX_SIMILAR_N } from './similar-limits';

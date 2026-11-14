@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Alignment } from '@rask/explorer-api';
+	import type { Alignment } from '@workbench/explorer-api';
 	import { queryTerms } from '$lib/utils';
 	import { on } from 'svelte/events';
 

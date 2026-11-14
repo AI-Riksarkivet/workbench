@@ -5,7 +5,7 @@
 	 *  width and do not overlap anything; the engine chip went to the drawer's status line too.
 	 *  Adding nodes lives in the rail's node library. */
 	import { LoaderCircle, Play, Redo2, RotateCcw, Undo2, Wand2 } from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { graph } from '$lib/flows/graph.svelte';
 
 	const iconBtn = 'nodrag';

@@ -5,7 +5,7 @@ a local directory or an ``s3://`` (RustFS / AWS / any S3) URI. Discovery replace
 ``Path.glob("*.lance")`` — which collapses ``s3://`` to ``s3:/`` — with this seam
 so the same code lists datasets and tables over either backend. When
 ``storage_options`` is ``None`` the local ``Path`` path runs, byte-identical to
-before (RASK_LANDING §4.2).
+before (WORKBENCH_LANDING §4.2).
 """
 
 from __future__ import annotations

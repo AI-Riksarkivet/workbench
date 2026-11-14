@@ -33,15 +33,15 @@ class FlowsSettings(GovernedAuthSettings, BaseSettings):
     )
 
     #: Ray Serve's HTTP ingress origin. A `model` node POSTs to `{serve_url}/{app}`.
-    serve_url: str = Field(default="http://localhost:8000", alias="RASK_FLOWS_SERVE_URL")
+    serve_url: str = Field(default="http://localhost:8000", alias="WORKBENCH_FLOWS_SERVE_URL")
 
     #: Per-node Serve call budget. Generous because an HTR page through `/htrflow` is a real
     #: pipeline, not a token stream — the models zone's own inference route allows 180 s.
-    serve_timeout: float = Field(default=180.0, alias="RASK_FLOWS_SERVE_TIMEOUT")
+    serve_timeout: float = Field(default=180.0, alias="WORKBENCH_FLOWS_SERVE_TIMEOUT")
 
     #: How many finished runs stay readable at `GET /flows/runs/{id}`. The store is a process-local
     #: dict (v0), so this is a memory bound, not a retention policy — oldest is evicted first.
-    max_runs: int = Field(default=200, alias="RASK_FLOWS_MAX_RUNS")
+    max_runs: int = Field(default=200, alias="WORKBENCH_FLOWS_MAX_RUNS")
 
 
 def build_flows_settings() -> FlowsSettings:

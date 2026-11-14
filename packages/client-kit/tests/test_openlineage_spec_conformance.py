@@ -1,8 +1,8 @@
-"""The client kit's OpenLineage builder passes the same spec-fidelity gate the lakehouse's emitters do.
+"""The client kit's OpenLineage builder emits events the official spec admits.
 
 Every event `client_kit.lancekit.openlineage` builds is validated against the vendored official core schema
-(`tests/data/openlineage-2-0-2.json`, the 2-0-2 document `RUN_EVENT_SCHEMA_URL` names), and its column lineage is read
-back through lineage's own `Dataset` model, which is how the lakehouse receives it.
+(`data/openlineage-2-0-2.json`, the 2-0-2 document `RUN_EVENT_SCHEMA_URL` names), and its column lineage names the
+column's source dataset in the facet a lineage backend reads it from.
 """
 
 from __future__ import annotations
@@ -12,12 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
-from lineage.models import ColumnUpstream, Dataset
 
 from client_kit.lancekit import openlineage as lancekit_ol
 
 
-_SPEC_PATH = Path(__file__).resolve().parents[3] / "tests" / "data" / "openlineage-2-0-2.json"
+_SPEC_PATH = Path(__file__).resolve().parent / "data" / "openlineage-2-0-2.json"
 _SPEC: dict[str, Any] = json.loads(_SPEC_PATH.read_text())
 
 _EVENT_TIME = "2026-07-26T09:00:00+00:00"
@@ -73,8 +72,8 @@ def test_lancekit_annotation_event_conforms() -> None:
 def test_lancekit_column_lineage_uses_the_modern_transformations_array() -> None:
     # ASSERTS the slot a graph backend reads the kind from. The first cut put transformationType/
     # transformationSubtype on the InputField — valid JSON (InputField allows additional properties) but a slot
-    # no consumer reads, so every forwarded edge arrived with an empty type and subtype. And lineage's own
-    # authorizer must find the column's source dataset in the same facet, or it authorizes nothing.
+    # no consumer reads, so every forwarded edge arrived with an empty type and subtype. And a lineage backend
+    # must find the column's source dataset in the same facet, or the edge names no source.
     result = lancekit_ol.WriteResult(
         version=1,
         row_count=1,
@@ -94,4 +93,4 @@ def test_lancekit_column_lineage_uses_the_modern_transformations_array() -> None
     )
     [source] = event["outputs"][0]["facets"]["columnLineage"]["fields"]["labels"]["inputFields"]
     assert [(t["type"], t["subtype"]) for t in source["transformations"]] == [("DIRECT", "TRANSFORMATION")]
-    assert Dataset.model_validate(event["outputs"][0]).column_upstreams == [ColumnUpstream(namespace="media", name="unit-7")]
+    assert (source["namespace"], source["name"]) == ("media", "unit-7")

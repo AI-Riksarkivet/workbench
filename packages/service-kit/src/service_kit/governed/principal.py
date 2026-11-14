@@ -4,7 +4,7 @@ ADR 0159 D5 and ADR 0156 C5. The idp id names the identity provider that vouched
 subjects never share a namespace, and renaming a provider in its own configuration re-keys nobody. `kubernetes` is the
 cluster's service-account issuer, whose subject is the account's username (`system:serviceaccount:<ns>:<sa>`);
 `dex-client` is a Dex client signed in for itself with the client-credentials grant, whose subject is its client id
-(ADR 0181); every other idp id is one the deployment names for a Dex connector (`RASK_OIDC_CONNECTORS`), whose subject
+(ADR 0181); every other idp id is one the deployment names for a Dex connector (`WORKBENCH_OIDC_CONNECTORS`), whose subject
 is the upstream user id Dex reports for it (`service_kit.governed.idp_identity`). The first two are machines. The idp
 id's grammar excludes `~`, so the first `~` ends it and the subject may carry any other character (Lakekeeper's `UserId`,
 crates/lakekeeper/src/service/authn.rs).

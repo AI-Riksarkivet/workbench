@@ -1,4 +1,4 @@
-// @rask/api/ingest — the ingest plane's door: POST /api/ingest, GET /api/ingest/{run_id}.
+// @workbench/api/ingest — the ingest plane's door: POST /api/ingest, GET /api/ingest/{run_id}.
 //
 // Rewritten 2026-08-03 for the plane that replaces the medallion's IIIF head.
 // Two things changed shape, and both were WRONG here in a way that would have failed at runtime:

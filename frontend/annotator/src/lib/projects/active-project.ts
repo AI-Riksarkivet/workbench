@@ -1,9 +1,9 @@
-import { projectFromHost } from '@rask/ui/shell';
+import { projectFromHost } from '@workbench/ui/shell';
 
 /**
  * The ACTIVE PROJECT — the tenant every projects surface in this zone acts on.
  *
- * Resolved by the SAME rule the shared shell resolves it by (`@rask/ui`'s `app-shell.svelte` and
+ * Resolved by the SAME rule the shared shell resolves it by (`@workbench/ui`'s `app-shell.svelte` and
  * `project-switcher.svelte`): a host-scoped deploy names the project in the request host, otherwise
  * it is the `rask_active_project` cookie (#103) that `zoneLayoutLoad` surfaces to every zone as
  * `data.activeProject`. One rule, so the page and the chrome above it can never disagree.

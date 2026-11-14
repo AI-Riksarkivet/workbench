@@ -1,14 +1,14 @@
 import { getRequestEvent, query } from '$app/server';
 import { env } from '$env/dynamic/private';
-import { lineageAuthHeaders, lineagePulse, type LineagePulse } from '@rask/api/runs-feed';
-import { readSecretFile } from '@rask/api/bff';
+import { lineageAuthHeaders, lineagePulse, type LineagePulse } from '@workbench/api/runs-feed';
+import { readSecretFile } from '@workbench/api/bff';
 
-export type { LineagePulse } from '@rask/api/runs-feed';
+export type { LineagePulse } from '@workbench/api/runs-feed';
 
 /**
  * This zone's run-notification feed.
  *
- * The whole body is `@rask/api/runs-feed`, shared with every other zone — probe the lineage cursor
+ * The whole body is `@workbench/api/runs-feed`, shared with every other zone — probe the lineage cursor
  * and keep the stream alive. What cannot be
  * shared is exactly this file: `query.live` must be declared inside an app to get its own endpoint, and
  * `getRequestEvent` only exists there. So a zone's cost of having the bell is four lines, which is why it

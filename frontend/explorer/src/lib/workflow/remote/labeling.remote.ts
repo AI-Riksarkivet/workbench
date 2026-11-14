@@ -1,10 +1,10 @@
 import { command } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
-import { parsed } from '@rask/api/upstream';
+import type { ApiResult } from '@workbench/api/client';
+import { parsed } from '@workbench/api/upstream';
 import { annotatorJSON, sessionGate } from '$lib/server/doors';
-import type { SaveResult } from '@rask/labeling/tag-writer';
-import type { JobResult } from '@rask/labeling/jobs';
+import type { SaveResult } from '@workbench/labeling/tag-writer';
+import type { JobResult } from '@workbench/labeling/jobs';
 
 // The two writes this zone makes into the ANNOTATOR service, in the zone's remote-function dialect
 // (the transport ruling, area 3) — same names, same payloads on the wire, transport only. Both deleted
@@ -17,8 +17,8 @@ import type { JobResult } from '@rask/labeling/jobs';
 // `/api/annotations/**` and `/api/assist/**` belongs to the annotator zone and is not reachable from
 // here — which is what deleting the routes rather than widening them keeps true.
 //
-// Transport and gate live in `$lib/server/doors` over `@rask/api/upstream` (#93). The answers are
-// PARSED (#94): the schemas are typed against the wire contracts imported from `@rask/labeling`, so
+// Transport and gate live in `$lib/server/doors` over `@workbench/api/upstream` (#93). The answers are
+// PARSED (#94): the schemas are typed against the wire contracts imported from `@workbench/labeling`, so
 // a drift between this schema and the shared contract is a compile error, and a drifted wire answer
 // is a named 502 the caller renders — never a silently-wrong count.
 
@@ -44,7 +44,7 @@ const annotatorPost = <T>(
 	);
 
 /** One tagged unit: the doc key plus the NON-doc identity fields, positional (pairs with the
- *  descriptor's `keyFields` minus the doc key) — the arity-generic shape `@rask/labeling/tag-writer`
+ *  descriptor's `keyFields` minus the doc key) — the arity-generic shape `@workbench/labeling/tag-writer`
  *  builds and this zone has always sent. */
 const TagWriteSchema = v.object({
 	doc_id: v.string(),
@@ -87,7 +87,7 @@ const ChunkSelectionSchema = v.variant('level', [
 ]);
 
 /** The wire shape the annotator's `/api/jobs/apply` takes — flattened from the selection union exactly
- *  as `scopePayload` in `@rask/labeling/jobs` did, so the request body is byte-for-byte what it was. */
+ *  as `scopePayload` in `@workbench/labeling/jobs` did, so the request body is byte-for-byte what it was. */
 function scopePayload(scope: v.InferOutput<typeof ChunkSelectionSchema>): {
 	level: string;
 	keys: string[];

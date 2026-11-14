@@ -18,7 +18,7 @@
  */
 import type { Table } from 'apache-arrow';
 
-import { makeInsertRow, type SavePayload } from '@rask/labeling/annotations-client';
+import { makeInsertRow, type SavePayload } from '@workbench/labeling/annotations-client';
 
 import { projectRows } from './annotation-rows';
 import type { TextLaneLine } from './text-lane';

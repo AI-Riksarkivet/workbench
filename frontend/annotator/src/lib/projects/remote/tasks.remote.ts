@@ -1,6 +1,6 @@
 import { command, query } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
+import type { ApiResult } from '@workbench/api/client';
 import {
 	SIGN_IN_REQUIRED,
 	parsed,

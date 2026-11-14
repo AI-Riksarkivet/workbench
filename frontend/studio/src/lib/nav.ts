@@ -1,5 +1,5 @@
 import { Workflow } from '@lucide/svelte';
-import { exact, type ZoneNav } from '@rask/ui/shell';
+import { exact, type ZoneNav } from '@workbench/ui/shell';
 
 // The studio zone's OWN sidebar — ONE row, because the zone is one surface: the flow canvas, which
 // is the zone ROOT. It listed `Apps` (a launcher grid whose only card opened the builder) and
@@ -10,7 +10,7 @@ import { exact, type ZoneNav } from '@rask/ui/shell';
 // The rail's substance is no longer this list at all — it is the NODE LIBRARY the page injects
 // through the shell's `sidebarContent` seam (see lib/flows/NodeLibrary.svelte). That is also why one
 // row does not hide the rail: the shell's `hasNav` is `leaves > 1 || sidebarContent !== undefined`,
-// and `@rask/zone-contract`'s leaf-count gate now reads that same condition rather than the leaf
+// and `@workbench/zone-contract`'s leaf-count gate now reads that same condition rather than the leaf
 // count alone.
 export const STUDIO_ZONE_NAV: ZoneNav = {
 	title: 'Studio',

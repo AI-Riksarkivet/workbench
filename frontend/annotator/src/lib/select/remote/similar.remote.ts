@@ -11,7 +11,7 @@
 
 import { query } from '$app/server';
 import * as v from 'valibot';
-import { parsed } from '@rask/api/upstream';
+import { parsed } from '@workbench/api/upstream';
 import { searchJSON } from '$lib/server/doors';
 
 import { SimilarArgSchema, type SimilarResult } from '../similar-types';
@@ -21,7 +21,7 @@ import { SimilarArgSchema, type SimilarResult } from '../similar-types';
  *
  * Failure is a VALUE, never a throw: a rejected fetch across the remote boundary would skip the
  * caller's honest "the search service is unreachable" branch and surface as a page error. The
- * transport is the zone door over `@rask/api/upstream` (#93): unreachable is `status: 0` (the
+ * transport is the zone door over `@workbench/api/upstream` (#93): unreachable is `status: 0` (the
  * signal `SimilarPanel` reads), the service's OWN refusal words survive the trip — "no row with
  * that key", "this corpus declares no vector space" are the actionable part — and the endpoint's
  * LIST answer is parsed as one, so an object body cannot silently become an empty neighbour set

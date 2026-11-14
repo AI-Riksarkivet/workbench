@@ -19,8 +19,10 @@ tool would:
 - the lakehouse's events as `docs/rask/COMMIT-EVENTS.md` describes them;
 - its permission is a scoped grant to its own identity, made at the catalog's access doors.
 
-It imports no rask code. What it once imported (service-kit, storage, `@rask/ui`, `@rask/api`, `@rask/config`,
-`@rask/dockview`, `@rask/flow`) is its own copy here, changed freely. rask's repository is `AI-Riksarkivet/rask`;
+It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
+names, changed freely: service-kit and storage, and the frontend packages `@workbench/ui`, `@workbench/api`,
+`@workbench/config`, `@workbench/dockview` and `@workbench/flow`. Its settings are `WORKBENCH_*` environment variables
+(the `LANCE_*` ones name what it asks of a lakehouse). rask's repository is `AI-Riksarkivet/rask`;
 compute (Ray Serve, the runners) is a repository of its own, called over HTTP.
 
 The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and what remains to do are on issue #1
@@ -94,8 +96,8 @@ Two language-pure planes, as in rask; never blur them.
   member, so its model pins never enter the services' resolution.
 - `frontend/`: the bun workspace root (`package.json`, `bun.lock`, `knip.json`, oxlint/oxfmt config, `patches/`).
   - `frontend/explorer`, `frontend/annotator`, `frontend/studio`: the three SvelteKit apps.
-  - `frontend/packages/*`: their libraries (`ui`, `api`, `config`, `dockview`, `flow`, `explorer-api`, `engine`,
-    `labeling`).
+  - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `dockview`, `flow`, `explorer-api`,
+    `engine`, `labeling`). `@workbench/ui` is read from source: its exports name `src/`, with no build step.
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`),
   built from the repository root against the root `uv.lock`.
 - `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`).

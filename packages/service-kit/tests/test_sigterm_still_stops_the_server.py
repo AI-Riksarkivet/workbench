@@ -175,7 +175,7 @@ def _free_port() -> int:
 def _uvicorn(tmp_path: Path, loop: str, source: str = _APP) -> Generator[_Server]:
     (tmp_path / "armed_app.py").write_text(source, encoding="utf-8")
     port = _free_port()
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("RASK_", "OTEL_"))}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("WORKBENCH_", "OTEL_"))}
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -319,7 +319,7 @@ _NO_SERVER = textwrap.dedent(
 def test_with_NO_handler_to_hand_on_to_SIGTERM_keeps_its_default_action() -> None:
     """Nothing installed a Python handler, so SIGTERM's disposition was the default: terminate. Arming
     the drain must not turn that into "ignore"."""
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("RASK_", "OTEL_"))}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("WORKBENCH_", "OTEL_"))}
     done = subprocess.run([sys.executable, "-c", _NO_SERVER], capture_output=True, text=True, env=env, timeout=30, check=False)
 
     assert "SURVIVED_SIGTERM" not in done.stdout, f"an armed process with the default disposition outlived SIGTERM: {done.stdout}{done.stderr}"

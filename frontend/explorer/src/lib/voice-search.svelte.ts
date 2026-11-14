@@ -23,7 +23,7 @@
  *    active voice query immediately when it flips.
  */
 
-import { getVoiceStatus, type VoiceAnchor, type VoiceStatus } from '@rask/explorer-api';
+import { getVoiceStatus, type VoiceAnchor, type VoiceStatus } from '@workbench/explorer-api';
 
 export type VoiceRequest =
 	| {

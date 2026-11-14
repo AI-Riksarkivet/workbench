@@ -80,11 +80,11 @@ def _app(*, fga_enabled: bool, allow: bool, subject: str = "dex~eve", monkeypatc
 
     settings = ViewerSettings.model_validate(
         {
-            "RASK_FGA_ENABLED": fga_enabled,
-            "RASK_OIDC_ENABLED": fga_enabled,
-            "RASK_OIDC_ISSUER": "https://issuer.test",
-            "RASK_OIDC_AUDIENCE": "rask",
-            "RASK_OIDC_CONNECTORS": {"local": "dex"},
+            "WORKBENCH_FGA_ENABLED": fga_enabled,
+            "WORKBENCH_OIDC_ENABLED": fga_enabled,
+            "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
+            "WORKBENCH_OIDC_AUDIENCE": "rask",
+            "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
         }
     )
     app.dependency_overrides[get_viewer_settings] = lambda: settings

@@ -29,11 +29,11 @@
 		makeInsertRow,
 		postSave,
 		type SavePayload,
-	} from '@rask/labeling/annotations-client';
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import * as Popover from '@rask/ui/popover';
-	import { Textarea } from '@rask/ui/textarea';
+	} from '@workbench/labeling/annotations-client';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as Popover from '@workbench/ui/popover';
+	import { Textarea } from '@workbench/ui/textarea';
 	import MediaThumb from '$lib/viewer/layout/MediaThumb.svelte';
 	import { statusVariant } from '$lib/viewer/layout/statusStyle';
 	import { taskCanvasHref } from '$lib/viewer/task-stream';

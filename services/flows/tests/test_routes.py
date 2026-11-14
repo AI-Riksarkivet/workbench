@@ -8,7 +8,7 @@ what these contracts are — and leaves the wiring to `test_the_flows_row_*` in 
 where it is checked against the real app's openapi.
 
 `/api` is the mount prefix on purpose: it is what the chart and `scripts/dev-micro.sh` set
-`RASK_API_PREFIX` to, so the paths driven here are the paths the gateway's `/api/flows` row forwards.
+`WORKBENCH_API_PREFIX` to, so the paths driven here are the paths the gateway's `/api/flows` row forwards.
 """
 
 from collections.abc import Iterator

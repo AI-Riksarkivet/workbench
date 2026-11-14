@@ -1,6 +1,6 @@
 """THE media-service app factory — one assembly for every service built on the media library, prod AND test.
 
-``service_kit.make_service_app`` is the FLEET factory: it mounts routers under ``RASK_API_PREFIX``,
+``service_kit.make_service_app`` is the FLEET factory: it mounts routers under ``WORKBENCH_API_PREFIX``,
 registers the fleet middleware stack and reads ``service_kit.config.Settings``. The media trio is a
 different plane — root-mounted routers, its own ``MediaSettings``, and a CORS policy that must expose
 ``Content-Range``/``Accept-Ranges`` so a browser can seek video — so it cannot use that factory

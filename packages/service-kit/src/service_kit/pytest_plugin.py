@@ -34,7 +34,7 @@ except ImportError:  # a client whose suite mocks no HTTP does not install respx
 #: `wait_for_sidecar` before `--timeout=300` took the offline suite and four e2e lanes with it.
 DAPR_HANDSHAKE_BUDGET_SECONDS: Final = 1.0
 
-#: The doors whose callers read a projected token file, `RASK_<DOOR>_IDENTITY_TOKEN_FILE`.
+#: The doors whose callers read a projected token file, `WORKBENCH_<DOOR>_IDENTITY_TOKEN_FILE`.
 PROJECTED_TOKEN_DOORS: Final = ("catalog", "lineage")
 
 
@@ -92,7 +92,7 @@ def _projected_identity_tokens(tmp_path: pathlib.Path, monkeypatch: pytest.Monke
     for door in PROJECTED_TOKEN_DOORS:
         path = tmp_path / f"projected-rask-{door}-token"
         path.write_text(f"projected-for-rask-{door}")
-        monkeypatch.setenv(f"RASK_{door.upper()}_IDENTITY_TOKEN_FILE", str(path))
+        monkeypatch.setenv(f"WORKBENCH_{door.upper()}_IDENTITY_TOKEN_FILE", str(path))
 
 
 @pytest.fixture(autouse=True)

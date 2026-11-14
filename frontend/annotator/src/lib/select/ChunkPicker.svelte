@@ -6,9 +6,9 @@
 	// chunk has no extracted frame yet.
 	import { onMount } from 'svelte';
 	import { ArrowLeft, ListChecks, Pencil } from '@lucide/svelte';
-	import { getDocChunks, type DocChunk, type Document } from '@rask/explorer-api';
-	import type { DatasetView } from '@rask/explorer-api/descriptor';
-	import { Button } from '@rask/ui/button';
+	import { getDocChunks, type DocChunk, type Document } from '@workbench/explorer-api';
+	import type { DatasetView } from '@workbench/explorer-api/descriptor';
+	import { Button } from '@workbench/ui/button';
 
 	import SimilarPanel from './SimilarPanel.svelte';
 
@@ -100,7 +100,7 @@
 			{#each chunks as chunk, i (keyOf(chunk))}
 				{@const time = view.time(chunk)}
 				<li>
-					<!-- Card geometry lifted from @rask/ui's Card (rounded-lg, border, bg-card,
+					<!-- Card geometry lifted from @workbench/ui's Card (rounded-lg, border, bg-card,
 					     shadow-sm) so a chunk row and a data-zone card are the same object. -->
 					<button
 						type="button"

@@ -1,7 +1,7 @@
 import { command, query } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
-import { parsed } from '@rask/api/upstream';
+import type { ApiResult } from '@workbench/api/client';
+import { parsed } from '@workbench/api/upstream';
 import { projectsJSON, sessionGate } from '$lib/server/doors';
 import {
 	CreatedProjectSchema,
@@ -20,7 +20,7 @@ import {
 // passthrough (a catch-all forwards whatever a caller spells, including the whole project plane media
 // has no business reaching) without adding a single capability.
 //
-// Dev seam, transport and write gate all live in `$lib/server/doors` over `@rask/api/upstream`
+// Dev seam, transport and write gate all live in `$lib/server/doors` over `@workbench/api/upstream`
 // (#93) — this file is the plane's named operations and nothing else.
 
 /** The send item's arg schema — the boundary check for what the dialog builds (see `SendItem`). */

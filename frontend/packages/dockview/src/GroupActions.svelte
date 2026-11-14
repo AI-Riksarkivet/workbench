@@ -60,7 +60,7 @@
 	let panelCount = $state(untrack(() => group.panels.length));
 
 	/** Where this group currently lives. Drives the float/popout buttons' meaning.
-	 *  Read ONCE at creation (the same `untrack` shape `@rask/ui`'s ResizableSplit uses for `initial`):
+	 *  Read ONCE at creation (the same `untrack` shape `@workbench/ui`'s ResizableSplit uses for `initial`):
 	 *  every later value arrives through `onDidLocationChange` below, not by re-reading the prop. */
 	let location = $state(untrack(() => api.location));
 	let maximized = $state(false);

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { activeView, type DocChunk } from '@rask/explorer-api';
+	import { activeView, type DocChunk } from '@workbench/explorer-api';
 	import { fmtTime, hitKey } from '$lib/utils';
 	import { Play } from '@lucide/svelte';
 	import TranscriptHighlighter from './transcript-highlighter.svelte';

@@ -25,7 +25,7 @@ const config = {
 		adapter: adapter(),
 		// Remote functions: the zone's run-notification feed is a `query.live` generator
 		// (`src/lib/live/feeds.remote.ts`). Without this the build fails outright rather than silently
-		// dropping the endpoint, which is the right failure — see @rask/zone-contract's
+		// dropping the endpoint, which is the right failure — see @workbench/zone-contract's
 		// notification-surface gate for why the bell must exist in every zone.
 		experimental: { remoteFunctions: true },
 		alias: {

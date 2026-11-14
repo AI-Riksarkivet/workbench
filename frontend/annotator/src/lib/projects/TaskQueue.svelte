@@ -20,13 +20,13 @@
 		type RowSelectionState,
 		type SortingState,
 		sortableHeader,
-	} from '@rask/ui/data-table';
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import { Dialog } from '@rask/ui/dialog';
-	import { Input } from '@rask/ui/input';
-	import { ResizableSplit } from '@rask/ui/resizable-split';
-	import { Select } from '@rask/ui/select';
+	} from '@workbench/ui/data-table';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import { Dialog } from '@workbench/ui/dialog';
+	import { Input } from '@workbench/ui/input';
+	import { ResizableSplit } from '@workbench/ui/resizable-split';
+	import { Select } from '@workbench/ui/select';
 
 	import { bulkActions, targetsFor } from './bulk-events';
 	import { indexRows, rowFor, rowKeysFor, rowText } from './corpus-rows';
@@ -39,7 +39,7 @@
 		mediaText,
 		predictedLabels,
 	} from './item-columns';
-	import { Textarea } from '@rask/ui/textarea';
+	import { Textarea } from '@workbench/ui/textarea';
 	import { Eye, ExternalLink, LayoutGrid, Rows3, Trash2 } from '@lucide/svelte';
 
 	import ImportButton from './ImportButton.svelte';

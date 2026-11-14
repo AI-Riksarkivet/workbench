@@ -2,7 +2,7 @@
 	/** Persistent right panel. Click a node → see its inputs + interatchte
 	 *  results; click a result → play it here (reuses PlayerPane). */
 	import { ArrowLeft, Copy, Download, Eye, EyeOff } from '@lucide/svelte';
-	import { activeView } from '@rask/explorer-api';
+	import { activeView } from '@workbench/explorer-api';
 	import {
 		graph,
 		modeLabel,

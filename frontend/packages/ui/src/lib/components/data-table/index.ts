@@ -1,4 +1,4 @@
-// The @rask/ui data-table stack: a Svelte 5 adapter over @tanstack/table-core (createSvelteTable),
+// The @workbench/ui data-table stack: a Svelte 5 adapter over @tanstack/table-core (createSvelteTable),
 // the shared table shell (DataTable: states + pagination), the column building blocks (sortable
 // header button, text filter, selection column, row-actions slot) and the render helpers that let
 // ColumnDefs point at Svelte components/snippets. Import the row models straight from here so

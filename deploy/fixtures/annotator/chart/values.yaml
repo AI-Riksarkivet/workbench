@@ -90,10 +90,10 @@ otel:
   samplingRate: "1"
 
 # The person: every request names a verified subject, and the person's own bearer is what the annotator asks the
-# catalog with. Off, it answers anonymously and says so (RASK_INSECURE_ALLOW_UNAUTHENTICATED).
+# catalog with. Off, it answers anonymously and says so (WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED).
 auth:
   enabled: true
-  # Emit the authn/authz audit stream (RASK_AUDIT_ENABLED).
+  # Emit the authn/authz audit stream (WORKBENCH_AUDIT_ENABLED).
   audit: true
   oidc:
     # rask's `auth.oidc.issuer`, exactly: a token is accepted only when its `iss` equals it. Required; `make k3s-fixtures`

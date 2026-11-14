@@ -28,7 +28,7 @@ describe('ingestLifecycle', () => {
 
 		await ingestLifecycle('r1', 'pause', fetchFn as unknown as typeof fetch);
 
-		// `/api/ingest` is the gateway row; the service's own RASK_API_PREFIX is `/api`, so the path
+		// `/api/ingest` is the gateway row; the service's own WORKBENCH_API_PREFIX is `/api`, so the path
 		// the browser sends is `/api/ingest/ingests/...`. A wrong prefix here is a silent 404.
 		expect(fetchFn).toHaveBeenCalledWith(
 			'/api/ingest/ingests/r1/pause',

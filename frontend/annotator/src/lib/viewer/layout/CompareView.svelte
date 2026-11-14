@@ -13,14 +13,14 @@
 	// same table the moment panes shared a key. The view REPLACES the canvas while open — the
 	// route mounts one or the other, never both.
 	import { ArrowLeft, Check } from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { toast } from 'svelte-sonner';
 
 	import {
 		AnnotationsHttpError,
 		loadAnnotations,
 		postSave,
-	} from '@rask/labeling/annotations-client';
+	} from '@workbench/labeling/annotations-client';
 
 	import { fetchTask } from '$lib/projects/remote/tasks.remote';
 	import type { MediaUnit } from '../types';

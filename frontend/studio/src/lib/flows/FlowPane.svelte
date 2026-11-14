@@ -21,7 +21,7 @@
 		type Edge,
 	} from '@xyflow/svelte';
 	import { on } from 'svelte/events';
-	import { useColorMode } from '@rask/ui/color-mode';
+	import { useColorMode } from '@workbench/ui/color-mode';
 	import { graph, isNodeKind } from '$lib/flows/graph.svelte';
 	import { nodeTypes } from '$lib/flows/node-types';
 	import FlowsToolbar from '$lib/flows/FlowsToolbar.svelte';

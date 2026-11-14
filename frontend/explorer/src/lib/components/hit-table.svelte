@@ -1,7 +1,7 @@
 <script lang="ts" module>
-	import type { Hit } from '@rask/explorer-api';
-	import { relevanceOf, isVoiceHit } from '@rask/explorer-api';
-	import { activeView, type DatasetView } from '@rask/explorer-api/descriptor';
+	import type { Hit } from '@workbench/explorer-api';
+	import { relevanceOf, isVoiceHit } from '@workbench/explorer-api';
+	import { activeView, type DatasetView } from '@workbench/explorer-api/descriptor';
 	import { fmtTime } from '$lib/utils';
 
 	/** A table column. `render` gives the displayed string. Set `numeric` for
@@ -166,7 +166,7 @@
 </script>
 
 <script lang="ts">
-	import { thumbnailUrl } from '@rask/explorer-api';
+	import { thumbnailUrl } from '@workbench/explorer-api';
 	import { queryTerms, makeHighlighter, hitKey } from '$lib/utils';
 	import { audioPreview } from '$lib/audio-preview.svelte';
 	import { ChevronDown, ChevronUp, Play, Pause } from '@lucide/svelte';

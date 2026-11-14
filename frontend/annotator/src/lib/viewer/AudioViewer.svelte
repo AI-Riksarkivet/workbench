@@ -1,15 +1,15 @@
 <script lang="ts">
 	// Audio viewer — a THIN wrapper over the engine's WaveSurface. All wavesurfer +
-	// region↔row logic lives in `@rask/engine` (framework-agnostic, reusable); this file
+	// region↔row logic lives in `@workbench/engine` (framework-agnostic, reusable); this file
 	// only mounts it, bridges gestures to the annotator facade via the data-only
 	// (temporal) seam, and reconciles regions from the controller's rows. The waveform
 	// is the one Canvas2D lane we allow; segments (t_start/t_end) share the SAME
 	// annotations table + Save path as spatial shapes.
 	import { untrack } from 'svelte';
-	import { loadAnnotations } from '@rask/labeling/annotations-client';
+	import { loadAnnotations } from '@workbench/labeling/annotations-client';
 	import { ZoomIn, ZoomOut } from '@lucide/svelte';
-	import { WaveSurface, type TemporalSegment } from '@rask/engine';
-	import { Button } from '@rask/ui/button';
+	import { WaveSurface, type TemporalSegment } from '@workbench/engine';
+	import { Button } from '@workbench/ui/button';
 	import TransportBar from './layout/TransportBar.svelte';
 	import {
 		clampTime,

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { activeView, type DocChunk } from '@rask/explorer-api';
+	import { activeView, type DocChunk } from '@workbench/explorer-api';
 	import { hitKey } from '$lib/utils';
 
 	type Props = {

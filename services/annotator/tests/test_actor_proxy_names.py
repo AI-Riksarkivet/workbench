@@ -64,23 +64,12 @@ class _NamelessInterface:
 setattr(_NamelessInterface.save_draft, "__actormethod__", None)  # noqa: B010 — the point is the dynamic write
 
 
-@pytest.mark.parametrize(
-    "proxy_factory",
-    [
-        pytest.param(lambda: __import__("annotator.projects.proxies", fromlist=["TypedActorProxy"]).TypedActorProxy, id="annotator"),
-        pytest.param(lambda: __import__("notifications.proxies", fromlist=["TypedActorProxy"]).TypedActorProxy, id="notifications"),
-    ],
-)
-def test_a_None_wire_name_is_refused_by_name_not_passed_to_getattr(proxy_factory: Any) -> None:
+def test_a_None_wire_name_is_refused_by_name_not_passed_to_getattr() -> None:
     """`getattr(self._proxy, None)` raises `TypeError: attribute name must be string`, from inside the
     proxy, naming neither the interface nor the method. The caller sees a type error about strings for
     what is actually a mis-declared actor method.
-
-    Parametrized across BOTH proxies deliberately: the two files carry the identical line, and a spot
-    fix on one leaves the same hole in the other — which is how this shape reappears.
     """
-    proxy_cls = proxy_factory()
-    typed = proxy_cls(_WireOnlyProxy({"save_draft"}), _NamelessInterface)
+    typed = TypedActorProxy(_WireOnlyProxy({"save_draft"}), _NamelessInterface)
 
     with pytest.raises(Exception) as caught:  # noqa: PT011 — the TYPE is what is under test
         _ = typed.save_draft

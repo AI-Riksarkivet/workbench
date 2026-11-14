@@ -8,7 +8,7 @@
  * had already lost the comment explaining it.
  *
  * The decisions are pure, so they are pinned here, next to the code, where a zone adopting
- * `@rask/api/live` gets them verified rather than inherited.
+ * `@workbench/api/live` gets them verified rather than inherited.
  */
 
 import { describe, expect, it } from 'vitest';

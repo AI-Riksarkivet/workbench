@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
-// The composition origin: @rask/zone-contract's dev proxy (`bun run dev` at the frontend
+// The composition origin: @workbench/zone-contract's dev proxy (`bun run dev` at the frontend
 // root), which path-routes every zone prefix off ONE origin exactly as the Ingress does — so
 // these suites drive the real split topology rather than a single zone's port.
 export const BASE = process.env.E2E_BASE ?? 'http://127.0.0.1:5200';
@@ -17,7 +17,7 @@ export const BASE = process.env.E2E_BASE ?? 'http://127.0.0.1:5200';
 // which bearer-forwards to viewer/search/annotator.
 export const API = process.env.E2E_API ?? 'http://127.0.0.1:5200';
 export const KEY = process.env.E2E_KEY ?? 'fe00cd746463ad2c/0/19';
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 function chromePath() {
 	if (process.env.E2E_CHROME) return process.env.E2E_CHROME;
@@ -55,7 +55,7 @@ export function launchBrowser() {
 
 /** Reset the demo annotations table (deterministic runs; leaves the demo clean). */
 export function seed() {
-	execFileSync('make', ['seed-annotations', 'DB=transcripts_v2.lance'], {
+	execFileSync('uv', ['run', 'python', 'scripts/seed_annotations.py', 'transcripts_v2.lance'], {
 		cwd: REPO,
 		stdio: 'pipe',
 	});

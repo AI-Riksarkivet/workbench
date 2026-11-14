@@ -11,7 +11,7 @@
 		Wand2,
 		Command,
 	} from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { graph } from '$lib/workflow/graph.svelte';
 	import { commandMenu } from '$lib/workflow/command-menu.svelte';
 </script>

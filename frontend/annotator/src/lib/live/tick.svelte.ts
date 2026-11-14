@@ -1,13 +1,13 @@
-import { liveRead, type LiveCursor } from '@rask/api/live';
+import { liveRead, type LiveCursor } from '@workbench/api/live';
 import { lineageFeed } from './feeds.remote';
 
 /**
  * This zone's live CURSOR — the annotator's half of #73.
  *
- * The reader (`liveRead`, and the four rules that make it not a timer) lives in `@rask/api/live`.
+ * The reader (`liveRead`, and the four rules that make it not a timer) lives in `@workbench/api/live`.
  * What stays here is the half that cannot move: a cursor wraps THIS app's `feeds.remote.ts`, because
  * `query.live` is declared per app so it gets its own endpoint and can reach `getRequestEvent`.
- * Same seam `@rask/api/runs-feed` uses — share the body, keep the app-bound shim in the app.
+ * Same seam `@workbench/api/runs-feed` uses — share the body, keep the app-bound shim in the app.
  *
  * WHY THE ANNOTATOR NEEDS ONE. Its Arrow annotations were read exactly once, at mount. Two people
  * labelling the same page never saw each other's work, and neither did one person with the item open

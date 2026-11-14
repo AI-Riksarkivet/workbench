@@ -3,7 +3,7 @@
  * Serve app. Bytes ride a `+server.ts`, never a remote function (the estate's
  * transport ruling), and the gateway's `/api/serve` row is read-only by design,
  * so the zone reaches Serve's own HTTP ingress (`:8000`) directly — the same
- * lane every Serve proxy takes, through the shared @rask/api helper so no two
+ * lane every Serve proxy takes, through the shared @workbench/api helper so no two
  * proxies can drift.
  *
  * `?app=<slug>` picks the Serve app (the Model node fills it from live
@@ -13,7 +13,7 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
-import { proxyServeInfer } from '@rask/api/serve-proxy';
+import { proxyServeInfer } from '@workbench/api/serve-proxy';
 
 /** Serve's HTTP ingress ORIGIN (no app path — `?app=` supplies it). In-cluster
  *  this points at the Ray head's serve port; unset means local `make serve-up-htrflow`. */

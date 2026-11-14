@@ -7,13 +7,13 @@
 	// frame, and each new shape is pinned to that moment (controller.timeCursor →
 	// t_start/t_end). One annotations table + Save path with images + audio segments.
 	import { onDestroy, untrack } from 'svelte';
-	import { loadAnnotations } from '@rask/labeling/annotations-client';
+	import { loadAnnotations } from '@workbench/labeling/annotations-client';
 
-	import { type PixiContext, type TemporalSegment, WaveSurface } from '@rask/engine';
-	import { Button } from '@rask/ui/button';
-	// @rask/ui has no slider yet, so the seek bar keeps the @rask/ui primitive — it is already
+	import { type PixiContext, type TemporalSegment, WaveSurface } from '@workbench/engine';
+	import { Button } from '@workbench/ui/button';
+	// @workbench/ui has no slider yet, so the seek bar keeps the @workbench/ui primitive — it is already
 	// token-styled, so it themes with the rest of the transport.
-	import { Slider } from '@rask/ui/slider';
+	import { Slider } from '@workbench/ui/slider';
 	import TransportBar from './layout/TransportBar.svelte';
 	import {
 		clampTime,

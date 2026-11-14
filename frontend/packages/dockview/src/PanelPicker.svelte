@@ -11,7 +11,7 @@
 	 * why `.dv-groupview`'s overflow, `.dv-animation`'s transform and `.dv-render-overlay`'s z-index
 	 * defeat every ordinary positioning strategy here.
 	 *
-	 * Hand-rolled rather than built on Bits UI's Command: this package must not depend on `@rask/ui`
+	 * Hand-rolled rather than built on Bits UI's Command: this package must not depend on `@workbench/ui`
 	 * (which has a `svelte-package` build step, and with it the `^build` ordering + `dist/` watcher
 	 * race), and the deferred bundle headroom is single-digit KB across three zones.
 	 */

@@ -325,7 +325,7 @@ def build_catalog_decider(settings: _DeciderSettings, *, service: str) -> Access
 
     token_file = settings.fga_decider_token_file
     if not token_file:
-        raise ValueError(f"{service}: RASK_FGA_DECIDER_URL is set but RASK_FGA_DECIDER_TOKEN_FILE is not; the catalog would refuse every decision")
+        raise ValueError(f"{service}: WORKBENCH_FGA_DECIDER_URL is set but WORKBENCH_FGA_DECIDER_TOKEN_FILE is not; the catalog would refuse every decision")
 
     def token() -> str:
         return read_identity_token(token_file)

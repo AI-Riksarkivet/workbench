@@ -100,7 +100,7 @@ def test_setup_otel_wires_when_enabled(monkeypatch: object) -> None:
     assert isinstance(monkeypatch, pytest.MonkeyPatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     app = FastAPI()
-    settings = _settings(RASK_OTEL_ENABLED=True)
+    settings = _settings(WORKBENCH_OTEL_ENABLED=True)
     wired = setup_otel(app, "svc-test", settings)
     assert wired is True
     # FastAPI instrumentation marks the app
@@ -119,7 +119,7 @@ def test_an_explicit_OFF_beats_an_ambient_endpoint(monkeypatch: object) -> None:
 
     `OTEL_EXPORTER_OTLP_ENDPOINT` is set by the HARNESS, not by the service: `dagger call test` injects
     it into every container for Dagger's own telemetry. Under the old `or`, that ambient variable
-    overrode an explicit `RASK_OTEL_ENABLED=false`, so every app a test built wired a live exporter at
+    overrode an explicit `WORKBENCH_OTEL_ENABLED=false`, so every app a test built wired a live exporter at
     a collector that rejects application metrics — and the SDK retried with exponential backoff. The
     suite did not fail, it slept: ~2.7s per unit test, and a full run sat in `hrtimer_nanosleep` at
     ~1.7% CPU.
@@ -132,4 +132,4 @@ def test_an_explicit_OFF_beats_an_ambient_endpoint(monkeypatch: object) -> None:
     assert isinstance(monkeypatch, pytest.MonkeyPatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid:4317")
 
-    assert setup_otel(FastAPI(), "svc-test", _settings(RASK_OTEL_ENABLED=False)) is False
+    assert setup_otel(FastAPI(), "svc-test", _settings(WORKBENCH_OTEL_ENABLED=False)) is False

@@ -1,5 +1,5 @@
 {
-	"name": "@rask/explorer-api",
+	"name": "@workbench/explorer-api",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -34,7 +34,7 @@
 		"valibot": "^1.4.2"
 	},
 	"devDependencies": {
-		"@rask/config": "workspace:*",
+		"@workbench/config": "workspace:*",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.10"
 	}

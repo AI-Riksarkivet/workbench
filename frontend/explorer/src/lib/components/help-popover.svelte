@@ -9,7 +9,7 @@
 	// would type them into.
 	import { Popover } from 'bits-ui';
 	import { HelpCircle, Image as ImageIcon } from '@lucide/svelte';
-	import { buttonVariants } from '@rask/ui';
+	import { buttonVariants } from '@workbench/ui';
 
 	type Example = { label: string; example: string; explain: string };
 	type Props = {

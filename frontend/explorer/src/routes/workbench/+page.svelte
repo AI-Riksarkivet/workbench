@@ -1,6 +1,6 @@
 <script lang="ts" module>
 	// Kicked off at MODULE EVALUATION so the ~100 KB dock chunk downloads in parallel with hydration.
-	const dockModule = import('@rask/dockview');
+	const dockModule = import('@workbench/dockview');
 </script>
 
 <script lang="ts">
@@ -20,10 +20,10 @@
 	import { onMount, type Component } from 'svelte';
 	import { ListTree, Map, Play } from '@lucide/svelte';
 	import type { DockviewApi, SerializedDockview } from 'dockview';
-	import type { PanelRegistry } from '@rask/dockview';
-	import { DockViews, ViewSidebar } from '@rask/dockview/views';
-	import { makeDockLayoutStore } from '@rask/api/dock-layout';
-	import { makeDockViewsStore } from '@rask/api/dock-views';
+	import type { PanelRegistry } from '@workbench/dockview';
+	import { DockViews, ViewSidebar } from '@workbench/dockview/views';
+	import { makeDockLayoutStore } from '@workbench/api/dock-layout';
+	import { makeDockViewsStore } from '@workbench/api/dock-views';
 	import { page } from '$app/state';
 	import { Bench, setBench } from '$lib/dock/bench.svelte';
 	import { userStateFetcher } from '$lib/dock/user-state-fetch';

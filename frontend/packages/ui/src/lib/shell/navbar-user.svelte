@@ -10,7 +10,7 @@
 	// avatar trigger + dropdown (identity, theme toggle, settings, the shared auth control). Context-free
 	// (no sidebar dependency) so it renders in the navbar of every zone AND on the home landing. The
 	// identity flows in as a plain prop from each zone's +layout.server.ts (single-sourced via
-	// @rask/api's sessionToUser) — the shared shell never imports app data.
+	// @workbench/api's sessionToUser) — the shared shell never imports app data.
 	//
 	// `authEnabled` drives the auth affordance (identical in every MFE): off → today's local identity,
 	// no auth UI; on + signed in → identity + Sign out; on + signed out (user null) → a "Sign in" prompt.

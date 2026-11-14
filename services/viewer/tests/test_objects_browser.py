@@ -5,7 +5,7 @@ problem+json handlers, S3 doubled by moto. Pins the wire shapes the lakehouse
 zone's storage.ts mirrors (S3Listing / S3ObjectHead), the 404 mapping, and the
 bucket allowlist rejection.
 
-The fixture SUPPLIES its own store registry through `RASK_STORES` rather than
+The fixture SUPPLIES its own store registry through `WORKBENCH_STORES` rather than
 leaning on a platform default. That is the contract as of 2026-08-17: a
 workload's buckets are deployment configuration, and `service-kit` no longer
 ships any — a platform library asserting that an estate holds page images was
@@ -45,7 +45,7 @@ def _fresh_viewer_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def _use_fixture_stores(monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the store registry at this suite's buckets. Needed by every test that builds its own
     client instead of taking the `client` fixture."""
-    monkeypatch.setenv("RASK_STORES", FIXTURE_STORES)
+    monkeypatch.setenv("WORKBENCH_STORES", FIXTURE_STORES)
     get_viewer_settings.cache_clear()
 
 
@@ -61,7 +61,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     # Force every S3-endpoint alias empty in the env (which overrides the repo
     # `.env`) so `s3_client` falls back to no endpoint and boto3 — and thus moto —
     # uses its default AWS endpoint instead of a real one.
-    monkeypatch.setenv("RASK_S3_ENDPOINT_URL", "")
+    monkeypatch.setenv("WORKBENCH_S3_ENDPOINT_URL", "")
     monkeypatch.setenv("S3_ENDPOINT_URL", "")
     monkeypatch.setenv("HCP_ENDPOINT", "")
     _use_fixture_stores(monkeypatch)

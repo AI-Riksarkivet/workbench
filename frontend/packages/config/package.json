@@ -1,5 +1,5 @@
 {
-	"name": "@rask/config",
+	"name": "@workbench/config",
 	"version": "0.0.0",
 	"private": true,
 	"files": [

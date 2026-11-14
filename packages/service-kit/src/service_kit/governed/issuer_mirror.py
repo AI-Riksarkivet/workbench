@@ -46,11 +46,11 @@ class IssuerMirrorSettings(BaseSettings):
 
     model_config = SettingsConfigDict(frozen=True, populate_by_name=True)
 
-    issuer: str = Field(alias="RASK_ISSUER_MIRROR_ISSUER")
-    public_url: str = Field(alias="RASK_ISSUER_MIRROR_PUBLIC_URL")
-    token_file: str = Field(alias="RASK_ISSUER_MIRROR_TOKEN_FILE")
-    ca_file: str | None = Field(default=None, alias="RASK_ISSUER_MIRROR_CA_FILE")
-    timeout_seconds: float = Field(default=10.0, gt=0, alias="RASK_ISSUER_MIRROR_TIMEOUT_SECONDS")
+    issuer: str = Field(alias="WORKBENCH_ISSUER_MIRROR_ISSUER")
+    public_url: str = Field(alias="WORKBENCH_ISSUER_MIRROR_PUBLIC_URL")
+    token_file: str = Field(alias="WORKBENCH_ISSUER_MIRROR_TOKEN_FILE")
+    ca_file: str | None = Field(default=None, alias="WORKBENCH_ISSUER_MIRROR_CA_FILE")
+    timeout_seconds: float = Field(default=10.0, gt=0, alias="WORKBENCH_ISSUER_MIRROR_TIMEOUT_SECONDS")
 
 
 def _upstream(request: Request) -> httpx.AsyncClient:

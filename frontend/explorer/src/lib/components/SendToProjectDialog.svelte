@@ -4,13 +4,13 @@
 	// (draft/labeling), or a new project created around the selection. The annotator zone's landing
 	// is the other end; nothing is annotated in media.
 	import { page } from '$app/state';
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import { Dialog } from '@rask/ui/dialog';
-	import { Input } from '@rask/ui/input';
-	import { Select } from '@rask/ui/select';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import { Dialog } from '@workbench/ui/dialog';
+	import { Input } from '@workbench/ui/input';
+	import { Select } from '@workbench/ui/select';
 	import { predictionFor } from '$lib/atlas/atlas-send';
-	import { projectFromHost } from '@rask/ui/shell';
+	import { projectFromHost } from '@workbench/ui/shell';
 	import type { ProjectRow, SendItem } from '$lib/projects/projects';
 	import {
 		createProject,

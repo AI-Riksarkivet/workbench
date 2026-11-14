@@ -7,14 +7,14 @@
 		chunkFrameUrl,
 		isVoiceHit,
 		voiceBandOf,
-	} from '@rask/explorer-api';
-	import { activeView } from '@rask/explorer-api/descriptor';
+	} from '@workbench/explorer-api';
+	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { features } from '$lib/feature-flags.svelte';
 	import { voiceSearch } from '$lib/voice-search.svelte';
 	import { audioPreview } from '$lib/audio-preview.svelte';
 	import { fmtTime, queryTerms, makeHighlighter, cn, hitKey } from '$lib/utils';
 	import { AudioLines, Play, Pause } from '@lucide/svelte';
-	import { Badge } from '@rask/ui';
+	import { Badge } from '@workbench/ui';
 
 	type Props = {
 		hit: Hit;

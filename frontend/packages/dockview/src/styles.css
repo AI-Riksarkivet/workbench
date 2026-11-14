@@ -1,7 +1,7 @@
 /* ────────────────────────────────────────────────────────────────────────────────────────────
- * @rask/dockview — the ONE line a consuming zone adds to its app.css:
+ * @workbench/dockview — the ONE line a consuming zone adds to its app.css:
  *
- *     @import '@rask/dockview/styles.css' layer(base);
+ *     @import '@workbench/dockview/styles.css' layer(base);
  *
  * `layer(base)` matters and is not decoration. dockview ships 124 KB of unlayered CSS whose
  * selectors (`.dv-tab`, `.dv-groupview` …) would otherwise out-specify the Tailwind utilities a

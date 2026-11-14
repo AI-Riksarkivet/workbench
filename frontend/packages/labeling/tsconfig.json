@@ -1,5 +1,5 @@
 {
-	"extends": "@rask/config/tsconfig.base.json",
+	"extends": "@workbench/config/tsconfig.base.json",
 	"compilerOptions": {
 		"noEmit": true
 	},

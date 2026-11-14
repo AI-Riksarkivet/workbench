@@ -192,7 +192,7 @@ class ControlUuids(BaseModel):
 
 
 #: A service whose own signing identity signs the control actions it emits ([[XC-078]]), and so a key of
-#: `RASK_CONTROL_SIGNER_ROLES`, which the chart renders as each role's signing identities. Every action has one: the
+#: `WORKBENCH_CONTROL_SIGNER_ROLES`, which the chart renders as each role's signing identities. Every action has one: the
 #: lane carries only the lakehouse's own signed events (ADR 0171).
 type ControlSigner = Literal["catalog", "maintenance"]
 
@@ -201,7 +201,7 @@ def control_signer_role(action: ControlAction) -> ControlSigner:
     """The role whose signature ``action`` needs before a door acts on it.
 
     The role is the service whose code emits the action, so a door verifies against that role's identities in
-    `RASK_CONTROL_SIGNER_ROLES` and never against every signer the estate lists: a valid signature from another
+    `WORKBENCH_CONTROL_SIGNER_ROLES` and never against every signer the estate lists: a valid signature from another
     service is no authority over the action. Total under ty: an action added to `ControlAction` without a case
     here fails the `assert_never`.
     """

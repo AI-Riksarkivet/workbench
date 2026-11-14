@@ -33,7 +33,7 @@ def _router() -> APIRouter:
 
 
 def _injected() -> Settings:
-    return Settings.model_validate({"RASK_API_PREFIX": "/api/injected", "RASK_DOCS": True, "RASK_MAX_BODY_BYTES": 4096})
+    return Settings.model_validate({"WORKBENCH_API_PREFIX": "/api/injected", "WORKBENCH_DOCS": True, "WORKBENCH_MAX_BODY_BYTES": 4096})
 
 
 def test_the_injected_settings_reach_the_router_prefix_and_the_docs_urls() -> None:

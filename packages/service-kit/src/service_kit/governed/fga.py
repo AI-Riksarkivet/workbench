@@ -765,7 +765,7 @@ async def provision(
     store (creators silently lose access). This image's model is written when the store has never held
     its body, removals included: every component checks against the model its own image carries, so a
     narrower body governs only the pods built with it ([[LH-201]]). Tuples live on the store and survive
-    new model versions. A pinned ``store_id`` (``RASK_FGA_STORE_ID``) is used as is, the store the hook and
+    new model versions. A pinned ``store_id`` (``WORKBENCH_FGA_STORE_ID``) is used as is, the store the hook and
     ``bootstrap-admin`` use too.
     """
     model = load_model()
@@ -926,7 +926,7 @@ class PinnedModelDrift(NamedTuple):
 async def audit_pinned_model(client: OpenFgaClient, *, store_id: str, model_id: str) -> PinnedModelDrift:
     """Report whether the PINNED model still says what this image's ``model.json`` says.
 
-    A pinned ``RASK_FGA_MODEL_ID`` overrides the model this image carries, which every unpinned service
+    A pinned ``WORKBENCH_FGA_MODEL_ID`` overrides the model this image carries, which every unpinned service
     resolves by body ([[LH-201]]); no deployment pins one, and removing the knob is parked as LH-309. A
     pin skips :func:`provision` entirely, so ``load_model()`` is never read, and that is the half nothing
     announced: an edit to ``model.fga`` shipped in this image takes effect nowhere and

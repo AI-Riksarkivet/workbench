@@ -1,7 +1,7 @@
 """Each service checks against the authorization model its own image carries, and no image rewrites anyone else's.
 
 [[LH-201]]. Every service resolves the store at boot, and the live estate pins nothing (measured
-2026-09-27: no `RASK_FGA_STORE_ID` or `RASK_FGA_MODEL_ID` on any deployment, 1,353 model versions in the
+2026-09-27: no `WORKBENCH_FGA_STORE_ID` or `WORKBENCH_FGA_MODEL_ID` on any deployment, 1,353 model versions in the
 one `lance-catalog` store). `resolve` took the store's NEWEST model, so a pod checked against whichever
 model was written last rather than the one its image was built with; and the store's newest is written by
 the catalog's boot, by the chart's hook and by older images that still provision their own model.
@@ -196,7 +196,7 @@ async def test_a_history_read_that_fails_at_first_is_waited_out(monkeypatch: pyt
 
 @pytest.mark.asyncio
 async def test_a_pinned_store_is_used_without_a_name_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The hook and `bootstrap-admin` honour `RASK_FGA_STORE_ID`, so every reader must, or the model is
+    """The hook and `bootstrap-admin` honour `WORKBENCH_FGA_STORE_ID`, so every reader must, or the model is
     written to one store and looked for in another."""
     fake = _OpenFga([[_SCRATCH]], [[_stored("model-OLDER", OLDER)]])
     _install(monkeypatch, fake, OLDER)
@@ -294,11 +294,11 @@ class _Http:
 
 def _run_hook(monkeypatch: pytest.MonkeyPatch, http: _Http, image_model: dict[str, Any], *, pinned: str | None = None) -> int:
     monkeypatch.setenv("FGA_API_URL", "http://fga:8080")
-    monkeypatch.setenv("RASK_FGA_TOKEN_FILE", "/var/run/secrets/rask/identity/rask-openfga/token")
+    monkeypatch.setenv("WORKBENCH_FGA_TOKEN_FILE", "/var/run/secrets/rask/identity/rask-openfga/token")
     if pinned is None:
-        monkeypatch.delenv("RASK_FGA_STORE_ID", raising=False)
+        monkeypatch.delenv("WORKBENCH_FGA_STORE_ID", raising=False)
     else:
-        monkeypatch.setenv("RASK_FGA_STORE_ID", pinned)
+        monkeypatch.setenv("WORKBENCH_FGA_STORE_ID", pinned)
     monkeypatch.setattr(write_model, "_call", http)
     monkeypatch.setattr(write_model, "model_document", lambda: json.loads(json.dumps(image_model)))
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
@@ -313,7 +313,7 @@ def test_the_hook_writes_into_the_store_the_estate_uses_not_the_first_one_listed
 
 
 def test_the_hook_writes_into_a_pinned_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every service honours `RASK_FGA_STORE_ID`, so the hook must write the model into that store and not
+    """Every service honours `WORKBENCH_FGA_STORE_ID`, so the hook must write the model into that store and not
     into a newer `lance-catalog` beside it."""
     newer = {"id": "store-NEWER", "name": "lance-catalog", "created_at": "2026-09-28T00:00:00Z"}
     http = _Http([_ESTATE, newer], {"store-ESTATE": [_stored("model-OLDER", OLDER)], "store-NEWER": []})

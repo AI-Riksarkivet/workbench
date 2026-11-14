@@ -1,6 +1,6 @@
 """SK-10 — one distribution, two classes called `Settings` and two `get_settings` with different DI shapes.
 
-`service_kit.config.Settings` is the fleet's `RASK_*` config; `client_kit.media.config.Settings` was
+`service_kit.config.Settings` is the fleet's `WORKBENCH_*` config; `client_kit.media.config.Settings` was
 a second, unrelated class on `MEDIA_*` aliases. They share almost no field and no inheritance, so a
 `settings: Settings` annotation, a stack frame or a `SettingsDep` meant one or the other depending on
 which module the reader had open.

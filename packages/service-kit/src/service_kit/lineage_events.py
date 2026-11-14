@@ -18,11 +18,11 @@ from pydantic import BaseModel, ConfigDict
 #: Where rask publishes its custom facets' schemas (`spec/facets/rask/`): under a git tag, since OpenLineage asks a
 #: facet's ``_schemaURL`` to be "an immutable pointer to the version of the facet schema", a tag or a sha, never a
 #: branch. A changed schema is a new tag. ``lineage_kit.signing.SIGNATURE_FACET_SCHEMA_URL`` names the same tag.
-RASK_FACET_SCHEMAS: Final = "https://raw.githubusercontent.com/AI-Riksarkivet/rask/facets-1.0.0/spec/facets/rask"
+WORKBENCH_FACET_SCHEMAS: Final = "https://raw.githubusercontent.com/AI-Riksarkivet/rask/facets-1.0.0/spec/facets/rask"
 #: The ``_schemaURL`` of :data:`LANCE_FACET`, a JSON pointer to its definition (`RaskLanceFacet.json`).
-LANCE_FACET_SCHEMA_URL: Final = f"{RASK_FACET_SCHEMAS}/RaskLanceFacet.json#/$defs/RaskLanceFacet"
+LANCE_FACET_SCHEMA_URL: Final = f"{WORKBENCH_FACET_SCHEMAS}/RaskLanceFacet.json#/$defs/RaskLanceFacet"
 #: The ``_schemaURL`` of :data:`AUTHOR_FACET` (`RaskAuthorFacet.json`).
-AUTHOR_FACET_SCHEMA_URL: Final = f"{RASK_FACET_SCHEMAS}/RaskAuthorFacet.json#/$defs/RaskAuthorFacet"
+AUTHOR_FACET_SCHEMA_URL: Final = f"{WORKBENCH_FACET_SCHEMAS}/RaskAuthorFacet.json#/$defs/RaskAuthorFacet"
 
 #: rask's own dataset and run facet: the ref an input was read on or a run wrote, and the uuids the catalog minted for the
 #: dataset's table and its namespace. Custom, so its key is ``{prefix}_{name}`` (OpenLineage spec, "Custom Facet Naming")

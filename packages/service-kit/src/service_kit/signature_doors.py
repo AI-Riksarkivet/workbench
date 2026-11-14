@@ -37,13 +37,13 @@ class SignatureDoorSettings:
     A plain mixin, like the auth mixins in `service_kit.governed.settings`, so it takes the host class's own `model_config`.
     """
 
-    signature_doors: DoorModeName = Field(default="off", alias="RASK_SIGNATURE_DOORS")
-    event_signers: frozenset[str] = Field(default=frozenset(), alias="RASK_EVENT_SIGNERS")
-    event_delegators: frozenset[str] = Field(default=frozenset(), alias="RASK_EVENT_DELEGATORS")
-    control_signer_roles: dict[ControlSigner, frozenset[str]] = Field(default_factory=dict, alias="RASK_CONTROL_SIGNER_ROLES")
+    signature_doors: DoorModeName = Field(default="off", alias="WORKBENCH_SIGNATURE_DOORS")
+    event_signers: frozenset[str] = Field(default=frozenset(), alias="WORKBENCH_EVENT_SIGNERS")
+    event_delegators: frozenset[str] = Field(default=frozenset(), alias="WORKBENCH_EVENT_DELEGATORS")
+    control_signer_roles: dict[ControlSigner, frozenset[str]] = Field(default_factory=dict, alias="WORKBENCH_CONTROL_SIGNER_ROLES")
 
     @model_validator(mode="after")
     def _a_verifying_door_names_its_signers(self) -> Self:
         if self.signature_doors != "off" and not self.event_signers:
-            raise ValueError(f"RASK_SIGNATURE_DOORS={self.signature_doors} needs RASK_EVENT_SIGNERS: a door would verify against no signer")
+            raise ValueError(f"WORKBENCH_SIGNATURE_DOORS={self.signature_doors} needs WORKBENCH_EVENT_SIGNERS: a door would verify against no signer")
         return self

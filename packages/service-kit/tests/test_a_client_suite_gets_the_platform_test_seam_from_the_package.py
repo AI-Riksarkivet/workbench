@@ -39,7 +39,7 @@ def test_the_next_test_reads_the_store_again():
 
 
 def test_each_door_has_a_projected_token_file():
-    assert {door: Path(os.environ[f"RASK_{door}_IDENTITY_TOKEN_FILE"]).is_file() for door in ("CATALOG", "LINEAGE")} == {
+    assert {door: Path(os.environ[f"WORKBENCH_{door}_IDENTITY_TOKEN_FILE"]).is_file() for door in ("CATALOG", "LINEAGE")} == {
         "CATALOG": True,
         "LINEAGE": True,
     }
@@ -65,7 +65,7 @@ def test_a_suite_outside_the_repository_is_served_the_seam_by_the_installed_pack
     (tmp_path / "test_client.py").write_text(_CLIENT_SUITE)
     report = tmp_path / "report.xml"
     # The run inherits none of this suite's own setup: whatever a fixture of ours put into the environment is left out.
-    environment = {name: value for name, value in os.environ.items() if not name.startswith(("RASK_", "PYTEST_"))}
+    environment = {name: value for name, value in os.environ.items() if not name.startswith(("WORKBENCH_", "PYTEST_"))}
 
     run = subprocess.run(
         [sys.executable, "-m", "pytest", "test_client.py", "-p", "no:cacheprovider", f"--junitxml={report}", "-q"],

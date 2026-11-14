@@ -15,7 +15,7 @@ from typing import Any
 type S3Client = Any
 
 # Env names for the S3 endpoint/insecure/CA, canonical-first. `HCP_ENDPOINT`/`HCP_INSECURE` are
-# aliases the chart's secret and values still set; drop them once everything uses RASK_S3_*.
+# aliases the chart's secret and values still set; drop them once everything uses WORKBENCH_S3_*.
 #
 # RESOLVED BY HAND rather than by a pydantic-settings model, and the reason is dependency weight, not
 # an absence of validation — there IS one coercion here, the insecure flag parsed to a bool at
@@ -27,9 +27,9 @@ type S3Client = Any
 # nothing can observe. The semantics also differ where it matters here: `_env_first` skips an EMPTY
 # value, where `AliasChoices` stops at the first name that is SET. Callers get the precedence from
 # `configured_endpoint` instead of copying this list.
-_ENDPOINT_ENVS = ("RASK_S3_ENDPOINT_URL", "S3_ENDPOINT_URL", "HCP_ENDPOINT")
-_INSECURE_ENVS = ("RASK_S3_INSECURE", "S3_INSECURE", "HCP_INSECURE")
-_CA_BUNDLE_ENVS = ("RASK_S3_CA_BUNDLE", "S3_CA_BUNDLE")
+_ENDPOINT_ENVS = ("WORKBENCH_S3_ENDPOINT_URL", "S3_ENDPOINT_URL", "HCP_ENDPOINT")
+_INSECURE_ENVS = ("WORKBENCH_S3_INSECURE", "S3_INSECURE", "HCP_INSECURE")
+_CA_BUNDLE_ENVS = ("WORKBENCH_S3_CA_BUNDLE", "S3_CA_BUNDLE")
 
 
 def _env_first(names: tuple[str, ...]) -> str | None:
@@ -44,7 +44,7 @@ def configured_endpoint() -> str | None:
     """The deployment's OWN S3 endpoint, as `s3_client` resolves it when given none.
 
     Public because a caller that honours a per-run endpoint override has to know when the override
-    IS the default — `RASK_S3_ENDPOINT_URL` and its two aliases are resolved in one place, and a
+    IS the default — `WORKBENCH_S3_ENDPOINT_URL` and its two aliases are resolved in one place, and a
     second copy of that precedence list in a service is exactly the drift this returns instead.
     """
     return _env_first(_ENDPOINT_ENVS)
@@ -61,7 +61,7 @@ def s3_client(
 ) -> Any:  # noqa: ANN401 — boto3 client has no public stub
     """Build a boto3 S3 client for any S3-compatible backend (RustFS / AWS / any S3).
 
-    Endpoint/CA/insecure flags resolve from env (RASK_S3_*/S3_*, then the HCP_* aliases). Path-style + s3v4 are the RustFS-safe, AWS-accepted defaults.
+    Endpoint/CA/insecure flags resolve from env (WORKBENCH_S3_*/S3_*, then the HCP_* aliases). Path-style + s3v4 are the RustFS-safe, AWS-accepted defaults.
 
     ``access_key``/``secret_key``/``session_token``/``region``/``insecure`` override the env for THIS
     client only. Env-only credentials are a single global pair, so one process could address exactly

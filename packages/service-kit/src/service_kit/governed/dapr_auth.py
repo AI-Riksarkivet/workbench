@@ -16,7 +16,7 @@ that delivered an event and nothing about who wrote it; a door that acts on what
 the producer's signature (``lineage_kit.signing``).
 
 **An unconfigured door REFUSES.** No ``APP_API_TOKEN`` means no caller can be authenticated, and a
-guard that cannot authenticate must not admit — ``RASK_ALLOW_UNAUTHENTICATED_DAPR`` is the one way to
+guard that cannot authenticate must not admit — ``WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR`` is the one way to
 run open, and it has to be set by hand.
 """
 
@@ -59,13 +59,13 @@ class DaprDoorSettings(BaseSettings):
 
     # NO `populate_by_name`, deliberately. It would teach the env source a SECOND lookup name per
     # field — the bare one — so `app_token_field` would answer to `$APP_TOKEN_FIELD` as well as the
-    # `RASK_APP_TOKEN_FIELD` it declares, which is precisely what
+    # `WORKBENCH_APP_TOKEN_FIELD` it declares, which is precisely what
     # `tests/unit/test_settings_env_namespace.py` exists to refuse. Nothing constructs this by field
     # name, so the convenience it buys is unused here.
     model_config = SettingsConfigDict(extra="ignore")
 
     #: DAPR'S OWN NAME, and it is deliberately unprefixed. daprd injects it from
-    #: ``dapr.io/app-token-secret``; renaming it to ``RASK_*`` would simply mean the sidecar sets a
+    #: ``dapr.io/app-token-secret``; renaming it to ``WORKBENCH_*`` would simply mean the sidecar sets a
     #: variable nothing reads and this door authenticates against nothing.
     app_api_token: str | None = Field(default=None, alias="APP_API_TOKEN")
 
@@ -79,7 +79,7 @@ class DaprDoorSettings(BaseSettings):
     #: Measured 2026-09-15, which is why it is opt-IN rather than opt-out: an actor host carried no
     #: `APP_API_TOKEN` and its sidecar-only `/dapr/config` answered 200 to a caller presenting none.
     #: Nothing in the render, the chart or a probe distinguished that from a configured door.
-    allow_unauthenticated_dapr: bool = Field(default=False, alias="RASK_ALLOW_UNAUTHENTICATED_DAPR")
+    allow_unauthenticated_dapr: bool = Field(default=False, alias="WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR")
 
     #: Resolve the expected token from the Dapr SECRET STORE rather than from the environment.
     #:
@@ -92,30 +92,30 @@ class DaprDoorSettings(BaseSettings):
     #: consulted at all — a chain would mean a store outage silently promoted a stale env value back to
     #: authoritative, which is the failure the rule exists to prevent. Off, env, exactly as before. That
     #: is the same shape the S3 key pair takes (`service_kit.governed.store_credential`).
-    app_token_from_store: bool = Field(default=False, alias="RASK_APP_TOKEN_FROM_STORE")
+    app_token_from_store: bool = Field(default=False, alias="WORKBENCH_APP_TOKEN_FROM_STORE")
 
     #: Which secret holds it: the store is the one every service names, and the secret is the estate's one app token,
     #: readable by exactly the apps with a Dapr door ([[XC-165]]).
-    secret_store: str = Field(default="lance-secrets", alias="RASK_SECRET_STORE")
-    secret_key: str = Field(default="dapr-app-token", alias="RASK_DAPR_SECRET_KEY")
-    app_token_field: str = Field(default="token", alias="RASK_APP_TOKEN_FIELD")
+    secret_store: str = Field(default="lance-secrets", alias="WORKBENCH_SECRET_STORE")
+    secret_key: str = Field(default="dapr-app-token", alias="WORKBENCH_DAPR_SECRET_KEY")
+    app_token_field: str = Field(default="token", alias="WORKBENCH_APP_TOKEN_FIELD")
     #: The token a rotation replaced, accepted beside the current one ([[XC-082]], ADR 0166). daprd reads its
     #: token from `<release>-dapr-app-token` once, when the pod starts, and ESO syncs that Secret from the store
     #: on its own interval, so a sidecar keeps presenting the old token until its pod restarts, and a pod that
     #: restarts before ESO synced still starts with it. Absent or empty outside a rotation.
-    app_token_previous_field: str = Field(default="previous", alias="RASK_APP_TOKEN_PREVIOUS_FIELD")
+    app_token_previous_field: str = Field(default="previous", alias="WORKBENCH_APP_TOKEN_PREVIOUS_FIELD")
 
     #: Read the expected token from this FILE: the Secret named by `dapr.io/app-token-secret`, mounted into the app,
     #: for a client of the estate that generates its own token and reads nothing from the estate's secret store
     #: (ADR 0171). The third MODE beside env and the store, never a fallback for either: setting it with
-    #: `RASK_APP_TOKEN_FROM_STORE` is a boot error. Read on every request, so a token the kubelet re-projects is the
+    #: `WORKBENCH_APP_TOKEN_FROM_STORE` is a boot error. Read on every request, so a token the kubelet re-projects is the
     #: one accepted.
-    app_token_file: Path | None = Field(default=None, alias="RASK_APP_TOKEN_FILE")
+    app_token_file: Path | None = Field(default=None, alias="WORKBENCH_APP_TOKEN_FILE")
 
     @model_validator(mode="after")
     def _one_source(self) -> Self:
         if self.app_token_from_store and self.app_token_file is not None:
-            raise ValueError("RASK_APP_TOKEN_FROM_STORE and RASK_APP_TOKEN_FILE name two sources for one token: set one")
+            raise ValueError("WORKBENCH_APP_TOKEN_FROM_STORE and WORKBENCH_APP_TOKEN_FILE name two sources for one token: set one")
         return self
 
 
@@ -227,7 +227,7 @@ def refuse_unconfigured_door(*, caller: str | None = None) -> None:
             remedy = "wire dapr.io/app-token-secret + APP_API_TOKEN"
         raise PermissionDeniedError(
             f"this Dapr door is not configured: {missing_app_token_knob()}, so no caller can be authenticated. "
-            f"Either {remedy}, or set RASK_ALLOW_UNAUTHENTICATED_DAPR to accept an unauthenticated door deliberately."
+            f"Either {remedy}, or set WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR to accept an unauthenticated door deliberately."
         )
     log.warning("dapr_door_unauthenticated", extra={"caller": caller or "<unset>"})
 
@@ -242,7 +242,7 @@ def require_dapr_token(
     match the app's ``APP_API_TOKEN`` (set by Dapr from ``dapr.io/app-token-secret``).
 
     An UNSET ``APP_API_TOKEN`` is a refusal, not a skip: the door cannot authenticate anybody, so it
-    admits nobody. ``RASK_ALLOW_UNAUTHENTICATED_DAPR`` reopens it for a deployment that means to run
+    admits nobody. ``WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR`` reopens it for a deployment that means to run
     open. ``assert_app_token_configured`` remains the earlier, louder version of the same rule — a
     startup error beats a per-request 403 — but only the six services that CALL it get that, which is
     why this door carries the check as well rather than relying on it.
@@ -312,7 +312,7 @@ def assert_app_token_configured(*, dapr_enabled: bool) -> None:
         raise RuntimeError(
             "APP_API_TOKEN must be set when Dapr ingest is enabled — the delivery route would otherwise be "
             "unauthenticated. Wire dapr.io/app-token-secret + the APP_API_TOKEN env, or set "
-            "RASK_APP_TOKEN_FROM_STORE to take it from the Dapr secret store instead."
+            "WORKBENCH_APP_TOKEN_FROM_STORE to take it from the Dapr secret store instead."
         )
 
 

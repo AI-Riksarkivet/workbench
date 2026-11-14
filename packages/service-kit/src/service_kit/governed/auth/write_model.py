@@ -86,7 +86,7 @@ def carried_model(api: str, *, token_file: str | None, pinned: str = "") -> tupl
     A tuple request naming no ``authorization_model_id``, or naming the store's newest, is validated against
     whichever image wrote last ([[LH-201]]). In the LH-201 review (OpenFGA v1.18.3) a legacy image's narrower
     newest model refused every ``estate`` tuple on ``type 'estate' not found``. So the rule is the one the hook,
-    ``bootstrap-admin`` and every service share: the ``pinned`` store (``RASK_FGA_STORE_ID``) when given, else
+    ``bootstrap-admin`` and every service share: the ``pinned`` store (``WORKBENCH_FGA_STORE_ID``) when given, else
     the newest named ``STORE_NAME``, and in it the model whose canonical body is this package's ``model.json``.
 
     Raises:
@@ -109,12 +109,12 @@ def main() -> int:
     """The chart's `openfga-model` hook: write this image's model unless the store already holds it.
 
     Pre-upgrade, so a new image's model exists before its pods resolve it ([[LH-201]]). The store is the
-    newest one named `lance-catalog` unless `RASK_FGA_STORE_ID` pins one, and a held body is not written
+    newest one named `lance-catalog` unless `WORKBENCH_FGA_STORE_ID` pins one, and a held body is not written
     again wherever it sits in the history. Nothing to pre-write exits 0 rather than failing the upgrade:
     with no store yet, or OpenFGA unreachable, the catalog writes its image's model when it boots, and a
     failed pre-upgrade hook would refuse the very upgrade that repairs OpenFGA. Run as a module rather
     than a heredoc in the Job's `args` so :func:`history` is covered by tests. Every request presents the
-    Job's projected `rask-openfga` token from `RASK_FGA_TOKEN_FILE` ([[XC-077]]), which the chart always sets,
+    Job's projected `rask-openfga` token from `WORKBENCH_FGA_TOKEN_FILE` ([[XC-077]]), which the chart always sets,
     and a 401 or 403 exits 1: a refused credential is a misconfiguration no later boot repairs.
     """
     import os
@@ -122,7 +122,7 @@ def main() -> int:
     import time
 
     api = os.environ["FGA_API_URL"]
-    token_file = os.environ["RASK_FGA_TOKEN_FILE"]
+    token_file = os.environ["WORKBENCH_FGA_TOKEN_FILE"]
     # The store may still be coming up behind the migrate hook, which is the ordering this hook sits
     # in the middle of. Any transport error here means "not ready yet" rather than "broken".
     stores: list[dict[str, Any]] = []
@@ -147,7 +147,7 @@ def main() -> int:
             time.sleep(2)
 
     named = newest_store(stores, STORE_NAME)
-    store = os.environ.get("RASK_FGA_STORE_ID", "") or (str(named["id"]) if named else "")
+    store = os.environ.get("WORKBENCH_FGA_STORE_ID", "") or (str(named["id"]) if named else "")
     if not store:
         print("no OpenFGA store yet and none pinned; nothing pre-written, the catalog creates it and writes this image's model when it boots")
         return 0

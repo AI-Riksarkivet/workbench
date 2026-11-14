@@ -171,7 +171,9 @@ test.beforeEach(async ({ page }) => {
 	// entered. Specs that need the estate level clear it themselves.
 	await enterProject(page, 'default');
 	// Identity stays a BFF pass-through (keep-flow), so it is still mocked at the browser boundary.
-	await page.route('**/annotator/capi/management/v1/me', (route) => json(route, { detail: 'anon' }, 401));
+	await page.route('**/annotator/capi/management/v1/me', (route) =>
+		json(route, { detail: 'anon' }, 401),
+	);
 	// The media plane still rides `+server.ts` bytes routes; nothing on these pages should reach one.
 	// Zone-scoped glob on purpose: a bare **/api/** also matches Vite /@fs module URLs.
 	await page.route('**/annotator/api/**', (route) => json(route, { detail: 'unstubbed' }, 404));

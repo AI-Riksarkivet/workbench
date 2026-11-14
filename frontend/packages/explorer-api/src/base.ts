@@ -11,7 +11,7 @@
 
 let apiBase = '';
 
-/** Set the base path prefixed to every `/api/*` URL this package (and @rask/labeling)
+/** Set the base path prefixed to every `/api/*` URL this package (and @workbench/labeling)
  *  builds — the zone's SvelteKit `base`. Idempotent; trailing slash is normalized.
  *
  *  This is module-level mutable state, which is only safe because a zone is a PROCESS: media and
@@ -23,7 +23,7 @@ export function setApiBase(b: string): void {
 	const next = b.replace(/\/$/, '');
 	if (apiBase && next && next !== apiBase) {
 		throw new Error(
-			`@rask/explorer-api: base already set to "${apiBase}", refusing to re-base to "${next}". ` +
+			`@workbench/explorer-api: base already set to "${apiBase}", refusing to re-base to "${next}". ` +
 				`Two zones share this module instance — the media plane's URLs cannot be per-request state.`,
 		);
 	}

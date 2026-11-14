@@ -3,7 +3,7 @@
 	// already reads — no new endpoint, no stored counters. A metric kept beside the facts it
 	// summarises can drift from them, and the drift is silent; this cannot drift because there is
 	// nothing to drift from.
-	import { Badge } from '@rask/ui/badge';
+	import { Badge } from '@workbench/ui/badge';
 
 	import { annotatorMetrics } from './metrics.js';
 	import type { TaskDetail } from './types.js';

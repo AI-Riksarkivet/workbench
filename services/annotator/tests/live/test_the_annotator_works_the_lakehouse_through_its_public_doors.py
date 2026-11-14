@@ -16,9 +16,8 @@ catalog's grant door. One drive, against the deployed estate:
   project and publishes it, and the annotator's account commits the published table for the admin;
 * every table the drive wrote is read back through the catalog with pylance's stock client.
 
-Run with `make e2e-annotator` against an estate the annotator's release is installed beside (`make k3s-clients`, after
-`make k3s-up`); the e2e-stack lane installs it after Phase 1's acceptance has run on the lakehouse alone, and runs this
-module in a session of its own on every push.
+Run against a deployed rask lakehouse with the annotator installed beside it, naming the endpoints in the
+`LANCE_E2E_*` variables `lakehouse_doors` reads and `LANCE_E2E_ANNOTATOR_URL`.
 """
 
 from __future__ import annotations
@@ -30,15 +29,13 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-import byo_scenario
+import lakehouse_doors
 import lance
 import pyarrow as pa
 import pytest
 import requests
-import scratch_tenant
-from correctness import rask_properties
+from lakehouse_doors import CATALOG, Identity, Tenant, ok, rask_properties
 from pydantic import BaseModel
-from scratch_tenant import CATALOG, Identity, Tenant, ok
 
 from annotator.annotations.schema import EMPTY_SCHEMA
 from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
@@ -55,7 +52,7 @@ pytestmark = [
     pytest.mark.e2e,
     pytest.mark.annotator,
     pytest.mark.skipif(
-        not (ANNOTATOR and CATALOG and scratch_tenant.DEX),
+        not (ANNOTATOR and CATALOG and lakehouse_doors.DEX),
         reason="LANCE_E2E_ANNOTATOR_URL, LANCE_E2E_CATALOG_URL and LANCE_E2E_DEX",
     ),
 ]
@@ -146,7 +143,7 @@ def _published(admin: requests.Session, project_id: str) -> dict[str, Any]:
         time.sleep(3)
 
 
-def _authors(reader: byo_scenario.Identity, table_id: str, *, since: int, after: int) -> list[str]:
+def _authors(reader: Identity, table_id: str, *, since: int, after: int) -> list[str]:
     """Who the catalog announced each write to ``table_id`` past version ``after`` as, read off lineage's feed from row
     ``since``. By version, since the feed lags the commit: the table's own create can arrive after ``since`` was read.
 
@@ -155,9 +152,9 @@ def _authors(reader: byo_scenario.Identity, table_id: str, *, since: int, after:
     """
 
     def past(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [row for row in rows if int(byo_scenario.lance_facet(row).get("version") or 0) > after]
+        return [row for row in rows if int(lakehouse_doors.lance_facet(row).get("version") or 0) > after]
 
-    rows, _ = byo_scenario.follow(reader, since=since, table=table_id, until=lambda rows: bool(past(rows)))
+    rows, _ = lakehouse_doors.follow(reader, since=since, table=table_id, until=lambda rows: bool(past(rows)))
     # The author rides the run's facets on a RunEvent and the dataset's on a DatasetEvent.
     carriers = [row["event"].get("run") if "run" in row["event"] else row["event"].get("dataset") for row in past(rows)]
     return [str(((carrier or {}).get("facets") or {}).get("author", {}).get("sub")) for carrier in carriers]
@@ -165,7 +162,7 @@ def _authors(reader: byo_scenario.Identity, table_id: str, *, since: int, after:
 
 @pytest.fixture(scope="module")
 def tenant() -> Iterator[Tenant]:
-    yield from scratch_tenant.provisioned("annot", grants=("writer",))
+    yield from lakehouse_doors.provisioned("annot", grants=("writer",))
 
 
 @pytest.fixture(scope="module")
@@ -188,8 +185,8 @@ def drive(tenant: Tenant) -> Iterator[Drive]:
     # The person annotates the corpus itself: the annotator resolves the dataset through the catalog and writes the
     # annotations table on the person's own token.
     unit = f"{ANNOTATOR}/api/annotations/{UNIT[0]}/{UNIT[1]}/{UNIT[2]}"
-    reader = byo_scenario.Identity(admin.bearer)
-    feed = byo_scenario.feed_start(reader)
+    reader = Identity(admin.bearer)
+    feed = lakehouse_doors.feed_start(reader)
     before = lance.dataset(namespace_client=person.namespace(), table_id=[tenant.bronze, "annotations"]).version
     loaded = as_person.get(unit, params={"dataset": tenant.bronze}, timeout=60)
     assert loaded.status_code == 200, f"GET {unit} -> {loaded.status_code}: {loaded.text[:300]}"

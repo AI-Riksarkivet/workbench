@@ -4,7 +4,7 @@
  * The numbers used to live inline in playwright.config.ts, which was fine while there was one server
  * and one number. The transport migration added a mock upstream, and a port that drifts between the
  * config and the thing that binds it comes up where nobody is looking — `reuseExistingServer` is on locally, so playwright ADOPTS whatever already listens
- * instead of failing. `@rask/zone-contract` scans this file and asserts no two zones claim a port.
+ * instead of failing. `@workbench/zone-contract` scans this file and asserts no two zones claim a port.
  */
 
 /** The app server. ONE of them: there used to be a second with `MEDIA_ASSIST_URL` set, because

@@ -8,7 +8,7 @@
 # existed but were wired to no command and documented in no target, so nobody ran them.
 #
 #   make seed-dev            # against the current kube context
-#   RASK_MEDIA_CORPUS=/data/corpus make seed-dev
+#   WORKBENCH_MEDIA_CORPUS=/data/corpus make seed-dev
 #
 # THE CORPUS IS SEEDED IN-CLUSTER, BY THE SERVING IMAGE, ON PURPOSE. Writing it from the host
 # leaves files the services cannot read: they run as uid 10001, a host seed writes 0600, and Lance
@@ -22,12 +22,12 @@ set -euo pipefail
 # saying so is the point: an absent declaration and a deliberate one used to look identical, so
 # "I meant the live cluster" was indistinguishable from "I never thought about it". Overridable, so a
 # second estate (another host, another context) is a variable rather than an edit.
-: "${RASK_EXPECT_CONTEXT:=default}"
-export RASK_EXPECT_CONTEXT
+: "${WORKBENCH_EXPECT_CONTEXT:=default}"
+export WORKBENCH_EXPECT_CONTEXT
 
 
-NS="${RASK_NAMESPACE:-default}"
-CORPUS_HOST_PATH="${RASK_MEDIA_CORPUS:-/home/gabriel/media-corpus}"
+NS="${WORKBENCH_NAMESPACE:-default}"
+CORPUS_HOST_PATH="${WORKBENCH_MEDIA_CORPUS:-/home/gabriel/media-corpus}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
@@ -40,13 +40,13 @@ IMAGE="$(kubectl get deployment rask-search -n "$NS" -o jsonpath='{.spec.templat
 # the exact symptom that makes a seeded estate look broken. Reading it from the live deployment
 # means the fixture can never drift from the config that reads it.
 MEDIA_DB="$(kubectl get deployment rask-viewer -n "$NS" -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | sed -n 's/^MEDIA_DB=//p')"
-if [ -z "${RASK_SEED_DATASET:-}" ] && [ -z "$MEDIA_DB" ]; then
+if [ -z "${WORKBENCH_SEED_DATASET:-}" ] && [ -z "$MEDIA_DB" ]; then
   echo "!! rask-viewer declares no MEDIA_DB — cannot know which dataset to seed." >&2
-  echo "   Set RASK_SEED_DATASET explicitly, or fix the deployment. Falling back to a guess is the" >&2
+  echo "   Set WORKBENCH_SEED_DATASET explicitly, or fix the deployment. Falling back to a guess is the" >&2
   echo "   exact drift this reads the deployment to avoid." >&2
   exit 1
 fi
-DATASET_ID="${RASK_SEED_DATASET:-$(basename "$MEDIA_DB" .lance)}"
+DATASET_ID="${WORKBENCH_SEED_DATASET:-$(basename "$MEDIA_DB" .lance)}"
 echo "  dataset id from the deployment: $DATASET_ID"
 
 # The SAME lesson, applied to the path: the chart's default corpus mode is emptyDir, and the only
@@ -62,7 +62,7 @@ if [ -z "$MOUNTED_HOST_PATH" ]; then
 fi
 if [ "$MOUNTED_HOST_PATH" != "$CORPUS_HOST_PATH" ]; then
   echo "!! the release mounts $MOUNTED_HOST_PATH but this run would seed $CORPUS_HOST_PATH." >&2
-  echo "   RASK_MEDIA_CORPUS moves the SEEDER, not the chart. Re-run with RASK_MEDIA_CORPUS=$MOUNTED_HOST_PATH" >&2
+  echo "   WORKBENCH_MEDIA_CORPUS moves the SEEDER, not the chart. Re-run with WORKBENCH_MEDIA_CORPUS=$MOUNTED_HOST_PATH" >&2
   echo "   or reinstall the release with explorer.corpus.hostPath=$CORPUS_HOST_PATH." >&2
   exit 1
 fi
@@ -126,8 +126,8 @@ done
 say "3/4 lakehouse: the annotations table, created through the catalog"
 # The governed half: a catalog table the demo user owns. Skipped (loudly, never silently) on request,
 # because a seed that dies on someone's offline laptop is a seed nobody runs.
-if [ "${RASK_SEED_SKIP_LAKEHOUSE:-0}" = "1" ]; then
-  echo "  skipped (RASK_SEED_SKIP_LAKEHOUSE=1)"
+if [ "${WORKBENCH_SEED_SKIP_LAKEHOUSE:-0}" = "1" ]; then
+  echo "  skipped (WORKBENCH_SEED_SKIP_LAKEHOUSE=1)"
 else
   kubectl port-forward -n "$NS" svc/rask-rustfs 19900:9000 >/dev/null 2>&1 &
   RUSTFS_PID=$!
@@ -144,8 +144,8 @@ else
     sleep 1
   done
   SEED_TOKEN="$(curl -s --max-time 15 -X POST "http://localhost:12434/dex/token" \
-    -d grant_type=password -d "username=${RASK_SEED_USER:-alice@example.com}" \
-    -d "password=${RASK_SEED_PASS:-password}" -d scope='openid profile email federated:id audience:server:client_id:rask-lakehouse' \
+    -d grant_type=password -d "username=${WORKBENCH_SEED_USER:-alice@example.com}" \
+    -d "password=${WORKBENCH_SEED_PASS:-password}" -d scope='openid profile email federated:id audience:server:client_id:rask-lakehouse' \
     -u rask-web:lance-catalog-secret \
     | python3 -c 'import sys,json; print(json.load(sys.stdin).get("id_token",""))' 2>/dev/null || true)"
   # The ANNOTATIONS table, through the catalog. Without this the annotate canvas cannot open at all,
@@ -176,7 +176,7 @@ fi
 say "4/4 a labeling task with items"
 # Through the ANNOTATOR's own API — the same door the UI uses, so a task seeded here is a task the
 # UI can claim, review and publish. Auth is the estate's: a dex bearer, minted for the demo user.
-RASK_SEED_DATASET="$DATASET_ID" "$REPO_ROOT/scripts/seed_labeling_task.sh"
+WORKBENCH_SEED_DATASET="$DATASET_ID" "$REPO_ROOT/scripts/seed_labeling_task.sh"
 
 say "5/5 VERIFY — ask the services whether they can actually see it"
 # A Job that reached Complete, three rollouts that finished and two curls that did not crash are
@@ -224,8 +224,8 @@ trap 'kill "$ANNO_PID" "$ANNO_DEX_PID" 2>/dev/null || true' EXIT INT TERM
 ANNO_CODE=000
 for _ in $(seq 1 30); do
   ANNO_TOKEN="$(curl -s --max-time 10 -X POST "http://localhost:12434/dex/token" \
-    -d grant_type=password -d "username=${RASK_SEED_USER:-alice@example.com}" \
-    -d "password=${RASK_SEED_PASS:-password}" -d scope='openid profile email federated:id audience:server:client_id:rask-lakehouse' \
+    -d grant_type=password -d "username=${WORKBENCH_SEED_USER:-alice@example.com}" \
+    -d "password=${WORKBENCH_SEED_PASS:-password}" -d scope='openid profile email federated:id audience:server:client_id:rask-lakehouse' \
     -u rask-web:lance-catalog-secret \
     | python3 -c 'import sys,json; print(json.load(sys.stdin).get("id_token",""))' 2>/dev/null || true)"
   if [ -n "$ANNO_TOKEN" ]; then

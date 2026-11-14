@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { COMMITS_SHAPE } from '@rask/labeling/shape-types';
+import { COMMITS_SHAPE } from '@workbench/labeling/shape-types';
 import { TOOL_DEFS, TOOL_GROUPS, TOOL_KEYS, bandsOf as bands } from './tool-defs.js';
 
 describe('the tool rail reads in bands', () => {

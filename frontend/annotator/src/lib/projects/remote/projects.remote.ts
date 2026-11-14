@@ -1,6 +1,6 @@
 import { command, query } from '$app/server';
 import * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
+import type { ApiResult } from '@workbench/api/client';
 import {
 	SIGN_IN_REQUIRED,
 	parsed,
@@ -35,7 +35,7 @@ import {
 //
 // PARSING moves, it is not invented: `client.ts` valibot-parsed every response at the browser
 // boundary and those exact parses now run server-side. Transport and parse live in
-// `$lib/server/doors` over `@rask/api/upstream` (#93) — a drift is a 502 with the drift's own
+// `$lib/server/doors` over `@workbench/api/upstream` (#93) — a drift is a 502 with the drift's own
 // words, and every page here buckets non-401/403/404 failures into its offline branch.
 //
 // SINGLE-FLIGHT REFRESH, only where it is the sole update path: `createProject` refreshes the tenant

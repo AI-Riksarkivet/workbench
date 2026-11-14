@@ -1,11 +1,11 @@
-// @rask/api/client — the BROWSER side of a zone's own BFF: base-path-aware fetch helpers with a
+// @workbench/api/client — the BROWSER side of a zone's own BFF: base-path-aware fetch helpers with a
 // shared timeout and a status-aware result type.
 //
 // Every zone is served UNDER a base path (`/data`, `/admin`, `/explorer`, …) and its BFF proxy routes
 // (`/api/*`, `/capi/*`) live there, so a browser call MUST carry that base — the Ingress path-routes
 // `/<zone>` to this zone and a bare `/capi` 404s before it ever reaches us. The base is the only
 // per-zone variable, so this module takes it as a parameter (`createBffClient`) instead of importing
-// `$app/paths`: same env-free seam as the rest of @rask/api, which keeps the package framework-
+// `$app/paths`: same env-free seam as the rest of @workbench/api, which keeps the package framework-
 // agnostic and unit-testable. Each zone binds it once in `src/lib/http.ts`.
 //
 // Server-safe too (fetch + valibot only, no node:crypto / $env), so a universal load may use it.
@@ -40,7 +40,7 @@ export interface BffClient {
 	getJSON: <T>(path: string) => Promise<T | null>;
 	/** Status-aware JSON request against a same-origin BFF base ("/api" or "/capi"). Same
 	 *  `declaredAs` contract: name `T` only for a machine-generated wire type; a hand-written shape
-	 *  calls this bare and parses (see `@rask/api/upstream`'s `parsed`). */
+	 *  calls this bare and parses (see `@workbench/api/upstream`'s `parsed`). */
 	requestJSON: <T = unknown>(
 		base: string,
 		path: string,
@@ -90,7 +90,7 @@ export function createBffClient(base: string): BffClient {
 	 *  (`generated/*.ts` — the lineage client's whole surface aliases them), where a hand-copied
 	 *  valibot schema would be a SECOND copy of the contract and its own drift surface. A
 	 *  hand-written shape never comes through here — it calls the transport bare (`T = unknown`)
-	 *  and parses at its boundary (`storage.ts`, the docks and `@rask/labeling` all do, post-#94). */
+	 *  and parses at its boundary (`storage.ts`, the docks and `@workbench/labeling` all do, post-#94). */
 	const declaredAs = <T>(body: unknown): T => body as T;
 
 	const requestJSON = async <T = unknown>(
@@ -169,7 +169,9 @@ export function createBffClient(base: string): BffClient {
 
 	const fetchMeViaBff = async (): Promise<Me | null> => {
 		try {
-			const res = await fetch(bffPath('/capi/management/v1/me'), { signal: timeoutSignal(FETCH_TIMEOUT_MS) });
+			const res = await fetch(bffPath('/capi/management/v1/me'), {
+				signal: timeoutSignal(FETCH_TIMEOUT_MS),
+			});
 			if (!res.ok) return null;
 			return parse(MeSchema, await res.json());
 		} catch {

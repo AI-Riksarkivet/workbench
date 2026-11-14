@@ -8,7 +8,7 @@ existing ``/api/explorer`` rule of the cluster route (``/api/explorer/objects`` 
 here), so the route grows zero new rules.
 
 Uses ``storage.s3_client`` (never raw boto3); endpoint/creds resolve from env
-(``RASK_S3_ENDPOINT_URL`` / ``AWS_*``). Routes are ``async def`` for the awaited
+(``WORKBENCH_S3_ENDPOINT_URL`` / ``AWS_*``). Routes are ``async def`` for the awaited
 FGA prologue; every blocking boto3 body then runs via ``run_in_threadpool`` — it
 must never run inline on the loop (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-01: this docstring
 claimed sync ``def`` while all three routes were coroutines doing boto3 inline).

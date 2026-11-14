@@ -236,7 +236,7 @@ def _require_https(url: str, *, label: str, allow_insecure: bool) -> None:
         # misconfiguration belongs. This stays for the discovery override, and for `jwks_uri`, which
         # comes from discovery and so cannot be seen until verify time.
         log.warning("oidc_insecure_url", extra={"label": label, "scheme": urlsplit(url).scheme})
-        raise ProviderUnavailableError(f"OIDC {label} must use HTTPS (set RASK_OIDC_ALLOW_INSECURE=true for dev IdPs)")
+        raise ProviderUnavailableError(f"OIDC {label} must use HTTPS (set WORKBENCH_OIDC_ALLOW_INSECURE=true for dev IdPs)")
 
 
 class OIDCVerifier:

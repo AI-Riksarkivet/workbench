@@ -17,7 +17,7 @@
 		type VoiceHit,
 		type VoiceQueryInfo,
 		type VoiceSimilarResponse,
-	} from '@rask/explorer-api';
+	} from '@workbench/explorer-api';
 	import { voiceSearch } from '$lib/voice-search.svelte';
 	import { submitBatchJob } from '$lib/workflow/remote/labeling.remote';
 	import { fmtTime, hitKey, queryTerms, makeHighlighter } from '$lib/utils';
@@ -33,12 +33,12 @@
 	import { loadCols, persistCols, loadTablePrefs, persistTablePrefs } from '$lib/table-columns';
 	import DocTile from '$lib/components/doc-tile.svelte';
 	import PlayerPane from '$lib/components/player-pane.svelte';
-	import { ResizableSplit } from '@rask/ui/resizable-split';
+	import { ResizableSplit } from '@workbench/ui/resizable-split';
 	import AtlasMap from '$lib/atlas/AtlasMap.svelte';
 	import { crossFilter } from '$lib/atlas/cross-filter.svelte';
-	import { getAtlasChunks } from '@rask/explorer-api';
-	import { Button, Badge } from '@rask/ui';
-	import { Switch } from '@rask/ui/switch';
+	import { getAtlasChunks } from '@workbench/explorer-api';
+	import { Button, Badge } from '@workbench/ui';
+	import { Switch } from '@workbench/ui/switch';
 	import {
 		LayoutGrid,
 		List as ListIcon,

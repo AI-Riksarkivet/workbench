@@ -1,6 +1,6 @@
 <script lang="ts">
-	// A small labelled chip — match reasons, tags, statuses. Same API @rask/ui's Chip exposed
-	// (label + tone), design-token styled so it themes with the rest of @rask/ui.
+	// A small labelled chip — match reasons, tags, statuses. Same API @workbench/ui's Chip exposed
+	// (label + tone), design-token styled so it themes with the rest of @workbench/ui.
 	let { label, tone = 'neutral' }: { label: string; tone?: 'neutral' | 'accent' } = $props();
 </script>
 

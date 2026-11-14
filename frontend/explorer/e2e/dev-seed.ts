@@ -2,7 +2,7 @@
  * Dev fixtures for `make dev-zone ZONE=explorer` — see `lakehouse/e2e/dev-seed.ts` for the rationale.
  *
  * DEV data, not test data: no spec imports this. Shapes are copied from `zone.spec.ts` (its `HIT`,
- * `HEALTH` and `DESCRIPTOR` fixtures) and `@rask/api/runs-feed`'s `LineageProbeSchema`.
+ * `HEALTH` and `DESCRIPTOR` fixtures) and `@workbench/api/runs-feed`'s `LineageProbeSchema`.
  *
  * THE DESCRIPTOR GATES EVERYTHING. This zone SSRs "Loading dataset" and renders nothing — not even the
  * search results list — until `/api/datasets/demo/descriptor` resolves. That call rides the zone's

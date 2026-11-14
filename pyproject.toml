@@ -106,6 +106,8 @@ error-on-warning = true
 
 [tool.ty.environment]
 python-version = "3.13"
+# The live harness the annotator's live suites import by its flat name.
+extra-paths = ["services/annotator/tests/live"]
 
 [tool.ty.src]
 exclude = ["**/.venv", "**/node_modules", "**/.claude/worktrees", "runners"]

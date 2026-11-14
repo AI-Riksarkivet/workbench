@@ -5,8 +5,8 @@
 	// span right there. Controlled like every layout component — rows in, intents out; the
 	// segmentation/colour model lives in `span-render.ts` where it is testable without a DOM.
 	import { X } from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
-	import { cn } from '@rask/ui/utils';
+	import { Button } from '@workbench/ui/button';
+	import { cn } from '@workbench/ui/utils';
 	import { type SpanMark, segmentText, spanColor } from '../span-render';
 
 	let {

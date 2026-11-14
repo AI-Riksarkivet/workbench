@@ -43,8 +43,8 @@ def test_the_AMBIGUOUS_case_refuses_to_start() -> None:
         assert_authentication_configured(oidc_enabled=False, insecure_allow_unauthenticated=False)
 
     message = str(excinfo.value)
-    assert "RASK_INSECURE_ALLOW_UNAUTHENTICATED" in message, "the refusal must name the escape, or an operator cannot act on it"
-    assert "RASK_OIDC_ENABLED" in message, "the refusal must name the fix, not only the escape"
+    assert "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED" in message, "the refusal must name the escape, or an operator cannot act on it"
+    assert "WORKBENCH_OIDC_ENABLED" in message, "the refusal must name the fix, not only the escape"
 
 
 def test_declaring_BOTH_is_not_a_way_to_be_half_open() -> None:

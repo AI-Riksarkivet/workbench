@@ -1,9 +1,9 @@
 /**
- * The explorer's upstream DOORS — over `@rask/api/upstream` (#93).
+ * The explorer's upstream DOORS — over `@workbench/api/upstream` (#93).
  *
  * This zone carried THREE verbatim copies of the transport ladder (`catalog.remote.ts`,
  * `projects.remote.ts`, `labeling.remote.ts`), two of the write gate and two of the `typedAs`
- * cast. The implementation now lives once in `@rask/api/upstream`; what stays here is only what
+ * cast. The implementation now lives once in `@workbench/api/upstream`; what stays here is only what
  * cannot move — `getRequestEvent` is app-bound, and the zone's base URLs and gate stance are its
  * own.
  *
@@ -23,8 +23,8 @@
 
 import { getRequestEvent } from '$app/server';
 import { env } from '$env/dynamic/private';
-import type { ApiResult } from '@rask/api/client';
-import { upstreamJSON } from '@rask/api/upstream';
+import type { ApiResult } from '@workbench/api/client';
+import { upstreamJSON } from '@workbench/api/upstream';
 
 export const CATALOG_API = env.CATALOG_API ?? 'http://localhost:2333';
 const VIEWER_API = env.VIEWER_API ?? 'http://localhost:8101';

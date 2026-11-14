@@ -7,7 +7,7 @@
 	 *  which is also why the preview here is not a second implementation of InspectNode's: both read
 	 *  the same `runtime.output.payload` off the store. */
 	import { Copy, Download, MousePointerClick } from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { graph, nodeLabel, STATUS_DOT } from '$lib/flows/graph.svelte';
 	import { payloadSummary } from '$lib/flows/types';
 

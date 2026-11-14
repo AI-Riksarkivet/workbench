@@ -2,9 +2,9 @@
 	// The v1 send surface: keys pasted or carried over from the corpus browser/search. The richer
 	// send-from-search flow lives in the media zone and lands later; this dialog is the honest
 	// minimum that makes the loop drivable end to end.
-	import { Button } from '@rask/ui/button';
-	import { Dialog } from '@rask/ui/dialog';
-	import { Textarea } from '@rask/ui/textarea';
+	import { Button } from '@workbench/ui/button';
+	import { Dialog } from '@workbench/ui/dialog';
+	import { Textarea } from '@workbench/ui/textarea';
 
 	import { sendItems } from './remote/projects.remote';
 

@@ -1,10 +1,15 @@
 <script lang="ts">
-	import { Button, Badge, buttonVariants } from '@rask/ui';
-	import { Select } from '@rask/ui/select';
-	import { Input } from '@rask/ui/input';
-	import { type SelectOption } from '@rask/ui/select';
+	import { Button, Badge, buttonVariants } from '@workbench/ui';
+	import { Select } from '@workbench/ui/select';
+	import { Input } from '@workbench/ui/input';
+	import { type SelectOption } from '@workbench/ui/select';
 	import { Popover } from 'bits-ui';
-	import { activeView, listColumns, type SearchSpec, type ColumnInfo } from '@rask/explorer-api';
+	import {
+		activeView,
+		listColumns,
+		type SearchSpec,
+		type ColumnInfo,
+	} from '@workbench/explorer-api';
 	import { Filter, X, Eye, EyeOff, Plus } from '@lucide/svelte';
 
 	type Props = {

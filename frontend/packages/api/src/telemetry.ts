@@ -1,4 +1,4 @@
-// @rask/api/telemetry — the SSR zones' server spans.
+// @workbench/api/telemetry — the SSR zones' server spans.
 //
 // THE GAP THIS CLOSES. A browser reaches a zone's SvelteKit/Bun server BEFORE anything reaches the
 // gateway, and the zones exported nothing at all. So a slow page with a healthy gateway had no span

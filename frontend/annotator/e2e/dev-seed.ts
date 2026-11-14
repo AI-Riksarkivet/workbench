@@ -2,7 +2,7 @@
  * Dev fixtures for `make dev-zone ZONE=annotator` — see `lakehouse/e2e/dev-seed.ts` for the rationale.
  *
  * DEV data, not test data: no spec imports this. Shapes are copied from `projects.spec.ts` and
- * `data-manager.spec.ts`, plus `@rask/api/runs-feed`'s `LineageProbeSchema` for the cursor.
+ * `data-manager.spec.ts`, plus `@workbench/api/runs-feed`'s `LineageProbeSchema` for the cursor.
  *
  * NO BEARER MATTERS HERE. `mock-annotator.ts` keys its seed store GLOBALLY, not per bearer, because this
  * zone's suite runs auth-OFF and every request arrives with no bearer — so there is no identity to key on

@@ -1,13 +1,13 @@
-import { liveRead, type LiveCursor } from '@rask/api/live';
+import { liveRead, type LiveCursor } from '@workbench/api/live';
 import { lineageFeed } from './feeds.remote';
 
 /**
  * This zone's live CURSOR — the explorer's half of #73.
  *
  * The reader itself (`liveRead`, and the four rules that make it not a timer) lives in
- * `@rask/api/live`. What stays here is the half that CANNOT move: a cursor wraps THIS app's own
+ * `@workbench/api/live`. What stays here is the half that CANNOT move: a cursor wraps THIS app's own
  * `feeds.remote.ts`, because `query.live` is declared per app so it gets its own endpoint and can
- * reach `getRequestEvent`. Same seam `@rask/api/runs-feed` uses — share the body, keep the
+ * reach `getRequestEvent`. Same seam `@workbench/api/runs-feed` uses — share the body, keep the
  * app-bound shim in the app.
  *
  * WHY THE EXPLORER NEEDED ONE. It already had `lineageFeed`, but the only thing reading it was the

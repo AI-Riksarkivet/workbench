@@ -16,7 +16,7 @@ import {
 	Pentagon,
 	Square,
 } from '@lucide/svelte';
-import type { Tool } from '@rask/engine';
+import type { Tool } from '@workbench/engine';
 
 export interface ToolDef {
 	tool: Tool;

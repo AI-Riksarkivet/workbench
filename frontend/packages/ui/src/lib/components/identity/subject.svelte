@@ -5,7 +5,7 @@
 	// did, within days of the helper shipping). A component makes the invariant STRUCTURAL: there is no
 	// way to render a subject here without its title.
 	//
-	// Estate-wide by design, which is why it lives at `@rask/ui/identity` and not under grants-panel —
+	// Estate-wide by design, which is why it lives at `@workbench/ui/identity` and not under grants-panel —
 	// the concern is "render an OIDC sub a human can read", and it applies to FGA subjects, control-event
 	// actors, a dropped-by stamp, and any future audit surface. None of those are grants panels.
 	import { subjectDisplay } from './subject.js';

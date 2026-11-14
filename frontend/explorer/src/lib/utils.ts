@@ -1,13 +1,13 @@
-import { activeView, type Row } from '@rask/explorer-api/descriptor';
+import { activeView, type Row } from '@workbench/explorer-api/descriptor';
 
 /** shadcn-svelte's standard `cn` helper: clsx for conditionals, twMerge for conflicts. */
-export { cn } from '@rask/ui/utils';
+export { cn } from '@workbench/ui/utils';
 export type {
 	WithElementRef,
 	WithoutChild,
 	WithoutChildren,
 	WithoutChildrenOrChild,
-} from '@rask/ui/utils';
+} from '@workbench/ui/utils';
 
 // Type helpers expected by shadcn-svelte v1.2+ generated components (shared
 // with the sibling apps so UI primitives stay copy-paste compatible).

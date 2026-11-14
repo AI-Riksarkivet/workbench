@@ -8,30 +8,9 @@ import {
 	Search,
 	Settings,
 } from '@lucide/svelte';
-import type { InboxNotificationLike } from './inbox.js';
 
 /** All lucide icons share one component signature, so any icon's type fits. */
 export type IconComponent = typeof Database;
-
-/** What a zone hands the shell to light up the navbar's notification bell.
- *
- *  One optional object rather than threaded props, so a zone opts in with a single `notifications=`
- *  and a zone that has not wired the feed yet renders no bell at all (rather than an empty one that
- *  looks broken). The shell never fetches it: the rows are the zone's own inbox read, and the read
- *  state comes back through the callbacks so the zone — which owns a per-subject store — can persist
- *  it. Ids in `seen`/`dismissed` are NOTIFICATION ids. */
-export type NotificationFeed = {
-	/** The INBOX plane: rows addressed to this subject, durable per subject. `undefined` means this
-	 *  zone has no inbox transport — a different statement from an empty inbox, and the bell renders
-	 *  it differently. */
-	inbox?: InboxNotificationLike[];
-	/** The server's unread count for the WHOLE inbox, not the page above. */
-	inboxUnread?: number;
-	seen?: string[];
-	dismissed?: string[];
-	onseen?: (seen: string[]) => void;
-	ondismiss?: (notificationId: string, dismissed: string[]) => void;
-};
 
 /** A leaf route inside the CURRENT zone's sidebar — same-zone (soft nav) unless `reload` says
  *  otherwise. */
@@ -117,7 +96,7 @@ export type ZoneNav = {
 };
 
 /** Every leaf in a zone's nav, flattened depth-first (parents before their children). The shell uses
- *  it to decide whether a rail is worth rendering; `@rask/zone-contract` uses it to walk every href. */
+ *  it to decide whether a rail is worth rendering; `@workbench/zone-contract` uses it to walk every href. */
 export function zoneNavLeaves(nav: ZoneNav | null | undefined): ZoneNavLeaf[] {
 	if (!nav) return [];
 	const out: ZoneNavLeaf[] = [];
@@ -148,7 +127,7 @@ export type NavUser = { name: string; email?: string; initials?: string };
 /** One project membership row from `/management/v1/me` — the tenant and the caller's role in it. */
 export type MeProject = { project: string; role: 'admin' | 'member' };
 
-/** The frozen `GET /management/v1/me` identity contract, mirrored structurally from @rask/api (the shared shell
+/** The frozen `GET /management/v1/me` identity contract, mirrored structurally from @workbench/api (the shared shell
  *  never imports app data — same seam as `NavUser`): any verified caller's sub/name/email, whether
  *  they hold the estate-admin privilege, and their project memberships. */
 export type Me = {
@@ -605,7 +584,7 @@ const SETTINGS_ENTRY: TopNavEntry = {
  * lakehouse still hard-navigated, which is correct) and wasteful in the other — standing on `/`, the
  * navbar's own Projects link cost a full document load to reach a route THIS app serves.
  *
- * Keep in step with `@rask/zone-contract`'s `HOME_ROUTES`, which enforces the same fact from the
+ * Keep in step with `@workbench/zone-contract`'s `HOME_ROUTES`, which enforces the same fact from the
  * other side (a link INTO these from another zone must carry `data-sveltekit-reload`). Two lists
  * because the gate cannot import the shell, and both are one line — a divergence shows up as a
  * cross-zone test failure rather than as silence.

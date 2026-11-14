@@ -1,7 +1,7 @@
 /**
  * Every port this zone's e2e run binds — declared ONCE.
  *
- * `@rask/zone-contract` asserts no two zones bind the same port and scans this file (`manifest.test.ts`,
+ * `@workbench/zone-contract` asserts no two zones bind the same port and scans this file (`manifest.test.ts`,
  * "no two zones bind the same port, in dev OR in e2e"). That gate exists because playwright runs with
  * `reuseExistingServer` locally: a duplicate does not fail loudly with EADDRINUSE, it silently ADOPTS
  * whatever is already listening — which is how the lakehouse admin suite once pointed its "mock catalog"

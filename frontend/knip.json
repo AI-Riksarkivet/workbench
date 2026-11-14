@@ -5,7 +5,8 @@
 		"interface": true
 	},
 	"ignoreBinaries": [
-		"make"
+		"make",
+		"uv"
 	],
 	"workspaces": {
 		"explorer": {

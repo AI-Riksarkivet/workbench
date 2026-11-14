@@ -4,7 +4,7 @@ Read once at startup via `Settings()`; pass through DI as `SettingsDep`. Never
 re-read env vars in routes or services.
 
 Only the fields the `make_service_app` services read live here. S3 endpoint and
-credential resolution belongs to `storage` (env-driven: RASK_S3_* / AWS_* /
+credential resolution belongs to `storage` (env-driven: WORKBENCH_S3_* / AWS_* /
 HCP_* aliases), not to this class.
 """
 
@@ -24,11 +24,11 @@ class Settings(BaseSettings):
         # alias bypasses it, so the deliberately-bare ones still land. See
         # tests/unit/test_settings_env_namespace.py.
         populate_by_name=True,
-        env_prefix="RASK_",
+        env_prefix="WORKBENCH_",
     )
 
-    api_prefix: str = Field(default="/api/v1", alias="RASK_API_PREFIX")
-    cors_origins: list[str] = Field(default_factory=list, alias="RASK_CORS_ORIGINS")
+    api_prefix: str = Field(default="/api/v1", alias="WORKBENCH_API_PREFIX")
+    cors_origins: list[str] = Field(default_factory=list, alias="WORKBENCH_CORS_ORIGINS")
 
     #: Whether this app serves `/docs`, `/redoc` and `/openapi.json`. OFF by default, and the default
     #: is the whole point.
@@ -41,21 +41,21 @@ class Settings(BaseSettings):
     #:
     #: What this closes is a route table, parameter names and request/response schemas — not data, and
     #: every documented route stays individually auth-gated.
-    docs_enabled: bool = Field(default=False, alias="RASK_DOCS")
+    docs_enabled: bool = Field(default=False, alias="WORKBENCH_DOCS")
 
     #: Whether this app emits the `lance.audit` compliance stream. ON by default, because the trail
     #: it gates is evidence: a deployment that wants none says so, and one that forgets still has it.
     #:
     #: THE FLAG EXISTS SO THE TRAIL IS DECIDED RATHER THAN INHERITED. `governed/audit.py` gates the
     #: stream by the dedicated logger's LEVEL, and a service that never sets it leaves `lance.audit`
-    #: at NOTSET — inheriting the root level `setup_logging` takes from `RASK_LOG_LEVEL`. Measured
+    #: at NOTSET — inheriting the root level `setup_logging` takes from `WORKBENCH_LOG_LEVEL`. Measured
     #: 2026-09-09 across the ten services holding `audit()` call sites: three set it and seven
-    #: inherited, so for those seven `RASK_LOG_LEVEL=WARNING` — the documented volume lever — deleted
+    #: inherited, so for those seven `WORKBENCH_LOG_LEVEL=WARNING` — the documented volume lever — deleted
     #: the compliance trail, and this flag could not turn it off. `make_service_app` now applies it,
     #: for the same reason it applies the readiness flags: a convention most apps did not hold up is
     #: not a convention. Pinned by
     #: `test_the_audit_trail_is_armed_by_configuration_not_by_the_log_level.py`.
-    audit_enabled: bool = Field(default=True, alias="RASK_AUDIT_ENABLED")
+    audit_enabled: bool = Field(default=True, alias="WORKBENCH_AUDIT_ENABLED")
 
     #: The request-body ceiling every app built by `make_service_app` enforces (`body_limit.py`).
     #:
@@ -63,15 +63,15 @@ class Settings(BaseSettings):
     #: apps had no ceiling at all until 2026-08-26. Generous on purpose: a route that wants a real limit states its own,
     #: and the catalog sets 256 MiB explicitly for Arrow-IPC writes (it builds its own app, so it is
     #: not double-capped).
-    max_body_bytes: int = Field(default=64 * 1024 * 1024, alias="RASK_MAX_BODY_BYTES")
+    max_body_bytes: int = Field(default=64 * 1024 * 1024, alias="WORKBENCH_MAX_BODY_BYTES")
 
     # OpenTelemetry opt-in. When true, OTLP/HTTP traces are exported to the
     # endpoint configured by OTEL_EXPORTER_OTLP_ENDPOINT. Also auto-enabled when
     # that env var is present, even if this flag is false.
-    otel_enabled: bool = Field(default=False, alias="RASK_OTEL_ENABLED")
+    otel_enabled: bool = Field(default=False, alias="WORKBENCH_OTEL_ENABLED")
 
     # Whether a Dapr sidecar runs beside the app; a service reads it to fail closed on an
     # unset app token (`assert_app_token_configured`). DAPR_HTTP_PORT is set by the
     # Dapr sidecar injector in-cluster.
-    dapr_enabled: bool = Field(default=False, alias="RASK_DAPR_ENABLED")
+    dapr_enabled: bool = Field(default=False, alias="WORKBENCH_DAPR_ENABLED")
     dapr_http_port: str = Field(default="3500", alias="DAPR_HTTP_PORT")

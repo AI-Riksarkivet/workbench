@@ -11,9 +11,9 @@
 	// its list by re-parsing MEDIA_ASSIST_BACKENDS locally, and its own comment conceded that could
 	// drift from the service's. The service is the process that resolves and calls a backend.
 	import { CircleAlert, CircleCheck, FlaskConical, Settings2 } from '@lucide/svelte';
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import * as Popover from '@rask/ui/popover';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as Popover from '@workbench/ui/popover';
 	import { assistProducers, type ProducerListing } from '../remote/assist.remote';
 
 	let { taskId = null }: { taskId?: string | null } = $props();

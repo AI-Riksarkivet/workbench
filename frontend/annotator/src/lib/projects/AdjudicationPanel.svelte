@@ -3,9 +3,9 @@
 	// canonical replica — never blends them. Renders only when replica groups exist. The pick is
 	// server-gated (can_manage) and server-validated (accepted members only, refused once
 	// provenance freezes); a refusal here is the SERVER's 403/409, surfaced verbatim.
-	import { Badge } from '@rask/ui/badge';
-	import { Button } from '@rask/ui/button';
-	import { Card } from '@rask/ui/card';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import { Card } from '@workbench/ui/card';
 
 	import { adjudicate, clearAdjudication } from './remote/projects.remote';
 	import { taskStateVariant } from './presentation.js';

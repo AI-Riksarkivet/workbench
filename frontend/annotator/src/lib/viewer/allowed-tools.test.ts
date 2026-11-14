@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { COMMITS_SHAPE, engineToolsFor } from '@rask/labeling/shape-types';
+import { COMMITS_SHAPE, engineToolsFor } from '@workbench/labeling/shape-types';
 import { TOOL_DEFS } from './tool-defs.js';
 
 /** The rail's own predicate, mirrored: a drawing tool survives only if the task permits it. */

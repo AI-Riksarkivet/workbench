@@ -7,8 +7,8 @@ once at startup and carries the verdict, rather than discovering it on the first
 WHAT THE LINE CLAIMED. `attach_governed_auth` constructs `OIDCVerifier(...)` and logs
 ``"%s: OIDC verifier ready (issuer=%s)"``. The constructor performs no I/O at all — it normalises the
 issuer list and stores settings. Discovery and JWKS are fetched lazily by `_resolve`, on the first
-request that presents a bearer. So a pod with a wrong `RASK_OIDC_ISSUER`, a wrong
-`RASK_OIDC_DISCOVERY_URL` (the split-horizon override whose omission at ONE of six doors once broke
+request that presents a bearer. So a pod with a wrong `WORKBENCH_OIDC_ISSUER`, a wrong
+`WORKBENCH_OIDC_DISCOVERY_URL` (the split-horizon override whose omission at ONE of six doors once broke
 every signed-in ingest) or an unreachable IdP comes up logging "ready", reports healthy, and the
 fault appears only as failed user traffic.
 

@@ -7,7 +7,7 @@
  *       'http://localhost:8090/explorer/api/atlas/points?space=text&v=6'
  *   200 6678928
  *
- * `UrlMemo` in `@rask/explorer-api` already stops the same tab paying that twice, which is what the
+ * `UrlMemo` in `@workbench/explorer-api` already stops the same tab paying that twice, which is what the
  * Text/Visual toggle used to do. It cannot help a refresh, a second tab or a second user, and a burst of
  * concurrent multi-megabyte reads is what OOM-killed the viewer (`exit 137`) and took the media plane to
  * 502. So this route sits in front of the same upstream the `/api/[...path]` catch-all would have used
@@ -57,8 +57,8 @@
  * scope's to edit.
  */
 import type { RequestHandler } from '@sveltejs/kit';
-import type { AuthLocals } from '@rask/api/bff';
-import { SharedPayloadCache } from '@rask/explorer-api/server-cache';
+import type { AuthLocals } from '@workbench/api/bff';
+import { SharedPayloadCache } from '@workbench/explorer-api/server-cache';
 
 type Env = Record<string, string | undefined>;
 

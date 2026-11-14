@@ -66,7 +66,7 @@ class BusWatchdogSettings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    bus_url: str = Field(default="", alias="RASK_BUS_URL")
+    bus_url: str = Field(default="", alias="WORKBENCH_BUS_URL")
     #: DAPR'S OWN NAME, injected by daprd into every annotated pod.
     dapr_http_port: int = Field(default=3500, alias="DAPR_HTTP_PORT")
 

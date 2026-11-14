@@ -98,7 +98,7 @@ def setup_otel(app: FastAPI, service_name: str, settings: Settings) -> bool:
     **`Settings` DECIDES, and the endpoint env never does.** This used to be
     `(settings is not None and settings.otel_enabled) or bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))`,
     an `or` that made ambient env an override nothing could turn off: a caller passing
-    `RASK_OTEL_ENABLED=false` still got a live exporter whenever the variable happened to be set in
+    `WORKBENCH_OTEL_ENABLED=false` still got a live exporter whenever the variable happened to be set in
     the environment. "Off" that cannot be selected is not a setting.
 
     That is not theoretical, and the place it bites is the one place it must not: **`dagger call test`**.
@@ -112,7 +112,7 @@ def setup_otel(app: FastAPI, service_name: str, settings: Settings) -> bool:
     pins that an explicit OFF wins over that ambient endpoint.
 
     `make_service_app`, the one caller in the estate, passes its `Settings`. Production is unaffected —
-    `chart/templates/_helpers.tpl` renders `RASK_OTEL_ENABLED: "true"` and `OTEL_EXPORTER_OTLP_ENDPOINT`
+    `chart/templates/_helpers.tpl` renders `WORKBENCH_OTEL_ENABLED: "true"` and `OTEL_EXPORTER_OTLP_ENDPOINT`
     from the SAME `observability.enabled` guard, so the two can never disagree there.
     """
     if not settings.otel_enabled:

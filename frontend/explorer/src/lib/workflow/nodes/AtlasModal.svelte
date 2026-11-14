@@ -22,8 +22,8 @@
 	import { X } from '@lucide/svelte';
 	import AtlasMap from '$lib/atlas/AtlasMap.svelte';
 	import { crossFilter } from '$lib/atlas/cross-filter.svelte';
-	import { Button } from '@rask/ui/button';
-	import type { Hit } from '@rask/explorer-api';
+	import { Button } from '@workbench/ui/button';
+	import type { Hit } from '@workbench/explorer-api';
 
 	let {
 		upstreamHits,

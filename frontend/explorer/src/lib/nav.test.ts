@@ -10,7 +10,7 @@
  * precisely that the nav never consulted one.
  */
 
-import { DatasetDescriptorSchema, DatasetView } from '@rask/explorer-api/descriptor';
+import { DatasetDescriptorSchema, DatasetView } from '@workbench/explorer-api/descriptor';
 import * as v from 'valibot';
 import { describe, expect, it } from 'vitest';
 

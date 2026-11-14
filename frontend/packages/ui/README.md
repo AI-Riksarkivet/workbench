@@ -1,4 +1,4 @@
-# @rask/ui
+# @workbench/ui
 
 Svelte 5 component library. Bits UI primitives + Tailwind 4 + Storybook.
 
@@ -21,20 +21,20 @@ bun run storybook
 ```jsonc
 {
 	"dependencies": {
-		"@rask/ui": "workspace:*",
+		"@workbench/ui": "workspace:*",
 		"bits-ui": "^2.18.0",
 	},
 }
 ```
 
 Import from the per-component subpath exports (never the root barrel or a deep
-`@rask/ui/dist/...` path):
+`@workbench/ui/dist/...` path):
 
 ```svelte
 <script lang="ts">
-	import { Button } from '@rask/ui/button';
-	import { Card } from '@rask/ui/card';
-	import { Dialog } from '@rask/ui/dialog';
+	import { Button } from '@workbench/ui/button';
+	import { Card } from '@workbench/ui/card';
+	import { Dialog } from '@workbench/ui/dialog';
 </script>
 ```
 
@@ -43,9 +43,9 @@ In the app's CSS:
 ```css
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import '@rask/ui/styles/tokens.css';
+@import '@workbench/ui/styles/tokens.css';
 
-/* Tailwind 4 skips node_modules — scan @rask/ui/dist or its classes vanish. */
+/* Tailwind 4 skips node_modules — scan @workbench/ui/dist or its classes vanish. */
 @source '../../../../packages/ui/dist';
 ```
 
@@ -55,7 +55,7 @@ In the app's CSS:
 2. `<name>.stories.ts` (simple) or `<name>.stories.svelte` (composite, uses snippets)
 3. `index.ts` barrel
 4. Add the `./<name>` subpath to `package.json` `exports` — this is the
-   canonical import path (`@rask/ui/<name>`); consumers import from the subpath.
+   canonical import path (`@workbench/ui/<name>`); consumers import from the subpath.
 5. Optionally re-export from `src/lib/index.ts` (the root `.` barrel is a
    curated convenience surface, not the full component set — subpaths are
    authoritative).

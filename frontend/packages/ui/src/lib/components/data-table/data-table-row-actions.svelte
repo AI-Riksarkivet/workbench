@@ -5,7 +5,7 @@
 	import * as DropdownMenu from '../dropdown-menu/index.js';
 
 	// The per-row actions slot: an ellipsis trigger opening a dropdown whose items the consumer
-	// supplies as `children` (DropdownMenu.Item/Separator/Label from @rask/ui). Wire it from a
+	// supplies as `children` (DropdownMenu.Item/Separator/Label from @workbench/ui). Wire it from a
 	// ColumnDef cell via renderSnippet — snippets can close over the row, components can't:
 	// `cell: ({ row }) => renderSnippet(actions, row.original)` with
 	// `{#snippet actions(row)}<DataTableRowActions>…</DataTableRowActions>{/snippet}`.

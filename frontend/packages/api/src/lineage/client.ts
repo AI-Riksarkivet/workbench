@@ -1,4 +1,4 @@
-// @rask/api/lineage — the typed browser client for the lineage plane, served through a zone's own
+// @workbench/api/lineage — the typed browser client for the lineage plane, served through a zone's own
 // same-origin `/api/*` BFF proxy.
 //
 // It covers what the lineage service serves to a zone: the event feed and the DLQ admin pair. One

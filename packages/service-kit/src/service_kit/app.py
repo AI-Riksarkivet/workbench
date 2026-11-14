@@ -57,12 +57,12 @@ def setup_logging() -> None:
     fewer of those than it did (lineage's feed write is now part of the ingest transaction and fails
     loudly rather than warning), but every best-effort arm that remains depends on this being fixed.
 
-    ``RASK_LOG_LEVEL`` is the volume lever (default INFO). Root-level INFO does make chatty
+    ``WORKBENCH_LOG_LEVEL`` is the volume lever (default INFO). Root-level INFO does make chatty
     third-party libraries audible; that is the correct trade against losing every application log,
     and it is one env var to turn down rather than a hardcoded allowlist that goes stale the same way
     this one did.
     """
-    level = os.environ.get("RASK_LOG_LEVEL", "INFO").upper()
+    level = os.environ.get("WORKBENCH_LOG_LEVEL", "INFO").upper()
     root = logging.getLogger()
     root.setLevel(level)
     # Idempotent by handler NAME, not by count: `make_service_app` runs this per app, and a duplicate
@@ -184,7 +184,7 @@ def make_service_app(
     # must run first either way, so a Settings validation failure is loggable rather than silent.
     settings = build_settings() if settings is None else settings
     # THE COMPLIANCE TRAIL IS ARMED HERE, for every app this factory builds — see
-    # `Settings.audit_enabled`. Left to each service, seven of ten inherited it from `RASK_LOG_LEVEL`
+    # `Settings.audit_enabled`. Left to each service, seven of ten inherited it from `WORKBENCH_LOG_LEVEL`
     # instead of deciding it. Immediately after `setup_logging`, which sets the root level this must
     # override in both directions.
     configure_audit(enabled=settings.audit_enabled)

@@ -1,4 +1,4 @@
-// @rask/api/serve-proxy — the Ray Serve HTR inference BFF body, shared by every zone that offers a
+// @workbench/api/serve-proxy — the Ray Serve HTR inference BFF body, shared by every zone that offers a
 // "run this page through the model" surface (server-only: it is mounted from a `+server.ts`).
 //
 // Unlike the rest of this package this module value-imports `error`/`json` from @sveltejs/kit rather
@@ -85,7 +85,7 @@ export async function proxyServeInfer(
 	opts: ServeProxyOptions,
 ): Promise<Response> {
 	const { request, url } = event;
-	// App.Locals is declared per-zone; in @rask/api's own typecheck it's empty, so read via AuthLocals.
+	// App.Locals is declared per-zone; in @workbench/api's own typecheck it's empty, so read via AuthLocals.
 	const locals = event.locals as unknown as AuthLocals;
 	const serveUrl = opts.target;
 	const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;

@@ -41,7 +41,7 @@ class MediaSettings(BaseSettings):
     """The MEDIA plane's settings (``MEDIA_*``) — the config of the services built on the media library.
 
     NAMED `MediaSettings`, and it used to be a second class called `Settings`. One distribution held
-    two of them: this one on `MEDIA_*` aliases, and `service_kit.config.Settings` on `RASK_*` with an
+    two of them: this one on `MEDIA_*` aliases, and `service_kit.config.Settings` on `WORKBENCH_*` with an
     `env_prefix`. They are not related by inheritance and share almost no field, so which one a
     `settings: Settings` annotation, a `SettingsDep` or a stack frame referred to depended entirely on
     which module the reader had open. `Settings` survives below as a back-compat alias for the
@@ -104,7 +104,7 @@ class MediaSettings(BaseSettings):
     #: `service_kit.config.Settings.docs_enabled` for why the default is closed.
     docs_enabled: bool = Field(default=False, alias="MEDIA_DOCS")
 
-    # Optional S3 object-store backing (RASK_LANDING §4). Set MEDIA_S3_ENDPOINT to
+    # Optional S3 object-store backing (WORKBENCH_LANDING §4). Set MEDIA_S3_ENDPOINT to
     # serve datasets from RustFS / AWS / any S3: the registry then lists + opens
     # under MEDIA_S3_DB_ROOT (an s3:// URI) with these storage_options. All unset
     # (the default) = the local-filesystem db_root path, byte-identical to before.
@@ -117,10 +117,10 @@ class MediaSettings(BaseSettings):
     # sidecar-less dev only; the chart never sets it.
     #: THE ONE STORE, NAMED ONCE (DUP-17). The estate runs a single Dapr secret-store component and
     #: seven env vars named it, each defaulting to the same literal and none of them set by the chart —
-    #: so repointing the store meant finding all seven. `RASK_SECRET_STORE` is the estate-wide name
+    #: so repointing the store meant finding all seven. `WORKBENCH_SECRET_STORE` is the estate-wide name
     #: (already what viewer and ingest read); the per-service alias stays FIRST so a single service can
     #: still be moved on its own.
-    s3_secret_store: str = Field(default="lance-secrets", validation_alias=AliasChoices("MEDIA_S3_SECRET_STORE", "RASK_SECRET_STORE"))
+    s3_secret_store: str = Field(default="lance-secrets", validation_alias=AliasChoices("MEDIA_S3_SECRET_STORE", "WORKBENCH_SECRET_STORE"))
     s3_secret_key: str = Field(default="media-s3", alias="MEDIA_S3_SECRET_KEY")
     s3_secret_field: str = Field(default="secret_key", alias="MEDIA_S3_SECRET_FIELD")
     s3_region: str = Field(default="us-east-1", alias="MEDIA_S3_REGION")

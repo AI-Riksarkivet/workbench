@@ -25,7 +25,7 @@
  * that decides whether a user's work is safe to overwrite — a pure function of what the store answered,
  * testable without a server, exactly as it was when the answer came from a `fetch`.
  */
-import type { ApiResult } from '@rask/api/client';
+import type { ApiResult } from '@workbench/api/client';
 
 /** The documents this zone owns. Matches `UserStateDocument` in `services/common/user_state.py`. */
 export type UserStateDocument =

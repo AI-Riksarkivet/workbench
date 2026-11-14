@@ -9,14 +9,14 @@
  * endpoint's db path.
  */
 
-import { getDatasetView } from '@rask/explorer-api';
+import { getDatasetView } from '@workbench/explorer-api';
 import {
 	registerView,
 	setActiveTable,
 	setActiveView,
 	setFanoutCorpora,
 	type DatasetView,
-} from '@rask/explorer-api/descriptor';
+} from '@workbench/explorer-api/descriptor';
 import { serviceHealth } from '$lib/service-health.svelte';
 
 class DescriptorStore {

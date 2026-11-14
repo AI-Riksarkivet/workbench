@@ -11,7 +11,7 @@
 	// queued where, or refused why. With no jobs runner deployed the service answers with an
 	// honest mock and the toast says so; this panel repeats it rather than reading as success.
 	import { Send } from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { reviewSelection } from '$lib/labeling/review-selection.svelte';
 	import type { AnnotatorController } from '../annotator.svelte';
 
@@ -49,7 +49,7 @@
 
 	function run(): void {
 		const key = controller.unitKey;
-		const target: import('@rask/labeling/types').Selection | null =
+		const target: import('@workbench/labeling/types').Selection | null =
 			scope === 'corpus'
 				? { level: 'corpus' }
 				: scope === 'selection' && itemKeys.length > 0

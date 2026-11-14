@@ -2,7 +2,7 @@
  * Undo/redo as a small focused runes class — snapshot strings on two stacks.
  * The graph owns snapshot()/restore() and decides WHEN to checkpoint (debounced
  * after changes settle); this just owns the stacks. Same shape as the explorer
- * editor's UndoHistory — copied rather than shared because @rask/flow is the
+ * editor's UndoHistory — copied rather than shared because @workbench/flow is the
  * viewer binding and carries no editor state machinery by doctrine.
  */
 export class UndoHistory {

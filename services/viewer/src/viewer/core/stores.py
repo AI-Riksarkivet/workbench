@@ -1,6 +1,6 @@
 """The object stores the viewer's browser may read, and what each one is for.
 
-The registry is the viewer's own configuration: ``ViewerSettings.stores`` (``RASK_STORES``, the chart's ``storage.stores``), else
+The registry is the viewer's own configuration: ``ViewerSettings.stores`` (``WORKBENCH_STORES``, the chart's ``storage.stores``), else
 :data:`DEFAULT_STORES`. The browser lists it (``GET /api/stores``) and resolves every request's store name against it,
 so a bucket nobody registered is never read. A store is registered WITH A ROLE, which is what a reader groups by.
 """
@@ -48,7 +48,7 @@ class Store(BaseModel):
     role: StorageRole = Field(description="What this store is for.")
     endpoint: str | None = Field(
         default=None,
-        description="S3 endpoint this bucket lives on. `None` means the deployment's configured default (RASK_S3_ENDPOINT_URL).",
+        description="S3 endpoint this bucket lives on. `None` means the deployment's configured default (WORKBENCH_S3_ENDPOINT_URL).",
     )
     insecure: bool = Field(
         default=False,
@@ -74,7 +74,7 @@ class StoreRegistry(BaseModel):
 
 
 #: The stores a deployment that registers none still browses: the lakehouse's own store, never a workload's bucket.
-#: A workload's buckets belong in ``RASK_STORES`` for the deployment that has them.
+#: A workload's buckets belong in ``WORKBENCH_STORES`` for the deployment that has them.
 DEFAULT_STORES: tuple[Store, ...] = (
     Store(
         name="lance-catalog",
@@ -102,7 +102,7 @@ def registered_stores(raw: str) -> list[Store]:
     try:
         return [Store.model_validate(item) for item in json.loads(value)]
     except (ValueError, TypeError):
-        log.exception("RASK_STORES is not a valid JSON array of stores; using defaults")
+        log.exception("WORKBENCH_STORES is not a valid JSON array of stores; using defaults")
         return list(DEFAULT_STORES)
 
 

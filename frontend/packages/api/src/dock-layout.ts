@@ -7,9 +7,9 @@
  * is that getting it wrong destroys a user's saved work. There is one here now, and a zone supplies
  * only what is genuinely zone-shaped — the endpoint its own BFF serves.
  *
- * **Generic over the layout type on purpose.** `@rask/api` is the transport layer and must not depend
- * on a UI package, so it never names `SerializedDockview`; `@rask/dockview`'s `LayoutStore` is
- * satisfied structurally by {@link StoredLayoutStore}<SerializedDockview>. Same stance as `@rask/ui`
+ * **Generic over the layout type on purpose.** `@workbench/api` is the transport layer and must not depend
+ * on a UI package, so it never names `SerializedDockview`; `@workbench/dockview`'s `LayoutStore` is
+ * satisfied structurally by {@link StoredLayoutStore}<SerializedDockview>. Same stance as `@workbench/ui`
  * declaring its client props structurally rather than importing them.
  *
  * **The three outcomes, and why the middle one cannot be collapsed:**

@@ -225,7 +225,7 @@ class CatalogDecider:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not catalog_url:
-            raise ValueError("a catalog decider needs the catalog's URL (RASK_FGA_DECIDER_URL)")
+            raise ValueError("a catalog decider needs the catalog's URL (WORKBENCH_FGA_DECIDER_URL)")
         self._token = token
         self._http = httpx.AsyncClient(base_url=f"{catalog_url.rstrip('/')}{DECISIONS_PREFIX}", timeout=timeout_seconds, transport=transport)
 

@@ -1,4 +1,4 @@
-// @rask/api/bff — the SvelteKit BFF integration for the OIDC seam (server-only). Env-free: each app
+// @workbench/api/bff — the SvelteKit BFF integration for the OIDC seam (server-only). Env-free: each app
 // passes its own $env values in, so this is the shared, single-sourced auth trailer (mirroring the
 // backend services' shared auth). Imports @sveltejs/kit TYPES only, so it lives in server bundles.
 import type { Handle, RequestHandler } from '@sveltejs/kit';
@@ -23,7 +23,7 @@ import {
 
 type Env = Record<string, string | undefined>;
 
-/** The identity the shared AppShell's nav-user renders — structurally the `@rask/ui` shell's `NavUser`
+/** The identity the shared AppShell's nav-user renders — structurally the `@workbench/ui` shell's `NavUser`
  *  (name/email/initials), produced here (the data seam) and consumed there (the view), no cross-package dep. */
 export interface SessionUser {
 	name: string;
@@ -115,7 +115,7 @@ export function isGatedPageRequest(event: {
  *  302 Response (not kit's `redirect()`) keeps this module's types-only @sveltejs/kit import. */
 export function makeSessionHandle(cfg: OidcConfig | null): Handle {
 	return async ({ event, resolve }) => {
-		// App.Locals is declared per-zone; in @rask/api's own typecheck it's empty, so read via AuthLocals.
+		// App.Locals is declared per-zone; in @workbench/api's own typecheck it's empty, so read via AuthLocals.
 		const locals = event.locals as unknown as AuthLocals;
 		locals.authEnabled = cfg !== null;
 		locals.session = null;
@@ -331,7 +331,7 @@ export function makeZoneLayoutLoad(env: Env) {
  *
  * `handle` hydrates the session per request from the sealed OIDC cookie and runs the login-first gate;
  * it is a no-op when OIDC is unconfigured (the zone runs auth-off — dev servers and hermetic e2e are
- * unchanged). `handleFetch` rewrites SSR `/api/*` onto the cluster edge (`RASK_EDGE_URL`, see
+ * unchanged). `handleFetch` rewrites SSR `/api/*` onto the cluster edge (`WORKBENCH_EDGE_URL`, see
  * `./edge`) and is wired for the zones that issue relative `/api/*` during SSR (`edge: true`); the
  * media zones reach their services through their own BFF routes instead, so they leave it undefined.
  */

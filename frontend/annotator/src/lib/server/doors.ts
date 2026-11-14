@@ -1,9 +1,9 @@
 /**
- * The annotator's upstream DOORS — over `@rask/api/upstream` (#93).
+ * The annotator's upstream DOORS — over `@workbench/api/upstream` (#93).
  *
  * This zone carried THREE verbatim copies of the transport ladder (`projects.remote.ts`,
  * `tasks.remote.ts`, `jobs.remote.ts`), plus two copies of the session guard and two of the
- * boundary parse. The implementation now lives once in `@rask/api/upstream`; what stays here is
+ * boundary parse. The implementation now lives once in `@workbench/api/upstream`; what stays here is
  * only what cannot move — `getRequestEvent` is app-bound, and the zone's base URLs and the
  * `requireSession` stance are its own.
  *
@@ -24,8 +24,8 @@
 import { getRequestEvent } from '$app/server';
 import { env } from '$env/dynamic/private';
 import type * as v from 'valibot';
-import type { ApiResult } from '@rask/api/client';
-import { parsed as sharedParsed, upstreamJSON } from '@rask/api/upstream';
+import type { ApiResult } from '@workbench/api/client';
+import { parsed as sharedParsed, upstreamJSON } from '@workbench/api/upstream';
 
 const PROJECTS_API = env.ANNOTATOR_PROJECTS_API ?? env.ANNOTATOR_API ?? 'http://localhost:8103';
 const ANNOTATOR_API = env.ANNOTATOR_API ?? 'http://localhost:8103';

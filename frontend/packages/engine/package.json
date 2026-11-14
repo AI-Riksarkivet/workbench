@@ -1,5 +1,5 @@
 {
-	"name": "@rask/engine",
+	"name": "@workbench/engine",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -25,7 +25,7 @@
 		"wavesurfer.js": "^7.12.11"
 	},
 	"devDependencies": {
-		"@rask/config": "workspace:*",
+		"@workbench/config": "workspace:*",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.10"
 	}

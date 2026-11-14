@@ -14,16 +14,16 @@ set -euo pipefail
 
 # NOTE: do NOT bash-source .env here. Every service loads it itself via
 # python-dotenv (load_dotenv), which correctly parses JSON-list settings like
-# RASK_CORS_ORIGINS=["..."]; bash sourcing strips the quotes and breaks parsing.
+# WORKBENCH_CORS_ORIGINS=["..."]; bash sourcing strips the quotes and breaks parsing.
 # We only export vars that are NOT in .env and that the services require.
 
 export RAY_ENABLE_UV_RUN_RUNTIME_ENV=0   # documented Ray/uv gotcha
 
 # The frontend (@rask/api + remote functions) calls /api/*, so default the whole
-# fleet to RASK_API_PREFIX=/api. The services' OWN default is /api/v1, and the
+# fleet to WORKBENCH_API_PREFIX=/api. The services' OWN default is /api/v1, and the
 # chart's routes publish /api/flows, /api/ray, … unchanged — a mismatch is a 404
 # at the service (e.g. the compute zone's /api/ray/jobs).
-export RASK_API_PREFIX="${RASK_API_PREFIX:-/api}"
+export WORKBENCH_API_PREFIX="${WORKBENCH_API_PREFIX:-/api}"
 
 # PORT_OFFSET shifts every port so a second fleet can run on one host without
 # colliding (e.g. another user already holds the defaults): PORT_OFFSET=1000 →
@@ -79,7 +79,7 @@ run viewer       "$VIEWER_PORT"       viewer.main:app
 run search       "$SEARCH_PORT"       search.main:app
 run annotator    "$ANNOTATOR_PORT"    annotator.main:app
 
-echo "fleet up — compute :${COMPUTE_PORT} flows :${FLOWS_PORT} notifications :${NOTIFICATIONS_PORT} viewer :${VIEWER_PORT} search :${SEARCH_PORT} annotator :${ANNOTATOR_PORT} (RASK_API_PREFIX=${RASK_API_PREFIX}; Ctrl-C to stop)"
-echo "  no edge runs here: the zones' /api needs one on RASK_EDGE_URL — the in-cluster Gateway via"
+echo "fleet up — compute :${COMPUTE_PORT} flows :${FLOWS_PORT} notifications :${NOTIFICATIONS_PORT} viewer :${VIEWER_PORT} search :${SEARCH_PORT} annotator :${ANNOTATOR_PORT} (WORKBENCH_API_PREFIX=${WORKBENCH_API_PREFIX}; Ctrl-C to stop)"
+echo "  no edge runs here: the zones' /api needs one on WORKBENCH_EDGE_URL — the in-cluster Gateway via"
 echo "  \`make dev-frontends-k3s\`, or \`make dev-zone ZONE=<z>\` for a zone against its mocks."
 wait

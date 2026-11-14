@@ -127,18 +127,18 @@ def test_authorization_without_authentication_is_refused_at_construction(monkeyp
     proves the names an operator actually sets are the ones that bind. Passing them as keyword
     arguments would exercise a path no deployment uses.
     """
-    monkeypatch.setenv("RASK_FGA_ENABLED", "true")
-    monkeypatch.setenv("RASK_OIDC_ENABLED", "false")
-    with pytest.raises(ValueError, match="RASK_OIDC_ENABLED is required"):
+    monkeypatch.setenv("WORKBENCH_FGA_ENABLED", "true")
+    monkeypatch.setenv("WORKBENCH_OIDC_ENABLED", "false")
+    with pytest.raises(ValueError, match="WORKBENCH_OIDC_ENABLED is required"):
         AnnotatorSettings()
 
 
 def test_oidc_without_issuer_and_audience_is_refused_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RASK_OIDC_ENABLED", "true")
-    monkeypatch.setenv("RASK_OIDC_CONNECTORS", '{"local": "dex"}')
-    monkeypatch.delenv("RASK_OIDC_ISSUER", raising=False)
-    monkeypatch.delenv("RASK_OIDC_AUDIENCE", raising=False)
-    with pytest.raises(ValueError, match="RASK_OIDC_ISSUER and RASK_OIDC_AUDIENCE are required"):
+    monkeypatch.setenv("WORKBENCH_OIDC_ENABLED", "true")
+    monkeypatch.setenv("WORKBENCH_OIDC_CONNECTORS", '{"local": "dex"}')
+    monkeypatch.delenv("WORKBENCH_OIDC_ISSUER", raising=False)
+    monkeypatch.delenv("WORKBENCH_OIDC_AUDIENCE", raising=False)
+    with pytest.raises(ValueError, match="WORKBENCH_OIDC_ISSUER and WORKBENCH_OIDC_AUDIENCE are required"):
         AnnotatorSettings()
 
 

@@ -23,7 +23,7 @@ _ORIGIN = "https://ui.example"
 
 
 def _settings(**over: object) -> Settings:
-    return Settings.model_validate({"RASK_CORS_ORIGINS": [_ORIGIN], "RASK_API_PREFIX": "/api", **over})
+    return Settings.model_validate({"WORKBENCH_CORS_ORIGINS": [_ORIGIN], "WORKBENCH_API_PREFIX": "/api", **over})
 
 
 def _app(**over: object):
@@ -37,7 +37,7 @@ def _app(**over: object):
 
 
 def test_an_over_cap_rejection_is_readable_by_the_browser() -> None:
-    with TestClient(_app(RASK_MAX_BODY_BYTES=16)) as client:
+    with TestClient(_app(WORKBENCH_MAX_BODY_BYTES=16)) as client:
         response = client.post("/api/echo", content=b"x" * 64, headers={"Origin": _ORIGIN})
         assert response.status_code == 413
         assert response.headers.get("access-control-allow-origin") == _ORIGIN, f"the 413 is invisible to the caller that provoked it: {dict(response.headers)}"

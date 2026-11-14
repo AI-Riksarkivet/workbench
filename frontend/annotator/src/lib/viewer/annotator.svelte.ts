@@ -19,13 +19,13 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { toast } from 'svelte-sonner';
 import type { Table } from 'apache-arrow';
-import type { CommitShape, GeometryUpdate, PixiContext, Tool } from '@rask/engine';
-import { LayerStore, buildBatchTable } from '@rask/engine';
-import type { LabelDelta, LabelOp, LabelOutcome, Selection } from '@rask/labeling/types';
-import { canonicalShapeType, engineToolsFor } from '@rask/labeling/shape-types';
-import { isChunkSelection } from '@rask/labeling/types';
-import { PRODUCERS } from '@rask/labeling/producers';
-import { rowSignature } from '@rask/labeling/history';
+import type { CommitShape, GeometryUpdate, PixiContext, Tool } from '@workbench/engine';
+import { LayerStore, buildBatchTable } from '@workbench/engine';
+import type { LabelDelta, LabelOp, LabelOutcome, Selection } from '@workbench/labeling/types';
+import { canonicalShapeType, engineToolsFor } from '@workbench/labeling/shape-types';
+import { isChunkSelection } from '@workbench/labeling/types';
+import { PRODUCERS } from '@workbench/labeling/producers';
+import { rowSignature } from '@workbench/labeling/history';
 import { remapSpans } from './span-remap';
 import {
 	AnnotationsHttpError,
@@ -35,7 +35,7 @@ import {
 	makeInsertRow,
 	payloadIsEmpty,
 	postSave,
-} from '@rask/labeling/annotations-client';
+} from '@workbench/labeling/annotations-client';
 import { type AnnoRow, effectiveField, numField, projectRows, rawField } from './annotation-rows';
 import { type TrackRow, boxAt, newTrackId, tracksFrom } from './tracks';
 import { requestAssist } from './remote/assist.remote';
@@ -43,7 +43,7 @@ import { submitBatchJob } from './remote/jobs.remote';
 
 // Re-exported so the layout components keep their existing import site.
 export type { AnnoRow } from './annotation-rows';
-export type { InsertRow } from '@rask/labeling/annotations-client';
+export type { InsertRow } from '@workbench/labeling/annotations-client';
 
 export type Mode = 'view' | 'edit';
 

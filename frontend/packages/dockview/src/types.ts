@@ -1,7 +1,7 @@
 /**
  * The seams a consuming zone injects. Nothing here knows what a panel renders, which zone mounts it,
- * or where a layout is stored — that is the whole point. `@rask/dockview` is estate infrastructure
- * like `@rask/ui`, so every zone-shaped decision arrives as a prop.
+ * or where a layout is stored — that is the whole point. `@workbench/dockview` is estate infrastructure
+ * like `@workbench/ui`, so every zone-shaped decision arrives as a prop.
  *
  * This module deliberately re-exports NOTHING from `dockview`. A consumer holds the real
  * `DockviewApi` and calls its documented methods, so it imports those types from `dockview` itself —
@@ -70,7 +70,7 @@ export type AnyPanelComponent = PanelComponent<never> | Component<Record<string,
 /**
  * The glyph a picker row shows.
  *
- * Declared STRUCTURALLY rather than imported from `@lucide/svelte`, the same stance `@rask/ui` takes
+ * Declared STRUCTURALLY rather than imported from `@lucide/svelte`, the same stance `@workbench/ui` takes
  * with its client props: this package must not acquire an icon-library dependency merely to describe
  * one. A lucide icon satisfies it because every member of `LucideProps` is optional.
  *

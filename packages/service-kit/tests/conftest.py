@@ -1,6 +1,6 @@
 """service-kit test configuration.
 
-RASK_API_PREFIX is intentionally NOT pinned here — tests resolve the prefix dynamically from
+WORKBENCH_API_PREFIX is intentionally NOT pinned here — tests resolve the prefix dynamically from
 build_settings().api_prefix.
 """
 

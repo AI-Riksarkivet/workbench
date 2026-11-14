@@ -7,7 +7,7 @@
 	 *  out of the way when closed, it spans the width so a log line or a curl command has room to be
 	 *  read, and it does not overlap the graph at all.
 	 *
-	 *  Resizing is hand-rolled rather than `@rask/ui`'s `ResizableSplit` (which the inspector pane
+	 *  Resizing is hand-rolled rather than `@workbench/ui`'s `ResizableSplit` (which the inspector pane
 	 *  uses, and which does support `orientation="vertical"`) for ONE reason: that component's second
 	 *  pane has a hard `minRight`, so it cannot collapse to a bar — and switching between a split and
 	 *  a non-split layout would remount the canvas and lose the viewport. Same interaction, same
@@ -25,7 +25,7 @@
 		Server,
 		Trash2,
 	} from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { graph } from '$lib/flows/graph.svelte';
 	import { logs } from '$lib/flows/logs.svelte';
 	import { library } from '$lib/flows/library.svelte';

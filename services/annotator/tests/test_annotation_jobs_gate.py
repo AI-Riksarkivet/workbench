@@ -73,11 +73,11 @@ def test_an_UNCONFIGURED_door_refuses_every_caller(monkeypatch: pytest.MonkeyPat
     `rask-annotator` rendered no `APP_API_TOKEN`, and this corpus-scale route answered a caller
     presenting none.
 
-    The dev path is now `RASK_ALLOW_UNAUTHENTICATED_DAPR`, asserted below: an open door is chosen,
+    The dev path is now `WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR`, asserted below: an open door is chosen,
     never inherited from an unset variable.
     """
     monkeypatch.delenv("APP_API_TOKEN", raising=False)
-    monkeypatch.delenv("RASK_ALLOW_UNAUTHENTICATED_DAPR", raising=False)
+    monkeypatch.delenv("WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR", raising=False)
 
     response = _client().post("/api/jobs/apply", json=BODY)
 
@@ -87,7 +87,7 @@ def test_an_UNCONFIGURED_door_refuses_every_caller(monkeypatch: pytest.MonkeyPat
 def test_the_DELIBERATE_dev_default_still_reaches_the_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     """The local loop keeps working without a token — once someone says so out loud."""
     monkeypatch.delenv("APP_API_TOKEN", raising=False)
-    monkeypatch.setenv("RASK_ALLOW_UNAUTHENTICATED_DAPR", "true")
+    monkeypatch.setenv("WORKBENCH_ALLOW_UNAUTHENTICATED_DAPR", "true")
 
     response = _client().post("/api/jobs/apply", json=BODY)
 

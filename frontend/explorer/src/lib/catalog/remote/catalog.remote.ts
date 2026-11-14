@@ -1,8 +1,8 @@
 import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
-import { fetchMe, type Me } from '@rask/api';
-import type { ApiResult } from '@rask/api/client';
-import { parsed } from '@rask/api/upstream';
+import { fetchMe, type Me } from '@workbench/api';
+import type { ApiResult } from '@workbench/api/client';
+import { parsed } from '@workbench/api/upstream';
 import { CATALOG_API, catalogJSON } from '$lib/server/doors';
 import type { UserStateEnvelope } from '$lib/user-state';
 
@@ -49,8 +49,8 @@ const UserStateEnvelopeSchema: v.GenericSchema<unknown, UserStateEnvelope> = v.l
  *
  * Same degrade posture as before — `null` on ANY failure (signed out, 401, outage, timeout, contract
  * drift) — because identity is chrome: the navbar renders the base entry set and stays fail-closed on
- * the admin surfaces rather than 500ing the zone. The whole body is `@rask/api`'s shared `fetchMe`,
- * exactly as `feeds.remote.ts` is `@rask/api/runs-feed`: what cannot be shared is this file, because a
+ * the admin surfaces rather than 500ing the zone. The whole body is `@workbench/api`'s shared `fetchMe`,
+ * exactly as `feeds.remote.ts` is `@workbench/api/runs-feed`: what cannot be shared is this file, because a
  * remote function must be declared inside an app to get its own endpoint.
  */
 export const fetchMeViaBff = query(async (): Promise<Me | null> => {
@@ -67,7 +67,11 @@ export const fetchMeViaBff = query(async (): Promise<Me | null> => {
 export const readUserStateDoc = query(
 	DocumentArg,
 	async ({ document }): Promise<ApiResult<UserStateEnvelope>> =>
-		parsed(await catalogJSON(`/management/v1/user-state/${document}`), UserStateEnvelopeSchema, 'catalog'),
+		parsed(
+			await catalogJSON(`/management/v1/user-state/${document}`),
+			UserStateEnvelopeSchema,
+			'catalog',
+		),
 );
 
 /** Save the caller's own document. A refused write is reported as such — a mirror write is not a save.
@@ -78,5 +82,8 @@ export const readUserStateDoc = query(
 export const writeUserStateDoc = command(
 	v.object({ ...DocumentArg.entries, value: v.unknown() }),
 	async ({ document, value }): Promise<ApiResult<unknown>> =>
-		catalogJSON(`/management/v1/user-state/${document}`, { method: 'PUT', body: JSON.stringify(value) }),
+		catalogJSON(`/management/v1/user-state/${document}`, {
+			method: 'PUT',
+			body: JSON.stringify(value),
+		}),
 );

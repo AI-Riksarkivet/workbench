@@ -4,7 +4,7 @@
  * draft-sync.ts.
  */
 import type { Table } from 'apache-arrow';
-import { canonicalShapeType } from '@rask/labeling/shape-types';
+import { canonicalShapeType } from '@workbench/labeling/shape-types';
 
 /** One draft shape, in the task-draft model's wire shape (annotator.projects.models.Shape). */
 export type DraftShape = {

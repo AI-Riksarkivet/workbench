@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { makeBackendProxy } from '@rask/api/bff';
+import { makeBackendProxy } from '@workbench/api/bff';
 
 // Same-origin proxy for ANNOTATION IMPORT — Arrow IPC bytes to the annotator service's
 // `POST /tasks/{id}/import`.

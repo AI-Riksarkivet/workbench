@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { DiarTurn } from '@rask/explorer-api';
+	import type { DiarTurn } from '@workbench/explorer-api';
 	import { fmtTime } from '$lib/utils';
 	import { AudioLines } from '@lucide/svelte';
 

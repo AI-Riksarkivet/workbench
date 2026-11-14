@@ -1,4 +1,4 @@
-// @rask/ui attachments — reusable GSAP attachments for Svelte 5's {@attach} directive
+// @workbench/ui attachments — reusable GSAP attachments for Svelte 5's {@attach} directive
 // (skill: gsap + svelte-template-directives). Each factory returns an Attachment —
 // `(node) => cleanup` — so it animates on mount and reverts on removal. Every factory
 // is reduced-motion aware and SSR-safe (gsap only runs client-side here).

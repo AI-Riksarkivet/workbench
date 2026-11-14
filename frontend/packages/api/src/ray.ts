@@ -1,4 +1,4 @@
-// @rask/api/ray — Ray dashboard + Serve introspection (compute domain).
+// @workbench/api/ray — Ray dashboard + Serve introspection (compute domain).
 
 import * as v from 'valibot';
 import { parse } from './parse.js';

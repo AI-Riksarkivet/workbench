@@ -6,9 +6,9 @@
 	//
 	// Rides the controller's TEMPORAL seam (`attachData`) exactly like audio: full data + review +
 	// Save path, no engine. One registry entry, one component — the modality contract holding.
-	import { loadAnnotations } from '@rask/labeling/annotations-client';
-	import { Button } from '@rask/ui/button';
-	import { cn } from '@rask/ui/utils';
+	import { loadAnnotations } from '@workbench/labeling/annotations-client';
+	import { Button } from '@workbench/ui/button';
+	import { cn } from '@workbench/ui/utils';
 	import { spanColor } from './span-render';
 	import { textLaneLines } from './text-lane';
 	import TextSpanSurface from './layout/TextSpanSurface.svelte';

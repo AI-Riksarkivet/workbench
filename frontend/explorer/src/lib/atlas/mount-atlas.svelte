@@ -12,12 +12,12 @@
 	 * stable _rowid), single playback from GET /api/atlas/chunk (all in <AtlasMap>).
 	 */
 	import AtlasMap from './AtlasMap.svelte';
-	import { ResizableSplit } from '@rask/ui/resizable-split';
+	import { ResizableSplit } from '@workbench/ui/resizable-split';
 	import PlayerPane from '$lib/components/player-pane.svelte';
 	import HitTable, { TABLE_COLUMNS } from '$lib/components/hit-table.svelte';
-	import { activeView, type Hit } from '@rask/explorer-api';
+	import { activeView, type Hit } from '@workbench/explorer-api';
 	import { Columns3, Check, Tags } from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import SendToProjectDialog from '$lib/components/SendToProjectDialog.svelte';
 	import { selectionKeys, sendRefusal } from './atlas-send';
 

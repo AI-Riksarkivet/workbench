@@ -62,7 +62,7 @@ vi.mock('./remote/jobs.remote', () => ({
 vi.mock('$lib/labeling/review-selection.svelte', () => ({ reviewSelection: { taskId: null } }));
 
 import { AnnotatorController } from './annotator.svelte.js';
-import type { CommitShape } from '@rask/engine';
+import type { CommitShape } from '@workbench/engine';
 
 function harness() {
 	const hidden = new Set<number>();

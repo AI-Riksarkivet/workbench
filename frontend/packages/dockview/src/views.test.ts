@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DockView, DockViewsStore } from '@rask/api/dock-views';
+import type { DockView, DockViewsStore } from '@workbench/api/dock-views';
 import { DockViews } from './views.svelte';
 
 /**

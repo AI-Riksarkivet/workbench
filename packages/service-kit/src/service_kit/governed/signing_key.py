@@ -280,7 +280,7 @@ def make_signing_holder[KeyT: SigningKeyLike](
     """The holder for a service that signs, or None for one that does not.
 
     A service signs when its secret store is wired and the chart named the identity it signs as
-    (`RASK_SIGNING_IDENTITY`). A stack with no store has no key to read, and a service without an identity has no
+    (`WORKBENCH_SIGNING_IDENTITY`). A stack with no store has no key to read, and a service without an identity has no
     name to publish under: both emit exactly what they emit without signing.
     """
     if not (secrets_from_dapr and identity):

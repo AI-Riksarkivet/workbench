@@ -9,7 +9,7 @@ import { Position, type Edge, type Node } from '@xyflow/svelte';
 // injected client-side by Vite, so a pure server render would otherwise emit
 // unstyled (invisible) nodes.
 import xyflowCss from '@xyflow/svelte/dist/style.css?inline';
-import { StaticFlow as Flow } from '@rask/flow';
+import { StaticFlow as Flow } from '@workbench/flow';
 import type { RequestHandler } from './$types';
 
 const W = 150;

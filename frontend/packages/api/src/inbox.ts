@@ -1,7 +1,7 @@
 /**
  * The notification inbox transport — the backend half of the shared bell's persistence seam.
  *
- * `@rask/ui`'s `NotificationCenter` has always exposed `seen`/`dismissed` as bindable props with
+ * `@workbench/ui`'s `NotificationCenter` has always exposed `seen`/`dismissed` as bindable props with
  * `onseen`/`ondismiss` documented at `notification-center.svelte:44-48` as "the persistence seam".
  * Unbound, the component remembers per TAB: close the tab and a FAILED run you had already dealt
  * with comes back unread, on every zone, forever. This module is what a zone binds that seam to —
@@ -13,7 +13,7 @@
  * is the caller's own inbox — which is also why it is server-side only: the bearer lives in the
  * sealed httpOnly session cookie a zone's BFF holds, and the browser cannot attach it.
  *
- * Built on `@rask/api/upstream` rather than a seventeenth hand-rolled fetch ladder (#93): the
+ * Built on `@workbench/api/upstream` rather than a seventeenth hand-rolled fetch ladder (#93): the
  * three-outcome `ApiResult` contract — `0` unreachable, `n` answered-n, `502` contract drift — is
  * what every caller's honest-state branch reads, and the drift class that produced sixteen
  * disagreeing copies is exactly the one a new transport re-opens.
@@ -113,7 +113,7 @@ export const INBOX_PAGE_LIMIT_MAX = 100;
 const nullableString = v.optional(v.nullable(v.string()), null);
 const nullableNumber = v.optional(v.nullable(v.number()), null);
 
-// Parsed, not cast, at the wire boundary (the @rask/api parse-don't-validate rule): a drift in the
+// Parsed, not cast, at the wire boundary (the @workbench/api parse-don't-validate rule): a drift in the
 // inbox's shape must surface as a 502-flavoured `ApiResult` the caller can render, never as
 // `undefined` read as "nothing to show" forever. The annotations tie each schema to the interface
 // above, so a field renamed in one and not the other fails `check` rather than at runtime.

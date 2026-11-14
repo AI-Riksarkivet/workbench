@@ -3,7 +3,7 @@
 	// the FGA model (roles, nested roles, the parent cascade). Kind-generalized (sweep group 3): `kind` picks
 	// the catalog surface — 'table' (the default) or 'namespace' — and the owner gate is the per-type
 	// bar (can_drop / can_delete). Owner-only by design — the catalog gates the enumeration, so a
-	// non-owner sees the denial state, never the ACL. Hoisted into @rask/ui (audit 2026-07-24: the data
+	// non-owner sees the denial state, never the ACL. Hoisted into @workbench/ui (audit 2026-07-24: the data
 	// and lineage copies had silently drifted apart). Transport-agnostic (rask convention:
 	// the lib never owns an API client) — the zone injects its own `client`,
 	// and the Grants* types are the STRUCTURAL shapes this panel reads, so any zone whose generated

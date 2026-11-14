@@ -24,7 +24,7 @@
  */
 import type { Edge, Node } from '@xyflow/svelte';
 import { browser } from '$app/environment';
-import { depths, layout } from '@rask/flow';
+import { depths, layout } from '@workbench/flow';
 import { nodeFingerprint } from './fingerprint';
 import { UndoHistory } from './history.svelte';
 import { runGraph, runSubgraph, type RunDeps } from './executor';
@@ -57,7 +57,7 @@ const HISTORY_LIMIT = 50;
 /** Pixel offset for a duplicated node. */
 const DUPLICATE_OFFSET_PX = 48;
 
-/** Auto-arrange: @rask/flow's placer uses a viewer pitch (240×110); flow cards
+/** Auto-arrange: @workbench/flow's placer uses a viewer pitch (240×110); flow cards
  *  are wider/taller (w-64 + fields), so stretch to keep columns clear. */
 const TIDY_STRETCH_X = 1.5;
 const TIDY_STRETCH_Y = 2;
@@ -379,7 +379,7 @@ class FlowsGraph {
 		this.applyParsed(parsed, { preserveRuntime: true });
 	}
 
-	/** Auto-arrange the graph left-to-right with @rask/flow's layered placer.
+	/** Auto-arrange the graph left-to-right with @workbench/flow's layered placer.
 	 *  The placer speaks the lineage edge direction (source = downstream), so
 	 *  dataflow edges are inverted before computing depths. */
 	tidy(): void {

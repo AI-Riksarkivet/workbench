@@ -15,11 +15,11 @@
 		Save,
 		SlidersHorizontal,
 	} from '@lucide/svelte';
-	import { Button } from '@rask/ui/button';
-	import * as Popover from '@rask/ui/popover';
-	import { Slider } from '@rask/ui/slider';
-	import { cn } from '@rask/ui/utils';
-	import { COMMITS_SHAPE } from '@rask/labeling/shape-types';
+	import { Button } from '@workbench/ui/button';
+	import * as Popover from '@workbench/ui/popover';
+	import { Slider } from '@workbench/ui/slider';
+	import { cn } from '@workbench/ui/utils';
+	import { COMMITS_SHAPE } from '@workbench/labeling/shape-types';
 	import { TOOL_DEFS, bandsOf } from '../tool-defs';
 	import type { AnnotatorController } from '../annotator.svelte';
 

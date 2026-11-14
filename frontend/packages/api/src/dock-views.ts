@@ -17,7 +17,7 @@
  * autosave overwriting the named view — means you can never open a saved arrangement to look at it
  * without destroying it, which is the opposite of what saving one is for.
  *
- * Generic over the layout type for the same reason `dock-layout.ts` is: `@rask/api` is the transport
+ * Generic over the layout type for the same reason `dock-layout.ts` is: `@workbench/api` is the transport
  * layer and must not depend on a UI package, so it never names `SerializedDockview`.
  */
 import * as v from 'valibot';

@@ -11,11 +11,11 @@
 		getDocChunks,
 		getDiarization,
 		mediaUrl,
-	} from '@rask/explorer-api';
+	} from '@workbench/explorer-api';
 	import { voiceSearch } from '$lib/voice-search.svelte';
 	import { fmtTime, hitKey } from '$lib/utils';
 	import { ChevronRight, Maximize2, Minimize2 } from '@lucide/svelte';
-	import { Button } from '@rask/ui';
+	import { Button } from '@workbench/ui';
 	import ChunkBodyWindow from './chunk-body-window.svelte';
 	import { panesFor, shownTab } from '$lib/pane-capabilities';
 	import ChunkTimeline from './chunk-timeline.svelte';

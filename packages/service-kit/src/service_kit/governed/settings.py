@@ -6,7 +6,7 @@ one switch, and the copies drift: measured before 2026-08-30, one copy declared 
 where the rest declared `str | None`, dropped the `ge=0.1` floor on `fga_timeout_seconds`, and never grew
 the HTTPS-issuer validator, so an `http://` issuer booted there and answered 401 on every VALID bearer.
 
-One declaration, one `RASK_*` name each. The old prefixed names are DELETED, with no alias list and no
+One declaration, one `WORKBENCH_*` name each. The old prefixed names are DELETED, with no alias list and no
 precedence chain: `_refuse_retired_names` turns a deployment that still sets one into a startup error,
 because the failure it replaces — half an estate authenticating and half not — is silent.
 
@@ -65,23 +65,23 @@ RETIRED_AUTH_ENV_NAMES: tuple[str, ...] = tuple(
 class FgaSettings:
     """The OpenFGA client coordinates. Mix in alone when the service authorizes as ITSELF."""
 
-    fga_enabled: bool = Field(default=False, alias="RASK_FGA_ENABLED")
-    fga_api_url: str = Field(default="http://openfga:8080", alias="RASK_FGA_API_URL")
-    fga_store_id: str | None = Field(default=None, alias="RASK_FGA_STORE_ID")
-    fga_model_id: str | None = Field(default=None, alias="RASK_FGA_MODEL_ID")
-    fga_timeout_seconds: float = Field(default=5.0, ge=0.1, alias="RASK_FGA_TIMEOUT_SECONDS")
+    fga_enabled: bool = Field(default=False, alias="WORKBENCH_FGA_ENABLED")
+    fga_api_url: str = Field(default="http://openfga:8080", alias="WORKBENCH_FGA_API_URL")
+    fga_store_id: str | None = Field(default=None, alias="WORKBENCH_FGA_STORE_ID")
+    fga_model_id: str | None = Field(default=None, alias="WORKBENCH_FGA_MODEL_ID")
+    fga_timeout_seconds: float = Field(default=5.0, ge=0.1, alias="WORKBENCH_FGA_TIMEOUT_SECONDS")
     #: This pod's projected ServiceAccount token for the `rask-openfga` audience, presented as the bearer of
     #: every OpenFGA request and read on each one, because the kubelet rotates it ([[XC-077]]). Unset sends
     #: no credential, which only an OpenFGA without authn admits; the chart sets it wherever auth is on.
-    fga_token_file: str | None = Field(default=None, alias="RASK_FGA_TOKEN_FILE")
+    fga_token_file: str | None = Field(default=None, alias="WORKBENCH_FGA_TOKEN_FILE")
     #: The catalog whose decision door answers this service's authorization questions ([[LH-442]],
     #: `service_kit.governed.decider`). Set, the service builds no OpenFGA client and holds no credential to the
     #: store; unset, it is one of the store's clients at `fga_api_url`. The chart sets it on every governed
     #: service that writes no tuple.
-    fga_decider_url: str | None = Field(default=None, alias="RASK_FGA_DECIDER_URL")
+    fga_decider_url: str | None = Field(default=None, alias="WORKBENCH_FGA_DECIDER_URL")
     #: This pod's projected ServiceAccount token for the catalog's `rask-catalog` audience, the bearer of every
     #: decision request, read on each one.
-    fga_decider_token_file: str | None = Field(default=None, alias="RASK_FGA_DECIDER_TOKEN_FILE")
+    fga_decider_token_file: str | None = Field(default=None, alias="WORKBENCH_FGA_DECIDER_TOKEN_FILE")
     #: The estate's root FGA object — the one a platform-wide PRIVILEGE is checked against, as
     #: opposed to a per-tenant one. Shared here rather than redeclared per service because it is a
     #: coordinate every governed service must agree on: the catalog gates its estate-wide doors on it,
@@ -89,7 +89,7 @@ class FgaSettings:
     #: own asks the estate-admin verb there through the decision door. Three
     #: copies of the same default in three configs is exactly how one of them ends up naming a
     #: different object and quietly authorizing against something nobody grants.
-    fga_root_object: str = Field(default="estate:rask", alias="RASK_FGA_ROOT_OBJECT")
+    fga_root_object: str = Field(default="estate:rask", alias="WORKBENCH_FGA_ROOT_OBJECT")
     #: The estate's default WAREHOUSE — a structural coordinate, and deliberately NOT the one above.
     #:
     #: [[LH-055]]'s port moves the estate privileges onto `type estate`, and the single setting was
@@ -109,7 +109,7 @@ class FgaSettings:
     #: and maintenance's reconcile excludes the platform's own warehouse from the ghost report by
     #: matching the root's TYPE, so a non-warehouse root reports the default warehouse as a ghost on
     #: every tick.
-    fga_default_warehouse_object: str = Field(default="warehouse:lance_catalog", alias="RASK_FGA_DEFAULT_WAREHOUSE_OBJECT")
+    fga_default_warehouse_object: str = Field(default="warehouse:lance_catalog", alias="WORKBENCH_FGA_DEFAULT_WAREHOUSE_OBJECT")
 
     @model_validator(mode="before")
     @classmethod
@@ -137,7 +137,7 @@ class FgaSettings:
         if retired := cls._retired_names_in_scope():
             raise ValueError(
                 f"{', '.join(retired)} no longer exist — the auth settings were unified onto one "
-                f"RASK_* name each (RASK_OIDC_*, RASK_FGA_*). Re-template the deployment; there is no "
+                f"WORKBENCH_* name each (WORKBENCH_OIDC_*, WORKBENCH_FGA_*). Re-template the deployment; there is no "
                 f"alias and no fallback, so leaving these set would authenticate some pods and not others."
             )
         return data
@@ -175,70 +175,72 @@ def _configured_env_files(cls: type) -> list[Path]:
 class OidcSettings:
     """The bearer-token verifier's knobs. Mix in alone only alongside `FgaSettings` (see medallion)."""
 
-    oidc_enabled: bool = Field(default=False, alias="RASK_OIDC_ENABLED")
-    oidc_issuer: str | None = Field(default=None, alias="RASK_OIDC_ISSUER")
-    oidc_audience: str | None = Field(default=None, alias="RASK_OIDC_AUDIENCE")
+    oidc_enabled: bool = Field(default=False, alias="WORKBENCH_OIDC_ENABLED")
+    oidc_issuer: str | None = Field(default=None, alias="WORKBENCH_OIDC_ISSUER")
+    oidc_audience: str | None = Field(default=None, alias="WORKBENCH_OIDC_AUDIENCE")
     #: Split-horizon fetch (reverse-proxied IdP): pull discovery/JWKS in-cluster while tokens keep the
     #: PUBLIC issuer string. Unset = derive the fetch URL from the issuer.
-    oidc_discovery_url: str | None = Field(default=None, alias="RASK_OIDC_DISCOVERY_URL")
-    oidc_cache_ttl: int = Field(default=3600, alias="RASK_OIDC_CACHE_TTL")
-    oidc_leeway: int = Field(default=60, alias="RASK_OIDC_LEEWAY")
-    oidc_allow_insecure: bool = Field(default=False, alias="RASK_OIDC_ALLOW_INSECURE")
+    oidc_discovery_url: str | None = Field(default=None, alias="WORKBENCH_OIDC_DISCOVERY_URL")
+    oidc_cache_ttl: int = Field(default=3600, alias="WORKBENCH_OIDC_CACHE_TTL")
+    oidc_leeway: int = Field(default=60, alias="WORKBENCH_OIDC_LEEWAY")
+    oidc_allow_insecure: bool = Field(default=False, alias="WORKBENCH_OIDC_ALLOW_INSECURE")
     #: The idp id each Dex connector's users are principals of, keyed by the connector id Dex reports in
     #: `federated_claims` ([[LH-063]], `service_kit.governed.idp_identity`): `{"local": "dex"}` makes the user id
     #: `u` of connector `local` the principal `dex~u`. Renaming a connector adds its new id under the same idp id, so
     #: no grant is re-keyed. A connector absent here authenticates nobody.
-    oidc_connectors: dict[str, str] = Field(default_factory=dict, alias="RASK_OIDC_CONNECTORS")
+    oidc_connectors: dict[str, str] = Field(default_factory=dict, alias="WORKBENCH_OIDC_CONNECTORS")
     #: AN ACKNOWLEDGEMENT, NOT A SWITCH — it turns nothing off. `oidc_enabled` already decides whether
     #: this service authenticates; this says an operator MEANT the answer to be "no". Without it,
     #: "auth off because I meant it" and "auth off because nothing set it" are indistinguishable, and
     #: only the second is a vulnerability. `assert_authentication_configured` refuses to boot on that
     #: ambiguity alone (Q17-6 / §F2-2, Lakekeeper Plus's shape).
-    insecure_allow_unauthenticated: bool = Field(default=False, alias="RASK_INSECURE_ALLOW_UNAUTHENTICATED")
+    insecure_allow_unauthenticated: bool = Field(default=False, alias="WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED")
     #: The cluster's service-account issuer, the one way a service authenticates ([[LH-220]], ADR 0156 C5). A projected
     #: token is verified offline against its key set and is the subject `kubernetes~system:serviceaccount:<ns>:<sa>`,
     #: whatever its namespace; OpenFGA alone decides what that subject may do. Unset, this door admits no service.
-    sa_issuer: str | None = Field(default=None, alias="RASK_SA_ISSUER")
-    sa_audience: str | None = Field(default=None, alias="RASK_SA_AUDIENCE")
+    sa_issuer: str | None = Field(default=None, alias="WORKBENCH_SA_ISSUER")
+    sa_audience: str | None = Field(default=None, alias="WORKBENCH_SA_AUDIENCE")
     #: The issuer serves discovery and its keys only to a bearer from a private CA (k3s, measured 2026-10-02).
-    sa_fetch_token_file: str | None = Field(default=None, alias="RASK_SA_FETCH_TOKEN_FILE")
-    sa_ca_file: str | None = Field(default=None, alias="RASK_SA_CA_FILE")
+    sa_fetch_token_file: str | None = Field(default=None, alias="WORKBENCH_SA_FETCH_TOKEN_FILE")
+    sa_ca_file: str | None = Field(default=None, alias="WORKBENCH_SA_CA_FILE")
 
     @model_validator(mode="after")
     def _validate_service_accounts(self) -> Self:
         """An issuer with no audience would accept a token minted for any other door, or refuse every one."""
         if self.sa_issuer and not self.sa_audience:
-            raise ValueError("RASK_SA_AUDIENCE is required with RASK_SA_ISSUER")
+            raise ValueError("WORKBENCH_SA_AUDIENCE is required with WORKBENCH_SA_ISSUER")
         if self.sa_issuer and not self.sa_issuer.startswith("https://"):
-            raise ValueError("RASK_SA_ISSUER must use HTTPS")
+            raise ValueError("WORKBENCH_SA_ISSUER must use HTTPS")
         # A door routes a bearer by its unverified `iss`, the service-account issuer first, so one issuer named twice
         # would answer every person's token as a service account's. Lakekeeper refuses two providers claiming one
         # issuer at boot (crates/lakekeeper/src/service/authn.rs).
         if self.oidc_enabled and self.sa_issuer and self.oidc_issuer and self.sa_issuer.rstrip("/") == self.oidc_issuer.rstrip("/"):
-            raise ValueError("RASK_SA_ISSUER and RASK_OIDC_ISSUER name one issuer: its tokens would be routed as service accounts' and never as a person's")
+            raise ValueError(
+                "WORKBENCH_SA_ISSUER and WORKBENCH_OIDC_ISSUER name one issuer: its tokens would be routed as service accounts' and never as a person's"
+            )
         return self
 
     @model_validator(mode="after")
     def _validate_connectors(self) -> Self:
         """A connector maps to an idp id a principal can carry, never a machine identity's (`kubernetes`, `dex-client`)."""
         if self.oidc_enabled and not self.oidc_connectors:
-            raise ValueError("RASK_OIDC_CONNECTORS is required when OIDC is enabled: a person is the principal their Dex connector maps to")
+            raise ValueError("WORKBENCH_OIDC_CONNECTORS is required when OIDC is enabled: a person is the principal their Dex connector maps to")
         for connector, idp_id in self.oidc_connectors.items():
             if not connector:
-                raise ValueError("RASK_OIDC_CONNECTORS names an empty connector id")
+                raise ValueError("WORKBENCH_OIDC_CONNECTORS names an empty connector id")
             if idp_id in MACHINE_IDPS:
-                raise ValueError(f"RASK_OIDC_CONNECTORS maps {connector!r} to {idp_id!r}, a machine identity's idp id")
+                raise ValueError(f"WORKBENCH_OIDC_CONNECTORS maps {connector!r} to {idp_id!r}, a machine identity's idp id")
             try:
                 require_idp_id(idp_id)
             except ValueError as exc:
-                raise ValueError(f"RASK_OIDC_CONNECTORS maps {connector!r} to an idp id no principal can carry: {exc}") from exc
+                raise ValueError(f"WORKBENCH_OIDC_CONNECTORS maps {connector!r} to an idp id no principal can carry: {exc}") from exc
         return self
 
     @model_validator(mode="after")
     def _validate_oidc(self) -> Self:
         """Fail fast at construction rather than fail open — or fail confusingly — at request time."""
         if self.oidc_enabled and not (self.oidc_issuer and self.oidc_audience):
-            raise ValueError("RASK_OIDC_ISSUER and RASK_OIDC_AUDIENCE are required when OIDC is enabled")
+            raise ValueError("WORKBENCH_OIDC_ISSUER and WORKBENCH_OIDC_AUDIENCE are required when OIDC is enabled")
         # AN `http://` ISSUER IS A MISCONFIGURATION, AND IT BELONGS HERE. `_require_https` catches it
         # only at VERIFY time, refusing every bearer — valid or not — with a 503 on the first request
         # after a healthy-looking startup. A scheme is knowable at construction, which is what this
@@ -247,7 +249,7 @@ class OidcSettings:
         # The `jwks_uri` half cannot move here: it comes from DISCOVERY, so settings never sees it and
         # `_require_https` remains the backstop for that path.
         if self.oidc_enabled and self.oidc_issuer and not self.oidc_allow_insecure and not self.oidc_issuer.startswith("https://"):
-            raise ValueError("RASK_OIDC_ISSUER must use HTTPS (set RASK_OIDC_ALLOW_INSECURE=true for a dev IdP)")
+            raise ValueError("WORKBENCH_OIDC_ISSUER must use HTTPS (set WORKBENCH_OIDC_ALLOW_INSECURE=true for a dev IdP)")
         return self
 
 
@@ -264,7 +266,7 @@ class GovernedAuthSettings(OidcSettings, FgaSettings):
     @model_validator(mode="after")
     def _authorization_requires_authentication(self) -> Self:
         if self.fga_enabled and not self.oidc_enabled:
-            raise ValueError("RASK_OIDC_ENABLED is required when RASK_FGA_ENABLED is set (authz needs a verified subject)")
+            raise ValueError("WORKBENCH_OIDC_ENABLED is required when WORKBENCH_FGA_ENABLED is set (authz needs a verified subject)")
         return self
 
 
@@ -290,8 +292,8 @@ def assert_authentication_configured(*, oidc_enabled: bool, insecure_allow_unaut
     if oidc_enabled or insecure_allow_unauthenticated:
         return
     raise RuntimeError(
-        "this service would start with NO authentication: RASK_OIDC_ENABLED is off and nothing "
+        "this service would start with NO authentication: WORKBENCH_OIDC_ENABLED is off and nothing "
         "acknowledged it, so every route would serve any caller that can reach the port. Set "
-        "RASK_OIDC_ENABLED=true (with RASK_OIDC_ISSUER + RASK_OIDC_AUDIENCE), or set "
-        "RASK_INSECURE_ALLOW_UNAUTHENTICATED=true to declare that an open service is what you meant."
+        "WORKBENCH_OIDC_ENABLED=true (with WORKBENCH_OIDC_ISSUER + WORKBENCH_OIDC_AUDIENCE), or set "
+        "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED=true to declare that an open service is what you meant."
     )

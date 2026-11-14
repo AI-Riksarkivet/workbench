@@ -2,9 +2,9 @@
 	// One document card in the selection grid — thumbnail (cheap: the viewer's cached
 	// /api/thumbnail blob), descriptor-driven title/metadata, duration badge. Dumb +
 	// controlled, mirroring the media zone's gallery tile.
-	import type { Document } from '@rask/explorer-api';
-	import type { DatasetView } from '@rask/explorer-api/descriptor';
-	import { cn } from '@rask/ui/utils';
+	import type { Document } from '@workbench/explorer-api';
+	import type { DatasetView } from '@workbench/explorer-api/descriptor';
+	import { cn } from '@workbench/ui/utils';
 
 	let { view, doc, onclick }: { view: DatasetView; doc: Document; onclick?: () => void } = $props();
 
@@ -30,7 +30,7 @@
 	{onclick}
 	data-testid="doc-tile"
 	class={cn(
-		// Card geometry straight off @rask/ui's Card (border-border / bg-card / rounded-lg /
+		// Card geometry straight off @workbench/ui's Card (border-border / bg-card / rounded-lg /
 		// shadow-sm), plus the lift + ring this tile needs as an interactive element.
 		'group border-border bg-card text-card-foreground flex flex-col overflow-hidden rounded-lg border text-left shadow-sm transition-all',
 		'hover:border-primary focus-visible:ring-ring/50 hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-3 focus-visible:outline-none',

@@ -10,7 +10,7 @@
 	import { ChevronRight, MoreHorizontal } from '@lucide/svelte';
 	import { gsap } from 'gsap';
 	import { zoneNavLeaves } from './nav-config.js';
-	import type { Me, NotificationFeed, Project, NavUser, ZoneNav } from './nav-config.js';
+	import type { Me, Project, NavUser, ZoneNav } from './nav-config.js';
 	import { collapseCrumbs, pathCrumbs, projectFromHost, type Crumb } from './breadcrumb.js';
 	import { isMainMenu } from './nav-config.js';
 
@@ -58,7 +58,6 @@
 		zoneNav = null,
 		me = null,
 		meLoading = false,
-		notifications = null,
 		sidebarFooter,
 		sidebarContent,
 		canvas = false,
@@ -85,9 +84,6 @@
 		 *  which task you are on. That is why the canvas had no breadcrumb at all; the answer is to let
 		 *  the zone contribute the part it alone knows, not to hide the bar. */
 		crumbs?: Crumb[];
-		/** The zone's run feed for the navbar's notification bell (see `NotificationFeed`). The shell
-		 *  never fetches it; `null` renders no bell at all. */
-		notifications?: NotificationFeed | null;
 		/** A zone whose CONTENT owns the whole viewport — an annotation canvas, not a page of panels.
 		 *  Drops the sidebar and the breadcrumb row and gives `children` the full height, while keeping the
 		 *  one thing every zone must share: this header, with the project switcher and the identity cluster
@@ -208,15 +204,7 @@
 					<Sidebar.Trigger class="text-muted-foreground hover:text-foreground -ml-1 shrink-0" />
 					<Separator orientation="vertical" class="data-[orientation=vertical]:h-4" />
 				{/if}
-				<TopNavbar
-					{pathname}
-					{me}
-					{meLoading}
-					{user}
-					{authEnabled}
-					{notifications}
-					class="min-w-0 flex-1"
-				/>
+				<TopNavbar {pathname} {me} {meLoading} {user} {authEnabled} class="min-w-0 flex-1" />
 			</div>
 			<!-- Row 2 — the breadcrumb bar. Its own slim row, so it can never be squeezed by (or
 			     overlap) the zone links; within the row, a trail too long to fit folds its MIDDLE

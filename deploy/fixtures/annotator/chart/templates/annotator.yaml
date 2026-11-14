@@ -114,7 +114,7 @@ spec:
             # The publish saga's identity: this pod's own ServiceAccount token, projected for the catalog.
             - { name: ANNOTATOR_CATALOG_TOKEN_FILE, value: /var/run/secrets/rask/identity/rask-catalog/token }
             # The token the sidecar presents to the actor callbacks, mounted from the Secret this release generates.
-            - { name: RASK_APP_TOKEN_FILE, value: /var/run/secrets/annotator/app-token/token }
+            - { name: WORKBENCH_APP_TOKEN_FILE, value: /var/run/secrets/annotator/app-token/token }
             {{- with .Values.serve.discoveryUrl }}
             - { name: ANNOTATOR_SERVE_DISCOVERY_URL, value: {{ . | quote }} }
             - { name: ANNOTATOR_SERVE_PROXY_URL, value: {{ $.Values.serve.proxyUrl | default . | quote }} }
@@ -126,7 +126,7 @@ spec:
             - { name: ANNOTATOR_JOBS_URL, value: {{ . | quote }} }
             {{- end }}
             {{- if .Values.otel.enabled }}
-            - { name: RASK_OTEL_ENABLED, value: "true" }
+            - { name: WORKBENCH_OTEL_ENABLED, value: "true" }
             - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ include "annotator.otlpEndpoint" . | quote }} }
             - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf" }
             - { name: OTEL_METRIC_EXPORT_INTERVAL, value: "5000" }
@@ -136,21 +136,21 @@ spec:
             {{- end }}
             {{- if .Values.auth.enabled }}
             {{- $issuer := required "auth.oidc.issuer is rask's auth.oidc.issuer; the annotator accepts a token only when its iss equals it" .Values.auth.oidc.issuer }}
-            - { name: RASK_AUDIT_ENABLED, value: {{ .Values.auth.audit | quote }} }
-            - { name: RASK_OIDC_ENABLED, value: "true" }
-            - { name: RASK_OIDC_ISSUER, value: {{ $issuer | quote }} }
-            - { name: RASK_OIDC_DISCOVERY_URL, value: {{ .Values.auth.oidc.discoveryUrl | default (printf "http://%s-dex:5556/dex" $r) | quote }} }
-            - { name: RASK_OIDC_AUDIENCE, value: {{ .Values.auth.oidc.audience | quote }} }
-            - { name: RASK_OIDC_ALLOW_INSECURE, value: {{ ternary "false" "true" (hasPrefix "https://" $issuer) | quote }} }
+            - { name: WORKBENCH_AUDIT_ENABLED, value: {{ .Values.auth.audit | quote }} }
+            - { name: WORKBENCH_OIDC_ENABLED, value: "true" }
+            - { name: WORKBENCH_OIDC_ISSUER, value: {{ $issuer | quote }} }
+            - { name: WORKBENCH_OIDC_DISCOVERY_URL, value: {{ .Values.auth.oidc.discoveryUrl | default (printf "http://%s-dex:5556/dex" $r) | quote }} }
+            - { name: WORKBENCH_OIDC_AUDIENCE, value: {{ .Values.auth.oidc.audience | quote }} }
+            - { name: WORKBENCH_OIDC_ALLOW_INSECURE, value: {{ ternary "false" "true" (hasPrefix "https://" $issuer) | quote }} }
             {{- $connectors := required "auth.oidc.connectors is rask's: the idp id of each Dex connector" .Values.auth.oidc.connectors }}
             {{- range $connector, $idp := $connectors }}
             {{- if or (not $connector) (not (kindIs "string" $idp)) (eq $idp "kubernetes") (not (regexMatch "^[a-z0-9-]+$" $idp)) }}
             {{- fail (printf "auth.oidc.connectors.%s=%v is not an idp id: lower-case letters, digits and '-', never kubernetes, as rask's auth.oidc.connectors" $connector $idp) }}
             {{- end }}
             {{- end }}
-            - { name: RASK_OIDC_CONNECTORS, value: {{ $connectors | toJson | quote }} }
+            - { name: WORKBENCH_OIDC_CONNECTORS, value: {{ $connectors | toJson | quote }} }
             {{- else }}
-            - { name: RASK_INSECURE_ALLOW_UNAUTHENTICATED, value: "true" }
+            - { name: WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED, value: "true" }
             {{- end }}
           startupProbe:
             httpGet: { path: /livez, port: http }

@@ -21,7 +21,7 @@ import { onMount, untrack } from 'svelte';
  * a MECHANISM — which is the only thing a `frontend/packages/*` entry may be. The zone-specific half
  * (`lineageTick`, `controlCursor`, …) stays in the zone that owns it, because it imports that app's
  * own `feeds.remote.ts` — `query.live` is declared per app so it gets its own endpoint and can reach
- * `getRequestEvent`. That is the same seam `@rask/api/runs-feed` already uses: share the body, keep
+ * `getRequestEvent`. That is the same seam `@workbench/api/runs-feed` already uses: share the body, keep
  * the app-bound shim in the app.
  *
  * Four rules, and the last two are each here because getting them wrong broke a test:
