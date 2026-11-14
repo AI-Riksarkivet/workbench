@@ -47,7 +47,7 @@ from annotator.projects.machines import (
     project_transition,
     refuse_unreadable_ontology,
 )
-from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Shape, Task, TaskState, new_id
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Shape, Task, TaskState, new_id, publish_warehouse_of
 from annotator.projects.ontology import LabelOntology, ShapeLike, membership_violation
 from annotator.projects.project_actor import AnnotationProjectActorInterface
 from annotator.projects.publish import namespace_for
@@ -222,10 +222,13 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
 
     # RESOLVED ONCE, BEFORE THE GATE. The door authorizes `namespace:<target>` and the actor pins the
     # table id from the same string; deriving them separately would let the gate check one object
-    # while the write lands in another, which is worse than the unqualified write this replaces.
-    target = payload.target_namespace or namespace_for(str(current.get("tenant") or ""), DEFAULT_TARGET_TIER)
-
+    # while the write lands in another. Only a publish has a target.
+    target: str | None = None
     if payload.event == "publish":
+        try:
+            target = payload.target_namespace or namespace_for(publish_warehouse_of(current), DEFAULT_TARGET_TIER)
+        except ValueError as exc:
+            raise ConflictError(f"annotation project {project_id} names no publish warehouse: {exc}") from exc
         await _authorize_publish(checker, subject, project_id, target)
     elif permission is not None:
         # `annotation_project`, not `project:<tenant>`: the project's roles grant can_manage /

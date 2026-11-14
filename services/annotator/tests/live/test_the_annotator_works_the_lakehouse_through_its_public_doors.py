@@ -157,7 +157,7 @@ def _authors(reader: Identity, table_id: str, *, since: int, after: int) -> list
     rows, _ = lakehouse_doors.follow(reader, since=since, table=table_id, until=lambda rows: bool(past(rows)))
     # The author rides the run's facets on a RunEvent and the dataset's on a DatasetEvent.
     carriers = [row["event"].get("run") if "run" in row["event"] else row["event"].get("dataset") for row in past(rows)]
-    return [str(((carrier or {}).get("facets") or {}).get("author", {}).get("sub")) for carrier in carriers]
+    return [str(((carrier or {}).get("facets") or {}).get("rask_author", {}).get("sub")) for carrier in carriers]
 
 
 @pytest.fixture(scope="module")
@@ -169,8 +169,8 @@ def tenant() -> Iterator[Tenant]:
 def drive(tenant: Tenant) -> Iterator[Drive]:
     """The drive, and the project archived after it: its state is the annotator's, which the tenant's teardown never reaches."""
     admin, person = tenant.admin, tenant.job
-    silver = f"{tenant.project}-silver"
-    ok(admin.http.post(f"{CATALOG}/management/v1/warehouses/{tenant.project}/namespaces", json={"namespace": silver, "properties": {"rask.tier": "silver"}}))
+    silver = f"{tenant.project}$silver"
+    ok(admin.http.post(f"{CATALOG}/v1/namespace/{silver}/create", json={"properties": {"rask.tier": "silver"}}))
     _seed_corpus(tenant)
     # A project admin hands the annotator's account what its publish needs, and nothing more.
     _grant(admin, silver, ANNOTATOR_ACCOUNT, "writer")
@@ -242,6 +242,6 @@ def test_the_annotator_works_the_lakehouse_through_its_public_doors(drive: Drive
     assert drive.annotation_authors and set(drive.annotation_authors) == {tenant.job.principal}, drive.annotation_authors
     rows = [(row["project_id"], row["label"], row["annotated_by"], row["reviewed_by"]) for row in drive.published]
     assert rows == [(drive.project_id, LABEL, tenant.job.principal, tenant.admin.principal)]
-    assert drive.published_table.startswith(f"{tenant.project}-silver$")
+    assert drive.published_table.startswith(f"{tenant.project}$silver$")
     assert drive.published_commit.get("rask.author") == ANNOTATOR_ACCOUNT
     assert drive.published_commit.get("rask.inputs") == [{"table": [tenant.bronze, "chunks"], "version": drive.selected}]

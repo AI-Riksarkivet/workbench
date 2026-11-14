@@ -61,7 +61,8 @@ SCHEMA = pa.schema(
     ]
 )
 
-NAMESPACE = "media"
+#: The namespace the suite writes in, its warehouse first: a one-segment namespace names a warehouse, which holds no tables.
+NAMESPACE = os.environ.get("LANCE_E2E_MEDIA_NAMESPACE", "acme$media")
 
 
 def _row(id_: str, *, source: str, status: str, confidence: float, label: str = "person") -> dict[str, object]:
@@ -137,7 +138,7 @@ def table_id() -> list[str]:
             json={"retention_days": 30, "retain_versions": 100, "compact_enabled": True},
         )
         assert policy.status_code == 200, policy.text
-    return [NAMESPACE, name]
+    return [*NAMESPACE.split("$"), name]
 
 
 @pytest.fixture(scope="module")
@@ -222,6 +223,6 @@ def test_catalog_errors_translate_to_domain_errors() -> None:
     holds it on a real OpenFGA, including `a-table-the-caller-cannot-see-answers-as-an-absent-one` (a hidden object
     answers as an absent one does) and `no-parent-rung-no-answer` (no probe from outside the hierarchy).
     """
-    missing = CatalogTableReader(NamespaceCatalogTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None)), [NAMESPACE, "no_such_table"])
+    missing = CatalogTableReader(NamespaceCatalogTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None)), [*NAMESPACE.split("$"), "no_such_table"])
     with pytest.raises(NotFoundError):
         missing.to_table(limit=1)

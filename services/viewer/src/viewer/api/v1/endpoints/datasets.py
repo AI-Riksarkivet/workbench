@@ -18,7 +18,7 @@ from client_kit.lancekit.registry import DatasetRegistry, UnknownDatasetError
 from client_kit.media.authz import corpus_object
 from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState, dataset_handle, ensure_registry
-from service_kit.exceptions import ForbiddenError
+from service_kit.exceptions import ForbiddenError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
 from viewer.api.security import READ_METADATA, CheckerDep, CurrentSubject, DeciderDep, SettingsDep
 from viewer.audit_actions import ViewerAuditAction
@@ -130,9 +130,15 @@ async def list_datasets(state: StateDep, decider: DeciderDep, subject: CurrentSu
     if not tabled or decider is None:
         return DatasetsResponse(datasets=[])
 
-    objects = [corpus_object(settings, summary.id, table) for summary, table in tabled]
-    verdicts = await decider.batch_check(user=subject, relation=READ_METADATA, objects=objects)
-    return DatasetsResponse(datasets=[summary for (summary, _t), obj in zip(tabled, objects, strict=True) if verdicts.get(obj, False)])
+    # A corpus that names no catalog table has nothing to authorize it on, so it is left out, as a refused one is.
+    named: list[tuple[DatasetSummary, str]] = []
+    for summary, table in tabled:
+        try:
+            named.append((summary, corpus_object(settings, summary.id, table)))
+        except NotFoundError:
+            continue
+    verdicts = await decider.batch_check(user=subject, relation=READ_METADATA, objects=[obj for _s, obj in named])
+    return DatasetsResponse(datasets=[summary for summary, obj in named if verdicts.get(obj, False)])
 
 
 @router.get("/datasets/{dataset_id}/descriptor")

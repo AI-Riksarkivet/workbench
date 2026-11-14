@@ -157,7 +157,7 @@ def _app(registry: _Registry, *, allow: Any, seen: list[dict[str, Any]] | None =
 
 @pytest.fixture
 def registry() -> _Registry:
-    return _Registry({"vasa": "chunks", "secret": "chunks"})
+    return _Registry({"acme$vasa": "chunks", "acme$secret": "chunks"})
 
 
 def _permitted(dataset_id: str) -> str:
@@ -172,11 +172,22 @@ def _permitted(dataset_id: str) -> str:
 # makes them assert the thing their names claim.
 def test_the_listing_returns_ONLY_the_corpora_the_caller_may_see(registry: _Registry) -> None:
     """The defect, stated directly: it used to return both."""
-    client = TestClient(_app(registry, allow={_permitted("vasa")}, fga_enabled=True))
+    client = TestClient(_app(registry, allow={_permitted("acme$vasa")}, fga_enabled=True))
 
     body = client.get("/api/datasets").json()
 
-    assert [d["id"] for d in body["datasets"]] == ["vasa"]
+    assert [d["id"] for d in body["datasets"]] == ["acme$vasa"]
+
+
+def test_a_corpus_with_no_catalog_name_is_left_out_not_a_500() -> None:
+    """A corpus whose id is not warehouse-qualified names no catalog table, so nothing can authorize it: it is not
+    listed, and the corpora that can be authorized still are."""
+    client = TestClient(_app(_Registry({"vasa": "chunks", "acme$secret": "chunks"}), allow={_permitted("acme$secret")}, fga_enabled=True))
+
+    r = client.get("/api/datasets")
+
+    assert r.status_code == 200, r.text
+    assert [d["id"] for d in r.json()["datasets"]] == ["acme$secret"]
 
 
 def test_a_caller_with_nothing_gets_an_empty_list_not_a_403(registry: _Registry) -> None:
@@ -198,7 +209,7 @@ def test_the_check_names_the_CATALOG_object_not_an_invented_one(registry: _Regis
 
     client.get("/api/datasets")
 
-    assert {c["obj"] for c in seen} == {_permitted("vasa"), _permitted("secret")}
+    assert {c["obj"] for c in seen} == {_permitted("acme$vasa"), _permitted("acme$secret")}
     assert all(c["obj"].startswith("table:") for c in seen)
 
 
@@ -216,16 +227,16 @@ def test_the_descriptor_is_gated_too(registry: _Registry) -> None:
     list and leaving this open would mean the list only had to be guessed."""
     client = TestClient(_app(registry, allow=False))
 
-    r = client.get("/api/datasets/secret/descriptor")
+    r = client.get("/api/datasets/acme$secret/descriptor")
 
     assert r.status_code == 403, r.text
     assert "can_get_metadata" in r.text
 
 
 def test_a_permitted_descriptor_still_serves(registry: _Registry) -> None:
-    client = TestClient(_app(registry, allow={_permitted("vasa")}))
+    client = TestClient(_app(registry, allow={_permitted("acme$vasa")}))
 
-    assert client.get("/api/datasets/vasa/descriptor").status_code == 200
+    assert client.get("/api/datasets/acme$vasa/descriptor").status_code == 200
 
 
 def test_a_corpus_with_NO_search_declaration_is_denied_under_authz() -> None:
@@ -235,8 +246,8 @@ def test_a_corpus_with_NO_search_declaration_is_denied_under_authz() -> None:
     Denied rather than guessed. Inventing an identifier would authorize against something the catalog
     never governs, and a check against a nonexistent object reads as a grant.
     """
-    registry = _Registry({"vasa": "chunks"})
-    registry.strip_search.add("vasa")
+    registry = _Registry({"acme$vasa": "chunks"})
+    registry.strip_search.add("acme$vasa")
     client = TestClient(_app(registry, allow=True, fga_enabled=True))
 
     assert client.get("/api/datasets").json()["datasets"] == []
@@ -244,11 +255,11 @@ def test_a_corpus_with_NO_search_declaration_is_denied_under_authz() -> None:
 
 def test_the_same_corpus_still_lists_when_authz_is_OFF() -> None:
     """The deny above must not become a behaviour change for a dev stack that never turned FGA on."""
-    registry = _Registry({"vasa": "chunks"})
-    registry.strip_search.add("vasa")
+    registry = _Registry({"acme$vasa": "chunks"})
+    registry.strip_search.add("acme$vasa")
     client = TestClient(_app(registry, allow=True, fga_enabled=False))
 
-    assert [d["id"] for d in client.get("/api/datasets").json()["datasets"]] == ["vasa"]
+    assert [d["id"] for d in client.get("/api/datasets").json()["datasets"]] == ["acme$vasa"]
 
 
 def test_the_descriptor_route_survives_a_corpus_with_no_search_block() -> None:
@@ -261,11 +272,11 @@ def test_the_descriptor_route_survives_a_corpus_with_no_search_block() -> None:
     Denied, matching the listing: with nothing to name as an FGA object, guessing an identifier
     would authorize against something the catalog never governs.
     """
-    registry = _Registry({"vasa": "chunks"})
-    registry.strip_search.add("vasa")
+    registry = _Registry({"acme$vasa": "chunks"})
+    registry.strip_search.add("acme$vasa")
     client = TestClient(_app(registry, allow=True, fga_enabled=True))
 
-    r = client.get("/api/datasets/vasa/descriptor")
+    r = client.get("/api/datasets/acme$vasa/descriptor")
 
     assert r.status_code == 403, r.text
 
@@ -277,11 +288,11 @@ def test_a_search_less_descriptor_still_serves_when_authz_is_OFF() -> None:
     version of this guard denied unconditionally, which would have broken every dev stack the moment
     a corpus omitted its search block.
     """
-    registry = _Registry({"vasa": "chunks"})
-    registry.strip_search.add("vasa")
+    registry = _Registry({"acme$vasa": "chunks"})
+    registry.strip_search.add("acme$vasa")
     client = TestClient(_app(registry, allow=True, fga_enabled=False))
 
-    assert client.get("/api/datasets/vasa/descriptor").status_code == 200
+    assert client.get("/api/datasets/acme$vasa/descriptor").status_code == 200
 
 
 def test_ten_corpora_cost_ONE_openfga_round_trip() -> None:
@@ -294,7 +305,7 @@ def test_ten_corpora_cost_ONE_openfga_round_trip() -> None:
     """
     # Row tables are BARE names — the descriptor helper refuses a `$` in a segment; the dataset id
     # supplies the corpus half of the object identifier.
-    registry = _Registry({f"corpus{i}": "chunks" for i in range(10)})
+    registry = _Registry({f"acme$corpus{i}": "chunks" for i in range(10)})
     app = _app(registry, allow=True, fga_enabled=True)
     client = TestClient(app)
 

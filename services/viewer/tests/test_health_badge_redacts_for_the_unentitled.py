@@ -51,7 +51,7 @@ class _Descriptor:
 
 
 class _Handle:
-    id = "vasa"
+    id = "acme$vasa"
     uri = "s3://lake/vasa"
     descriptor = _Descriptor()
 

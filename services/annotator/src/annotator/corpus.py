@@ -88,14 +88,17 @@ def resolve(state: AppState, dataset_id: str | None, caller_token: str | None) -
         handle = dataset_handle(state, dataset_id)
         return Corpus(id=handle.id, declared=handle.descriptor.declared, local=handle)
     dataset = dataset_id or settings.default_dataset_id
-    namespace = settings.catalog_namespace or dataset
+    try:
+        namespace = settings.catalog_namespace_id(dataset)
+    except ValueError as exc:
+        raise NotFoundError(f"dataset {dataset!r} names no catalog namespace: {exc}") from exc
     client = catalog_client(settings, caller_token)
     with _as_the_catalog_answers(f"dataset {dataset!r}"):
-        names = list(client.list_tables(lance_namespace.ListTablesRequest(id=[namespace])).tables or [])
+        names = list(client.list_tables(lance_namespace.ListTablesRequest(id=namespace)).tables or [])
         tables: dict[str, TableInfo] = {}
         declared: Declared | None = None
         for name in names:
-            opened = lance.dataset(namespace_client=client, table_id=[namespace, name])
+            opened = lance.dataset(namespace_client=client, table_id=[*namespace, name])
             tables[name] = dataset_info(opened, name)
             stamp = (opened.schema.metadata or {}).get(DESCRIPTOR_METADATA_KEY)
             if declared is None and stamp:
@@ -107,11 +110,26 @@ def resolve(state: AppState, dataset_id: str | None, caller_token: str | None) -
     return Corpus(id=dataset, declared=declared)
 
 
+def _is_table(client: lance_namespace.LanceNamespace, identifier: list[str]) -> bool:
+    """Whether the catalog holds ``identifier`` as a table; a nested namespace of the same depth answers no.
+
+    Asked with DescribeTable, which the spec answers TableNotFound for anything but a table. TableExists and
+    NamespaceExists are not: measured 2026-11-14 on lance-namespace's ``dir`` catalog (pylance 13.0.0), each answers
+    yes for a nested namespace's id and for a table's id alike.
+    """
+    try:
+        client.describe_table(lance_namespace.DescribeTableRequest(id=identifier))
+    except lance_namespace.TableNotFoundError:
+        return False
+    return True
+
+
 def input_tables(state: AppState, names: list[str], caller_token: str | None) -> dict[str, str | None] | None:
     """For each of ``names`` the catalog shows the caller, the governed table an item's captured version is a version of.
 
-    A name carrying the delimiter is a table, its own input. Any other is a dataset, whose items are rows of its default
-    search's row table: the table whose version a sender captures (the zone's `rowTableVersion`), so that table at that
+    A name is written as the catalog writes it, its warehouse first. One of three or more segments that the catalog holds
+    as a table is a table, its own input; any other of two or more segments is a dataset (a namespace, possibly nested),
+    whose items are rows of its default search's row table: the table whose version a sender captures (the zone's `rowTableVersion`), so that table at that
     version is what a publish of the items names as its input, which a write to a derived tier must. None for a dataset
     that declares no search. A name missing from the answer is one the caller cannot open on the canvas: absent,
     refused, or a dataset with no valid descriptor. None when the catalog could not be asked.
@@ -122,8 +140,7 @@ def input_tables(state: AppState, names: list[str], caller_token: str | None) ->
     for name in names:
         identifier = name.split(settings.catalog_delimiter)
         try:
-            if len(identifier) > 1:
-                client.table_exists(lance_namespace.TableExistsRequest(id=identifier))
+            if len(identifier) >= 3 and _is_table(client, identifier):
                 found[name] = name
             else:
                 search = resolve(state, name, caller_token).declared.search

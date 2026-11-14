@@ -352,9 +352,8 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
             # every published row, so a per-attempt timestamp would make a retry rewrite the dataset
             # with different values than the attempt it is resuming.
             # The door resolves this and sends it explicitly. The fallback is for a payload that
-            # names none — and it qualifies by the project's OWN tenant rather than a bare literal,
-            # because an unqualified namespace puts every tenant's labels in one place.
-            requested_ns = str(payload.get("target_namespace") or namespace_for(project.tenant, "silver"))
+            # names none: the silver namespace of the project's own warehouse.
+            requested_ns = str(payload.get("target_namespace") or namespace_for(project.publish_warehouse, "silver"))
             if project.pending_publish_id is None:
                 project.pending_publish_id = new_id()
                 project.pending_publish_at = datetime.now(UTC)

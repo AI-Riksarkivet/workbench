@@ -26,6 +26,8 @@ type Env = Record<string, string | undefined>;
 /** The identity the shared AppShell's nav-user renders — structurally the `@workbench/ui` shell's `NavUser`
  *  (name/email/initials), produced here (the data seam) and consumed there (the view), no cross-package dep. */
 export interface SessionUser {
+	/** The verified subject: what a person's own documents in this browser are kept under. */
+	sub: string;
 	name: string;
 	email?: string;
 	initials?: string;
@@ -45,7 +47,7 @@ function initialsOf(name: string): string {
 export function sessionToUser(session: Session | null): SessionUser | null {
 	if (!session) return null;
 	const name = session.name || session.email || session.sub;
-	const user: SessionUser = { name, initials: initialsOf(name) };
+	const user: SessionUser = { sub: session.sub, name, initials: initialsOf(name) };
 	// exactOptionalPropertyTypes: only set `email` when present (never assign an explicit undefined).
 	if (session.email) user.email = session.email;
 	return user;

@@ -141,6 +141,9 @@ if __name__ == "__main__":
     print("columns:", [f.name for f in ds.schema])
     catalog_url = os.environ.get("MEDIA_CATALOG_URL", "")
     if catalog_url:
-        namespace = os.environ.get("MEDIA_CATALOG_NAMESPACE") or db.rstrip("/").rsplit("/", 1)[-1].removesuffix(".lance")
+        # A name's first segment is its warehouse: the catalog answers a one-segment namespace as a warehouse.
+        namespace = os.environ.get("MEDIA_CATALOG_NAMESPACE", "")
+        if namespace.count("$") < 1 or not all(namespace.split("$")):
+            raise SystemExit("set MEDIA_CATALOG_NAMESPACE to <warehouse>$<namespace> to seed the catalog")
         table_id = seed_catalog(catalog_url, namespace, doc)
         print(f"seeded the catalog too → {catalog_url} {table_id} (mode=overwrite)")

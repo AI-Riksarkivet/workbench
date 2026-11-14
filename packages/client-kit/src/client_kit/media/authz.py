@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from service_kit.exceptions import NotFoundError
+
 
 if TYPE_CHECKING:
     from client_kit.media.config import Settings
@@ -25,8 +27,15 @@ def corpus_object(settings: Settings, dataset_id: str, table: str) -> str:
     Built through `catalog_table_id` so the object a service checks is the SAME identifier a client
     writes through and the catalog authorizes on. Deriving it any other way creates a second
     naming scheme that agrees until someone sets `MEDIA_CATALOG_NAMESPACE`.
+
+    Raises:
+        NotFoundError: The corpus names no catalog table, so there is nothing to authorize it on; a 404, as for a
+            corpus the caller may not see.
     """
-    segments = settings.catalog_table_id(dataset_id, table)
+    try:
+        segments = settings.catalog_table_id(dataset_id, table)
+    except ValueError as exc:
+        raise NotFoundError(f"corpus {dataset_id!r} names no catalog table: {exc}") from exc
     return f"table:{settings.catalog_delimiter.join(segments)}"
 
 

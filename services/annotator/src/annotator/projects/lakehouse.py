@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from annotator.core.config import get_annotator_settings
+from annotator.projects.models import publish_warehouse_of
 from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, namespace_for
 from annotator.projects.saga import PublishOutcome, run_publish
 from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog
@@ -218,9 +219,9 @@ async def run_publish_for(project_id: str) -> PublishOutcome | None:
     if raw is None:
         logger.warning("publish watchdog fired for project %s but its actor holds no state", project_id)
         return None
-    # Qualified by the project's own tenant, not a bare literal: this is the crash-resume path, so
-    # the namespace it picks is the one a publish lands in with no request left to correct it.
-    namespace = str(raw.get("pending_target_namespace") or namespace_for(str(raw.get("tenant") or ""), "silver"))
+    # The project's own warehouse: this is the crash-resume path, so the namespace it picks is the one a
+    # publish lands in with no request left to correct it.
+    namespace = str(raw.get("pending_target_namespace") or namespace_for(publish_warehouse_of(raw), "silver"))
     subject = str(raw.get("pending_publish_by") or "system")
 
     settings = get_annotator_settings()

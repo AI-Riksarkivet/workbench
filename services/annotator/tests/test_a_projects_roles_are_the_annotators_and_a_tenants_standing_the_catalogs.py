@@ -155,9 +155,9 @@ async def test_the_members_door_keeps_the_roles_in_the_projects_own_state_and_ne
 async def test_a_lakehouse_objects_permission_is_the_catalogs_answer_on_the_persons_token(answer: httpx.Response, outcome: bool | type[Exception]) -> None:
     actor = await _created()
     with respx.mock() as router:
-        door = router.post(f"{CATALOG}/management/v1/namespace/acme-silver/access/my-permissions").mock(return_value=answer)
+        door = router.post(f"{CATALOG}/management/v1/namespace/acme$silver/access/my-permissions").mock(return_value=answer)
         async with httpx.AsyncClient() as client:
-            ask: Callable[[], Any] = lambda: _checker(actor, CREATOR, client)(user=CREATOR, relation="can_create_table", obj="namespace:acme-silver")  # noqa: E731
+            ask: Callable[[], Any] = lambda: _checker(actor, CREATOR, client)(user=CREATOR, relation="can_create_table", obj="namespace:acme$silver")  # noqa: E731
             if isinstance(outcome, bool):
                 assert await ask() is outcome
             else:

@@ -23,6 +23,7 @@ describe('sessionToUser', () => {
 
 	test('projects name + email and derives two-letter initials from the first two words', () => {
 		expect(sessionToUser(session())).toEqual({
+			sub: 'user:alice',
 			name: 'Alice Ackerman',
 			email: 'alice@example.com',
 			initials: 'AA',
@@ -40,7 +41,7 @@ describe('sessionToUser', () => {
 
 		// exactOptionalPropertyTypes: a null email is OMITTED (never an explicit undefined key).
 		const noEmail = sessionToUser(session({ name: 'Carol', email: null }));
-		expect(noEmail).toEqual({ name: 'Carol', initials: 'CA' });
+		expect(noEmail).toEqual({ sub: 'user:alice', name: 'Carol', initials: 'CA' });
 		expect('email' in noEmail!).toBe(false);
 
 		const bare = sessionToUser(session({ name: '', email: null }));

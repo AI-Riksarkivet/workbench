@@ -386,7 +386,7 @@ async def test_a_dropped_task_does_not_re_block_the_publish() -> None:
 
     await actor.task_state_changed({"task_id": "t1", "state": str(TaskState.UNASSIGNED)})
 
-    await actor.fire({"event": "publish", "namespace": "acme-silver", "token": "tok-1"})
+    await actor.fire({"event": "publish", "namespace": "acme$silver", "token": "tok-1"})
     assert (await _state(actor))["state"] == str(ProjectState.PUBLISHING), "a removed task re-blocked a legal publish"
 
 

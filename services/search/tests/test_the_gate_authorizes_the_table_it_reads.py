@@ -41,7 +41,7 @@ from search.core.config import SearchSettings, get_search_settings
 from service_kit.exceptions import register_handlers
 
 
-DATASET = "vasa"
+DATASET = "acme$vasa"
 
 #: A corpus that declares TWO searchable tables — the shape c60773f7 made legal. `default` is the
 #: first, so it is what `declared.search` returns and what the gate checked regardless of `?table=`.

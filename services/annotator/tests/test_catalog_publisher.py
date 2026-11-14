@@ -144,9 +144,9 @@ async def test_every_publish_call_presents_the_annotators_own_token_read_again_a
     token = _token(tmp_path / "token", "token-1")
     publisher = CatalogPublisher(catalog.url, token_file=token, originator="dex~gina")
 
-    await publisher.create_table("acme-silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
+    await publisher.create_table("acme$silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
     _token(token, "token-2")
-    await publisher.create_table("acme-silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
+    await publisher.create_table("acme$silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
 
     presented = [(call.headers["authorization"], call.headers["x-lance-originator"]) for call in catalog.calls]
     assert presented == [("Bearer token-1", "dex~gina"), ("Bearer token-2", "dex~gina")]

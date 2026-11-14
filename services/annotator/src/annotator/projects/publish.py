@@ -412,18 +412,6 @@ def table_properties(project: AnnotationProject, plan: PublishPlan) -> dict[str,
     }
 
 
-def project_namespace(project: str, name: str) -> str:
-    """Project-qualify a lineage namespace or dataset name — ``("acme", "bronze")`` → ``"acme-bronze"``.
-
-    Empty ``project`` → ``name`` unchanged (the single-tenant default, byte-identical). Qualification
-    keeps per-project lineage under DISTINCT names — lineage's edge list keys a governed dataset on its
-    name alone, so two tenants both emitting ``bronze$events`` would otherwise collide onto one identity
-    (#84 risk 1) — and the ``-`` join keeps the result inside the established ``[A-Za-z0-9_-]`` segment
-    shape (``acme-bronze$events`` is still a valid ``stage$name`` dataset id).
-    """
-    return f"{project}-{name}" if project else name
-
-
 def tier_namespace(tier: str) -> str:
     """The namespace NAME a governed tier writes into, overridable per tier by ``MEDALLION_<TIER>_NAMESPACE``.
 
@@ -433,15 +421,16 @@ def tier_namespace(tier: str) -> str:
     return os.getenv(f"MEDALLION_{tier.upper()}_NAMESPACE", tier)
 
 
-def namespace_for(project: str, tier: str) -> str:
-    """The namespace a write for ``project`` into ``tier`` lands in — ``acme-silver``, or ``silver``
-    untenanted.
+def namespace_for(warehouse: str, tier: str) -> str:
+    """The namespace a publish into ``tier`` of ``warehouse`` lands in: ``acme$silver``.
 
-    A writer that composes the bare literal ``"silver"`` instead puts two annotating tenants in one namespace —
-    one FGA parent, one set of grants, both tenants' labels.
+    A name's first segment is its warehouse (`docs/rask/COMMIT-EVENTS.md`), so the tier is a namespace inside the
+    project's warehouse; one with no warehouse names nothing rask serves. The door authorizes this same string and the
+    actor pins the table id from it, so it is composed here and nowhere else.
 
-    The ``is_safe_project`` guard is applied HERE rather than by each caller, because applying it on
-    only one side is how a garbage project produces a write that is refused for a reason invisible
-    from the writer.
+    Raises:
+        ValueError: ``warehouse`` is not an id rask could have issued.
     """
-    return project_namespace(project if is_safe_project(project) else "", tier_namespace(tier))
+    if not is_safe_project(warehouse):
+        raise ValueError(f"warehouse {warehouse!r} is not a lakehouse warehouse id")
+    return f"{warehouse}{CATALOG_DELIMITER}{tier_namespace(tier)}"

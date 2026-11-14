@@ -78,7 +78,7 @@ def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: st
 
 #: The corpus the gate resolves: its documents binding names the table the write rung is asked on.
 CORPUS = Corpus(
-    id="corpus-1",
+    id="acme$corpus-1",
     declared=Declared.model_validate(
         {"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}, "document": {"table": "documents", "media_blob": "image"}}
     ),

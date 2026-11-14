@@ -27,6 +27,7 @@ from annotator.projects.models import AnnotationProject, ProjectState
 from annotator.projects.ontology import LabelOntology
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.naming import CONTROL_ID_PATTERN
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class CreateProjectRequest(BaseModel):
     """The create payload. `tenant` is the authz parent, so it is required and never inferred."""
 
     tenant: str = Field(min_length=1)
+    #: The lakehouse warehouse publishes land in; empty means the warehouse named like the tenant.
+    warehouse: str = Field(default="", pattern=rf"^(?:{CONTROL_ID_PATTERN})?$")
     slug: str = Field(min_length=1)
     title: str = ""
     description: str = ""
@@ -90,6 +93,7 @@ async def create_annotation_project(payload: CreateProjectRequest, checker: Chec
     now = datetime.now(UTC)
     project = AnnotationProject(
         tenant=payload.tenant,
+        warehouse=payload.warehouse,
         slug=payload.slug,
         title=payload.title,
         description=payload.description,

@@ -48,15 +48,6 @@ function doorTo(
 	});
 }
 
-/** One catalog call → `ApiResult<unknown>`. The STATUS is load-bearing for user-state and must
- *  survive the trip: 409 means "a document exists and cannot be read" (do not seed, do not
- *  overwrite), 401 means signed out (the mirror is the honest local answer), and an unreachable
- *  store is status 0 — none of which may be flattened into "empty", which is the flattening that
- *  destroys a user's work. */
-export function catalogJSON(path: string, init?: RequestInit): Promise<ApiResult<unknown>> {
-	return doorTo(CATALOG_API, 'catalog', path, init);
-}
-
 /** One projects-plane call → `ApiResult<unknown>`; the signed-in session's bearer rides along. */
 export function projectsJSON(path: string, init?: RequestInit): Promise<ApiResult<unknown>> {
 	return doorTo(PROJECTS_API, 'annotator', path, init);

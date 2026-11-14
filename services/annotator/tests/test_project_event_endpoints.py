@@ -45,7 +45,7 @@ class _FakeProject:
         self.tasks: dict[str, str] = {}
 
     async def get(self) -> dict[str, Any] | None:
-        return None if self.state is None else {"state": str(self.state), "project_id": "p1", "review_required": True, "lease_seconds": 900}
+        return None if self.state is None else {"state": str(self.state), "project_id": "p1", "tenant": "acme", "review_required": True, "lease_seconds": 900}
 
     async def fire(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.raise_on_fire:
@@ -148,7 +148,7 @@ def test_publish_needs_every_door(wired: Any) -> None:
     relations = [c["relation"] for c in seen]
     assert relations == ["can_publish", "can_create_table"], "the doors must be crossed in order"
     assert seen[0]["obj"] == "annotation_project:p1", "door 1 is the annotator's own domain"
-    assert seen[1]["obj"] == "namespace:silver", "door 2 is the TARGET NAMESPACE, not the project"
+    assert seen[1]["obj"] == "namespace:acme$silver", "door 2 is the tenant warehouse's silver namespace, not the project"
     assert project.fired, "the transition never reached the actor"
 
 

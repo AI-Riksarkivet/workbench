@@ -1,11 +1,9 @@
 /**
- * The dock stores speak `fetch(endpoint)` / `fetch(endpoint, {method:'PUT'})`; this zone's user-state
- * plane is REMOTE FUNCTIONS (the transport ruling: JSON values ride `query`/`command`, and the old
- * `capi/v1/user-state/[document]` proxy is gone). This adapter is the seam — it maps the store's two
- * calls onto `readUserStateDoc`/`writeUserStateDoc` and answers with a real `Response`, so the
- * store's THREE outcomes (ok / absent / unreadable) survive unchanged: a status is a status.
+ * The dock stores speak `fetch(endpoint)` / `fetch(endpoint, {method:'PUT'})`; this adapter answers those two calls
+ * from the person's browser store and with a real `Response`, so the stores' three outcomes (ok / absent / unreadable)
+ * survive unchanged. A store nobody can use (status 0) answers 503: a `Response` cannot carry status 0.
  */
-import { readUserStateDoc, writeUserStateDoc } from '$lib/catalog/remote/catalog.remote';
+import { readUserStateDoc, writeUserStateDoc } from '$lib/browser-user-state';
 import type { UserStateDocument } from '$lib/user-state';
 
 const asJSON = (body: unknown, status = 200): Response =>
@@ -20,10 +18,10 @@ export function userStateFetcher(document: UserStateDocument): typeof fetch {
 			const res = await writeUserStateDoc({ document, value });
 			return res.ok
 				? new Response(null, { status: 204 })
-				: new Response(null, { status: res.status });
+				: new Response(null, { status: res.status || 503 });
 		}
 		const res = await readUserStateDoc({ document });
-		return res.ok ? asJSON(res.data) : new Response(null, { status: res.status });
+		return res.ok ? asJSON(res.data) : new Response(null, { status: res.status || 503 });
 	};
 	return call as unknown as typeof fetch;
 }

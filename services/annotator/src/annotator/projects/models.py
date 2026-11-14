@@ -16,6 +16,7 @@ would buy nothing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Final, Literal
@@ -24,6 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from annotator.projects.ontology import LabelOntology
+from service_kit.naming import CONTROL_ID_PATTERN
 
 
 def new_id() -> str:
@@ -317,12 +319,21 @@ class Task(BaseModel):
             self.review_notes = self.review_notes[-MAX_REVIEW_NOTES:]
 
 
+def publish_warehouse_of(project: Mapping[str, object]) -> str:
+    """The warehouse a publish of a stored project document lands in: its own, else the one named like its tenant."""
+    return str(project.get("warehouse") or project.get("tenant") or "")
+
+
 class AnnotationProject(BaseModel):
     """§4.1. `tenant` is the authz parent — the object a role is checked on is `annotation_project:<project_id>`,
     and creating one is checked as membership of `project:<tenant>` (`annotator.api.authorization`)."""
 
     project_id: str = Field(default_factory=new_id)
     tenant: str
+    #: The lakehouse warehouse this project's publishes land in, as `<warehouse>$silver`. A rask project can hold
+    #: several warehouses, so the warehouse is the project creator's choice; empty means the warehouse named like the
+    #: tenant, which is the one rask's tenant set-up makes for a project (`docs/rask/COMMIT-EVENTS.md`).
+    warehouse: str = Field(default="", pattern=rf"^(?:{CONTROL_ID_PATTERN})?$")
     slug: str
     title: str = ""
     description: str = ""
@@ -388,6 +399,11 @@ class AnnotationProject(BaseModel):
     def authz_object(self) -> str:
         """The object this project's roles are checked on."""
         return f"annotation_project:{self.project_id}"
+
+    @property
+    def publish_warehouse(self) -> str:
+        """The warehouse a publish of this project lands in."""
+        return publish_warehouse_of({"warehouse": self.warehouse, "tenant": self.tenant})
 
     @property
     def tenant_object(self) -> str:

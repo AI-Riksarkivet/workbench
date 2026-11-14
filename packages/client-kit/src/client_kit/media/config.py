@@ -15,7 +15,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from service_kit.endpoint_scheme import allow_http_for
@@ -35,6 +35,16 @@ class TableBackend(StrEnum):
 
     direct = "direct"
     catalog = "catalog"
+
+
+def _warehouse_qualified(namespace: list[str], delimiter: str) -> None:
+    """Refuse a namespace id with fewer than two segments or an empty one.
+
+    Raises:
+        ValueError: The namespace is not warehouse-qualified.
+    """
+    if len(namespace) < 2 or not all(namespace):
+        raise ValueError(f"catalog namespace {delimiter.join(namespace)!r} is not warehouse-qualified: write it as <warehouse>{delimiter}<namespace>")
 
 
 class MediaSettings(BaseSettings):
@@ -139,20 +149,40 @@ class MediaSettings(BaseSettings):
     # The catalog namespace a dataset's tables live under; unset → the dataset id.
     catalog_namespace: str | None = Field(default=None, alias="MEDIA_CATALOG_NAMESPACE")
 
-    def catalog_table_id(self, dataset_id: str, table: str) -> list[str]:
-        """The catalog identifier for a dataset's table — settings-derived, never
-        hardcoded: ``MEDIA_CATALOG_NAMESPACE`` when set, else the dataset id.
+    @field_validator("catalog_namespace")
+    @classmethod
+    def _catalog_namespace_is_warehouse_qualified(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """A configured namespace is refused at load, not at every request, when no table could live in it."""
+        if value is not None:
+            delimiter = str(info.data.get("catalog_delimiter", CATALOG_DELIMITER))
+            _warehouse_qualified(value.split(delimiter), delimiter)
+        return value
 
-        Guards the catalog's id grammar: the delimiter inside a segment would
-        silently split the identifier server-side into the wrong namespace/table.
+    def catalog_namespace_id(self, dataset_id: str) -> list[str]:
+        """The catalog identifier of a dataset's namespace: ``MEDIA_CATALOG_NAMESPACE`` when set, else the dataset id.
+
+        Written as the catalog writes it (``warehouse$namespace``). A name's first segment is its warehouse, and a
+        one-segment namespace names a warehouse, which serves no tables, so it needs at least two non-empty segments
+        (`docs/rask/COMMIT-EVENTS.md`).
+
+        Raises:
+            ValueError: The namespace has fewer than two segments or an empty one.
         """
-        namespace = self.catalog_namespace or dataset_id
-        for segment in (namespace, table):
-            if self.catalog_delimiter in segment:
-                raise ValueError(
-                    f"catalog id segment {segment!r} contains the delimiter {self.catalog_delimiter!r} — set MEDIA_CATALOG_NAMESPACE to a clean name"
-                )
-        return [namespace, table]
+        namespace = (self.catalog_namespace or dataset_id).split(self.catalog_delimiter)
+        _warehouse_qualified(namespace, self.catalog_delimiter)
+        return namespace
+
+    def catalog_table_id(self, dataset_id: str, table: str) -> list[str]:
+        """The catalog identifier of a dataset's table: its namespace's segments, then the table, one segment, since the
+        delimiter inside it would split the identifier server-side into another namespace.
+
+        Raises:
+            ValueError: The namespace is not warehouse-qualified, or the table name is empty or carries the delimiter.
+        """
+        namespace = self.catalog_namespace_id(dataset_id)
+        if not table or self.catalog_delimiter in table:
+            raise ValueError(f"catalog table name {table!r} must be one non-empty segment without {self.catalog_delimiter!r}")
+        return [*namespace, table]
 
     @property
     def rest_catalog_mode(self) -> bool:

@@ -1,10 +1,6 @@
 /**
- * Reactive saved-views store — named read-plane selections, kept per SUBJECT on the server.
- *
- * These used to live in `localStorage`, so the same signed-in person on another machine found none of
- * their saved searches. They now belong to the user rather than to the browser: `$lib/user-state` reads
- * and writes them through this zone's `readUserStateDoc`/`writeUserStateDoc` remote functions, and
- * `localStorage` survives only as a mirror for an auth-off dev stack and an offline tab.
+ * Reactive saved-views store: named read-plane selections, kept for the signed-in person in this browser
+ * (`$lib/browser-user-state`, read and written through `$lib/user-state`).
  *
  * The one rule that matters: a document we could not READ is never overwritten. `ready` stays false and
  * every save is refused while `unreadable` holds, because a store answering "cannot read" and a store
@@ -20,13 +16,13 @@ import {
 	type SavedView,
 } from '$lib/saved-views';
 import { readUserState, writeUserState } from '$lib/user-state';
-import { readUserStateDoc, writeUserStateDoc } from '$lib/catalog/remote/catalog.remote';
+import { readUserStateDoc, writeUserStateDoc } from '$lib/browser-user-state';
 
 class SavedViewsStore {
 	views = $state<SavedView[]>([]);
 	/** False until a read settles. A save before that could overwrite what the read is about to return. */
 	ready = $state(false);
-	/** Why the server's copy could not be read, when it could not. Saving is refused while this is set. */
+	/** Why the stored copy could not be read, when it could not. Saving is refused while this is set. */
 	unreadable = $state<string | null>(null);
 
 	/** The read in flight, if one is. Two callers awaiting the same read is one request, not two. */

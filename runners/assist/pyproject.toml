@@ -17,7 +17,9 @@ dependencies = [
     "pydantic-settings>=2.6",
     "transformers>=4.49",
     "torch==2.9.1+cpu",
-    "pillow>=11",
+    "pillow>=13.0.0",
+    # Floor at the first release without the advisories Dependabot reports on this lock.
+    "certifi>=2026.10.23",
     "numpy>=2,<3",
     "opencv-python-headless>=4.10",
 ]
@@ -25,7 +27,13 @@ dependencies = [
 [tool.uv]
 package = false
 
-# The +cpu wheels live only on the pytorch index (local-version pins are not on PyPI) —
-# same idiom as the cu128 runners, opposite direction: this env must never pull CUDA.
+# The +cpu wheels live only on the pytorch index (local-version pins are not on PyPI), and this env must never pull CUDA.
+# The index is explicit: it serves torch alone, so a package it also mirrors at an older release (certifi 2022.12.7,
+# which carries an advisory) resolves from PyPI.
 [[tool.uv.index]]
+name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

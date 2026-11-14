@@ -123,7 +123,7 @@ def catalog_harness(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _FakeT
         MEDIA_READ_BACKEND="catalog",
         MEDIA_WRITE_BACKEND="catalog",
         MEDIA_CATALOG_URI="http://catalog.test",
-        MEDIA_CATALOG_NAMESPACE="proj1",
+        MEDIA_CATALOG_NAMESPACE="acme$proj1",
     )
     handle = SimpleNamespace(id="ds1", descriptor=SimpleNamespace(declared=_DECLARED))
     return _make_client(settings, handle), transport
@@ -153,7 +153,7 @@ def test_catalog_mode_versions_listing_counts_and_header(catalog_harness) -> Non
     # `limit` sequential round-trips to the catalog were the whole response time), so which one
     # reaches the transport first is a race. What must hold is that each version is counted exactly
     # once with this unit's filter; the ORDER that matters is the response body's, asserted above.
-    assert ("list_versions", ("proj1", "annotations"), 20) in transport.calls
+    assert ("list_versions", ("acme", "proj1", "annotations"), 20) in transport.calls
     counts = [call for call in transport.calls if call[0] == "count"]
     assert sorted((call[3], call[2]) for call in counts) == [(1, _UNIT_FILTER), (2, _UNIT_FILTER)]
 
@@ -163,7 +163,7 @@ def test_catalog_mode_versions_listing_respects_limit(catalog_harness) -> None:
     response = client.get(f"/api/annotations/{DOC}/0/19/versions?limit=1")
     assert response.status_code == 200
     assert [entry["version"] for entry in response.json()] == [2]  # most-recent first, capped
-    assert ("list_versions", ("proj1", "annotations"), 1) in transport.calls
+    assert ("list_versions", ("acme", "proj1", "annotations"), 1) in transport.calls
 
 
 def test_catalog_mode_missing_table_degrades_to_empty_listing(catalog_harness) -> None:

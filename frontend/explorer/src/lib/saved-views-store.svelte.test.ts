@@ -10,13 +10,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
  * This asserts the de-duplication that makes that structurally impossible, and that the second caller
  * still gets the data rather than an empty list.
  *
- * The transport is a REMOTE FUNCTION now, so the stub is the remote module rather than a global `fetch`.
- * Mocking it also keeps `$app/server` out of this suite: vitest runs the plain `svelte` plugin, not
- * `sveltekit`, and the real module would fail to resolve it at import time.
+ * The transport is stubbed so the test counts the reads it makes.
  */
 const transport = vi.hoisted(() => ({ reads: 0, value: [] as unknown }));
 
-vi.mock('$lib/catalog/remote/catalog.remote', () => ({
+vi.mock('$lib/browser-user-state', () => ({
 	readUserStateDoc: async () => {
 		transport.reads += 1;
 		// Settle on a later microtask so concurrent callers are genuinely in flight together.
