@@ -17,13 +17,12 @@ signatures at runtime, so the annotations stay real objects.
 import json
 from typing import Any
 
-import lance
 from fastapi import APIRouter
 
-from client_kit.lancekit import store
 from client_kit.lancekit.topics_meta import NOISE_LABEL
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import REQUIRE_CORPUS_DATA
 from viewer.schemas.topics import TopicsResponse
 
@@ -46,17 +45,16 @@ def _decode_jsonb(raw: Any) -> Any:
 
 
 @router.get("", dependencies=[REQUIRE_CORPUS_DATA])
-def get_topics(state: StateDep, dataset: DatasetParam = None) -> TopicsResponse:
+def get_topics(state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> TopicsResponse:
     """The topic hierarchy for the treemap, or ``built: false`` if not generated yet."""
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     target = handle.descriptor.declared.capabilities.get("topics")
     if target is None:
         return _NOT_BUILT
     table, _, column = target.partition(".")
-    uri = handle.table_uri(table)
-    if not store.exists(uri, handle.storage_options):
+    if not handle.has_table(table):
         return _NOT_BUILT
-    rows = lance.dataset(uri, storage_options=handle.storage_options).to_table().to_pylist()
+    rows = handle.dataset(table).to_table().to_pylist()
     if not rows:
         return _NOT_BUILT
     # The columns are a writer-guaranteed contract (build_topic_tree always

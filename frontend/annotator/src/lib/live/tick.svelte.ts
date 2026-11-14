@@ -13,7 +13,7 @@ import { lineageFeed } from './feeds.remote';
  * labelling the same page never saw each other's work, and neither did one person with the item open
  * in two tabs — the second save would be written against a `base_version` from before the first,
  * which is precisely the conflict OCC exists to refuse. Verified emitting: `annotations/commit.py`
- * calls `emit_save` on every real save (and in catalog mode the catalog emits for the same write),
+ * calls `emit_save` on every save to a local directory catalog (and the catalog's REST door emits for its own writes),
  * so an annotation save DOES move this cursor.
  */
 export { liveRead, type LiveCursor };

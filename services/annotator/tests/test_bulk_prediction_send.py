@@ -19,9 +19,10 @@ a suggestion.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -31,7 +32,9 @@ from annotator.api.v1.endpoints import project_events as ev
 from annotator.projects.models import ProjectState
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
+from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
+from tests.media_catalog import write_table
 
 
 SUBJECT = "henry"
@@ -88,7 +91,7 @@ class _FakeTask:
         return dict(payload)
 
 
-def _client(project: _FakeProject, task: _FakeTask, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def _client(project: _FakeProject, task: _FakeTask, monkeypatch: pytest.MonkeyPatch, catalog: Path) -> TestClient:
     async def checker(**_call: Any) -> bool:
         """Every relation granted — authorization is `test_project_event_endpoints`'s subject."""
         return True
@@ -101,14 +104,15 @@ def _client(project: _FakeProject, task: _FakeTask, monkeypatch: pytest.MonkeyPa
     app.include_router(ev.router)
     app.dependency_overrides[get_checker] = lambda: checker
     app.dependency_overrides[current_subject] = lambda: SUBJECT
-    app.dependency_overrides[get_state] = lambda: SimpleNamespace(settings=Settings(), registry=SimpleNamespace(list_ids=list))
+    state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(catalog)}))
+    app.dependency_overrides[get_state] = lambda: state
     return TestClient(app)
 
 
 def _item(prediction: list[dict[str, Any]] | None = None, *, task_id: str = "t1") -> dict[str, Any]:
     item: dict[str, Any] = {
         "task_id": task_id,
-        "source": {"kind": "chunks", "keys": ["page-1"], "where": "vasa"},
+        "source": {"kind": "chunks", "keys": ["page-1"], "where": "acme$vasa"},
         "media": {"kind": "image"},
     }
     if prediction is not None:
@@ -117,11 +121,14 @@ def _item(prediction: list[dict[str, Any]] | None = None, *, task_id: str = "t1"
 
 
 @pytest.fixture
-def wired(monkeypatch: pytest.MonkeyPatch) -> Any:
+def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """The project, its task and the dataset its items name (``acme$vasa``, in a directory catalog)."""
+    write_table(tmp_path, ["acme", "vasa", "chunks"], pa.table({"doc_id": ["page-1"]}), descriptor={"identity": {"key_fields": ["doc_id"]}})
+
     def build(*, ontology: dict[str, Any] | None = None, consensus_n: int = 1) -> tuple[TestClient, _FakeProject, _FakeTask]:
         project = _FakeProject(ontology=ontology, consensus_n=consensus_n)
         task = _FakeTask()
-        return _client(project, task, monkeypatch), project, task
+        return _client(project, task, monkeypatch, tmp_path), project, task
 
     return build
 

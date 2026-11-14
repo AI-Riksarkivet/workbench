@@ -24,6 +24,12 @@ export RAY_ENABLE_UV_RUN_RUNTIME_ENV=0   # documented Ray/uv gotcha
 # chart's routes publish /api/flows, /api/ray, … unchanged — a mismatch is a 404
 # at the service (e.g. the compute zone's /api/ray/jobs).
 export WORKBENCH_API_PREFIX="${WORKBENCH_API_PREFIX:-/api}"
+# The media plane reads one lance-namespace catalog: a local directory catalog unless MEDIA_CATALOG_URI names the
+# catalog's REST door. `uv run python scripts/seed_demo_corpus.py` seeds the same directory.
+if [ -z "${MEDIA_CATALOG_URI:-}" ]; then
+  export MEDIA_CATALOG_DIR="${MEDIA_CATALOG_DIR:-${TMPDIR:-/tmp}/workbench-catalog}"
+  mkdir -p "$MEDIA_CATALOG_DIR"
+fi
 
 # PORT_OFFSET shifts every port so a second fleet can run on one host without
 # colliding (e.g. another user already holds the defaults): PORT_OFFSET=1000 →
@@ -67,15 +73,14 @@ run flows        "$FLOWS_PORT"        flows:app
 # it), but nothing delivers to it without a sidecar, and the reconciler that would close that gap is
 # S2 — so in this fleet the badge is empty either way.
 run notifications "$NOTIFICATIONS_PORT" notifications:app
-# The media-plane viewer: /api/explorer/* (incl. the lakehouse storage browser's
-# /api/explorer/object* routes). Its DatasetRegistry is lazy, so it boots without a
-# staged corpus — dataset routes then 404 honestly while the objects browser works.
+# The media-plane viewer: /api/explorer/*. Its DatasetRegistry is lazy, so it boots without a
+# seeded catalog — dataset routes then 404 honestly.
 run viewer       "$VIEWER_PORT"       viewer.main:app
 # The other two thirds of the media plane. Until 2026-07-28 the fleet started ONLY the viewer, so the
 # annotator zone's BFF (which proxies /annotator/api/annotations/* to :8103) 502'd against a fleet that
 # looked "up" — the canvas could load a page image but never read or save a single annotation. Both
-# are lazy over the same MEDIA_* registry as the viewer, so they boot without a staged corpus and
-# 404 honestly until one exists (`uv run python scripts/seed_demo_corpus.py` makes one locally).
+# are lazy over the same MEDIA_* catalog as the viewer, so they boot without a seeded corpus and
+# 404 honestly until one exists (`uv run python scripts/seed_demo_corpus.py` seeds MEDIA_CATALOG_DIR).
 run search       "$SEARCH_PORT"       search.main:app
 run annotator    "$ANNOTATOR_PORT"    annotator.main:app
 

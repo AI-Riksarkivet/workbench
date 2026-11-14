@@ -1,7 +1,7 @@
-"""Emit a spec-2-0-2 OpenLineage RunEvent for an annotation write to a LOCAL table.
+"""Emit a spec-2-0-2 OpenLineage RunEvent for an annotation write to a local directory catalog.
 
-The catalog emits lineage for a write that routes through it, so on a live catalog this emits nothing
-(``AnnotatorSettings.effective_lineage_sink``). A local stack's write does not route through one, so it
+The catalog emits lineage for a write through its REST door, so there this emits nothing
+(``AnnotatorSettings.effective_lineage_sink``). A local directory catalog announces nothing, so a write there
 logs its own, using the clients' OpenLineage primitives (``client_kit.lancekit.openlineage``, on the OpenLineage spec's own
 constants) so it describes the run as the catalog would. Configurable
 sink (``ANNOTATOR_LINEAGE_SINK=log|none``), with no external dependency.

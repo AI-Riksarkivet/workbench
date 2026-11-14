@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from pydantic import BaseModel
 
-from client_kit.lancekit import store
 from client_kit.lancekit.predicate import and_, eq, isin, ne
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError, ValidationError
 from viewer.schemas.voice import (
@@ -130,9 +129,9 @@ def _capability_table(declared: Declared, name: str) -> str | None:
 
 
 def _table_exists(handle: DatasetHandle, name: str | None) -> bool:
-    # Probed on the store (not via the descriptor's startup snapshot) so a table
-    # built after the app started is picked up without a restart — over S3 or local.
-    return name is not None and store.exists(handle.table_uri(name), handle.storage_options)
+    # Asked of the catalog (not read off the descriptor's startup snapshot) so a table
+    # built after the app started is picked up without a restart.
+    return name is not None and handle.has_table(name)
 
 
 def _payload_columns(handle: DatasetHandle, declared: Declared) -> list[str]:
@@ -220,10 +219,10 @@ def voice_status(handle: DatasetHandle) -> VoiceStatusResponse:
     speakers_table = _capability_table(declared, "speakers")
     speakers = 0
     if _table_exists(handle, speakers_table):
-        speakers = int(handle.db.open_table(str(speakers_table)).count_rows())
+        speakers = int(handle.open_table(str(speakers_table)).count_rows())
     return VoiceStatusResponse(
         built=True,
-        turns=int(handle.db.open_table(str(emb_table)).count_rows()),
+        turns=int(handle.open_table(str(emb_table)).count_rows()),
         speakers=speakers,
     )
 
@@ -340,7 +339,7 @@ def _attach_captions(handle: DatasetHandle, bindings: VoiceBindings, hits: list[
         return
     if not _table_exists(handle, bindings.captions_table):
         return
-    frames_tbl: Any = handle.db.open_table(bindings.captions_table)
+    frames_tbl: Any = handle.open_table(bindings.captions_table)
     if bindings.captions_column not in frames_tbl.schema.names:
         return
     doc_filter = isin(bindings.doc_key, (str(h[bindings.doc_key]) for h in hits))
@@ -373,7 +372,7 @@ def _attach_speaker_clusters(handle: DatasetHandle, bindings: VoiceBindings, hit
         h["speaker_cluster"] = None
     if not hits or bindings.speakers_table is None:
         return
-    speakers_tbl: Any = handle.db.open_table(bindings.speakers_table)
+    speakers_tbl: Any = handle.open_table(bindings.speakers_table)
     if _SPEAKER_CLUSTER not in speakers_tbl.schema.names:
         return
     doc_filter = isin(_TURN_DOC, (str(h[bindings.doc_key]) for h in hits))
@@ -424,10 +423,10 @@ def rank_similar_turns(
     including ``speaker_cluster``, joined from the speakers table when present.
     """
     n = max(1, min(n, MAX_N))
-    emb_tbl: Any = handle.db.open_table(bindings.embeddings_table)
+    emb_tbl: Any = handle.open_table(bindings.embeddings_table)
     turn_hits = _search_turns(emb_tbl, bindings.embedding_column, vec, n=n, exclude_doc_id=exclude_doc_id)
 
-    row_ds: Any = handle.db.open_table(bindings.row_table).to_lance()
+    row_ds: Any = handle.open_table(bindings.row_table).to_lance()
     hits: list[dict[str, Any]] = []
     for th in turn_hits:
         turn_start, turn_end = float(th[_TURN_START]), float(th[_TURN_END])
@@ -472,8 +471,8 @@ def similar_voices(
     if t is not None and not math.isfinite(t):
         raise ValidationError("t must be a finite number of seconds")
 
-    emb_tbl: Any = handle.db.open_table(bindings.embeddings_table)
-    speakers_tbl: Any | None = handle.db.open_table(bindings.speakers_table) if bindings.speakers_table else None
+    emb_tbl: Any = handle.open_table(bindings.embeddings_table)
+    speakers_tbl: Any | None = handle.open_table(bindings.speakers_table) if bindings.speakers_table else None
     if turn_id is not None:
         vec, anchor = _resolve_turn_anchor(emb_tbl, doc_id, turn_id, bindings.embedding_column)
     elif speaker is not None:
@@ -506,7 +505,7 @@ def speaker_identity(handle: DatasetHandle, *, doc_id: str, speaker: str) -> Voi
     speakers_name = _capability_table(handle.descriptor.declared, "speakers")
     if not _table_exists(handle, speakers_name):
         raise ServiceUnavailableError("speakers table not built yet — run `ratch build-speakers`")
-    speakers_tbl: Any = handle.db.open_table(str(speakers_name))
+    speakers_tbl: Any = handle.open_table(str(speakers_name))
     ds = speakers_tbl.to_lance()
     has_cluster = _SPEAKER_CLUSTER in speakers_tbl.schema.names
     columns = _IDENTITY_COLUMNS + ([_SPEAKER_CLUSTER] if has_cluster else [])

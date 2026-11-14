@@ -21,6 +21,7 @@ from client_kit.lancekit.registry import table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from service_kit.exceptions import NotFoundError
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import REQUIRE_CORPUS_DATA
 from viewer.schemas.chunks import ChunkAlignments, DocChunks
 
@@ -40,14 +41,14 @@ def alignments_binding(declared: Declared) -> tuple[str, str] | None:
 
 
 @router.get("/doc-chunks/{doc_id}", dependencies=[REQUIRE_CORPUS_DATA])
-def doc_chunks(doc_id: str, state: StateDep, dataset: DatasetParam = None) -> DocChunks:
+def doc_chunks(doc_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> DocChunks:
     """A document's chunks, ordered by declared start time. One lazy
     fetch drives both a clickable chunk timeline and (flattened) the player's
     karaoke track. Chunks with no timing keep ``alignments == []`` (media still
     plays, no karaoke). No vector/_score column is projected, so the plain
     dataset scan can't hit the FTS/vector _score restriction.
     """
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     if declared.search is None:
@@ -85,6 +86,7 @@ def chunk_alignments(
     chunk_id: int,
     state: StateDep,
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> ChunkAlignments:
     """Per-token alignments for one chunk — lazy-fetched by the player when a hit is
     opened. Search results omit the multi-KB alignments blob (it was ~93% of the
@@ -92,7 +94,7 @@ def chunk_alignments(
     array here on demand. The path params map positionally onto the descriptor's
     identity key fields (doc key first); no alignments capability → always ``[]``.
     """
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = alignments_binding(declared)

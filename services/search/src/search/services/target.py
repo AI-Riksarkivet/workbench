@@ -20,7 +20,7 @@ from client_kit.lancekit.registry import DatasetHandle
 from search.services.constants import DURATION_COLUMN
 from search.services.filters import topic_layer_columns
 from search.services.spec import SearchMode
-from service_kit.exceptions import ValidationError
+from service_kit.exceptions import NotFoundError, ValidationError
 
 
 logger = logging.getLogger(__name__)
@@ -130,15 +130,12 @@ def resolve_target(handle: DatasetHandle, table: str | None = None) -> SearchTar
 
     # Open FIRST, then consult the cached descriptor: the open is ground truth,
     # and syncing it into the cache heals the stale-handle race (a row table
-    # rebuilt or created after the dataset was first opened). Only a genuinely
-    # missing table maps to 400 — infra faults (S3, corrupt manifest) stay 500s.
+    # rebuilt or created after the dataset was first opened). Only a table the
+    # catalog does not hold maps to 400 — a catalog or store outage keeps its own status.
     try:
-        row_tbl = handle.db.open_table(search.row_table)
-    except (ValueError, FileNotFoundError, OSError) as e:
-        msg = str(e).lower()
-        if "not found" in msg or "does not exist" in msg:
-            raise ValidationError("search row table missing from dataset") from e
-        raise
+        row_tbl = handle.open_table(search.row_table)
+    except NotFoundError as e:
+        raise ValidationError("search row table missing from dataset") from e
     handle.sync_table_info(search.row_table, int(row_tbl.version))
     row_info = handle.descriptor.tables[search.row_table]
     tables: dict[str, Any] = {search.row_table: row_tbl}
@@ -146,7 +143,7 @@ def resolve_target(handle: DatasetHandle, table: str | None = None) -> SearchTar
         if binding.table in tables:
             continue
         try:
-            tables[binding.table] = handle.db.open_table(binding.table)
+            tables[binding.table] = handle.open_table(binding.table)
         except Exception:
             logger.warning("vector-binding table %s failed to open", binding.table, exc_info=True)
 

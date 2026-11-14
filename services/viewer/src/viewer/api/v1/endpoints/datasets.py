@@ -1,7 +1,7 @@
 """Dataset enumeration + descriptor endpoints — the multi-dataset front door.
 
-``GET /api/datasets`` lists every ``<id>.lance`` directory the registry can
-serve (tables + available capabilities per dataset); ``GET /api/datasets/{id}/
+``GET /api/datasets`` lists every ``warehouse$namespace`` the catalog shows the
+caller (tables + available capabilities per dataset); ``GET /api/datasets/{id}/
 descriptor`` hands the frontend the full merged descriptor it renders from
 (LANCE_MEDIA_MERGE §4.2/§4.4). Datasets whose descriptor fails to load are
 skipped from the listing (logged), never half-served.
@@ -20,6 +20,7 @@ from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState, dataset_handle, ensure_registry
 from service_kit.exceptions import ForbiddenError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import READ_METADATA, CheckerDep, CurrentSubject, DeciderDep, SettingsDep
 from viewer.audit_actions import ViewerAuditAction
 
@@ -58,7 +59,9 @@ def _registry(state: AppState) -> DatasetRegistry:
 
 
 @router.get("/datasets")
-async def list_datasets(state: StateDep, decider: DeciderDep, subject: CurrentSubject, settings: SettingsDep) -> DatasetsResponse:
+async def list_datasets(
+    state: StateDep, decider: DeciderDep, subject: CurrentSubject, settings: SettingsDep, caller_token: RawBearerToken = None
+) -> DatasetsResponse:
     """The corpora this CALLER may see.
 
     It used to be every corpus on disk, to anyone. A corpus list is itself sensitive — it names data
@@ -69,23 +72,16 @@ async def list_datasets(state: StateDep, decider: DeciderDep, subject: CurrentSu
     answer to "what can I search" is a shorter list, not a 403.
     """
 
-    # Off the loop: `registry.get` opens Lance/S3 under a threading.Lock, and this is the first call
-    # every zone makes on page load — inline it serialized the whole process behind one cold dataset
-    # (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-02). The row table is read HERE, in the same pass, so `_may_see` below
-    # never re-opens the registry per dataset (the descriptor was being read twice).
-    #
-    # `_registry(state)` RUNS INSIDE the threadpool too (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" E2): building the registry
-    # reads `settings.storage_options()`, a BLOCKING Dapr secret fetch on the cold path, and it used
-    # to sit on the event loop above this function. The secret is `_store_secret`-cached, so the boot
-    # warm usually makes this free — but a request that arrives before the warm, or after a warm that
-    # failed, must not block the loop on the fetch.
+    # Off the loop: listing and opening are catalog calls and manifest reads, and this is the first call every zone
+    # makes on page load (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-02).
+    # The row table is read HERE, in the same pass, so the gate below never re-opens a dataset.
     def _collect() -> list[tuple[DatasetSummary, str | None]]:
         registry = _registry(state)
         collected: list[tuple[DatasetSummary, str | None]] = []
-        for dataset_id in registry.list_ids():
+        for dataset_id in registry.list_ids(caller_token):
             try:
-                descriptor = registry.get(dataset_id).descriptor
-            except (UnknownDatasetError, ValueError) as exc:
+                descriptor = registry.get(dataset_id, caller_token).descriptor
+            except (UnknownDatasetError, ValueError, NotFoundError, ForbiddenError) as exc:
                 logger.warning("skipping dataset %s: %s", dataset_id, exc)
                 continue
             summary = DatasetSummary(
@@ -142,7 +138,9 @@ async def list_datasets(state: StateDep, decider: DeciderDep, subject: CurrentSu
 
 
 @router.get("/datasets/{dataset_id}/descriptor")
-async def dataset_descriptor(dataset_id: str, state: StateDep, checker: CheckerDep, subject: CurrentSubject, settings: SettingsDep) -> DatasetDescriptor:
+async def dataset_descriptor(
+    dataset_id: str, state: StateDep, checker: CheckerDep, subject: CurrentSubject, settings: SettingsDep, caller_token: RawBearerToken = None
+) -> DatasetDescriptor:
     """The full merged descriptor (discovered tables + declared roles); 404 via
     the domain handler for unknown or descriptor-less ids.
 
@@ -150,7 +148,7 @@ async def dataset_descriptor(dataset_id: str, state: StateDep, checker: CheckerD
     every table, every column name, every declared capability. Guarding the list and leaving this
     open would mean the list only had to be guessed.
     """
-    handle = await run_in_threadpool(dataset_handle, state, dataset_id)
+    handle = await run_in_threadpool(dataset_handle, state, dataset_id, caller_token)
     # `Search | None` — the same shape the listing handles, and it must be handled identically here:
     # with no row table there is nothing to name as an FGA object, so DENY rather than guess one.
     # Reading it unguarded was a 500 (`'NoneType' object has no attribute 'row_table'`).

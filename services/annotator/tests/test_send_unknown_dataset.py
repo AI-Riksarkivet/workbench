@@ -6,15 +6,18 @@ skipped — and the publish precondition requires EVERY task terminal, so ONE of
 project. Creating it is the mistake, and send is where refusing it costs nothing: zero task actors
 have been seeded yet.
 
-The interesting cases are the two where refusing would be WRONG: an item that names no dataset at
-all (it takes the backend default, which resolves by construction), and a registry that cannot be
-consulted (not being able to check is not evidence of a problem).
+The interesting case is the one where refusing would be WRONG: a catalog that cannot be consulted (not being able to
+check is not evidence of a problem). Driven on a real lance-namespace ``dir`` catalog; the unreachable catalog is a REST
+door on a port nothing listens on.
 """
 
 from __future__ import annotations
 
+import socket
+from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -24,7 +27,9 @@ from annotator.api.v1.endpoints import project_events as events_ep
 from annotator.api.v1.endpoints.project_events import router
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
-from service_kit.exceptions import NotFoundError, register_handlers
+from client_kit.media.state import AppState
+from service_kit.exceptions import register_handlers
+from tests.media_catalog import write_table
 
 
 class _FakeProjectActor:
@@ -50,34 +55,12 @@ class _FakeTaskActor:
         return payload
 
 
-class _Registry:
-    def __init__(self, ids: list[str]) -> None:
-        self._ids = ids
-
-    def list_ids(self) -> list[str]:
-        return self._ids
+DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "search": {"row_table": "chunks"}}
 
 
-def _app(
-    monkeypatch: pytest.MonkeyPatch,
-    task_actor: _FakeTaskActor,
-    *,
-    known: list[str] | None = None,
-    registry_broken: bool = False,
-) -> FastAPI:
+def _app(monkeypatch: pytest.MonkeyPatch, task_actor: _FakeTaskActor, settings: Settings) -> FastAPI:
     monkeypatch.setattr(events_ep, "_project_proxy", lambda _p: _FakeProjectActor())
     monkeypatch.setattr(events_ep, "_task_proxy", lambda _t: task_actor)
-
-    ids = known if known is not None else ["demo", "transcripts_v2"]
-
-    def _handle(_state: Any, dataset_id: str | None = None) -> Any:
-        if registry_broken:
-            raise RuntimeError("registry unavailable")
-        if dataset_id and dataset_id not in ids:
-            raise NotFoundError(f"dataset {dataset_id!r} not found under .")
-        return object()
-
-    monkeypatch.setattr(events_ep, "dataset_handle", _handle)
 
     app = FastAPI()
     app.include_router(router)
@@ -88,13 +71,16 @@ def _app(
 
     app.dependency_overrides[get_checker] = lambda: checker
     app.dependency_overrides[current_subject] = lambda: "gina"
-
-    class _State:
-        settings = Settings()
-        registry = _Registry(ids)
-
-    app.dependency_overrides[get_state] = lambda: _State()
+    state = AppState(settings=settings)
+    app.dependency_overrides[get_state] = lambda: state
     return app
+
+
+@pytest.fixture
+def catalog(tmp_path: Path) -> Settings:
+    """A directory catalog holding one dataset, ``acme$demo``."""
+    write_table(tmp_path, ["acme", "demo", "chunks"], pa.table({"doc_id": ["doc0"]}), descriptor=DESCRIPTOR)
+    return Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)})
 
 
 def _items(*wheres: str | None) -> dict[str, Any]:
@@ -109,38 +95,43 @@ def _items(*wheres: str | None) -> dict[str, Any]:
     }
 
 
-def test_an_item_naming_an_UNKNOWN_dataset_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_item_naming_an_UNKNOWN_dataset_is_refused(monkeypatch: pytest.MonkeyPatch, catalog: Settings) -> None:
     task_actor = _FakeTaskActor()
-    client = TestClient(_app(monkeypatch, task_actor))
+    client = TestClient(_app(monkeypatch, task_actor, catalog))
 
-    r = client.post("/projects/p1/items", json=_items("gone-away"))
+    r = client.post("/projects/p1/items", json=_items("acme$gone-away"))
 
     assert r.status_code == 409, r.text
     assert "gone-away" in r.text, "the refusal must name the dataset that does not exist"
     assert task_actor.seeded == [], "a task actor was seeded for an item that can never be opened"
 
 
-def test_a_known_dataset_sends_normally(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_known_dataset_sends_normally(monkeypatch: pytest.MonkeyPatch, catalog: Settings) -> None:
     task_actor = _FakeTaskActor()
-    client = TestClient(_app(monkeypatch, task_actor))
+    client = TestClient(_app(monkeypatch, task_actor, catalog))
 
-    r = client.post("/projects/p1/items", json=_items("demo"))
+    r = client.post("/projects/p1/items", json=_items("acme$demo"))
 
     assert r.status_code == 201, r.text
     assert len(task_actor.seeded) == 1
 
 
-def test_an_UNVERIFIABLE_registry_lets_the_send_through(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_UNVERIFIABLE_catalog_lets_the_send_through(monkeypatch: pytest.MonkeyPatch) -> None:
     """Not being able to check is not evidence of a problem.
 
-    If the dataset plane cannot be consulted at all, refusing every send would take the labeling
+    If the catalog cannot be consulted at all, refusing every send would take the labeling
     plane down for a guard rather than a gate — the canvas still reports the real 404 at read, and
     removal still exists. This is the one place the check yields.
     """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    monkeypatch.delenv("MEDIA_CATALOG_DIR")
+    unreachable = Settings.model_validate({"MEDIA_CATALOG_URI": f"http://127.0.0.1:{closed}"})
     task_actor = _FakeTaskActor()
-    client = TestClient(_app(monkeypatch, task_actor, registry_broken=True))
+    client = TestClient(_app(monkeypatch, task_actor, unreachable))
 
-    r = client.post("/projects/p1/items", json=_items("anything"))
+    r = client.post("/projects/p1/items", json=_items("acme$anything"))
 
     assert r.status_code == 201, r.text
     assert len(task_actor.seeded) == 1

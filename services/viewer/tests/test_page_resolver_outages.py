@@ -1,135 +1,102 @@
 """A dependency being down is not a missing page, and its driver text is not for the browser.
 
-open_fastapi-audit — "viewer's page resolver reports a catalog or object-store OUTAGE as 404 Not
-Found, with the raw httpx/lance exception text in the client-visible detail".
+open_fastapi-audit — "viewer's page resolver reports a catalog or object-store OUTAGE as 404 Not Found, with the raw
+exception text in the client-visible detail". A 404 is TERMINAL: the zone renders "page not found", the reader stops,
+and nothing retries, for a condition that is transient and would clear on its own. And `service_kit.exceptions._problem`
+puts `str(exc)` verbatim into the client body at any status, so an interpolated driver message put the internal host
+and the ``s3://`` location on the wire.
 
-TWO DEFECTS, and the first is what makes the second reachable.
-
-**Wrong class.** `_resolve` caught `httpx.RequestError` — the base of ConnectError, ConnectTimeout,
-ReadTimeout and DNS failure — and raised `NotFoundError`. `_open` caught bare `Exception` around
-`lance.dataset(...)` and did the same, so a RustFS outage, expired vended credentials and a corrupt
-manifest all reported 404. A 404 is TERMINAL: the zone renders "page not found", the reader stops,
-and nothing retries — for a condition that is transient and would clear on its own. The message even
-said so out loud ("catalog unreachable") while the class said the opposite.
-
-The file already argues this exact point twelve lines below, refusing to launder 401/403 into
-"unknown table" because "the annotator lost real debugging time to exactly this laundering". The
-reasoning simply was not extended two lines up.
-
-**The leak.** Both messages interpolated the caught exception into `detail`, and
-`service_kit.exceptions._problem` puts `str(exc)` verbatim into the client body with no redaction at
-any status. So the browser received the httpx connect error (internal host and port) or the lance/S3
-driver message (the `s3://` location, credential state). `ns_errors` redacts every 5xx detail for
-exactly this reason — and never applied here, because the class chosen was a 4xx. Mislabelling the
-outage is what put the internals on the wire.
-
-The estate states the rule in its own words in `service_kit/exceptions.py`: "Keep the message STABLE;
-never interpolate a raw upstream exception into it (log that instead)."
-
-WHAT STAYS 404: the two cases that genuinely mean absent — the catalog answering a non-401/403 4xx
-(4xx ONLY: a 5xx response is the outage again, caught by the re-audit after this header first
-claimed the branch was already that narrow), and a describe that returns no `location`.
+The page resolver opens a catalog table through lance-namespace as the caller. A catalog that does not answer, or
+answers 5xx, is a 503; a table the catalog does not hold stays a 404; a store failure behind a table the catalog
+resolved is a 503 whose detail names neither the driver text nor the location. The catalog is driven for real: a
+directory catalog, and a REST door that answers 500.
 """
 
 from __future__ import annotations
 
-import httpx
+import http.server
+import json
+import threading
+from collections.abc import Iterator
+from pathlib import Path
+
+import pyarrow as pa
 import pytest
 
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError
+from tests.media_catalog import write_table
 from viewer.api.v1.endpoints import pages as pages_ep
 
 
-TABLE = "bronze$pages"
+TABLE: str = "acme$bronze$pages"
 LOCATION = "s3://rask-lake/bronze/pages.lance"
 SECRET = "connect to object-store.internal:9000: connection refused"
 
 
-def _state(http: object | None = None) -> AppState:
-    """A REAL `AppState`, not a stand-in.
-
-    `_resolve` and `_open` are typed against it, and a duck-typed fake here would pass the test while
-    the type checker (correctly) rejected it — the state object is the thing that carries both the
-    catalog URI and the storage options these two functions read.
-
-    `http` is the pooled client `_resolve` posts through (VS-12): the resolve reuses `state.http`, so
-    the fake catalog lives there rather than behind a patched `httpx.Client` constructor.
-    """
-    return AppState(settings=Settings(MEDIA_CATALOG_URI="http://catalog.internal:2333"), http=http)
+def _state(monkeypatch: pytest.MonkeyPatch, catalog_uri: str) -> AppState:
+    monkeypatch.delenv("MEDIA_CATALOG_DIR")
+    return AppState(settings=Settings.model_validate({"MEDIA_CATALOG_URI": catalog_uri}))
 
 
-class _ConnectErrorClient:
-    """A pooled client whose catalog is unreachable — the transient-outage case."""
+class _Failing(http.server.BaseHTTPRequestHandler):
+    """A catalog that answers every request with the spec's Internal error (code 18) at HTTP 500."""
 
-    def post(self, *_args: object, **_kwargs: object) -> None:
-        raise httpx.ConnectError(SECRET)
+    def do_POST(self) -> None:  # noqa: N802 - the stdlib's handler name
+        body = json.dumps({"error": SECRET, "code": 18}).encode()
+        self.send_response(500)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - the stdlib's parameter name
+        return None
 
 
-def test_a_catalog_outage_is_not_a_missing_page() -> None:
-    """A transient dependency failure must be retryable, not terminal."""
+@pytest.fixture
+def failing_catalog() -> Iterator[str]:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Failing)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_a_catalog_outage_is_not_a_missing_page(monkeypatch: pytest.MonkeyPatch, failing_catalog: str) -> None:
+    """A transient dependency failure must be retryable, not terminal, and its text stays in the log. An unreachable
+    catalog takes the same path: pylance's REST client reports it as the spec's ServiceUnavailable (code 17), one more
+    code no caller can act on (measured 2026-11-14 on pylance 13.0.0)."""
     with pytest.raises(ServiceUnavailableError) as caught:
-        pages_ep._resolve(_state(_ConnectErrorClient()), TABLE, "tok")  # noqa: SLF001
+        pages_ep._open(_state(monkeypatch, failing_catalog), TABLE, "tok")  # noqa: SLF001
     assert not isinstance(caught.value, NotFoundError)
+    assert SECRET not in str(caught.value)
+    assert "127.0.0.1" not in str(caught.value)
 
 
-def test_an_unreadable_dataset_is_an_outage_not_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_unreadable_dataset_is_an_outage_not_a_404(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A RustFS outage, expired vended credentials and a corrupt manifest all land here."""
-    monkeypatch.setattr(pages_ep, "_resolve", lambda *_a, **_k: LOCATION)
+    write_table(tmp_path, TABLE.split("$"), pa.table({"id": [1]}))
 
     def _boom(*_args: object, **_kwargs: object) -> None:
-        raise OSError(SECRET)
+        raise OSError(f"{SECRET} at {LOCATION}")
 
     monkeypatch.setattr(pages_ep.lance, "dataset", _boom)
+    state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
 
     with pytest.raises(ServiceUnavailableError) as caught:
-        pages_ep._open(_state(), TABLE, "tok")  # noqa: SLF001
+        pages_ep._open(state, TABLE, "tok")  # noqa: SLF001
     message = str(caught.value)
     assert not isinstance(caught.value, NotFoundError)
     assert SECRET not in message, f"the detail carried the driver text: {message}"
     assert LOCATION not in message, f"the detail carried the object-store location: {message}"
 
 
-class _RespondingClient:
-    """A pooled client that answers `status` with `payload` — the response-path cases."""
+def test_a_table_the_catalog_does_not_hold_stays_a_404(tmp_path: Path) -> None:
+    """Absence must not become 503: that would make a missing registration look retryable and hide it behind an outage
+    alert."""
+    write_table(tmp_path, ["acme", "bronze", "other"], pa.table({"id": [1]}))
+    state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
 
-    def __init__(self, status: int, payload: dict) -> None:
-        self._status = status
-        self._payload = payload
-
-    def post(self, *_args: object, **_kwargs: object) -> object:
-        status = self._status
-        payload = self._payload
-
-        class _Response:
-            status_code = status
-
-            def json(self) -> dict:
-                return payload
-
-        return _Response()
-
-
-@pytest.mark.parametrize(("status", "payload"), [(404, {}), (200, {})])
-def test_a_genuinely_absent_table_stays_a_404(status: int, payload: dict) -> None:
-    """The two cases that really do mean absent must not become 503 — that would make a missing
-    registration look retryable and hide it behind an outage alert."""
     with pytest.raises(NotFoundError):
-        pages_ep._resolve(_state(_RespondingClient(status, payload)), TABLE, "tok")  # noqa: SLF001
-
-
-@pytest.mark.parametrize("status", [500])
-def test_a_catalog_5xx_RESPONSE_is_an_outage_not_a_404(status: int) -> None:
-    """Found by the adversarial re-audit of this file's own finding: the branch was `>= 400`.
-
-    A catalog answering HTTP 500 — or a proxy in front of it answering 502/503 — is exactly the
-    outage this file exists to classify, and it was still laundered into a terminal 404 ("catalog
-    does not know table"). The connection-level cases above never see it because they raise before a
-    response exists; only a 5xx RESPONSE walks this path. The "stays 404" parametrization below
-    covered 404 and 200-with-no-location, never a 5xx, so the residual was unpinned and invisible.
-    """
-    with pytest.raises(ServiceUnavailableError) as caught:
-        pages_ep._resolve(_state(_RespondingClient(status, {})), TABLE, "tok")  # noqa: SLF001
-    assert not isinstance(caught.value, NotFoundError)
-    assert TABLE in str(caught.value)
+        pages_ep._open(state, TABLE, "tok")  # noqa: SLF001

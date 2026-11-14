@@ -20,6 +20,7 @@ from client_kit.lancekit.registry import table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from client_kit.pagination import Page, PaginationDep, build_page
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import REQUIRE_CORPUS_METADATA, CorpusFactsVisible
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.schemas.system import ColumnKind, DbFacts, FilterColumn, HealthResponse, VllmPing
@@ -35,7 +36,7 @@ DURATION_COLUMN = "duration"
 
 
 @router.get("/health")
-def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetParam = None) -> HealthResponse:
+def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> HealthResponse:
     """Frontend status badge: pings vLLM embed/rerank, reports DB facts.
 
     ALWAYS 200 — this is the media plane's liveness/capability probe, not a dataset read. That
@@ -79,7 +80,7 @@ def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetP
     rerank = _ping(state.settings.rerank_url)
 
     try:
-        handle = dataset_handle(state, dataset)
+        handle = dataset_handle(state, dataset, caller_token)
     except Exception as e:
         # NotFoundError (unknown id / missing-or-invalid descriptor) is the expected case on an
         # un-loaded corpus; anything else (a broken S3 endpoint, a corrupt manifest) is equally a
@@ -100,9 +101,8 @@ def health(state: StateDep, facts_visible: CorpusFactsVisible, dataset: DatasetP
     doc_info = tables.get(declared.document.table) if declared.document is not None else None
     return HealthResponse(
         db=DbFacts(
-            # handle.uri, not str(handle.path): Path() collapses an s3:// URI's
-            # double slash to "s3:/…", so the badge would show a mangled root.
-            path=handle.uri,
+            # The dataset's catalog id: where a table lives on the store is the catalog's to know, not the badge's.
+            path=handle.id,
             tables=sorted(tables),
             chunks=row_info.row_count if row_info is not None else 0,
             documents=doc_info.row_count if doc_info is not None else 0,
@@ -137,13 +137,13 @@ def _filterable(column: ColumnInfo, exclude: set[str]) -> ColumnKind | None:
 
 
 @router.get("/columns", dependencies=[REQUIRE_CORPUS_METADATA])
-def columns(state: StateDep, dataset: DatasetParam = None) -> list[FilterColumn]:
+def columns(state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> list[FilterColumn]:
     """Filterable scalar columns of the declared row table (name + friendly kind).
 
     Lets the UI show *what* can go in a WHERE filter. Vector / blob / list /
     alignments columns are omitted — they can't appear in a SQL filter anyway.
     """
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     if declared.search is None:
         return []
@@ -185,10 +185,11 @@ def documents(
     # `per_page`) and so is the 100 ceiling.
     pagination: PaginationDep,
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> DocumentsPage:
     """Documents gallery: the declared doc-level display fields, paged."""
     per_page = pagination.page_size
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     binding = declared.document
     info = handle.descriptor.tables.get(binding.table) if binding is not None else None

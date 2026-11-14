@@ -46,10 +46,10 @@ def test_a_paramless_fake_is_not_silently_accommodated(monkeypatch: pytest.Monke
         def __init__(self) -> None: ...
 
     monkeypatch.setattr(embedding, "VLLMEmbeddingClient", _ParamlessFake)
-    monkeypatch.setattr(clients, "_default_embed_dim", lambda _s: 128)
+    monkeypatch.setattr(clients, "_default_embed_dim", lambda _s, _t: 128)
 
     with pytest.raises(ServiceUnavailableError):
-        clients.ensure_embedder(cast("AppState", _State()))
+        clients.ensure_embedder(cast("AppState", _State()), None)
 
 
 def test_the_embedder_is_constructed_with_the_real_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,10 +61,10 @@ def test_the_embedder_is_constructed_with_the_real_kwargs(monkeypatch: pytest.Mo
             seen["expected_dim"] = expected_dim
 
     monkeypatch.setattr(embedding, "VLLMEmbeddingClient", _Fake)
-    monkeypatch.setattr(clients, "_default_embed_dim", lambda _s: 128)
+    monkeypatch.setattr(clients, "_default_embed_dim", lambda _s, _t: 128)
 
     state = _State()
-    built = clients.ensure_embedder(cast("AppState", state))
+    built = clients.ensure_embedder(cast("AppState", state), None)
 
     assert seen == {"embed_url": "http://embed.invalid", "expected_dim": 128}
     assert state.embedder is built, "the accessor must cache the client on the state"

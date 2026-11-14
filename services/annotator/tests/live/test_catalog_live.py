@@ -2,12 +2,9 @@
 
 Auto-skips unless ``MEDIA_CATALOG_URL`` points at a running catalog (e.g.
 ``http://127.0.0.1:8180`` booted from the lance-ns checkout against RustFS).
-Everything here drives OUR seams — ``NamespaceCatalogTransport`` /
-``NamespaceCatalogWriteTransport`` (the stock Lance Namespace SDK) behind ``MEDIA_READ/WRITE_BACKEND`` and the real
-``check_base_version_value`` conflict check — against THEIR wire: table create
-(Arrow-IPC stream), query (empty-vector scan → Arrow-IPC file), merge_insert
-(stream body), delete, and the version primitive
-(``describe?load_detailed_metadata=true``).
+Everything here drives OUR seams — the table opened through the stock Lance Namespace SDK on the credential
+DescribeTable vends, ``NamespaceCatalogWriteTransport`` for the writes, and the real ``check_base_version_value``
+conflict check — against THEIR wire: table create (Arrow-IPC stream), describe, merge_insert (stream body) and delete.
 
 Each run creates a FRESH uuid-suffixed table so re-runs never collide; the
 catalog owns the storage (RustFS bucket) and its own cleanup policy. The loop
@@ -23,15 +20,14 @@ import uuid
 from datetime import UTC, datetime
 
 import httpx
+import lance
 import pyarrow as pa
 import pyarrow.ipc as ipc
 import pytest
 
 from annotator.annotations.commit import check_base_version_value
 from annotator.annotations.schema import EMPTY_SCHEMA
-from client_kit.lancekit.catalog import NamespaceCatalogTransport, NamespaceCatalogWriteTransport, connect_catalog
-from client_kit.lancekit.reader import CatalogTableReader
-from client_kit.lancekit.writer import CatalogTableWriter
+from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog, translate_catalog_errors
 from service_kit.exceptions import ConflictError, NotFoundError
 
 
@@ -141,30 +137,42 @@ def table_id() -> list[str]:
     return [*NAMESPACE.split("$"), name]
 
 
-@pytest.fixture(scope="module")
-def reader(table_id: list[str]) -> CatalogTableReader:
-    return CatalogTableReader(NamespaceCatalogTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None)), table_id)
+class _Table:
+    """The table as the media plane reads it: opened through the namespace at its latest version on every read."""
+
+    def __init__(self, table_id: list[str]) -> None:
+        self._client = connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None)
+        self._id = table_id
+
+    def latest(self) -> lance.LanceDataset:
+        with translate_catalog_errors():
+            return lance.dataset(namespace_client=self._client, table_id=self._id)
 
 
 @pytest.fixture(scope="module")
-def writer(table_id: list[str]) -> CatalogTableWriter:
-    return CatalogTableWriter(NamespaceCatalogWriteTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None), table_id), table_id)
+def reader(table_id: list[str]) -> _Table:
+    return _Table(table_id)
 
 
-def test_milestone_loop(reader: CatalogTableReader, writer: CatalogTableWriter) -> None:
+@pytest.fixture(scope="module")
+def writer(table_id: list[str]) -> NamespaceCatalogWriteTransport:
+    return NamespaceCatalogWriteTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None), table_id)
+
+
+def test_milestone_loop(reader: _Table, writer: NamespaceCatalogWriteTransport) -> None:
     """The whole condition-4 story in order: human save → 409 handshake → model
     predictions → replace-protects-humans → insert-only never clobbers."""
     # 1. Human save, then read it back.
     writer.merge_upsert(_table([_row("human-1", source="human", status="accepted", confidence=1.0)]), on="id")
-    got = reader.to_table(filter="source = 'human'")
+    got = reader.latest().to_table(filter="source = 'human'")
     assert got.num_rows == 1
     assert got["label"][0].as_py() == "person"
 
     # 2. The 409 handshake against THEIR version primitive: client A loads at v,
     #    client B commits, A's stale save must be rejected.
-    loaded = reader.table_version()
+    loaded = int(reader.latest().version)
     writer.merge_upsert(_table([_row("human-2", source="human", status="accepted", confidence=1.0)]), on="id")
-    current = reader.table_version()
+    current = int(reader.latest().version)
     assert current > loaded
     with pytest.raises(ConflictError, match=rf"loaded v{loaded}, now v{current}"):
         check_base_version_value(current, loaded)
@@ -180,11 +188,11 @@ def test_milestone_loop(reader: CatalogTableReader, writer: CatalogTableWriter) 
         ),
         on="id",
     )
-    assert reader.count_rows("source LIKE 'model:%'") == 2
+    assert reader.latest().count_rows("source LIKE 'model:%'") == 2
 
     # 4. …and a model re-run deletes ONLY its predictions: humans survive.
     writer.delete("source LIKE 'model:%' AND status = 'prediction'")
-    remaining = reader.to_table(columns=["id", "source"])
+    remaining = reader.latest().to_table(columns=["id", "source"])
     assert sorted(remaining["id"].to_pylist()) == ["human-1", "human-2"]
     assert set(remaining["source"].to_pylist()) == {"human"}
 
@@ -203,7 +211,7 @@ def test_milestone_loop(reader: CatalogTableReader, writer: CatalogTableWriter) 
         ),
         on="id",
     )
-    got = reader.to_table(filter="id = 'human-1'", columns=["label"])
+    got = reader.latest().to_table(filter="id = 'human-1'", columns=["label"])
     assert got["label"][0].as_py() == "person"
 
 
@@ -223,6 +231,6 @@ def test_catalog_errors_translate_to_domain_errors() -> None:
     holds it on a real OpenFGA, including `a-table-the-caller-cannot-see-answers-as-an-absent-one` (a hidden object
     answers as an absent one does) and `no-parent-rung-no-answer` (no probe from outside the hierarchy).
     """
-    missing = CatalogTableReader(NamespaceCatalogTransport(connect_catalog(CATALOG_URL, token=CATALOG_TOKEN or None)), [*NAMESPACE.split("$"), "no_such_table"])
+    missing = _Table([*NAMESPACE.split("$"), "no_such_table"])
     with pytest.raises(NotFoundError):
-        missing.to_table(limit=1)
+        missing.latest()

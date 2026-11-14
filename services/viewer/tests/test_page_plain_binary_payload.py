@@ -21,7 +21,6 @@ asked of ``ds.schema``), and a double would restate the assumption instead of te
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import lance
 import pyarrow as pa
@@ -29,13 +28,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from client_kit.media.config import Settings
+from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
+from tests.media_catalog import namespace_client, write_table
 from viewer.api.v1.endpoints import pages as pg
 from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
 
 
-TABLE = "bronze$pages"
+TABLE: str = "acme$bronze$pages"
 
 #: Real JPEG magic so the sniff is exercised on the fixture — a payload that were not actually a
 #: JPEG would honestly be served as `application/octet-stream` and the content-type assertion below
@@ -58,26 +60,9 @@ def dataset_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "payload": pa.array([_JPEG, None], pa.large_binary()),
         }
     )
-    path = tmp_path_factory.mktemp("plainpages") / "pages.lance"
-    lance.write_dataset(table, str(path))
-    return path
-
-
-def _catalog_ok() -> Any:
-    """A pooled catalog client `_resolve` posts through — answers 200 with a location."""
-
-    class _Resp:
-        status_code = 200
-
-        @staticmethod
-        def json() -> dict[str, str]:
-            return {"location": "s3://bkt/tbl.lance"}
-
-    class _Client:
-        def post(self, _url: str, **_kw: Any) -> _Resp:
-            return _Resp()
-
-    return _Client()
+    root = tmp_path_factory.mktemp("plainpages")
+    write_table(root, TABLE.split("$"), table)
+    return root
 
 
 def _app() -> FastAPI:
@@ -107,20 +92,14 @@ def _app() -> FastAPI:
     app.dependency_overrides[pg.CheckerDep.__metadata__[0].dependency] = lambda: checker
     app.dependency_overrides[pg.CurrentSubject.__metadata__[0].dependency] = lambda: "gina"
     app.dependency_overrides[pg.RawBearerToken.__metadata__[0].dependency] = lambda: "caller-jwt"
-    # `storage_options` is a METHOD on the real settings (it performs a blocking Dapr secret fetch),
-    # so the double has to be one too or it tests a shape production does not have.
-    state = type(
-        "_State",
-        (),
-        {"settings": type("S", (), {"catalog_uri": "http://catalog", "storage_options": lambda _self: {}})(), "http": _catalog_ok()},
-    )()
+    state = AppState(settings=Settings())
     app.dependency_overrides[pg.StateDep.__metadata__[0].dependency] = lambda: state
     return app
 
 
 @pytest.fixture
 def _plain_dataset(dataset_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    real = lance.dataset(str(dataset_path))
+    real = lance.dataset(namespace_client=namespace_client(dataset_path), table_id=TABLE.split("$"))
     monkeypatch.setattr(pg.lance, "dataset", lambda *_a, **_kw: real)
 
 

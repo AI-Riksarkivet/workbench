@@ -69,11 +69,14 @@ def test_schema_single_source_of_truth(tmp_path: Path) -> None:
 
     spec = importlib.util.spec_from_file_location("seed_annotations", P(__file__).resolve().parents[3] / "scripts" / "seed_annotations.py")
     assert spec is not None and spec.loader is not None
+    from tests.media_catalog import namespace_client
+
     seed_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed_mod)
 
-    uri = seed_mod.seed(str(tmp_path), "a" * 16)
-    seeded = lance.dataset(uri).schema
+    client = namespace_client(tmp_path)
+    table_id = seed_mod.seed(client, ["acme", "demo"], "a" * 16)
+    seeded = lance.dataset(namespace_client=client, table_id=table_id).schema
     expected = pa.schema(
         [
             ("doc_id", pa.string()),

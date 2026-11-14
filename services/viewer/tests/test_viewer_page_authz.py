@@ -14,38 +14,46 @@ image bytes and takes `can_read_data`. The model already separates them, and for
 difference is the point: knowing that a volume of sealed records exists is a different permission
 from reading it.
 
-The third defect fixed here is the bearer. `_resolve` asked the catalog to resolve a table id while
-sending NO Authorization header at all — so on an auth-enabled catalog it 401'd, and where it
-succeeded it succeeded as nobody in particular. The caller's bearer already arrives at the viewer
-(sealed cookie -> zone BFF -> gateway); it was simply dropped on the floor.
+The third defect fixed here is the bearer. The table was resolved at the catalog with NO Authorization header at all —
+so on an auth-enabled catalog it 401'd, and where it succeeded it succeeded as nobody in particular. The caller's bearer
+already arrives at the viewer (sealed cookie -> zone BFF -> gateway); it rides the namespace client the table opens
+through, observed at a real socket because that client is pylance's Rust REST client.
 """
 
 from __future__ import annotations
 
+import http.server
+import json
+import threading
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from lance import blob_array, blob_field
 
+from client_kit.media.config import Settings
+from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
+from tests.media_catalog import write_table
 from viewer.api.security import READ_DATA, READ_METADATA
 from viewer.api.v1.endpoints import pages as pg
 from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
 
 
-TABLE = "bronze$pages"
+TABLE: str = "acme$bronze$pages"
+
+#: REAL magic bytes, not the string "JPEGBYTES". The route sniffs the payload instead of asserting `image/jpeg` over
+#: whatever it was handed (open_fastapi-audit), so a fixture that is not actually a JPEG would correctly be served as
+#: `application/octet-stream` — and the content-type assertion below would be testing the fixture rather than the route.
+_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00"
 
 
-def _app(
-    *,
-    allow: Any,
-    seen: list[dict[str, Any]] | None = None,
-    subject: str = "dex~gina",
-    token: str | None = "caller-jwt",
-    http: Any | None = None,
-) -> FastAPI:
+def _app(settings: Settings, *, allow: Any, seen: list[dict[str, Any]] | None = None, subject: str = "dex~gina", token: str | None = "caller-jwt") -> FastAPI:
     async def checker(*, user: str, relation: str, obj: str) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
@@ -55,59 +63,31 @@ def _app(
     app.include_router(router)
     register_handlers(app)
 
-    settings = ViewerSettings.model_validate(
+    viewer_settings = ViewerSettings.model_validate(
         {
             "WORKBENCH_FGA_ENABLED": True,
             "WORKBENCH_OIDC_ENABLED": True,
             "WORKBENCH_OIDC_ISSUER": "https://issuer.test",
             "WORKBENCH_OIDC_AUDIENCE": "rask",
             "WORKBENCH_OIDC_CONNECTORS": {"local": "dex"},
+            **({"MEDIA_CATALOG_URI": settings.catalog_uri} if settings.catalog_uri else {"MEDIA_CATALOG_DIR": str(settings.catalog_dir)}),
         }
     )
-    app.dependency_overrides[get_viewer_settings] = lambda: settings
+    app.dependency_overrides[get_viewer_settings] = lambda: viewer_settings
     app.dependency_overrides[pg.CheckerDep.__metadata__[0].dependency] = lambda: checker
     app.dependency_overrides[pg.CurrentSubject.__metadata__[0].dependency] = lambda: subject
     app.dependency_overrides[pg.RawBearerToken.__metadata__[0].dependency] = lambda: token
-
-    # `storage_options` is a METHOD on the real settings (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" E2: it performs a
-    # blocking Dapr secret fetch, and a @property disguised that as a free attribute read). The
-    # double has to match, or it tests a shape production does not have. `http` carries the pooled
-    # catalog stub `_resolve` posts through (VS-12) — the resolve reuses `state.http` rather than
-    # constructing a client per call.
-    state = type(
-        "_State",
-        (),
-        {
-            "settings": type("S", (), {"catalog_uri": "http://catalog", "storage_options": lambda _self: {}})(),
-            "http": http if http is not None else _catalog_ok(),
-        },
-    )()
+    state = AppState(settings=settings)
     app.dependency_overrides[pg.StateDep.__metadata__[0].dependency] = lambda: state
     return app
 
 
-@pytest.fixture(autouse=True)
-def _fake_dataset(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
-    """Stub only the LANCE layer, deliberately leaving `_open` and `_resolve` real.
-
-    The first cut stubbed `_open` itself, which made every bearer assertion in this file vacuous:
-    `_resolve` never ran, so no header was ever sent and the tests passed against a route that
-    forwarded nothing. Stubbing one layer deeper — `lance.dataset` — keeps the catalog round-trip on
-    the real code path, which is the thing being asserted.
-
-    A REAL tiny blob-v2 dataset rather than a hand-built double of the read seam: the routes read
-    through Lance's own take-path (`id -> _rowid -> take_blobs`), and a double of an internal seam
-    dies silently the moment the read path moves — this file has already had all nine of its gate
-    tests error against a double of a function the routes no longer called. Real bytes through the
-    real read path cannot drift out from under the gate.
-    """
-    import lance
-    import pyarrow as pa
-    from lance import blob_array, blob_field
-
-    uri = str(tmp_path_factory.mktemp("authz") / "pages.lance")
-    # The governed-tier columns the LISTING projects (_PAGE_COLUMNS) must exist, or the listing
-    # route fails on schema rather than deciding authorization — which is what this file is for.
+@pytest.fixture
+def pages(tmp_path: Path) -> Settings:
+    """A REAL tiny blob-v2 page table in a directory catalog, read through Lance's own take-path
+    (`id -> _rowid -> take_blobs`): a double of an internal seam dies silently the moment the read path moves. The
+    governed-tier columns the LISTING projects must exist, or the listing fails on schema rather than deciding
+    authorization — which is what this file is for."""
     table = pa.table(
         {
             "id": pa.array([0, 1], pa.int64()),
@@ -117,43 +97,50 @@ def _fake_dataset(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.Temp
         },
         schema=pa.schema([pa.field("id", pa.int64()), pa.field("source_uri", pa.string()), pa.field("stage", pa.string()), blob_field("payload")]),
     )
-    lance.write_dataset(table, uri, data_storage_version="2.2", enable_stable_row_ids=True)
-    real = lance.dataset(uri)
-    monkeypatch.setattr(pg.lance, "dataset", lambda *_a, **_kw: real)
+    write_table(tmp_path, TABLE.split("$"), table)
+    return Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)})
 
 
-def _catalog_ok(seen_headers: list[dict[str, str]] | None = None) -> Any:
-    """A pooled catalog client `_resolve` posts through — answers 200 with a location."""
+class _Catalog:
+    """A catalog's REST door on a real socket: it records the bearer of each DescribeTable and answers ``status``."""
 
-    class _Resp:
-        status_code = 200
+    def __init__(self) -> None:
+        self.bearers: list[str | None] = []
+        self.status = 404
+        catalog = self
 
-        @staticmethod
-        def json() -> dict[str, str]:
-            return {"location": "s3://bkt/tbl.lance"}
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - the stdlib's handler name
+                catalog.bearers.append(self.headers.get("Authorization"))
+                body = json.dumps({"error": "refused", "code": {401: 16, 404: 4}[catalog.status]}).encode()
+                self.send_response(catalog.status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
-    class _Client:
-        def post(self, _url: str, **kwargs: Any) -> _Resp:
-            if seen_headers is not None:
-                seen_headers.append(dict(kwargs.get("headers") or {}))
-            return _Resp()
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - the stdlib's parameter name
+                return None
 
-    return _Client()
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+
+@pytest.fixture
+def catalog(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Catalog]:
+    stub = _Catalog()
+    threading.Thread(target=stub._server.serve_forever, daemon=True).start()
+    monkeypatch.delenv("MEDIA_CATALOG_DIR")
+    yield stub
+    stub._server.shutdown()
 
 
 # --- the gate ---------------------------------------------------------------------------------
 
 
-#: REAL magic bytes, not the string "JPEGBYTES". The route sniffs the payload now instead of asserting
-#: `image/jpeg` over whatever it was handed (open_fastapi-audit), so a fixture that is not actually a
-#: JPEG would correctly be served as `application/octet-stream` — and the content-type assertion below
-#: would be testing the fixture rather than the route.
-_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00"
-
-
-def test_page_BYTES_are_refused_without_a_grant() -> None:
+def test_page_BYTES_are_refused_without_a_grant(pages: Settings) -> None:
     """The defect, stated directly: this used to return the image to anyone."""
-    client = TestClient(_app(allow=False))
+    client = TestClient(_app(pages, allow=False))
 
     r = client.get("/api/page", params={"table": TABLE, "id": 0})
 
@@ -161,14 +148,14 @@ def test_page_BYTES_are_refused_without_a_grant() -> None:
     assert _JPEG not in r.content
 
 
-def test_the_page_LISTING_is_refused_without_a_grant() -> None:
+def test_the_page_LISTING_is_refused_without_a_grant(pages: Settings) -> None:
     """A volume's contents name records someone may not know exist."""
-    client = TestClient(_app(allow=False))
+    client = TestClient(_app(pages, allow=False))
 
     assert client.get("/api/pages", params={"table": TABLE}).status_code == 403
 
 
-def test_bytes_need_can_read_data_while_the_listing_needs_only_metadata() -> None:
+def test_bytes_need_can_read_data_while_the_listing_needs_only_metadata(pages: Settings) -> None:
     """The two rungs are DIFFERENT, and that difference is the archival point.
 
     A caller granted metadata may see that a volume of sealed records exists and how many pages it
@@ -176,11 +163,12 @@ def test_bytes_need_can_read_data_while_the_listing_needs_only_metadata() -> Non
     whichever surface got the weaker one.
     """
     seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow=True, seen=seen))
+    client = TestClient(_app(pages, allow=True, seen=seen))
 
-    client.get("/api/pages", params={"table": TABLE})
-    client.get("/api/page", params={"table": TABLE, "id": 0})
+    listing = client.get("/api/pages", params={"table": TABLE})
+    page = client.get("/api/page", params={"table": TABLE, "id": 0})
 
+    assert (listing.status_code, page.status_code, page.content) == (200, 200, _JPEG)
     assert [s["relation"] for s in seen] == [READ_METADATA, READ_DATA]
     assert {s["obj"] for s in seen} == {f"table:{TABLE}"}
 
@@ -188,39 +176,29 @@ def test_bytes_need_can_read_data_while_the_listing_needs_only_metadata() -> Non
 # --- the bearer -------------------------------------------------------------------------------
 
 
-def test_the_CALLERS_bearer_is_forwarded_to_the_catalog() -> None:
+def test_the_CALLERS_bearer_is_forwarded_to_the_catalog(catalog: _Catalog) -> None:
     """Not a service credential, and not nothing.
 
     `raw_bearer`'s own docstring says why a service token is wrong: the catalog checks one relation
     on one `table:` object and injects no row predicate, so a service identity answers 200 for a
     caller with no grant at all. Before this, the header was absent entirely.
     """
-    headers: list[dict[str, str]] = []
-    client = TestClient(_app(allow=True, token="caller-jwt", http=_catalog_ok(headers)))
+    client = TestClient(_app(Settings.model_validate({"MEDIA_CATALOG_URI": catalog.url}), allow=True, token="caller-jwt"))
 
     client.get("/api/page", params={"table": TABLE, "id": 0})
 
-    assert headers == [{"Authorization": "Bearer caller-jwt"}]
+    assert catalog.bearers == ["Bearer caller-jwt"]
 
 
-def test_a_catalog_401_says_WHICH_credential_problem_it_was() -> None:
-    """ "No credential sent" and "credential refused" are different problems with different fixes.
+def test_a_catalog_401_says_WHICH_credential_problem_it_was(catalog: _Catalog) -> None:
+    """ "No credential sent" and "credential refused" are different problems with different fixes: "the caller is
+    anonymous" and "the caller was refused" send a reader in opposite directions."""
+    catalog.status = 401
+    settings = Settings.model_validate({"MEDIA_CATALOG_URI": catalog.url})
 
-    The route already refused to launder 401/403 into "unknown table" — the annotator lost real
-    debugging time to that. Now that a bearer is actually forwarded, the message distinguishes the
-    two cases, because "the caller is anonymous" and "the caller was refused" send a reader in
-    opposite directions.
-    """
+    anon = TestClient(_app(settings, allow=True, token=None)).get("/api/page", params={"table": TABLE, "id": 0})
+    held = TestClient(_app(settings, allow=True, token="caller-jwt")).get("/api/page", params={"table": TABLE, "id": 0})
 
-    class _Resp:
-        status_code = 401
-
-    class _Client:
-        def post(self, _url: str, **_kw: Any) -> _Resp:
-            return _Resp()
-
-    anon = TestClient(_app(allow=True, token=None, http=_Client())).get("/api/page", params={"table": TABLE, "id": 0})
-    held = TestClient(_app(allow=True, token="caller-jwt", http=_Client())).get("/api/page", params={"table": TABLE, "id": 0})
-
+    assert (anon.status_code, held.status_code) == (401, 401)
     assert "no bearer was sent" in anon.text
     assert "bearer was refused" in held.text

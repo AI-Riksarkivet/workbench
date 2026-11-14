@@ -33,7 +33,7 @@ from client_kit.media.middleware import register_media_middleware
 def test_the_media_factory_applies_a_body_cap() -> None:
     """The apps that accept uploads were the ones without a ceiling."""
     app = FastAPI()
-    register_media_middleware(app, MediaSettings())
+    register_media_middleware(app, MediaSettings.model_validate({"MEDIA_CATALOG_DIR": "/catalog"}))
 
     names = [getattr(m.cls, "__name__", repr(m.cls)) for m in app.user_middleware]
     assert "BodySizeLimitMiddleware" in names, (

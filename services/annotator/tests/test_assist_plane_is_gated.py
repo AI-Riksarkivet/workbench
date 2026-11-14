@@ -28,31 +28,22 @@ level when every route in the group needs it, "cheaper to read and harder to for
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import lance
+import pyarrow as pa
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_checker
-from annotator.api.v1.endpoints import assist as assist_ep
 from annotator.api.v1.endpoints.assist import router
-from annotator.corpus import Corpus
-from client_kit.lancekit.descriptor import Declared
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
+from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
-
-
-class _State:
-    """The app state `require_assist` reads: its settings, which name the corpus table's catalog object.
-
-    The gate must be provable without a corpus on disk — the whole point is that the check happens BEFORE any unit
-    is read.
-    """
-
-    def __init__(self) -> None:
-        self.settings = Settings()
+from tests.media_catalog import write_table
 
 
 def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: str = "gina") -> FastAPI:
@@ -63,7 +54,7 @@ def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: st
             record.append({"user": user, "relation": relation, "obj": obj})
         return allow
 
-    state = _State()
+    state = AppState(settings=Settings())
 
     app = FastAPI()
     app.include_router(router)
@@ -77,18 +68,19 @@ def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: st
 
 
 #: The corpus the gate resolves: its documents binding names the table the write rung is asked on.
-CORPUS = Corpus(
-    id="acme$corpus-1",
-    declared=Declared.model_validate(
-        {"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}, "document": {"table": "documents", "media_blob": "image"}}
-    ),
-)
+CORPUS_DECLARED = {"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}, "document": {"table": "documents", "media_blob": "image"}}
 
 
 @pytest.fixture(autouse=True)
-def _resolve_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resolving a corpus asks the catalog; the gate must be testable with no catalog and no corpus present."""
-    monkeypatch.setattr(assist_ep, "resolve", lambda *_a, **_k: CORPUS)
+def _corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The corpus, in a directory catalog the settings read, as the default dataset. The gate is decided before any unit
+    is read, so the documents table holds no row."""
+    documents = pa.table(
+        {"doc_id": pa.array([], pa.string()), "image": lance.blob_array([])}, schema=pa.schema([pa.field("doc_id", pa.string()), lance.blob_field("image")])
+    )
+    write_table(tmp_path, ["acme", "corpus-1", "documents"], documents, descriptor=CORPUS_DECLARED)
+    monkeypatch.setenv("MEDIA_CATALOG_DIR", str(tmp_path))
+    monkeypatch.setenv("MEDIA_DEFAULT_DATASET", "acme$corpus-1")
 
 
 BODY = {"producer": "sam", "prompt": "a line of text"}

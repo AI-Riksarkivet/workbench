@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from viewer.api.v1.endpoints import graph as graph_ep
 
@@ -35,33 +36,26 @@ _BUILD_HOLD_S = 5.0
 _OTHER_DATASET_BUDGET_S = 2.0
 
 
-class _Handle:
-    """The parts of a `DatasetHandle` the graph cache path touches."""
-
-    def __init__(self, dataset_id: str) -> None:
-        self.uri = f"memory://{dataset_id}"
-        self.id = dataset_id
-        self.storage_options: dict[str, str] = {}
-        self.descriptor = _Descriptor()
-
-    def table_uri(self, name: str) -> str:
-        return f"{self.uri}/{name}"
-
-
-class _Descriptor:
-    declared: Any = None
-
-
 class _Version:
     version = 7
 
 
-class _Lance:
-    """Stands in for the `lance` module: only `dataset(...).version` is read here."""
+class _Handle:
+    """The parts of a `DatasetHandle` the graph cache path touches: every KG table exists, at a stable version."""
 
-    @staticmethod
-    def dataset(*_a: object, **_k: object) -> _Version:
+    def __init__(self, dataset_id: str) -> None:
+        self.id = dataset_id
+        self.descriptor = _Descriptor()
+
+    def has_table(self, _name: str) -> bool:
+        return True
+
+    def dataset(self, _name: str) -> _Version:
         return _Version()
+
+
+class _Descriptor:
+    declared: Any = None
 
 
 def _resources(clip_title_column: str | None = None) -> graph_ep._GraphResources:
@@ -84,16 +78,14 @@ def _kg_tables_exist(monkeypatch: pytest.MonkeyPatch) -> None:
         "_kg_tables",
         lambda _declared: graph_ep._KgTables(entities="kg_entities", chunks="kg_chunks", mentions="kg_mentions", relationships="kg_relationships"),
     )
-    monkeypatch.setattr(graph_ep.store, "exists", lambda *_a, **_k: True)
-    monkeypatch.setattr(graph_ep, "lance", _Lance)
-    monkeypatch.setattr(graph_ep, "dataset_handle", lambda _state, dataset=None: _Handle(dataset or "default"))
+    monkeypatch.setattr(graph_ep, "dataset_handle", lambda _state, dataset=None, _caller_token=None: _Handle(dataset or "default"))
 
 
 def _count_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     built: list[str] = []
 
     def _build(handle: _Handle, _names: graph_ep._KgTables) -> graph_ep._GraphResources:
-        built.append(handle.uri)
+        built.append(handle.id)
         return _resources()
 
     monkeypatch.setattr(graph_ep, "_build_resources", _build)
@@ -104,8 +96,8 @@ def test_two_apps_do_not_share_one_engine_cache(monkeypatch: pytest.MonkeyPatch)
     """A second app must build its OWN engine — it has its own registry, settings and lifetime."""
     built = _count_builds(monkeypatch)
 
-    graph_ep.get_status(AppState(), dataset="isolation-corpus")
-    graph_ep.get_status(AppState(), dataset="isolation-corpus")
+    graph_ep.get_status(AppState(settings=Settings()), dataset="isolation-corpus")
+    graph_ep.get_status(AppState(settings=Settings()), dataset="isolation-corpus")
 
     assert len(built) == 2, (
         f"the second app was served the first app's cached engine (builds: {built}) — one module-global dict is shared by every app in the process"
@@ -120,7 +112,7 @@ def test_tearing_an_app_down_releases_its_engines(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(graph_ep, "_build_resources", lambda *_a, **_k: holder[0])
     alive = weakref.ref(holder[0])
 
-    state = AppState()
+    state = AppState(settings=Settings())
     graph_ep.get_status(state, dataset="teardown-corpus")
 
     holder.clear()
@@ -141,7 +133,7 @@ def test_a_cold_build_for_one_dataset_does_not_block_another(monkeypatch: pytest
         return _resources()
 
     monkeypatch.setattr(graph_ep, "_build_resources", _build)
-    state = AppState()
+    state = AppState(settings=Settings())
 
     slow = threading.Thread(target=lambda: graph_ep.get_status(state, dataset="slow"), daemon=True)
     slow.start()
@@ -169,11 +161,11 @@ def test_concurrent_first_requests_build_once(monkeypatch: pytest.MonkeyPatch) -
     gate = threading.Barrier(2, timeout=_BUILD_HOLD_S)
 
     def _build(handle: _Handle, _names: graph_ep._KgTables) -> graph_ep._GraphResources:
-        built.append(handle.uri)
+        built.append(handle.id)
         return _resources()
 
     monkeypatch.setattr(graph_ep, "_build_resources", _build)
-    state = AppState()
+    state = AppState(settings=Settings())
 
     def _request() -> None:
         gate.wait()

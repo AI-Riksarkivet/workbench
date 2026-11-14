@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = [
     # `client_kit.media.lifespan` attaches the governed auth posture (`service_kit.governed`); `[arrow]` is the platform's
-    # input and credential guards (`service_kit.arrow_ipc`, `service_kit.storage_options`).
+    # input guard (`service_kit.arrow_ipc`).
     "service-kit[governed,arrow]",
     # The stock Lance Namespace SDK a client reaches the catalog's doors through (`lance_namespace.connect("rest")`,
     # pylance's `RestNamespace`); pylance 13.0.0 requires >=0.11.1,<0.12.

@@ -44,7 +44,7 @@ def _install(
     searched: list[str] = []
     refuse = refuse or set()
 
-    def dataset_handle(_state: Any, dataset_id: str | None = None) -> _Handle:
+    def dataset_handle(_state: Any, dataset_id: str | None = None, _caller_token: str | None = None) -> _Handle:
         if dataset_id in refuse:
             raise ValidationError(f"corpus {dataset_id} has no search bindings")
         return _Handle(str(dataset_id), ["doc_id"])
@@ -76,7 +76,7 @@ def fan(corpora: list[str], **kw: Any) -> list[dict[str, Any]]:
     # Request would add setup that proves nothing about the fan-out.
     state: Any = None
     request: Any = _Request()
-    return router_mod._fused_search(state, corpora, request, _spec(kw.pop("n", 10)), None, None)
+    return router_mod._fused_search(state, corpora, request, _spec(kw.pop("n", 10)), None, None, None)
 
 
 def test_the_result_is_RANK_fused_not_score_sorted(monkeypatch: pytest.MonkeyPatch) -> None:

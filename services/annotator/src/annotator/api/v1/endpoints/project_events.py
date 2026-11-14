@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     # Resolves the `_task_proxy` return type without importing the actor module (which pulls in
     # `dapr.actor`) at module scope — the runtime import stays lazy inside the function.
     from annotator.projects.actor import AnnotationTaskActorInterface
-from client_kit.media.state import AppState, dataset_handle
+from client_kit.media.state import AppState
 
 
 logger = logging.getLogger(__name__)
@@ -347,16 +347,15 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller_
     task terminal, so one of them wedges the project. Creating it is the mistake; refusing at send
     is where it costs nothing.
 
-    With a live catalog the catalog is asked, as the sender (`annotator.corpus.input_tables`): a dataset or
-    table the sender cannot see is one their items could never open, and each one it shows names the governed table
-    its captured version is of, which the send stamps on the item (`ItemSource.table`). Without one, the local
-    registry is asked, and no table is named.
+    The catalog is asked, as the sender (`annotator.corpus.input_tables`): a dataset or table the sender cannot see is
+    one their items could never open, and each one it shows names the governed table its captured version is of, which
+    the send stamps on the item (`ItemSource.table`).
 
     The whole send, not the offending items: a partial send produces exactly the half-populated
     project this is meant to prevent, and it costs ZERO seeded task actors to refuse here — the same
     argument the project-state check above makes.
 
-    An UNVERIFIABLE source lets the send through. If the catalog or the registry cannot be consulted
+    An UNVERIFIABLE source lets the send through. If the catalog cannot be consulted
     at all, refusing every send would take the whole labeling plane down for a check that is a guard,
     not a gate — the canvas still reports the real 404 at read, and removal still exists. Not being
     able to check is not evidence of a problem.
@@ -364,32 +363,12 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller_
     names = sorted({item.source.where for item in payload.items if item.source.where})
     if not names:
         return {}  # every item takes the backend default, which resolves by construction
-    if state.settings.rest_catalog_mode:
-        found = input_tables(state, names, caller_token)
-        if found is None:
-            return {}
-        if unseen := [name for name in names if name not in found]:
-            raise ConflictError(f"dataset(s) {unseen} do not exist or cannot be read — an item naming one could never be opened, claimed or completed")
-        return found
-    unknown: list[str] = []
-    for name in names:
-        try:
-            dataset_handle(state, name)
-        except NotFoundError:
-            unknown.append(name)
-        except Exception:  # noqa: BLE001 - see docstring: unverifiable is not the same as wrong
-            logger.warning("send could not consult the dataset registry; not refusing on a check that did not run")
-            return {}
-    if not unknown:
+    found = input_tables(state, names, caller_token)
+    if found is None:
         return {}
-    try:
-        # `dataset_handle` above populated the registry slot on first use, but the slot is
-        # Optional by declaration — narrow rather than assume; an empty `known` degrades fine.
-        known = sorted(state.registry.list_ids()) if state.registry is not None else []
-    except Exception:  # noqa: BLE001 - naming the alternatives is a nicety, never the refusal
-        known = []
-    detail = f"dataset(s) {unknown} do not exist — an item naming one could never be opened, claimed or completed"
-    raise ConflictError(f"{detail}; known datasets are {known}" if known else detail)
+    if unseen := [name for name in names if name not in found]:
+        raise ConflictError(f"dataset(s) {unseen} do not exist or cannot be read — an item naming one could never be opened, claimed or completed")
+    return found
 
 
 #: What `send` stamps onto a pre-annotation's `source`. The `import` precedent (§ `projects.imports`

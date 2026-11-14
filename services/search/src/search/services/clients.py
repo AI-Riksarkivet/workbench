@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _default_embed_dim(state: AppState) -> int:
+def _default_embed_dim(state: AppState, caller_token: str | None) -> int:
     """The query-vector dimension of the default dataset's semantic binding.
 
     Falls back to the first declared vector binding when no ``semantic`` mode
@@ -37,7 +37,7 @@ def _default_embed_dim(state: AppState) -> int:
     dataset declares no vectors at all — constructing an embedder then is a
     caller bug surfaced as the same 503 the accessor maps everything to.
     """
-    handle = dataset_handle(state)
+    handle = dataset_handle(state, None, caller_token)
     search = handle.descriptor.declared.search
     if search is None or not search.vectors:
         raise RuntimeError("default dataset declares no vector bindings")
@@ -45,7 +45,7 @@ def _default_embed_dim(state: AppState) -> int:
     return binding.dim
 
 
-def ensure_embedder(state: AppState) -> EmbeddingClient:
+def ensure_embedder(state: AppState, caller_token: str | None) -> EmbeddingClient:
     """Return the app's embedding client, connecting on first use (503 on failure)."""
     if state.embedder is not None:
         return state.embedder
@@ -55,7 +55,7 @@ def ensure_embedder(state: AppState) -> EmbeddingClient:
         # Constructed with the real kwargs, unconditionally (VS-19: a signature-introspecting
         # helper here existed to accommodate param-less test fakes, which meant a drifted real
         # signature dropped kwargs silently). A double that cannot take these fails loudly.
-        state.embedder = VLLMEmbeddingClient(state.settings.embed_url, expected_dim=_default_embed_dim(state))
+        state.embedder = VLLMEmbeddingClient(state.settings.embed_url, expected_dim=_default_embed_dim(state, caller_token))
         return state.embedder
     except Exception as e:
         logger.exception("failed to initialize embedding client")

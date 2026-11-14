@@ -12,7 +12,6 @@ from viewer.api.v1.endpoints.datasets import router as datasets_router
 from viewer.api.v1.endpoints.diarization import router as diarization_router
 from viewer.api.v1.endpoints.graph import router as graph_router
 from viewer.api.v1.endpoints.media import router as media_router
-from viewer.api.v1.endpoints.objects import router as objects_router
 from viewer.api.v1.endpoints.pages import router as pages_router
 from viewer.api.v1.endpoints.system import router as system_router
 from viewer.api.v1.endpoints.topics import router as topics_router
@@ -23,7 +22,6 @@ router = APIRouter()
 for r in (
     datasets_router,
     media_router,
-    objects_router,
     pages_router,
     chunks_router,
     system_router,

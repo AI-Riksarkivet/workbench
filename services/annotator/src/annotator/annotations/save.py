@@ -3,8 +3,8 @@
 Edits accumulate client-side (in-memory overlay + undo/redo); one Save patches only
 the editable fields onto the current rows (geometry/provenance carried forward) and
 ``merge_insert("id")`` commits them as ONE atomic new version — the lakehouse
-"version IS the handshake". (The catalog-governed write path is the merge step; this
-is the direct-write prototype, mirroring the direct read.)
+"version IS the handshake". The write goes through the catalog's merge_insert door as the
+person, so the catalog governs it.
 """
 
 import logging
@@ -26,9 +26,6 @@ from annotator.annotations.schema import (
 from annotator.api.security import CurrentSubject, RawBearerToken
 from annotator.corpus import resolve
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
-from client_kit.lancekit.reader import open_reader
-from client_kit.lancekit.registry import table_dataset
-from client_kit.lancekit.writer import open_writer
 from client_kit.media.deps import DatasetParam, StateDep
 
 
@@ -71,22 +68,16 @@ def save_annotations(
     corpus = resolve(state, dataset, caller_token)
     declared = corpus.declared
     doc_id = validate_doc_key(declared, doc_id)
-    # Full catalog mode never opens the local replica (the catalog 404s absent
-    # tables through the error translation); any other config keeps local resolution.
-    ds = None if corpus.local is None else table_dataset(corpus.local, ANNOTATIONS_TABLE)
-    # The version check AND the carry-forward read both go through the reader seam:
-    # in catalog mode the catalog table is the truth (patching against a stale local
-    # copy would resurrect old fields), and the 409 compares the version the client
-    # loaded against the same source the wire GET served it from.
-    table_id = state.settings.catalog_table_id(corpus.id, ANNOTATIONS_TABLE)
-    reader = open_reader(dataset=ds, table_id=table_id, settings=state.settings, caller_token=caller_token)
+    # The version check AND the carry-forward read are of the table the wire GET served: opened through the namespace
+    # as the caller, so the 409 compares the version the client loaded against the same source.
+    ds = corpus.handle.dataset(ANNOTATIONS_TABLE)
     # REQUIRED here (#50): this path commits a merge_upsert, which UPDATES matched rows, so a save
     # that does not state what it was built from can overwrite another annotator's fields. The tag
     # batch is insert-only and keeps the precondition optional — see check_base_version_value.
-    check_base_version_value(reader.table_version(), body.base_version, required=True)
+    check_base_version_value(int(ds.version), body.base_version, required=True)
 
     where = chunk_key_filter(declared, doc_id, (speech_id, chunk_id))
-    current = reader.to_table(filter=where)
+    current = ds.to_table(filter=where)
 
     # edits (patch existing) + inserts (new shapes) commit in ONE merge_insert; the
     # source is the union, keyed by id — matched ⇒ update, unmatched ⇒ insert.
@@ -118,9 +109,8 @@ def save_annotations(
         parts.append(new_rows(body.inserts, ident, current.schema))
     delta = pa.concat_tables(parts)
 
-    # Writes flow through the writer seam (direct default = byte-identical; catalog
-    # merge_insert/delete at merge, which yields OpenFGA + OpenLineage for free).
-    writer = open_writer(dataset=ds, table_id=table_id, settings=state.settings, caller_token=caller_token)
+    # Writes go through the catalog's merge_insert and delete doors as the caller, so the catalog governs them.
+    writer = corpus.handle.writer(ANNOTATIONS_TABLE)
     touched = 0
     if delta.num_rows:
         writer.merge_upsert(delta, "id")
@@ -134,7 +124,6 @@ def save_annotations(
         state.settings,
         touched=touched,
         unit_key=f"{doc_id}/{speech_id}/{chunk_id}",
-        caller_token=caller_token,
     )
     if touched:
         logger.info(

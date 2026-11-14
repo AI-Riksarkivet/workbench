@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
+import lance
 import pytest
 
-from annotator.annotations.versions import local_annotation_versions
+from annotator.annotations.versions import table_annotation_versions
 
 
 class _Concurrency:
@@ -77,7 +78,7 @@ class _Dataset:
 def test_the_limit_still_caps_the_snapshots_that_are_opened(limit: int) -> None:
     dataset = _Dataset(total=10)
 
-    rows = local_annotation_versions(dataset, "doc_id = 'a'", limit=limit)
+    rows = table_annotation_versions(cast("lance.LanceDataset", dataset), "doc_id = 'a'", limit=limit)
 
     assert len(rows) == limit
     assert len(dataset.checked_out) == limit, "a capped listing must not open the versions it will not return"

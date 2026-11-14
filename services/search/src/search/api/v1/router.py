@@ -38,6 +38,7 @@ from search.services.spec import PostSearchSpec, SearchMode, SearchSpec
 from search.services.target import resolve_target
 from search.services.vector import vector_search
 from service_kit.exceptions import DomainError, ValidationError
+from service_kit.governed.deps import RawBearerToken
 
 
 logger = logging.getLogger(__name__)
@@ -127,13 +128,14 @@ def search_get(
     # dependency because this handler is a sync `def` with a blocking Lance body and cannot await
     # the checker itself (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" X6 / VS-13).
     corpus: AuthorizedCorpora = None,
+    caller_token: RawBearerToken = None,
 ) -> list[dict[str, Any]]:
     spec = _spec_from_query(request)
     if corpus is not None:
         # An empty list means the caller asked to fan out and may read NONE of them: an empty result
         # is the same shorter-list answer, not an error.
-        return _fused_search(state, corpus, request, spec, get_embedder, get_reranker) if corpus else []
-    handle = dataset_handle(state, spec.dataset)
+        return _fused_search(state, corpus, request, spec, get_embedder, get_reranker, caller_token) if corpus else []
+    handle = dataset_handle(state, spec.dataset, caller_token)
     filters = extract_filters(request.query_params, _filterable(handle, spec.table))
     # Empty-input short-circuit: only the topic facet triggers filter-only
     # browse (the Tree page contract); other filters without a query stay [].
@@ -149,6 +151,7 @@ def _fused_search(
     spec: SearchSpec,
     get_embedder: Any,
     get_reranker: Any,
+    caller_token: str | None,
 ) -> list[dict[str, Any]]:
     """Search several corpora and fuse the results by RECIPROCAL RANK.
 
@@ -170,7 +173,7 @@ def _fused_search(
     key_fields: list[str] = []
     for dataset_id in dict.fromkeys(corpora):  # de-duplicated, order preserved
         try:
-            handle = dataset_handle(state, dataset_id)
+            handle = dataset_handle(state, dataset_id, caller_token)
             filters = extract_filters(request.query_params, _filterable(handle, spec.table))
             if not spec.q and not spec.q_vec and not filters.get(TOPIC_FILTER):
                 continue
@@ -236,10 +239,11 @@ async def search_post(
     checker: CheckerDep,
     settings: SettingsDep,
     image: Annotated[UploadFile | None, File()] = None,
-    dataset: Annotated[str | None, Query(description="Dataset id (default DB when omitted)")] = None,
+    dataset: Annotated[str | None, Query(description="Dataset id (the configured default when omitted)")] = None,
     table: Annotated[str | None, Query(description="Searchable table name (the corpus default when omitted)")] = None,
+    caller_token: RawBearerToken = None,
 ) -> list[dict[str, Any]]:
-    await require_search(state, dataset, table=table, subject=subject, checker=checker, settings=settings)
+    await require_search(state, dataset, table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token)
     image_bytes = None
     if image is not None:
         # Bound the read so a large multipart part can't be buffered whole
@@ -248,7 +252,7 @@ async def search_post(
         if len(image_bytes) > _MAX_IMAGE_BYTES:
             raise ValidationError(f"image upload exceeds {_MAX_IMAGE_BYTES // (1024 * 1024)} MB")
     # First resolution opens the Lance DB (blocking IO) — keep the loop free.
-    handle = await run_in_threadpool(dataset_handle, state, dataset)
+    handle = await run_in_threadpool(dataset_handle, state, dataset, caller_token)
     form = await request.form()  # already parsed by FastAPI; cached by Starlette
     form_values = {k: v for k, v in form.items() if isinstance(v, str)}
     filters = extract_filters(form_values, _filterable(handle, table))
@@ -263,9 +267,9 @@ async def search_post(
     return await run_in_threadpool(_cached_search, state, handle, spec, filters, image_bytes, get_embedder, get_reranker)
 
 
-def _run_similar(state: AppState, spec: SimilarSpec, dataset: str | None, table: str | None) -> list[dict[str, Any]]:
+def _run_similar(state: AppState, spec: SimilarSpec, dataset: str | None, table: str | None, caller_token: str | None) -> list[dict[str, Any]]:
     """The whole "more like this" path, off the event loop (every call below is blocking Lance IO)."""
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     target = resolve_target(handle, table)
 
     # WHICH vector space. A named one must exist — falling back to the default would answer a
@@ -329,8 +333,9 @@ async def search_similar(
     n: Annotated[int, Query(ge=1, le=200, description="How many neighbours")] = 24,
     space: Annotated[str | None, Query(description="Declared vector space (the corpus's first when omitted)")] = None,
     where: Annotated[str | None, Query(description="Raw SQL filter, ANDed")] = None,
-    dataset: Annotated[str | None, Query(description="Dataset id (default DB when omitted)")] = None,
+    dataset: Annotated[str | None, Query(description="Dataset id (the configured default when omitted)")] = None,
     table: Annotated[str | None, Query(description="Searchable table name (the corpus default when omitted)")] = None,
+    caller_token: RawBearerToken = None,
 ) -> list[dict[str, Any]]:
     """ "More like this" — the k nearest rows to one the caller already has.
 
@@ -347,6 +352,6 @@ async def search_similar(
     # (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-13 names that as the sharp edge of the service having no authz at all);
     # the predicate stays — `duration > 60` is a real feature — but it can now only ever run against
     # the corpus TABLE this caller may read — `table=`, the same one `_run_similar` resolves rows from.
-    await require_search(state, dataset, table=table, subject=subject, checker=checker, settings=settings)
+    await require_search(state, dataset, table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token)
     spec = SimilarSpec(key=key, n=n, space=space, where=where)
-    return await run_in_threadpool(_run_similar, state, spec, dataset, table)
+    return await run_in_threadpool(_run_similar, state, spec, dataset, table, caller_token)

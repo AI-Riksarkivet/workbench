@@ -41,10 +41,8 @@ governed = [
     "httpx>=0.27",
     "lance-namespace>=0.11.0,<0.12",
 ]
-# The input and credential guards: `service_kit.arrow_ipc`, the one validating decoder of an Arrow body, and
-# `service_kit.storage_options`, the S3 filesystem a store credential builds. That credential is the auth plane's
-# `S3KeyPair`, so the guards carry `[governed]` as well.
-arrow = ["service-kit[governed]", "pyarrow"]
+# The input guard: `service_kit.arrow_ipc`, the one validating decoder of an Arrow body.
+arrow = ["pyarrow"]
 
 # The platform's test seam ([[XC-190]]): pytest loads `service_kit.pytest_plugin` in any environment that installs this
 # package, so a client's suite gets the fixtures that keep it hermetic against the platform's process-global state with

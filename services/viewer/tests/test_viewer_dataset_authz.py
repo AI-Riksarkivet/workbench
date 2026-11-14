@@ -50,17 +50,17 @@ def _descriptor(dataset_id: str, row_table: str | None) -> DatasetDescriptor:
 
 
 class _Registry:
-    """Stands in for the on-disk DatasetRegistry."""
+    """Stands in for the DatasetRegistry: what the catalog lists for the caller, and each dataset's descriptor."""
 
     def __init__(self, ids: dict[str, str]) -> None:
         self._ids = ids
         #: Ids whose descriptor declares NO search block at all — the `Search | None` case.
         self.strip_search: set[str] = set()
 
-    def list_ids(self) -> list[str]:
+    def list_ids(self, _caller_token: str | None) -> list[str]:
         return list(self._ids)
 
-    def get(self, dataset_id: str) -> Any:
+    def get(self, dataset_id: str, _caller_token: str | None) -> Any:
         row_table = None if dataset_id in self.strip_search else self._ids[dataset_id]
         return type("H", (), {"descriptor": _descriptor(dataset_id, row_table)})()
 

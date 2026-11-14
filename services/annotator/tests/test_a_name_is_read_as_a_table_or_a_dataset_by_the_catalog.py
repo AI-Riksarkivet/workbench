@@ -25,7 +25,7 @@ DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "searches": [{"name": "def
 
 
 @pytest.fixture
-def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppState:
+def catalog(tmp_path: Path) -> AppState:
     root = str(tmp_path)
     client = lance_namespace.connect("dir", {"root": root})
     for namespace in (["acme"], ["acme", "media"], ["acme", "media", "nested"]):
@@ -35,9 +35,7 @@ def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppState:
         schema=pa.schema([("doc_id", pa.string()), ("text", pa.string())], metadata={DESCRIPTOR_METADATA_KEY: json.dumps(DESCRIPTOR).encode()}),
     )
     lancedb.connect_namespace("dir", {"root": root}).create_table("chunks", rows, namespace_path=["acme", "media"])
-    monkeypatch.setattr(corpus, "catalog_client", lambda _settings, _token: lance_namespace.connect("dir", {"root": root}))
-    settings = Settings.model_validate({"MEDIA_CATALOG_URI": "http://catalog.test", "MEDIA_READ_BACKEND": "catalog", "MEDIA_WRITE_BACKEND": "catalog"})
-    return AppState(settings=settings)
+    return AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": root}))
 
 
 def test_input_tables_reads_each_name_as_the_catalog_holds_it(catalog: AppState) -> None:

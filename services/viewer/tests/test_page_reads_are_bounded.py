@@ -40,13 +40,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from lance import BlobFile, blob_array, blob_field
 
+from client_kit.media.config import Settings
+from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
+from tests.media_catalog import namespace_client, write_table
 from viewer.api.v1.endpoints import pages as pg
 from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
 
 
-TABLE = "bronze$pages"
+TABLE: str = "acme$bronze$pages"
 
 #: 256 KiB per row across 8 rows = a 2 MiB corpus. Large enough that reading all of it to serve one
 #: page is unmistakable in the counter, small enough to stay a unit test.
@@ -99,9 +102,9 @@ def dataset_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
         },
         schema=schema,
     )
-    path = tmp_path_factory.mktemp("pages") / "pages.lance"
-    lance.write_dataset(table, str(path), data_storage_version="2.2", enable_stable_row_ids=True)
-    return path
+    root = tmp_path_factory.mktemp("pages")
+    write_table(root, TABLE.split("$"), table)
+    return root
 
 
 class _CountingScanner:
@@ -154,28 +157,6 @@ class _CountingDataset:
         return handles
 
 
-def _catalog_ok() -> Any:
-    """`httpx.Client` stub so `_resolve` reaches a catalog that answers 200 with a location."""
-
-    class _Resp:
-        status_code = 200
-
-        @staticmethod
-        def json() -> dict[str, str]:
-            return {"location": "s3://bkt/tbl.lance"}
-
-    class _Client:
-        def __init__(self, **_kw: Any) -> None: ...
-        def __enter__(self) -> _Client:
-            return self
-
-        def __exit__(self, *_exc: object) -> None: ...
-        def post(self, _path: str, **_kw: Any) -> _Resp:
-            return _Resp()
-
-    return _Client
-
-
 def _app() -> FastAPI:
     """The pages router with the authorization plane satisfied — this file measures reads, not gates.
 
@@ -203,15 +184,7 @@ def _app() -> FastAPI:
     app.dependency_overrides[pg.CheckerDep.__metadata__[0].dependency] = lambda: checker
     app.dependency_overrides[pg.CurrentSubject.__metadata__[0].dependency] = lambda: "gina"
     app.dependency_overrides[pg.RawBearerToken.__metadata__[0].dependency] = lambda: "caller-jwt"
-    # `storage_options` is a METHOD on the real settings (it performs a blocking Dapr secret fetch),
-    # so the double has to be one too or it tests a shape production does not have. `http` carries the
-    # pooled catalog stub `_resolve` posts through (VS-12) — the resolve reuses `state.http` rather
-    # than building a client per call.
-    state = type(
-        "_State",
-        (),
-        {"settings": type("S", (), {"catalog_uri": "http://catalog", "storage_options": lambda _self: {}})(), "http": _catalog_ok()()},
-    )()
+    state = AppState(settings=Settings())
     app.dependency_overrides[pg.StateDep.__metadata__[0].dependency] = lambda: state
     return app
 
@@ -219,7 +192,7 @@ def _app() -> FastAPI:
 @pytest.fixture
 def counted(dataset_path: Path, monkeypatch: pytest.MonkeyPatch) -> _CountingDataset:
     """Route `_open` at the counting wrapper, leaving `_resolve` and `_open` themselves real."""
-    counter = _CountingDataset(lance.dataset(str(dataset_path)))
+    counter = _CountingDataset(lance.dataset(namespace_client=namespace_client(dataset_path), table_id=TABLE.split("$")))
     monkeypatch.setattr(pg.lance, "dataset", lambda *_a, **_kw: counter)
     return counter
 
@@ -316,9 +289,9 @@ def big_page_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
         {"id": [0], "source_uri": ["iiif://big/0"], "stage": ["bronze"], "payload": blob_array([body])},
         schema=schema,
     )
-    path = tmp_path_factory.mktemp("bigpage") / "pages.lance"
-    lance.write_dataset(table, str(path), data_storage_version="2.2", enable_stable_row_ids=True)
-    return path
+    root = tmp_path_factory.mktemp("bigpage")
+    write_table(root, TABLE.split("$"), table)
+    return root
 
 
 def test_a_payload_over_the_threshold_is_streamed_not_buffered(big_page_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,7 +302,7 @@ def test_a_payload_over_the_threshold_is_streamed_not_buffered(big_page_path: Pa
     reads, so declaring it gives the browser a progress bar instead of a chunked stream of unknown
     length. Without this test the streaming branch is never entered by the suite at all.
     """
-    real = lance.dataset(str(big_page_path))
+    real = lance.dataset(namespace_client=namespace_client(big_page_path), table_id=TABLE.split("$"))
     monkeypatch.setattr(pg.lance, "dataset", lambda *_a, **_kw: real)
     handle = real.take_blobs("payload", ids=[0])[0]
     assert handle is not None
@@ -396,15 +369,15 @@ def plain_dataset_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "payload": pa.array(payloads, pa.large_binary()),
         }
     )
-    path = tmp_path_factory.mktemp("plainpages") / "pages.lance"
-    lance.write_dataset(table, str(path))
-    return path
+    root = tmp_path_factory.mktemp("plainpages")
+    write_table(root, TABLE.split("$"), table)
+    return root
 
 
 @pytest.fixture
 def counted_plain(plain_dataset_path: Path, monkeypatch: pytest.MonkeyPatch) -> _CountingDataset:
     """The plain-shaped dataset behind the same counting wrapper the blob-v2 fixtures use."""
-    counter = _CountingDataset(lance.dataset(str(plain_dataset_path)))
+    counter = _CountingDataset(lance.dataset(namespace_client=namespace_client(plain_dataset_path), table_id=TABLE.split("$")))
     monkeypatch.setattr(pg.lance, "dataset", lambda *_a, **_kw: counter)
     return counter
 

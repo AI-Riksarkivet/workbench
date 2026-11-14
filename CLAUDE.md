@@ -32,7 +32,7 @@ Not there yet: service-kit's `governed/decider.py` still asks rask's decision do
 provisions rask's authorization model. Replacing both with the workbench's own is spec row WB-5.
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
-names, changed freely: service-kit and storage, and the frontend packages `@workbench/ui`, `@workbench/api`,
+names, changed freely: service-kit, and the frontend packages `@workbench/ui`, `@workbench/api`,
 `@workbench/config`, `@workbench/dockview` and `@workbench/flow`. Its settings are `WORKBENCH_*` environment variables
 (the `LANCE_*` ones name what it asks of a lakehouse). rask's repository is `AI-Riksarkivet/rask`;
 compute (Ray Serve, the runners) is a repository of its own, called over HTTP.
@@ -101,8 +101,9 @@ The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and w
 Two language-pure planes, as in rask; never blur them.
 
 - `packages/`: reusable Python libraries, no entrypoints. `service-kit` (the service base: app factory, governed
-  auth, settings), `storage` (the S3 client seam), `client-kit` (the media app factory and dataset registry the
-  viewer, search and annotator share).
+  auth, settings) and `client-kit` (the media app factory and dataset registry the viewer, search and annotator
+  share). Every dataset is a catalog namespace opened through lance-namespace as the caller, on the credentials the
+  catalog vends: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
 - `runners/assist`: the annotator's assist model server, a sealed environment with its own `uv.lock`; not a workspace
   member, so its model pins never enter the services' resolution.

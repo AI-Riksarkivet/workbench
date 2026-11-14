@@ -26,14 +26,13 @@ import weakref
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Annotated, Any
 
-import lance
 import lance_graph as lg
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
 
-from client_kit.lancekit import store
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import REQUIRE_CORPUS_DATA, REQUIRE_CORPUS_METADATA
 from viewer.schemas.graph import (
     CypherResponse,
@@ -195,9 +194,9 @@ class _GraphResources(BaseModel):
 #: superseded version must not linger. Small: KGs rebuild rarely.
 _CACHE_MAX = 2
 
-#: Cache key: (db path, entities-table version). The version bump on a rebuild changes the key, so
-#: a stale engine is never served.
-type _CacheKey = tuple[str, int]
+#: Cache key: (dataset id, the versions of the four KG tables). A write to any of them changes the key, so a stale engine
+#: is never served.
+type _CacheKey = tuple[str, tuple[int, ...]]
 
 
 class _GraphCache:
@@ -306,7 +305,7 @@ def _build_resources(handle: DatasetHandle, names: _KgTables) -> _GraphResources
         "MENTIONS": names.mentions,
         "RELATIONSHIP": names.relationships,
     }
-    tables = {label: lance.dataset(handle.table_uri(name), storage_options=handle.storage_options).to_table() for label, name in files.items()}
+    tables = {label: handle.dataset(name).to_table() for label, name in files.items()}
     cfg = (
         lg.GraphConfigBuilder()
         .with_node_label("Entity", _ENTITY_ID_COL)
@@ -346,7 +345,7 @@ def _build_resources(handle: DatasetHandle, names: _KgTables) -> _GraphResources
 def _resources(state: AppState, handle: DatasetHandle) -> _GraphResources | None:
     """This APP's cached graph engine + lookups, or ``None`` if the graph isn't built.
 
-    Existence is probed on disk per request (not via the descriptor's startup
+    Existence is asked of the catalog per request (not read off the descriptor's startup
     table snapshot) so a KG built after the app started is served without a
     restart.
 
@@ -357,12 +356,15 @@ def _resources(state: AppState, handle: DatasetHandle) -> _GraphResources | None
     if names is None:
         return None
     all_names = (names.entities, names.chunks, names.mentions, names.relationships)
-    if not all(store.exists(handle.table_uri(n), handle.storage_options) for n in all_names):
+    if not all(handle.has_table(n) for n in all_names):
         return None
-    version = lance.dataset(handle.table_uri(names.entities), storage_options=handle.storage_options).version
+    # Every table the engine is built from is opened AS THE CALLER before anything cached is served: the cache is shared
+    # by every caller of the app, and an engine is served only to a caller whose own open of each of its tables succeeded
+    # in this request (a refusal propagates). The versions of all four key it, so a write to any one rebuilds it.
+    versions = tuple(int(handle.dataset(n).version) for n in all_names)
     # Single-flight + bounded: the ~20s/~370MB build must not run N times under a
     # cold-start thundering herd, and superseded versions must not accumulate.
-    return _cache_for(state).get_or_build((handle.uri, version), lambda: _build_resources(handle, names))
+    return _cache_for(state).get_or_build((handle.id, versions), lambda: _build_resources(handle, names))
 
 
 def _node(res: _GraphResources, entity_id: str) -> GraphNode | None:
@@ -389,9 +391,9 @@ def _run_rows(res: _GraphResources, cypher: str) -> list[dict[str, Any]]:
 
 
 @router.get("/status", dependencies=[REQUIRE_CORPUS_METADATA])
-def get_status(state: StateDep, dataset: DatasetParam = None) -> GraphStatusResponse:
+def get_status(state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> GraphStatusResponse:
     """Row counts for the explorer header, or ``built: false`` if the KG is absent."""
-    res = _resources(state, dataset_handle(state, dataset))
+    res = _resources(state, dataset_handle(state, dataset, caller_token))
     if res is None:
         return GraphStatusResponse(built=False)
     return GraphStatusResponse(
@@ -411,9 +413,9 @@ class CypherRequest(BaseModel):
 
 
 @router.post("/cypher", dependencies=[REQUIRE_CORPUS_DATA])
-def run_cypher(body: CypherRequest, state: StateDep, dataset: DatasetParam = None) -> CypherResponse:
+def run_cypher(body: CypherRequest, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> CypherResponse:
     """Run arbitrary read Cypher; invalid queries return ``error`` (HTTP 200)."""
-    res = _resources(state, dataset_handle(state, dataset))
+    res = _resources(state, dataset_handle(state, dataset, caller_token))
     if res is None:
         return CypherResponse(built=False)
     raw = body.query.strip()
@@ -437,9 +439,9 @@ def run_cypher(body: CypherRequest, state: StateDep, dataset: DatasetParam = Non
 
 
 @router.get("/search", dependencies=[REQUIRE_CORPUS_DATA])
-def search_entities(q: str, state: StateDep, dataset: DatasetParam = None) -> GraphSearchResponse:
+def search_entities(q: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> GraphSearchResponse:
     """Entity-name substring matches (top 10 by mention count). ``q`` never hits Cypher."""
-    res = _resources(state, dataset_handle(state, dataset))
+    res = _resources(state, dataset_handle(state, dataset, caller_token))
     if res is None:
         return GraphSearchResponse(built=False)
     needle = q.strip().lower()
@@ -479,7 +481,7 @@ def _clip(row: dict[str, Any], title_column: str | None) -> EntityClip:
 
 
 @router.get("/entity/{entity_id}", dependencies=[REQUIRE_CORPUS_DATA])
-def get_entity(entity_id: str, state: StateDep, dataset: DatasetParam = None) -> GraphEntityResponse:
+def get_entity(entity_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> GraphEntityResponse:
     """An entity's properties + clips + relationship neighbours + co-occurrences.
 
     Clips, neighbours and co-occurrences are answered through the live
@@ -488,7 +490,7 @@ def get_entity(entity_id: str, state: StateDep, dataset: DatasetParam = None) ->
     content pending descriptor-ization (they name the KG writer contract's
     columns, no corpus schema).
     """
-    res = _resources(state, dataset_handle(state, dataset))
+    res = _resources(state, dataset_handle(state, dataset, caller_token))
     if res is None:
         return GraphEntityResponse(built=False)
     if not _ENTITY_ID.match(entity_id):
@@ -553,6 +555,7 @@ def get_subgraph(
     # schema never said so.
     limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = 150,
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> SubgraphResponse:
     """Nodes + edges for the force-layout view.
 
@@ -560,7 +563,7 @@ def get_subgraph(
     relationship among them). With one → that entity plus its 1-hop relationship
     neighbourhood.
     """
-    res = _resources(state, dataset_handle(state, dataset))
+    res = _resources(state, dataset_handle(state, dataset, caller_token))
     if res is None:
         return SubgraphResponse(built=False)
     limit = max(1, min(limit, _MAX_LIMIT))

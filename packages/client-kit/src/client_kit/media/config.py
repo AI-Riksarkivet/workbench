@@ -11,30 +11,14 @@ list or a bare comma-separated string (``MEDIA_CORS_ORIGINS=https://a,https://b`
 
 from __future__ import annotations
 
-from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import AliasChoices, Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from service_kit.endpoint_scheme import allow_http_for
 from service_kit.naming import CATALOG_DELIMITER
-
-
-class TableBackend(StrEnum):
-    """Which path a table read/write takes.
-
-    A TYPE, not a `field_validator` over a set literal. The allowed values used to live inside a
-    validator body, so the schema said "string", `ty` could not tell `read_backend == "catalouge"`
-    from a real comparison, and every consumer re-spelled the literals. A `StrEnum` states the set
-    once: pydantic rejects anything else at load with the members in the message, the members
-    compare equal to their own strings so existing comparisons keep working, and the OpenAPI schema
-    finally names the options.
-    """
-
-    direct = "direct"
-    catalog = "catalog"
 
 
 def _warehouse_qualified(namespace: list[str], delimiter: str) -> None:
@@ -70,11 +54,6 @@ class MediaSettings(BaseSettings):
     embed_url: str = Field(default="http://127.0.0.1:8001", alias="MEDIA_EMBED_URL")
     rerank_url: str = Field(default="http://127.0.0.1:8002", alias="MEDIA_RERANK_URL")
     host: str = Field(default="127.0.0.1", alias="MEDIA_HOST")
-    db_path: Path = Field(default=Path("transcripts_v2.lance"), alias="MEDIA_DB")
-    # Multi-dataset serving (LANCE_MEDIA_MERGE §4.4): the registry root holds
-    # one `<id>.lance` dir per dataset; `db_path`'s stem stays the default
-    # dataset so the legacy single-DB routes keep their behavior.
-    db_root: Path = Field(default=Path("."), alias="MEDIA_DB_ROOT")
     descriptor_dir: Path = Field(default=Path("config/descriptors"), alias="MEDIA_DESCRIPTOR_DIR")
     cors_origins: list[str] = Field(default_factory=lambda: ["*"], alias="MEDIA_CORS_ORIGINS")
 
@@ -114,52 +93,39 @@ class MediaSettings(BaseSettings):
     #: `service_kit.config.Settings.docs_enabled` for why the default is closed.
     docs_enabled: bool = Field(default=False, alias="MEDIA_DOCS")
 
-    # Optional S3 object-store backing (WORKBENCH_LANDING §4). Set MEDIA_S3_ENDPOINT to
-    # serve datasets from RustFS / AWS / any S3: the registry then lists + opens
-    # under MEDIA_S3_DB_ROOT (an s3:// URI) with these storage_options. All unset
-    # (the default) = the local-filesystem db_root path, byte-identical to before.
-    s3_endpoint: str | None = Field(default=None, alias="MEDIA_S3_ENDPOINT")
-    s3_access_key_id: str | None = Field(default=None, alias="MEDIA_S3_ACCESS_KEY_ID")
-    s3_secret_access_key: str | None = Field(default=None, alias="MEDIA_S3_SECRET_ACCESS_KEY")
-    # The SECRET half comes from the Dapr secret store, fail-closed: coordinates are config, the secret is
-    # not. The corpus readers' scoped identity is the secret `media-s3` (`objectStore.mediaAccessKey`), the
-    # viewer's `viewer-s3`, each denied to every other app; the store's root never reaches a reader (ADR 0168). MEDIA_S3_SECRET_ACCESS_KEY exists for tests and
-    # sidecar-less dev only; the chart never sets it.
-    #: THE ONE STORE, NAMED ONCE (DUP-17). The estate runs a single Dapr secret-store component and
-    #: seven env vars named it, each defaulting to the same literal and none of them set by the chart —
-    #: so repointing the store meant finding all seven. `WORKBENCH_SECRET_STORE` is the estate-wide name
-    #: (already what viewer and ingest read); the per-service alias stays FIRST so a single service can
-    #: still be moved on its own.
-    s3_secret_store: str = Field(default="lance-secrets", validation_alias=AliasChoices("MEDIA_S3_SECRET_STORE", "WORKBENCH_SECRET_STORE"))
-    s3_secret_key: str = Field(default="media-s3", alias="MEDIA_S3_SECRET_KEY")
-    s3_secret_field: str = Field(default="secret_key", alias="MEDIA_S3_SECRET_FIELD")
-    s3_region: str = Field(default="us-east-1", alias="MEDIA_S3_REGION")
-    s3_db_root: str | None = Field(default=None, alias="MEDIA_S3_DB_ROOT")
-
-    # Read-path backend (LANCE_NS_INTEGRATION §catalog-client). "direct" (default) =
-    # open Lance ourselves, byte-identical to today. "catalog" = read through the
-    # lance-ns catalog /v1/table/query contract (backend/lancekit/reader.py); when
-    # MEDIA_CATALOG_URI is set it hits that live REST catalog, else an in-process
-    # native-namespace transport. Host-agnostic + retry-friendly so the catalog path
-    # drops into a Dapr service-invocation / Ray-Serve-fronted catalog unchanged.
-    read_backend: TableBackend = Field(default=TableBackend.direct, alias="MEDIA_READ_BACKEND")
-    write_backend: TableBackend = Field(default=TableBackend.direct, alias="MEDIA_WRITE_BACKEND")
+    #: Where the media plane finds its datasets: a lance-namespace catalog, exactly one of the two. A dataset is a
+    #: namespace written ``warehouse$namespace``, its tables are what ListTables answers there, and each opens through
+    #: the namespace on the storage options DescribeTable returns, so this process holds no store credential.
+    #:
+    #: ``MEDIA_CATALOG_URI`` is the catalog's REST door (`lance_docs/ns_catalog/namespace/supported-catalogs/lance-rest.md`),
+    #: reached as the caller on the caller's own bearer. ``MEDIA_CATALOG_DIR`` is lance-namespace's stock directory
+    #: catalog under a local root (`lance_docs/ns_catalog/catalog/dir/index.md`), for development and the offline suite:
+    #: the same code runs on it, with nobody to authenticate.
     catalog_uri: str | None = Field(default=None, alias="MEDIA_CATALOG_URI")
+    catalog_dir: Path | None = Field(default=None, alias="MEDIA_CATALOG_DIR")
     catalog_delimiter: str = Field(default=CATALOG_DELIMITER, alias="MEDIA_CATALOG_DELIMITER")
-    # The catalog namespace a dataset's tables live under; unset → the dataset id.
-    catalog_namespace: str | None = Field(default=None, alias="MEDIA_CATALOG_NAMESPACE")
+    #: The dataset a request that names none reads, written ``warehouse$namespace``; unset, such a request is a 404.
+    default_dataset: str | None = Field(default=None, alias="MEDIA_DEFAULT_DATASET")
 
-    @field_validator("catalog_namespace")
+    @model_validator(mode="after")
+    def _one_catalog(self) -> Self:
+        """Exactly one catalog, refused at load: with none the plane has nowhere to read, and with both it would pick one
+        silently."""
+        if (self.catalog_uri is None) == (self.catalog_dir is None):
+            raise ValueError("set exactly one of MEDIA_CATALOG_URI (the catalog's REST door) and MEDIA_CATALOG_DIR (a local directory catalog)")
+        return self
+
+    @field_validator("default_dataset")
     @classmethod
-    def _catalog_namespace_is_warehouse_qualified(cls, value: str | None, info: ValidationInfo) -> str | None:
-        """A configured namespace is refused at load, not at every request, when no table could live in it."""
+    def _default_dataset_is_warehouse_qualified(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """A configured default is refused at load, not at every request, when no table could live in it."""
         if value is not None:
             delimiter = str(info.data.get("catalog_delimiter", CATALOG_DELIMITER))
             _warehouse_qualified(value.split(delimiter), delimiter)
         return value
 
     def catalog_namespace_id(self, dataset_id: str) -> list[str]:
-        """The catalog identifier of a dataset's namespace: ``MEDIA_CATALOG_NAMESPACE`` when set, else the dataset id.
+        """The catalog identifier of a dataset's namespace: the dataset id, split on the delimiter.
 
         Written as the catalog writes it (``warehouse$namespace``). A name's first segment is its warehouse, and a
         one-segment namespace names a warehouse, which serves no tables, so it needs at least two non-empty segments
@@ -168,7 +134,7 @@ class MediaSettings(BaseSettings):
         Raises:
             ValueError: The namespace has fewer than two segments or an empty one.
         """
-        namespace = (self.catalog_namespace or dataset_id).split(self.catalog_delimiter)
+        namespace = dataset_id.split(self.catalog_delimiter)
         _warehouse_qualified(namespace, self.catalog_delimiter)
         return namespace
 
@@ -184,89 +150,12 @@ class MediaSettings(BaseSettings):
             raise ValueError(f"catalog table name {table!r} must be one non-empty segment without {self.catalog_delimiter!r}")
         return [*namespace, table]
 
-    @property
-    def rest_catalog_mode(self) -> bool:
-        """True when the media plane's tables fully route through a LIVE catalog —
-        both backends flipped AND a URI set. Mixed configurations keep the local
-        table in the loop, so paths gate on this, not on the individual flags."""
-        return bool(self.catalog_uri) and self.read_backend is TableBackend.catalog and self.write_backend is TableBackend.catalog
-
-    @property
-    def default_dataset_id(self) -> str:
-        return self.db_path.stem
-
-    def storage_options(self) -> dict[str, str] | None:
-        """Lance ``storage_options`` for the object store (None = local filesystem).
-
-        A METHOD, not a property: on the Dapr-secret path this performs a BLOCKING secret fetch and
-        can raise, and a `@property` disguised that as a free attribute read — which is exactly how it
-        reached an event loop (`viewer datasets.list_datasets` built its registry inline, on the loop).
-        A call makes the cost visible at every site, and matches every other config in the estate
-        (`MedallionSettings`, catalog, maintenance all expose `storage_options()`). The fetch is
-        `_store_secret`-cached, so a boot-time warm (off the loop, in the lifespan) makes every
-        request-path call a pure dict build.
-
-        Path-style addressing is forced (``virtual_hosted_style_request=false``)
-        because RustFS rejects virtual-hosted signing — verified live.
-
-        The credential keys are ``aws_``-prefixed for the reason ``lance_storage_options`` records:
-        every fleet pod exports ``AWS_ACCESS_KEY_ID``/``AWS_SECRET_ACCESS_KEY``, and the bare spellings
-        do not displace them — object_store blends the two sources and signs with a pair belonging to
-        neither identity (``403 SignatureDoesNotMatch``, measured in-cluster 2026-09-03). This builder
-        goes to the trouble of fetching a secret from the store, fail-closed; being overridden by the
-        environment afterwards would defeat the whole path.
-        """
-        if not self.s3_endpoint:
-            return None
-        opts = {
-            "endpoint": self.s3_endpoint,
-            "region": self.s3_region,
-            "allow_http": allow_http_for(self.s3_endpoint),
-            "virtual_hosted_style_request": "false",
-        }
-        # Credential resolution, per the estate's secrets rule (store only, fail-closed):
-        #   1. BOTH static fields set — tests and sidecar-less dev. The chart never sets the secret.
-        #   2. Otherwise the secret comes from the Dapr secret store (cached), the access-key id from
-        #      config: the id is config, the secret is not. A missing bundle or field RAISES rather than falling back to the AWS env chain: an
-        #      env-borne secret is the shape the rule forbids, and a silent chain fallback would
-        #      re-admit it while looking configured.
-        if self.s3_access_key_id and self.s3_secret_access_key:
-            opts["aws_access_key_id"] = self.s3_access_key_id
-            opts["aws_secret_access_key"] = self.s3_secret_access_key
-            return opts
-        if not self.s3_access_key_id:
-            raise RuntimeError("MEDIA_S3_ENDPOINT is set but MEDIA_S3_ACCESS_KEY_ID is not — the id is config, set it")
-        secret = _store_secret(self.s3_secret_store, self.s3_secret_key, self.s3_secret_field)
-        if not secret:
-            raise RuntimeError(f"S3 secret {self.s3_secret_field!r} unavailable from Dapr store {self.s3_secret_store!r} — failing closed")
-        opts["aws_access_key_id"] = self.s3_access_key_id
-        opts["aws_secret_access_key"] = secret
-        return opts
-
-    @property
-    def registry_root(self) -> str:
-        """The root the registry lists/opens datasets under — the S3 URI when
-        configured, else the local ``db_root`` path."""
-        if self.s3_endpoint and self.s3_db_root:
-            return self.s3_db_root
-        return str(self.db_root)
-
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
-
-
-@lru_cache(maxsize=8)
-def _store_secret(store: str, key: str, field: str) -> str | None:
-    """One cached fetch per (store, key, field) — `storage_options` is read per dataset open, and
-    the bundle is static for the pod's lifetime. Import inside so sidecar-less callers that never
-    reach the store path (local roots, explicit test creds) pay nothing."""
-    from service_kit.governed.secrets import fetch_dapr_secret
-
-    return fetch_dapr_secret(store, key).get(field) or None
 
 
 @lru_cache

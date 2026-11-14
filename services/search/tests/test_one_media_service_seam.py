@@ -22,6 +22,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from lance_namespace import UnauthenticatedError
 
+from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from search.main import create_search_app
 
@@ -38,7 +39,7 @@ def test_the_test_seam_app_maps_the_same_errors_production_does() -> None:
     `DomainError` alone — so an expired or wrong-audience bearer came back `500 text/plain` from
     starlette's fallback, the very regression both mains' production comments are about.
     """
-    app = create_search_app(AppState())
+    app = create_search_app(AppState(settings=Settings()))
 
     @app.get("/_probe_unauthenticated")
     async def _raise() -> None:

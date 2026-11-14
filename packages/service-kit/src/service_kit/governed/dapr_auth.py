@@ -90,8 +90,7 @@ class DaprDoorSettings(BaseSettings):
     #:
     #: A MODE, NOT A FALLBACK CHAIN. On, the store is the STRICT sole source and `APP_API_TOKEN` is not
     #: consulted at all — a chain would mean a store outage silently promoted a stale env value back to
-    #: authoritative, which is the failure the rule exists to prevent. Off, env, exactly as before. That
-    #: is the same shape the S3 key pair takes (`service_kit.governed.store_credential`).
+    #: authoritative, which is the failure the rule exists to prevent. Off, env, exactly as before.
     app_token_from_store: bool = Field(default=False, alias="WORKBENCH_APP_TOKEN_FROM_STORE")
 
     #: Which secret holds it: the store is the one every service names, and the secret is the estate's one app token,

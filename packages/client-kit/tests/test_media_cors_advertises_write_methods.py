@@ -21,7 +21,7 @@ from client_kit.media.middleware import register_media_middleware
 
 def _preflight_allowed_methods(method: str) -> str:
     app = FastAPI()
-    register_media_middleware(app, MediaSettings())
+    register_media_middleware(app, MediaSettings.model_validate({"MEDIA_CATALOG_DIR": "/catalog"}))
 
     @app.api_route("/thing", methods=[method])
     async def _thing() -> dict[str, str]:  # pragma: no cover - never invoked; only the preflight is

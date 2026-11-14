@@ -107,9 +107,8 @@ spec:
           env:
             - { name: MEDIA_HOST, value: "0.0.0.0" }
             - { name: MEDIA_DOCS, value: {{ .Values.docs | quote }} }
-            # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only.
-            - { name: MEDIA_READ_BACKEND, value: "catalog" }
-            - { name: MEDIA_WRITE_BACKEND, value: "catalog" }
+            # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only: each
+            # table opens through lance-namespace on the credential the catalog vends the person, so the pod holds no store key.
             - { name: MEDIA_CATALOG_URI, value: {{ .Values.catalog.url | default (printf "http://%s-catalog:2333" $r) | quote }} }
             # The publish saga's identity: this pod's own ServiceAccount token, projected for the catalog.
             - { name: ANNOTATOR_CATALOG_TOKEN_FILE, value: /var/run/secrets/rask/identity/rask-catalog/token }

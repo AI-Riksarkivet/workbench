@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,19 +35,9 @@ class AppState(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Kept as tolerated no-op ctor args during the split-transition so existing
-    # constructions keep validating; the registry is the only data path.
-    db_path: Path | None = None
-    names: list[str] = Field(default_factory=list)
-    chunks: Any = None
-    # PER-STATE, not the process-global. This defaulted to `get_settings()`, which is `@lru_cache`d,
-    # so EVERY `AppState` in a process shared ONE mutable settings object: two apps in one process —
-    # the ordinary shape of a test suite, and of any host running more than one of the trio — could
-    # not be configured differently, and a mutation through one silently reconfigured the other. It
-    # also contradicted the request-scoped `service_kit.dependencies.get_settings` this same library
-    # exposes under the same name. A service that WANTS the singleton asks for it explicitly with
-    # `get_media_settings()` and passes it in.
-    settings: MediaSettings = Field(default_factory=MediaSettings)
+    # Required, per state: there is no default catalog to read, and a default built from the process environment would
+    # bind every state in the process to one configuration. A service passes its own (`make_media_state`).
+    settings: MediaSettings
     embedder: Any | None = None  # search.services.encoders.embedding.VLLMEmbeddingClient
     reranker: Any | None = None  # search.services.encoders.reranker.VLLMReranker
     # Lazy in-process voice encoder for the upload voice search (CPU by design;
@@ -73,11 +62,8 @@ class AppState(BaseModel):
     # discipline as points_cache; bounded by settings.search_cache_size AND
     # settings.search_cache_bytes (0 = off / no byte bound respectively).
     search_cache: dict[tuple[str, str, str], tuple[list[Any], int]] = Field(default_factory=dict)
-    # Multi-dataset registry (LANCE_MEDIA_MERGE §4.4) — the schema-agnostic
-    # resolution path. The legacy per-table fields above stay during the
-    # media/search service port and are stripped at integration. Same first-build
-    # hazard as voice_encoder: sync handlers run in a threadpool, so two
-    # concurrent first requests would otherwise both construct the registry.
+    # The dataset registry, the one resolution path. Same first-build hazard as voice_encoder: sync handlers run in a
+    # threadpool, so two concurrent first requests would otherwise both construct the registry.
     registry: Any | None = None  # client_kit.lancekit.registry.DatasetRegistry
     registry_lock: Any = Field(default_factory=threading.Lock)
 
@@ -85,50 +71,36 @@ class AppState(BaseModel):
 def ensure_registry(state: AppState) -> DatasetRegistry:
     """The ONE lazy first-build of ``state.registry`` (SK-06).
 
-    Every path that needs the registry — id resolution via :func:`dataset_handle`,
-    the viewer's enumeration (which has no dataset id to resolve through) — goes
-    through here, so the guarded construction exists exactly once. An unlocked
-    copy of this block lived in the viewer and raced it; de-duplication, not a
-    second lock, is what keeps the two from drifting again.
+    Every path that needs the registry (id resolution via :func:`dataset_handle`, the viewer's enumeration, which has no
+    dataset id to resolve through) goes through here, so the guarded construction exists exactly once.
     """
-    # Imported per call, not at module top: service-kit's media plane stays
-    # importable without the Lance stack until a registry is actually needed.
+    # Imported per call, not at module top: the media plane stays importable without the Lance stack until a registry
+    # is actually needed.
     from client_kit.lancekit.registry import DatasetRegistry
 
     if state.registry is None:
-        # Double-checked so the steady state never takes the lock; without it two
-        # concurrent first requests both construct, and the loser's registry (with
-        # whatever it already opened) is silently discarded.
+        # Double-checked so the steady state never takes the lock; without it two concurrent first requests both
+        # construct, and the loser's registry (with whatever it already opened) is silently discarded.
         with state.registry_lock:
             if state.registry is None:
-                state.registry = DatasetRegistry(
-                    state.settings.registry_root,
-                    state.settings.descriptor_dir,
-                    state.settings.default_dataset_id,
-                    storage_options=state.settings.storage_options(),
-                )
+                state.registry = DatasetRegistry(state.settings)
     registry: DatasetRegistry = state.registry
     return registry
 
 
-def dataset_handle(state: AppState, dataset_id: str | None = None) -> DatasetHandle:
-    """Resolve a dataset by id through the registry (``None`` → the default).
+def dataset_handle(state: AppState, dataset_id: str | None, caller_token: str | None) -> DatasetHandle:
+    """Resolve a dataset by id, as the caller, through the registry (``None`` is the configured default).
 
-    The one resolution path both router groups share; raises
-    ``service_kit.exceptions.NotFoundError`` for unknown ids so the RFC 9457
-    handler renders a clean 404.
-
-    The return type is DECLARED, and it is the reason this annotation matters more than most: every
-    media route funnels through here, and an unannotated entry point makes each of
-    them `Any` from its first line — so `handle.dbb` type-checks, and a renamed attribute on
-    `DatasetHandle` reddens nothing anywhere in the fleet.
+    ``caller_token`` is the caller's bearer, which the catalog reads the dataset for; the handle is that caller's alone.
+    The one resolution path every media route shares; an unknown id or an invalid descriptor is a ``NotFoundError``, so
+    the RFC 9457 handler renders a clean 404.
     """
     from client_kit.lancekit.registry import UnknownDatasetError
     from service_kit.exceptions import NotFoundError
 
     registry = ensure_registry(state)
     try:
-        return registry.get(dataset_id) if dataset_id else registry.default()
+        return registry.get(dataset_id, caller_token) if dataset_id else registry.default(caller_token)
     except UnknownDatasetError as exc:
         raise NotFoundError(str(exc)) from exc
     except ValueError as exc:  # invalid/missing descriptor — a config problem, not a 500

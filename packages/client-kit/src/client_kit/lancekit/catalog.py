@@ -1,63 +1,52 @@
 """A client's side of the catalog's doors, on the stock Lance Namespace SDK.
 
-A client reaches the catalog through ``lance_namespace.connect("rest", ...)``, which builds pylance's ``RestNamespace``: the
-Python SDK `lance_docs/ns_catalog/namespace/index.md` names for engines and frameworks. It depends on the lakehouse only
-through that spec and the platform package (``service_kit``), as Lakekeeper's and Polaris's clients reach their catalog
-with a stock engine client and share no server code.
+A client reaches the catalog through pylance's ``RestNamespace`` (what ``lance_namespace.connect("rest", ...)`` builds): the
+Python SDK `lance_docs/ns_catalog/namespace/index.md` names for engines and frameworks; locally and in the offline suite
+the same doors answer from lance-namespace's stock ``dir`` catalog (:func:`connect_namespace`). It depends on the
+lakehouse only through that spec and the platform package (``service_kit``).
 
-:class:`NamespaceCatalogTransport` serves the catalog read path: ``query`` for a scan, ``describe`` for the current
-version and ``version/list`` for the history. :class:`NamespaceCatalogWriteTransport` writes through ``merge_insert`` and
-``delete``, so the catalog governs the write (its authorization, quality gate and announcement on lineage). Every error
-the SDK raises is one of the spec's typed errors, and :func:`translate_catalog_errors` maps its code onto the platform's
-DomainError hierarchy.
+A table is read by opening it through the namespace (:mod:`client_kit.lancekit.registry`). A write goes through the
+catalog's doors, :class:`NamespaceCatalogWriteTransport` (``merge_insert``, ``create`` and ``delete``), so the catalog
+governs it (its authorization, quality gate and announcement on lineage). Every error the SDK raises is one of the spec's
+typed errors, and :func:`translate_catalog_errors` maps its code onto the platform's DomainError hierarchy.
 
-Two measured gaps in pylance 13.0.0's ``RestNamespace`` shape this module (2026-11-02, against the catalog app and against
-pylance's own ``RestAdapter``):
-
-* ITS COUNT DOOR DROPS THE PREDICATE AND THE VERSION. ``count_table_rows`` sends ``GET /v1/table/{id}/count_rows`` with no
-  body where `lance_docs/ns_catalog/spec.yaml:1350` defines a POST carrying both, so a filtered count answered the table's
-  total. A count is therefore the engine's: the table opened through the namespace on the credential DescribeTable vends
-  (`spec.yaml:2840`), counted by Lance's pushdown at the version, as Lakekeeper's and Polaris's clients read a table on the
-  credential their catalog vends.
-* IT BOUNDS NO CALL. A catalog that accepts a connection and never answers held a call past 45 s, with no setting and
-  under every timeout key tried, and the REST page documents only ``uri``, ``delimiter`` and ``headers.*``. So each call
-  runs on :data:`_CALLS`, a small pool of its own, and its caller waits :data:`CALL_TIMEOUT_S` at most: a hung catalog
-  costs a caller a 503, and holds at most the pool's threads until it answers.
+pylance 13.0.0's ``RestNamespace`` bounds no call (measured 2026-11-02): a catalog that accepts a connection and never
+answers held a call past 45 s, with no setting and under every timeout key tried, and the REST page documents only
+``uri``, ``delimiter`` and the ``header.*`` properties. So each call runs on :data:`_CALLS`, a small pool of its own (:func:`bounded`),
+and its caller waits :data:`CALL_TIMEOUT_S` at most: a hung catalog costs a caller a 503, and holds at most the pool's
+threads until it answers.
 """
 
 from __future__ import annotations
 
+import contextvars
 import logging
-import threading
 from collections.abc import Callable, Generator, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 
-import lance
 import lance_namespace
+from lance.namespace import DynamicContextProvider, RestNamespace
 from lance_namespace import (
     CreateTableRequest,
     DeleteFromTableRequest,
-    DescribeTableRequest,
     ErrorCode,
     LanceNamespaceError,
-    ListTableVersionsRequest,
     MergeInsertIntoTableRequest,
 )
 from opentelemetry import propagate
-from pydantic import BaseModel
 
-from client_kit.lancekit.absence import reads_as_absent
 from service_kit.arrow_ipc import encode_arrow_stream
 from service_kit.exceptions import ConflictError, DomainError, ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError, ValidationError
 from service_kit.naming import CATALOG_DELIMITER
-from service_kit.outage import reads_as_store_outage
 
 
 if TYPE_CHECKING:
     import pyarrow as pa
-    from lance_namespace import LanceNamespace, QueryTableRequest
+    from lance_namespace import LanceNamespace
+
+    from client_kit.media.config import MediaSettings
 
 
 log = logging.getLogger(__name__)
@@ -106,36 +95,57 @@ _BY_CODE: Final[dict[ErrorCode, tuple[type[DomainError], str]]] = {
 }
 
 
-class CatalogVersion(BaseModel):
-    """One entry of the catalog's version listing: the Lance version and its commit time in epoch millis, ``None`` when
-    the catalog records none."""
-
-    version: int
-    timestamp_millis: int | None = None
-
-
 def connect_catalog(base_url: str, *, token: str | None, delimiter: str = CATALOG_DELIMITER, headers: Mapping[str, str] | None = None) -> LanceNamespace:
     """The stock REST namespace for one caller: ``token`` rides every request as its bearer, and no other credential does.
 
     One per caller rather than one shared: the bearer is a header of the namespace, and a shared one would answer the next
     caller under the previous caller's identity. Measured 2026-11-02, a namespace and its describe cost 3.8 ms, and 200 of
     them left the process's thread count where it was. ``headers`` are the request's context headers (the spec's
-    ``header.``-prefixed context, `lance_docs/ns_catalog/catalog/rest/index.md` § Context Header Mapping), and the caller's
-    trace context rides beside them, so the catalog's span joins the caller's trace: the SDK's client is Rust, which no
-    Python instrumentor reaches.
+    ``header.``-prefixed context, `lance_docs/ns_catalog/catalog/rest/index.md` § Context Header Mapping). The caller's
+    trace context is added per call (:class:`TraceContext`), so the catalog's span joins the trace of the call that
+    reached it: the SDK's client is Rust, which no Python instrumentor reaches.
     """
-    carrier: dict[str, str] = dict(headers or {})
-    propagate.inject(carrier)
-    properties = {"uri": base_url, "delimiter": delimiter} | {f"header.{name}": value for name, value in carrier.items()}
+    properties = {"uri": base_url, "delimiter": delimiter} | {f"header.{name}": value for name, value in (headers or {}).items()}
     if token:
         properties["header.Authorization"] = f"Bearer {token}"
-    return lance_namespace.connect("rest", properties)
+    return RestNamespace(context_provider=TraceContext(), **properties)
+
+
+class TraceContext(DynamicContextProvider):
+    """The trace context of the call being made, as headers, asked for before every namespace operation.
+
+    Per call, not per client: a client outlives the request that built it (the registry caches it per caller), so a
+    ``traceparent`` fixed at construction would put every later call in the first request's trace. pylance's
+    ``RestNamespace`` asks its context provider before each operation and sends its ``headers.``-prefixed keys as HTTP
+    headers (pylance 13.0.0, ``lance/namespace.py`` ``DynamicContextProvider``); the ``header.`` properties above are the
+    client's static ones, the spelling ``RestNamespace``'s own docstring documents.
+    """
+
+    def provide_context(self, info: dict[str, str]) -> dict[str, str]:
+        del info
+        carrier: dict[str, str] = {}
+        propagate.inject(carrier)
+        return {f"headers.{name}": value for name, value in carrier.items()}
+
+
+def connect_namespace(settings: MediaSettings, caller_token: str | None) -> LanceNamespace:
+    """The namespace client the media plane reads and writes through, as the caller.
+
+    The catalog's REST door on ``MEDIA_CATALOG_URI``, carrying the caller's bearer and no other credential; or
+    lance-namespace's stock directory catalog on ``MEDIA_CATALOG_DIR``, which authenticates nobody, for development and
+    the offline suite. Either way the same doors answer, so the code above this seam does not know which it has.
+    """
+    if settings.catalog_dir is not None:
+        return lance_namespace.connect("dir", {"root": str(settings.catalog_dir)})
+    if settings.catalog_uri is None:
+        raise TypeError("MediaSettings names no catalog; its validator admits none without one")
+    return connect_catalog(settings.catalog_uri, token=caller_token, delimiter=settings.catalog_delimiter)
 
 
 @contextmanager
 def translate_catalog_errors() -> Generator[None]:
-    """Map the SDK's typed spec errors onto the platform's DomainError hierarchy, so a catalog refusal renders as the same
-    problem+json a direct read produces instead of an opaque 500.
+    """Map the SDK's typed spec errors onto the platform's DomainError hierarchy, so a catalog refusal renders as the
+    platform's problem+json instead of an opaque 500.
 
     A refusal keeps the catalog's own detail, which its handlers redact. Anything else is logged and answered with a stable
     sentence, since its responder may be an ingress or a sidecar rather than the catalog.
@@ -151,82 +161,22 @@ def translate_catalog_errors() -> Generator[None]:
         raise error(f"{sentence}: {exc}") from exc
 
 
-def _bounded[T](call: Callable[[], T]) -> T:
-    """``call`` on :data:`_CALLS`, its caller waiting :data:`CALL_TIMEOUT_S` at most."""
-    future = _CALLS.submit(call)
+def bounded[T](call: Callable[[], T]) -> T:
+    """``call`` on :data:`_CALLS`, its caller waiting :data:`CALL_TIMEOUT_S` at most.
+
+    The call runs in a copy of the caller's context, so what it reads of the caller's context variables (the current
+    span, which :class:`TraceContext` sends on) is the caller's, not the pool thread's.
+    """
+    context = contextvars.copy_context()
+    future: Future[T] = _CALLS.submit(lambda: context.run(call))
     try:
         return future.result(timeout=CALL_TIMEOUT_S)
     except TimeoutError as exc:
         raise ServiceUnavailableError(f"the catalog did not answer within {CALL_TIMEOUT_S:.0f} s") from exc
 
 
-class NamespaceCatalogTransport:
-    """The catalog read path's doors through the stock SDK, for :class:`~client_kit.lancekit.reader.CatalogTableReader`."""
-
-    def __init__(self, namespace: LanceNamespace) -> None:
-        self._namespace = namespace
-        self._lock = threading.Lock()
-        self._opened: dict[tuple[str, ...], lance.LanceDataset] = {}
-
-    def query(self, request: QueryTableRequest) -> bytes:
-        """One page of a scan: ``POST /v1/table/{id}/query``, answered as Arrow IPC file bytes."""
-        with translate_catalog_errors():
-            data = _bounded(lambda: self._namespace.query_table(request)).data
-        if not isinstance(data, bytes):
-            raise ServiceUnavailableError("the catalog's query answered no Arrow body")
-        return data
-
-    def count(self, table_id: list[str], filter: str | None, *, version: int | None = None) -> int:
-        """The rows of ``table_id`` matching ``filter`` at ``version``, counted on the table this transport opened.
-
-        Raises:
-            NotFoundError: The version is gone (reclaimed since it was listed, or never committed).
-            ServiceUnavailableError: The table's store did not answer, or the count outlived its bound.
-        """
-        dataset = self._open(table_id)
-
-        def counted() -> int:
-            at = dataset if version is None else dataset.checkout_version(version)
-            return at.count_rows(filter)
-
-        try:
-            return _bounded(counted)
-        except (OSError, ValueError) as exc:
-            if reads_as_absent(exc):
-                raise NotFoundError(f"table version {version} not found") from exc
-            if reads_as_store_outage(exc):
-                raise ServiceUnavailableError("the table's store is unavailable") from exc
-            raise
-
-    def table_version(self, table_id: list[str]) -> int:
-        """The table's current version, from a describe that asks for no credential: a vend would mint a store session
-        for a number this read never reaches the store with."""
-        request = DescribeTableRequest(id=table_id, load_detailed_metadata=True, vend_credentials=False)
-        with translate_catalog_errors():
-            response = _bounded(lambda: self._namespace.describe_table(request))
-        if response.version is None:
-            raise ServiceUnavailableError(f"catalog describe returned no version for {table_id}")
-        return int(response.version)
-
-    def list_versions(self, table_id: list[str], *, limit: int | None = None) -> list[CatalogVersion]:
-        """The table's versions, latest first and capped at ``limit`` by the catalog itself (``descending``)."""
-        request = ListTableVersionsRequest(id=table_id, limit=limit, descending=True)
-        with translate_catalog_errors():
-            response = _bounded(lambda: self._namespace.list_table_versions(request))
-        return [CatalogVersion(version=int(entry.version), timestamp_millis=entry.timestamp_millis) for entry in response.versions or []]
-
-    def _open(self, table_id: list[str]) -> lance.LanceDataset:
-        """The table, opened once per transport through the namespace, on the read credential its describe vends."""
-        key = tuple(table_id)
-        with self._lock:
-            if key not in self._opened:
-                with translate_catalog_errors():
-                    self._opened[key] = _bounded(lambda: lance.dataset(namespace_client=self._namespace, table_id=list(key)))
-            return self._opened[key]
-
-
 class NamespaceCatalogWriteTransport:
-    """The catalog write path's doors through the stock SDK, for :class:`~client_kit.lancekit.writer.CatalogTableWriter`."""
+    """The catalog's write doors for one table, through the stock SDK (:meth:`client_kit.lancekit.registry.DatasetHandle.writer`)."""
 
     def __init__(self, namespace: LanceNamespace, table_id: list[str]) -> None:
         self._namespace = namespace
@@ -248,16 +198,16 @@ class NamespaceCatalogWriteTransport:
         """
         request = CreateTableRequest(id=self._id, mode=mode, properties=dict(properties))
         with translate_catalog_errors():
-            response = _bounded(lambda: self._namespace.create_table(request, data))
+            response = bounded(lambda: self._namespace.create_table(request, data))
         return response.version
 
     def delete(self, predicate: str) -> None:
         """Delete the rows matching ``predicate``."""
         request = DeleteFromTableRequest(id=self._id, predicate=predicate)
         with translate_catalog_errors():
-            _bounded(lambda: self._namespace.delete_from_table(request))
+            bounded(lambda: self._namespace.delete_from_table(request))
 
     def _merge(self, delta: pa.Table, request: MergeInsertIntoTableRequest) -> None:
         body = encode_arrow_stream(delta)
         with translate_catalog_errors():
-            _bounded(lambda: self._namespace.merge_insert_into_table(request, body))
+            bounded(lambda: self._namespace.merge_insert_into_table(request, body))

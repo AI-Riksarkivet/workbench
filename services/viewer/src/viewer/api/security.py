@@ -48,22 +48,6 @@ READ_METADATA = "can_get_metadata"
 #: how `datasets.py` reasons about a corpus listing.
 READ_DATA = "can_read_data"
 
-#: Raw OBJECT-STORE browsing (#90) — the S3 list/HEAD/download routes. An ESTATE-wide privilege, checked ONLY against
-#: `fga_root_object`: the lakehouse's estate-admin verb, asked through the catalog's decision door, since the
-#: lakehouse model carries no relation of the viewer's own.
-#:
-#: Not a per-store grant, and that is a decision with a reason. A `store` FGA type would need a
-#: parent tuple per store to be reachable, and the four SHIPPED default stores are never registered
-#: through the API — they come from `DEFAULT_STORES` in code, so nothing would ever write their
-#: tuples. The model would be correct and the gate would deny everyone including the estate owner.
-#: A gate that denies everyone is an outage, not a gate. Per-store granularity lands the day store
-#: registration owns its own tuples.
-#:
-#: Owner tier, because the registry's buckets include the external RAW tier and the observability
-#: bucket — outside the medallion entirely (R23) — so a per-tenant admin must not reach them.
-BROWSE_STORAGE = "can_observe_events"
-
-
 # The two object-naming rules (`corpus_object`, `table_object`) moved to `client_kit.media.authz`
 # when the annotator's assist plane needed the same object. Import them from there — this module's
 # own docstring is why they must not be written twice.
@@ -88,6 +72,7 @@ from client_kit.media.authz import corpus_object  # noqa: E402
 from client_kit.media.deps import DatasetParam, StateDep  # noqa: E402
 from service_kit.exceptions import ForbiddenError  # noqa: E402
 from service_kit.governed.audit import AuditOutcome, audit  # noqa: E402
+from service_kit.governed.deps import RawBearerToken  # noqa: E402
 from viewer.audit_actions import ViewerAuditAction  # noqa: E402
 
 
@@ -116,13 +101,14 @@ def _corpus_gate(relation: str):
         subject: CurrentSubject,
         checker: CheckerDep,
         settings: SettingsDep,
+        caller_token: RawBearerToken = None,
         dataset: DatasetParam = None,
     ) -> None:
         if not settings.fga_enabled:
             return
         # Threadpooled: a COLD registry open is Lance/S3 under a lock (VS-02), and this runs on the
         # loop. The handler's own `dataset_handle` call then hits the registry's cache.
-        handle = await run_in_threadpool(_media_state.dataset_handle, state, dataset)
+        handle = await run_in_threadpool(_media_state.dataset_handle, state, dataset, caller_token)
         search = handle.descriptor.declared.search
         if search is None or not search.row_table:
             audit(ViewerAuditAction.VIEWER_CORPUS_READ, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=relation)
@@ -149,11 +135,12 @@ def _media_bytes_gate():
         subject: CurrentSubject,
         checker: CheckerDep,
         settings: SettingsDep,
+        caller_token: RawBearerToken = None,
         dataset: DatasetParam = None,
     ) -> None:
         if not settings.fga_enabled:
             return
-        handle = await run_in_threadpool(_media_state.dataset_handle, state, dataset)
+        handle = await run_in_threadpool(_media_state.dataset_handle, state, dataset, caller_token)
         binding = handle.descriptor.declared.document
         if binding is None:
             return
@@ -170,6 +157,7 @@ async def corpus_facts_visible(
     subject: OptionalSubject,
     checker: CheckerDep,
     settings: SettingsDep,
+    caller_token: RawBearerToken = None,
     dataset: DatasetParam = None,
 ) -> bool:
     """May this caller see the health badge's corpus FACTS (table names, row counts)?
@@ -184,7 +172,7 @@ async def corpus_facts_visible(
     if not settings.fga_enabled:
         return True
     try:
-        handle = await run_in_threadpool(_media_state.dataset_handle, state, dataset)
+        handle = await run_in_threadpool(_media_state.dataset_handle, state, dataset, caller_token)
     except Exception:
         return True
     search = handle.descriptor.declared.search

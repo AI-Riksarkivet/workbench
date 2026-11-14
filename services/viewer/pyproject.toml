@@ -15,7 +15,6 @@ dependencies = [
     # installs the SDK's providers at start; without it the launcher installs none (measured 2026-10-24).
     "opentelemetry-distro>=0.65b0",
     "opentelemetry-exporter-otlp>=1.44.0",
-    "storage",
     "fastapi>=0.115",
     "pydantic>=2.7",
     "python-multipart>=0.0.9",
@@ -37,7 +36,6 @@ packages = ["src/viewer"]
 [tool.uv.sources]
 client-kit = { workspace = true }
 service-kit = { workspace = true }
-storage = { workspace = true }
 
 [tool.ruff]
 extend = "../../pyproject.toml"
@@ -48,7 +46,7 @@ extend = "../../pyproject.toml"
 # here too. The root per-file ignores still apply under this directory (measured).
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses.dataclass".msg = "Structured values are pydantic BaseModel (CLAUDE.md, writing-python)."
-"boto3".msg = "Build S3/STS clients through storage.s3_client / storage.sts_client: a raw boto3 client carries no timeouts."
+"boto3".msg = "No raw S3 client: data is reached through lance-namespace, on the storage options the catalog vends."
 "lance.write_dataset".msg = "Lance is written only at the registered write doors (catalog dataplane, medallion compute/ingest)."
 "lance.fragment.write_fragments".msg = "Lance is written only at the registered write doors (catalog dataplane, medallion compute/ingest)."
 "catalog.services.warehouses.put_warehouse".msg = "An unconditional registry put lifts a quarantine; write through the conditional (CAS) path."
@@ -66,7 +64,6 @@ extend = "../../pyproject.toml"
 "pyarrow.RecordBatchStreamReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
 "pyarrow.RecordBatchFileReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
 "pyarrow.feather".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"service_kit.arrow_ipc.decode_arrow_response".msg = "Only the catalog /query reader may skip the size bound."
 "dapr.actor.ActorProxy".msg = "Build an actor proxy through the service's proxies module: it translates the wire method names."
 "notifications.subjects.encode_subject".msg = "An inbox actor id is derived only in notifications.proxies."
 "service_kit.governed.fga.write_tuples".msg = "Tuple grants happen only at the registered granting sites."

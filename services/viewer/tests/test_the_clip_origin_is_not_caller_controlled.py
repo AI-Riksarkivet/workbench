@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -95,7 +96,12 @@ def clip_call(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401 — retur
         return clip
 
     monkeypatch.setattr(media_ep, "build_clip", _build)
-    monkeypatch.setattr(media_ep, "dataset_handle", lambda *_a, **_k: _Handle())
+
+    def _handle(*_a: object, **_k: object) -> _Handle:
+        recorded["resolved_on"] = threading.get_ident()
+        return _Handle()
+
+    monkeypatch.setattr(media_ep, "dataset_handle", _handle)
     monkeypatch.setattr(media_ep, "validate_doc_key", lambda _declared, doc_id: doc_id)
     monkeypatch.setattr(media_ep, "table_dataset", lambda *_a, **_k: object())
     monkeypatch.setattr(media_ep, "rowid_for_doc", lambda *_a, **_k: 1)
@@ -105,6 +111,7 @@ def clip_call(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401 — retur
         return True
 
     def _call(headers: list[tuple[bytes, bytes]], dataset: str | None = None) -> dict[str, Any]:
+        recorded["loop_on"] = threading.get_ident()
         asyncio.run(
             media_ep.media_clip(
                 doc_id="doc1",
@@ -152,3 +159,10 @@ def test_the_callers_own_bearer_is_forwarded(clip_call: Any) -> None:
     assert recorded.get("authorization") == "Bearer tok-123", (
         f"the caller's credential was not handed to the fetch ({recorded!r}) — the media door refuses an anonymous loopback, so every clip would fail once FGA is on"
     )
+
+
+def test_the_dataset_is_resolved_off_the_event_loop(clip_call: Any) -> None:
+    """Resolving the dataset and opening its document table are catalog calls and manifest reads; on the loop they
+    would stall every other request the process is serving."""
+    recorded = clip_call([(b"host", b"viewer:8101")])
+    assert recorded["resolved_on"] != recorded["loop_on"]

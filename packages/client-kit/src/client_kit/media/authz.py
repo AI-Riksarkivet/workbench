@@ -26,7 +26,7 @@ def corpus_object(settings: Settings, dataset_id: str, table: str) -> str:
 
     Built through `catalog_table_id` so the object a service checks is the SAME identifier a client
     writes through and the catalog authorizes on. Deriving it any other way creates a second
-    naming scheme that agrees until someone sets `MEDIA_CATALOG_NAMESPACE`.
+    naming scheme, which agrees with the catalog's only until the two drift.
 
     Raises:
         NotFoundError: The corpus names no catalog table, so there is nothing to authorize it on; a 404, as for a

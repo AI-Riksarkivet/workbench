@@ -1,55 +1,45 @@
 #!/usr/bin/env python
 """Seed a REAL, SEARCHABLE dev corpus, so every media surface shows something.
 
-the OPEN-WORK register, row A1 (drained 2026-09-10; in git history) records that the media corpus lives on a node-local `hostPath`, which means a
-dev machine has no datasets: the annotator canvas has no page to draw on and search has nothing to
-find. Everything the registry needs is env-configurable (`MEDIA_DB_ROOT` / `MEDIA_DESCRIPTOR_DIR`),
-so the corpus can be synthesized locally instead.
+The media plane reads its datasets from a lance-namespace catalog: a dataset is a namespace ``<warehouse>$<namespace>``
+and its tables are what ListTables answers there. So the corpus is written through the same catalog the services read,
+``MEDIA_CATALOG_DIR`` (lance-namespace's directory catalog, for a local stack) or ``MEDIA_CATALOG_URI`` (the catalog's
+REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), and its descriptor is stamped on the ``chunks`` table's schema metadata,
+where the registry reads it.
 
-**Why this grew from one row to a corpus.** The first version seeded ONE document with ONE chunk
-and declared no `search` at all — so `/explorer` answered every query with zero hits and looked
-broken while being "correct". A fixture whose whole purpose is "witness the estate working" has to
-survive the first thing anyone does with it, which is type a word into the search box. So: several
-documents, several chunks each, distinct prose per chunk, and an FTS index — a query for a common
-word returns MANY hits across MANY documents.
+**Why this is a corpus and not one row.** A fixture that declared no `search` answered every query with zero hits and
+looked broken while being "correct". So: several documents, several chunks each, distinct prose per chunk, and an FTS
+index — a query for a common word returns MANY hits across MANY documents.
 
-This is a DEV FIXTURE, not production data. Every page image is drawn here rather than shipped as
-a binary, so the fixture stays reviewable in a diff.
+This is a DEV FIXTURE, not production data. Every page image is drawn here rather than shipped as a binary, so the
+fixture stays reviewable in a diff.
 
-    uv run python scripts/seed_demo_corpus.py [root]
+    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_demo_corpus.py [<warehouse>$<namespace>]
 
-Then point the media services at it:
-
-    MEDIA_DB_ROOT=<root> MEDIA_DESCRIPTOR_DIR=<root>/descriptors MEDIA_DB=demo.lance ...
+Then run the media services with the same ``MEDIA_CATALOG_DIR`` (and ``MEDIA_DEFAULT_DATASET`` naming the dataset).
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
 import math
 import os
-import shutil
 import sys
-import tempfile
-from pathlib import Path
 
 import lance
+import lance_namespace
 import lancedb
 import lancedb.index
 import pyarrow as pa
+from lance_namespace import CreateNamespaceRequest, DropTableRequest, LanceNamespace, NamespaceAlreadyExistsError, TableNotFoundError
 from PIL import Image, ImageDraw
 
-from service_kit.endpoint_scheme import allow_http_for
 
-
-#: The dataset the fixture is written as. It must MATCH what the deployment asks for — the chart
-#: points `MEDIA_DB` at `<root>/transcripts_v2.lance`, so a fixture named anything else makes every
-#: media surface answer "dataset 'transcripts_v2' not found under /media-corpus" while the corpus
-#: sits right there. `seed_dev_estate.sh` reads the running deployment and passes the name it
-#: expects, so the fixture cannot drift from the config that reads it.
-DATASET_ID = os.environ.get("SEED_DATASET_ID", "demo")
+#: The dataset the fixture is written as when the command line names none: a namespace, warehouse first.
+DEFAULT_DATASET = "demo$corpus"
 
 #: The fixture corpus: three volumes, each a handful of pages. The prose is deliberately
 #: OVERLAPPING — every page mentions the archive and most mention a protokoll — so a one-word
@@ -148,44 +138,42 @@ def _chunk_rows() -> dict[str, list]:
     return columns
 
 
-def _s3_options() -> dict[str, str]:
-    """Lance ``storage_options`` for an s3:// root, from SEED_S3_* (names shared with seed_bronze_pages).
+def _catalog() -> tuple[LanceNamespace, lancedb.DBConnection]:
+    """The catalog the media plane reads, from the same settings it reads them from, as a namespace client and a lancedb
+    connection (the FTS index is built through lancedb, the stack the search service queries it with)."""
+    root = os.environ.get("MEDIA_CATALOG_DIR")
+    uri = os.environ.get("MEDIA_CATALOG_URI")
+    if bool(root) == bool(uri):
+        raise SystemExit("set exactly one of MEDIA_CATALOG_DIR and MEDIA_CATALOG_URI")
+    if root:
+        properties = {"root": root}
+        return lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties)
+    properties = {"uri": str(uri)}
+    if token := os.environ.get("MEDIA_CATALOG_TOKEN"):
+        properties["header.Authorization"] = f"Bearer {token}"
+    return lance_namespace.connect("rest", properties), lancedb.connect_namespace("rest", properties)
 
-    The same option keys `client_kit.media.config.Settings.storage_options` builds for the READERS —
-    the seed must speak the dialect the viewer/search/annotator will read with, or the corpus works
-    for whoever wrote it and nobody else.
+
+def _fresh_table(client: LanceNamespace, table_id: list[str], data: pa.Table) -> lance.LanceDataset:
+    """Write ``data`` as a NEW table at ``table_id``, dropping any table already there.
+
+    Dropped rather than overwritten: an overwrite rewrites the data but leaves earlier ``_indices/<uuid>`` behind, and a
+    re-index can leave the table pointing at an index whose files were collected — the reader then dies with
+    ``tokens.lance not found`` and every query 400s. Re-seeding must be idempotent, so the fixture is rebuilt from
+    nothing rather than layered onto its own history. Blob-v2 needs file format >= 2.2, named here rather than left to
+    the default, and stable row ids are what the media routes take blobs by.
     """
-    endpoint = os.environ.get("SEED_S3_ENDPOINT")
-    if not endpoint:
-        raise SystemExit("an s3:// root needs SEED_S3_ENDPOINT (and SEED_S3_KEY / SEED_S3_SECRET)")
-    return {
-        "endpoint": endpoint,
-        "access_key_id": os.environ.get("SEED_S3_KEY", ""),
-        "secret_access_key": os.environ.get("SEED_S3_SECRET", ""),
-        "region": os.environ.get("SEED_S3_REGION", "us-east-1"),
-        "allow_http": allow_http_for(endpoint),
-    }
+    with contextlib.suppress(TableNotFoundError):
+        client.drop_table(DropTableRequest(id=table_id))
+    return lance.write_dataset(data, namespace_client=client, table_id=table_id, mode="create", data_storage_version="2.2", enable_stable_row_ids=True)
 
 
-def seed(root: Path | str) -> str:
-    is_uri = isinstance(root, str)
-    opts = _s3_options() if is_uri else None
-    if is_uri:
-        # An object store has no dirs to mkdir and no chmod to run; `mode="overwrite"` replaces the
-        # data. The local branch's stale-`_indices` wipe does not apply on a fresh S3 prefix — on a
-        # RE-seed the index is rebuilt with replace=True below, which supersedes the old one.
-        db = f"{str(root).rstrip('/')}/{DATASET_ID}.lance"
-    else:
-        db_path = root / f"{DATASET_ID}.lance"
-        # WIPE first. `mode="overwrite"` rewrites the data but leaves earlier `_indices/<uuid>`
-        # directories behind, and a re-index can leave the dataset pointing at an index whose files
-        # were collected — the reader then dies with `tokens.lance not found` and every query 400s
-        # while the corpus looks perfectly healthy on disk. Re-seeding must be idempotent, so the
-        # fixture is rebuilt from nothing rather than layered onto its own history.
-        if db_path.exists():
-            shutil.rmtree(db_path)
-        db_path.mkdir(parents=True, exist_ok=True)
-        db = str(db_path)
+def seed(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:
+    """Write the fixture's ``chunks`` and ``documents`` tables into ``namespace``, creating its levels the catalog lacks,
+    index ``chunks.text`` for FTS, and stamp the descriptor on ``chunks``."""
+    for depth in range(1, len(namespace) + 1):
+        with contextlib.suppress(NamespaceAlreadyExistsError):
+            client.create_namespace(CreateNamespaceRequest(id=namespace[:depth]))
 
     # The page image must be a Lance **blob-v2** column or the registry refuses the dataset
     # ("document.media_blob is not a lance.blob.v2 column"). Blob-v2 is a STRUCT — raw
@@ -242,7 +230,7 @@ def seed(root: Path | str) -> str:
         },
         schema=schema,
     )
-    lance.write_dataset(chunks, f"{db}/chunks.lance", mode="overwrite", data_storage_version="2.2", enable_stable_row_ids=True, storage_options=opts)
+    _fresh_table(client, [*namespace, "chunks"], chunks)
 
     # The doc-level table `document.table` points at — ONE row per document, and it carries its own
     # cover blob because `document.media_blob` must name a column in THIS table (the descriptor
@@ -269,18 +257,14 @@ def seed(root: Path | str) -> str:
         },
         schema=doc_schema,
     )
-    lance.write_dataset(documents, f"{db}/documents.lance", mode="overwrite", data_storage_version="2.2", enable_stable_row_ids=True, storage_options=opts)
+    _fresh_table(client, [*namespace, "documents"], documents)
 
     # The FTS index, through the LANCEDB api — the search service opens the row table with
     # `lancedb` and runs `tbl.search(MatchQuery(...), query_type="fts")`, which needs an index
     # built by that same stack. Writing the column without indexing it yields zero hits for every
     # query, indistinguishable from an empty corpus.
-    connection = lancedb.connect(db, storage_options=opts)
-    connection.open_table("chunks").create_index("text", config=lancedb.index.FTS(), replace=True)
+    connection.open_table("chunks", namespace_path=namespace).create_index("text", config=lancedb.index.FTS(), replace=True)
 
-    if not isinstance(root, str):
-        descriptors = root / "descriptors"
-        descriptors.mkdir(parents=True, exist_ok=True)
     # `capabilities` is DECLARED, not probed: it maps a capability name to the `table.column` it
     # needs, and `capability_available` just checks that column exists. Without the `frames` entry
     # the dataset lists with `capabilities: []` and the annotator has no page images to open.
@@ -323,63 +307,24 @@ def seed(root: Path | str) -> str:
         ],
         "capabilities": {"frames": "chunks.image"},
     }
-    if isinstance(root, str):
-        # Over S3 the readers take the SCHEMA-STAMP path: `load_declared` walks the stems and reads
-        # `lance_media.descriptor` off dataset schema metadata (descriptor.py:221-227) — the local
-        # descriptor dir never applies to an object-store root. Stamp the chunks table; the loader
-        # takes the first stem that carries the key.
-        ds = lance.dataset(f"{db}/chunks.lance", storage_options=opts)
-        ds.update_schema_metadata({"lance_media.descriptor": json.dumps(declared)})
-        print("  s3 root: descriptor STAMPED into chunks.lance schema metadata (lance_media.descriptor)")
-        return db
-
-    descriptors2 = root / "descriptors"
-    descriptors2.mkdir(parents=True, exist_ok=True)
-    (descriptors2 / f"{DATASET_ID}.json").write_text(json.dumps(declared, indent=2) + "\n")
-    _make_world_readable(root)
-    return db
-
-
-def _make_world_readable(root: Path) -> None:
-    """Make the fixture readable by WHOEVER serves it — the whole point of a shared corpus.
-
-    Lance writes with the process umask (0600 files here), and the media services run as uid 10001
-    while a corpus is seeded by a developer or a Job under some other uid. The reader then gets
-    EACCES, which Lance's object-store layer surfaces as **"Object at location …/tokens.lance not
-    found"** — a not-found error for a file that is right there. That misdirection cost a long
-    debugging detour: the index looked corrupt or version-skewed when it was merely unreadable.
-    """
-    # The CONTENTS are ours and must be readable — a failure here is the real defect and still raises.
-    for path in root.rglob("*"):
-        path.chmod(0o755 if path.is_dir() else 0o644)
-
-    # `root` itself is usually NOT ours. Seeding into a PersistentVolumeClaim mounts a root-owned
-    # directory and the Job runs as uid 1000, so this chmod raises EPERM — after every dataset has
-    # been written correctly. The seed then reports failure for a corpus that is complete and
-    # readable, which is a worse lie than the permission it was trying to fix. The mount root's mode
-    # is the volume's business (fsGroup/mountOptions), so it is best-effort with a visible warning.
-    try:
-        root.chmod(0o755)
-    except PermissionError:
-        print(f"  note: left {root} as-is (not owned by this process — normal on a mounted volume)")
+    # The registry reads a dataset's declared roles off the `lance_media.descriptor` schema-metadata stamp of its first
+    # table (by name) that carries one, so the descriptor rides the data rather than a file beside it. Re-opened at its
+    # latest version: the FTS index above committed a version after the write.
+    lance.dataset(namespace_client=client, table_id=[*namespace, "chunks"]).update_schema_metadata({"lance_media.descriptor": json.dumps(declared)})
 
 
 def main() -> None:
-    # Default under the system temp dir: this is a throwaway dev fixture, and writing it into the
-    # repo would put a Lance dataset in git. `tempfile.gettempdir()` rather than a literal /tmp so
-    # ruff's S108 stays satisfied and TMPDIR is honoured.
-    default = Path(tempfile.gettempdir()) / "rask-demo-corpus"
-    arg = sys.argv[1] if len(sys.argv) > 1 else None
-    root: Path | str = arg if arg and "://" in arg else (Path(arg).resolve() if arg else default)
-    db = seed(root)
-    opts = _s3_options() if isinstance(root, str) else None
+    dataset = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DATASET
+    namespace = dataset.split("$")
+    if len(namespace) < 2 or not all(namespace):
+        raise SystemExit("name the dataset as <warehouse>$<namespace>: a name's first segment is its warehouse")
+    client, connection = _catalog()
+    seed(client, connection, namespace)
     for name in ("chunks", "documents"):
-        ds = lance.dataset(f"{db}/{name}.lance", storage_options=opts)
-        print(f"  {name}.lance: {ds.count_rows()} rows, v{ds.version}")
+        ds = lance.dataset(namespace_client=client, table_id=[*namespace, name])
+        print(f"  {name}: {ds.count_rows()} rows, v{ds.version}")
     print(f"  fts index on chunks.text (searchable: {sum(len(d['pages']) for d in DOCUMENTS)} pages across {len(DOCUMENTS)} documents)")
-    print(f"seeded {db}")
-    if not isinstance(root, str):
-        print(f"descriptor: {root / 'descriptors' / f'{DATASET_ID}.json'}")
+    print(f"seeded {dataset}")
 
 
 if __name__ == "__main__":

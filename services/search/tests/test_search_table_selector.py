@@ -18,7 +18,7 @@ from client_kit.lancekit.descriptor import DatasetDescriptor
 from client_kit.lancekit.registry import DatasetHandle
 from search.services.spec import SearchSpec
 from search.services.target import resolve_target
-from service_kit.exceptions import ValidationError
+from service_kit.exceptions import NotFoundError, ValidationError
 
 
 def _descriptor(searches: list[dict[str, Any]]) -> DatasetDescriptor:
@@ -61,20 +61,19 @@ class _Table:
 class _Handle:
     """The bits of `DatasetHandle` that `resolve_target` touches.
 
-    A structural stand-in, not a subclass: building a real handle needs a Lance DB on disk, and the
-    function under test only reads `descriptor`, `db.open_table` and `sync_table_info`. Call sites
+    A structural stand-in, not a subclass: building a real handle needs a catalog, and the
+    function under test only reads `descriptor`, `open_table` and `sync_table_info`. Call sites
     go through `_as_handle`, the one seam where the stand-in is cast to the nominal type.
     """
 
     def __init__(self, descriptor: DatasetDescriptor) -> None:
         self.descriptor = descriptor
         self.opened: list[str] = []
-        self.db = self
 
     def open_table(self, name: str) -> _Table:
         self.opened.append(name)
         if name not in self.descriptor.tables:
-            raise FileNotFoundError(f"table {name} not found")
+            raise NotFoundError(f"table {name} not found")
         return _Table(name)
 
     def sync_table_info(self, _name: str, _version: int) -> None:
@@ -186,20 +185,17 @@ def test_a_LEGACY_single_table_corpus_resolves_exactly_as_before() -> None:
 
 
 class _CacheHandle(_Handle):
-    """`_Handle` plus the three attributes `cache_key` touches: id, storage_options, table_uri.
-
-    The URI deliberately names a path that cannot exist, so `version_signature` takes its
-    established `except Exception -> "table:?"` degradation and the test does no Lance IO."""
+    """`_Handle` plus what `cache_key` touches: the id, and each table's open, which answers a table at version 1 and
+    does no Lance IO."""
 
     def __init__(self, descriptor: DatasetDescriptor) -> None:
         super().__init__(descriptor)
         self.id = "corpus"
-        self.storage_options = None
         self.asked: list[str] = []
 
-    def table_uri(self, table: str) -> str:
+    def dataset(self, table: str) -> _Table:
         self.asked.append(table)
-        return f"/nonexistent/{table}.lance"
+        return _Table(table)
 
 
 def _spec(table: str | None) -> SearchSpec:

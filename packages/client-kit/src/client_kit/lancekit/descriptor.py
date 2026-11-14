@@ -15,16 +15,12 @@ FixedSizeList column with the declared dimension.
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
-import lance
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from client_kit.lancekit import store
-from client_kit.lancekit.introspect import TableInfo, discover_tables
+from client_kit.lancekit.introspect import TableInfo
 
 
 logger = logging.getLogger(__name__)
@@ -208,27 +204,6 @@ class DatasetDescriptor(BaseModel):
         return column == "" or info.column(column) is not None
 
 
-def load_declared(
-    db_path: str | Path,
-    dataset_id: str,
-    descriptor_dir: str | Path,
-    storage_options: dict[str, str] | None = None,
-    *,
-    session: lance.Session | None = None,
-) -> Declared | None:
-    """Config-file override first, else the schema-metadata stamp on any table."""
-    override = Path(descriptor_dir) / f"{dataset_id}.json"
-    if override.exists():
-        return Declared.model_validate_json(override.read_text())
-    for stem in store.list_lance_stems(db_path, storage_options):
-        uri = store.join(db_path, f"{stem}.lance")
-        metadata = lance.dataset(uri, storage_options=storage_options, session=session).schema.metadata or {}
-        raw = metadata.get(DESCRIPTOR_METADATA_KEY)
-        if raw:
-            return Declared.model_validate(json.loads(raw.decode()))
-    return None
-
-
 def validate_descriptor(declared: Declared, tables: dict[str, TableInfo]) -> list[str]:
     """The P2.2 cross-check: declared roles must exist in the live schema.
 
@@ -287,20 +262,3 @@ def validate_descriptor(declared: Declared, tables: dict[str, TableInfo]) -> lis
                 problems.append(f"atlas space {space.name!r}: column {col!r} missing from {space.table!r}")
 
     return problems
-
-
-def load_dataset_descriptor(
-    db_path: str | Path,
-    dataset_id: str,
-    descriptor_dir: str | Path,
-    storage_options: dict[str, str] | None = None,
-) -> DatasetDescriptor:
-    """Discover + declare + validate; raises ``ValueError`` on an invalid descriptor."""
-    tables = discover_tables(db_path, storage_options)
-    declared = load_declared(db_path, dataset_id, descriptor_dir, storage_options)
-    if declared is None:
-        raise ValueError(f"dataset {dataset_id!r}: no declared descriptor (config file or schema stamp)")
-    problems = validate_descriptor(declared, tables)
-    if problems:
-        raise ValueError(f"dataset {dataset_id!r}: invalid descriptor: " + "; ".join(problems))
-    return DatasetDescriptor(id=dataset_id, tables=tables, declared=declared)

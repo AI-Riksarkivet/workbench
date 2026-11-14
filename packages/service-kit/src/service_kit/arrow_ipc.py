@@ -15,12 +15,10 @@ because nothing in pyarrow checks them.
 A caller's body is also held to what its bytes can carry, before any batch is read
 (:func:`_refuse_what_its_bytes_cannot_carry`): a field of a type that stores nothing per value
 declares any count it likes, and a compressed buffer is inflated as it is read, so the door passes
-the limit its own body cap sets. A response from a rask service is not held to that, because an
-honest projection of such a field is dense too.
+the limit its own body cap sets.
 Every service that reads Arrow bytes reads them through this module — a caller's body through
-:func:`decode_arrow_body` in the framing its door takes, the catalog's ``/query`` response through
-:func:`decode_arrow_response`; pinned by the TID251 banned-api entries on the ``pyarrow.ipc``
-readers in the root ``pyproject.toml``.
+:func:`decode_arrow_body` in the framing its door takes; pinned by the TID251 banned-api entries on the
+``pyarrow.ipc`` readers in the root ``pyproject.toml``.
 
 ``pyarrow`` is imported inside the functions, not at module scope, so a module that only needs
 :data:`ARROW_STREAM_MEDIA_TYPE` (a header value on a publish path that keeps the heavy import off its
@@ -137,22 +135,6 @@ def decode_arrow_body(data: bytes, *, max_bytes: int, framing: ArrowFraming) -> 
             _refuse_what_its_bytes_cannot_carry(data, _file_messages(data), max_bytes=max_bytes)
         return _decoded_file(data)
     raise ValueError(f"framing must be 'stream' or 'file', got {framing!r}")
-
-
-def decode_arrow_response(data: bytes) -> pa.Table:
-    """A rask service's Arrow IPC response, stream or file, validated in full but not held to its size.
-
-    Not held to :func:`_refuse_what_its_bytes_cannot_carry`, because what bounds a response is the query
-    that asked for it, and an honest one is denser than a caller's body may be: measured on pylance
-    12.0.0, the ``dir`` backend's ``query_table`` answers a projection of a null column as one 490-byte
-    batch whatever its row count, 2,041 rows per byte at a million rows.
-
-    Raises:
-        TypeError: ``data`` is not bytes.
-        ArrowBodyError: the bytes are not a valid Arrow IPC stream or file.
-    """
-    _require_bytes(data)
-    return _decoded_file(data) if data.startswith(_FILE_MAGIC) else _decoded_stream(data)
 
 
 def _decoded_stream(data: bytes) -> pa.Table:

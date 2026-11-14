@@ -1,28 +1,30 @@
-"""Seed the ``annotations`` table for the annotator wire — local, and the catalog.
+"""Seed the ``annotations`` table for the annotator wire, through a lance-namespace catalog.
 
-Writes ``<db>/annotations.lance`` with a few sample shapes on a real frame. The
-contract columns come STRAIGHT from the backend's ``EMPTY_SCHEMA`` (the single source
-of truth — ``services/annotator/annotations/schema.py``); this script only prepends the
-demo descriptor's identity columns. A test asserts the seeded dataset matches the
-composition, so drift fails loudly.
+Writes ``<warehouse>$<namespace>$annotations`` with a few sample shapes on a real frame, through the catalog's CreateTable
+door (``mode=overwrite``), so a re-seed converges the fixture. The contract columns come STRAIGHT from the backend's
+``EMPTY_SCHEMA`` (the single source of truth — ``services/annotator/annotations/schema.py``); this script only prepends
+the demo descriptor's identity columns. A test asserts the seeded table matches the composition, so drift fails loudly.
 
-When ``MEDIA_CATALOG_URL`` is set, the SAME rows are also seeded into the lance-ns
-catalog (``create?mode=overwrite`` — the catalog analogue of the local overwrite),
-under ``MEDIA_CATALOG_NAMESPACE`` (default: the db stem). That keeps catalog-mode
-E2E runs seeded through the governed path, mirroring the local fixture exactly.
+The catalog is the one the media plane reads: ``MEDIA_CATALOG_DIR`` (lance-namespace's directory catalog, for a local
+stack) or ``MEDIA_CATALOG_URI`` (the catalog's REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), where the table's
+maintenance policy is set too.
 
-    uv run python scripts/seed_annotations.py [db_path] [doc_id]
+    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_annotations.py <warehouse>$<namespace> [doc_id]
 """
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import sys
 from datetime import UTC, datetime
 
+import httpx
 import lance
+import lance_namespace
 import pyarrow as pa
+from lance_namespace import CreateNamespaceRequest, CreateTableRequest, LanceNamespace, NamespaceAlreadyExistsError
 
 from annotator.annotations.schema import EMPTY_SCHEMA
 
@@ -85,65 +87,60 @@ def sample_table(doc_id: str) -> pa.Table:
     return pa.table(rows, schema=SCHEMA)
 
 
-def seed(db_path: str, doc_id: str) -> str:
-    """OVERWRITE ``<db_path>/annotations.lance`` with the sample rows; returns the uri."""
-    uri = f"{db_path.rstrip('/')}/annotations.lance"
-    lance.write_dataset(
-        sample_table(doc_id),
-        uri,
-        mode="overwrite",
-        data_storage_version="2.2",
-        enable_stable_row_ids=True,
-    )
-    return uri
-
-
-def seed_catalog(catalog_url: str, namespace: str, doc_id: str) -> str:
-    """Seed the SAME rows through the catalog: namespace create (idempotent) + table
-    ``create?mode=overwrite`` with the Arrow-IPC stream body — the governed analogue
-    of the local overwrite, so catalog-mode E2E starts from the identical fixture."""
-    import httpx
-
+def seed(client: LanceNamespace, namespace: list[str], doc_id: str) -> list[str]:
+    """OVERWRITE ``annotations`` in ``namespace`` with the sample rows, creating the namespace's levels the catalog lacks;
+    returns the table's id."""
+    for depth in range(1, len(namespace) + 1):
+        with contextlib.suppress(NamespaceAlreadyExistsError):
+            client.create_namespace(CreateNamespaceRequest(id=namespace[:depth]))
     table = sample_table(doc_id)
-    buf = io.BytesIO()
-    with pa.ipc.new_stream(buf, table.schema) as writer:
+    body = io.BytesIO()
+    with pa.ipc.new_stream(body, table.schema) as writer:
         writer.write_table(table)
-    table_id = f"{namespace}$annotations"
-    # Auth-on catalogs need a bearer — same env the catalog-mode transports honor.
-    token = os.environ.get("MEDIA_CATALOG_TOKEN", "")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    with httpx.Client(base_url=catalog_url, timeout=30, headers=headers) as client:
-        ns = client.post(f"/v1/namespace/{namespace}/create", json={})
-        if ns.status_code >= 400 and "exist" not in ns.text.lower():
-            ns.raise_for_status()  # a REAL failure, not the idempotent already-exists
-        created = client.post(
-            f"/v1/table/{table_id}/create",
-            params={"mode": "overwrite"},
-            content=buf.getvalue(),
-            headers={"Content-Type": "application/vnd.apache.arrow.stream"},
-        )
-        created.raise_for_status()
-        # Re-assert the maintenance policy: policies live OUTSIDE the table
-        # (control-root records), but re-seeding should converge the whole state.
-        client.post(
-            f"/management/v1/table/{table_id}/policy/set",
-            json={"retention_days": 30, "retain_versions": 100, "compact_enabled": True},
-        ).raise_for_status()
+    table_id = [*namespace, "annotations"]
+    client.create_table(CreateTableRequest(id=table_id, mode="overwrite"), body.getvalue())
     return table_id
 
 
+def set_maintenance_policy(catalog_uri: str, table_id: list[str], token: str | None) -> None:
+    """Re-assert the table's maintenance policy at the catalog's management door, so a re-seed converges the whole
+    state: the policy lives outside the table (`docs/rask/catalog-openapi.json`, ``/management/v1/table/{id}/policy/set``).
+    A directory catalog has no such door and keeps no policy."""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    response = httpx.post(
+        f"{catalog_uri.rstrip('/')}/management/v1/table/{'$'.join(table_id)}/policy/set",
+        json={"retention_days": 30, "retain_versions": 100, "compact_enabled": True},
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def _client() -> LanceNamespace:
+    """The catalog the media plane reads, from the same settings it reads them from."""
+    root = os.environ.get("MEDIA_CATALOG_DIR")
+    uri = os.environ.get("MEDIA_CATALOG_URI")
+    if bool(root) == bool(uri):
+        raise SystemExit("set exactly one of MEDIA_CATALOG_DIR and MEDIA_CATALOG_URI")
+    if root:
+        return lance_namespace.connect("dir", {"root": root})
+    properties = {"uri": str(uri)}
+    if token := os.environ.get("MEDIA_CATALOG_TOKEN"):
+        properties["header.Authorization"] = f"Bearer {token}"
+    return lance_namespace.connect("rest", properties)
+
+
 if __name__ == "__main__":
-    db = sys.argv[1] if len(sys.argv) > 1 else "transcripts_v2.lance"
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: seed_annotations.py <warehouse>$<namespace> [doc_id]")
+    namespace = sys.argv[1].split("$")
+    if len(namespace) < 2 or not all(namespace):
+        raise SystemExit("name the dataset as <warehouse>$<namespace>: a name's first segment is its warehouse")
     doc = sys.argv[2] if len(sys.argv) > 2 else "fe00cd746463ad2c"
-    out = seed(db, doc)
-    ds = lance.dataset(out)
-    print(f"seeded {ds.count_rows()} annotations → {out} (v{ds.version})")
+    client = _client()
+    table_id = seed(client, namespace, doc)
+    if uri := os.environ.get("MEDIA_CATALOG_URI"):
+        set_maintenance_policy(uri, table_id, os.environ.get("MEDIA_CATALOG_TOKEN"))
+    ds = lance.dataset(namespace_client=client, table_id=table_id)
+    print(f"seeded {ds.count_rows()} annotations → {'$'.join(table_id)} (v{ds.version})")
     print("columns:", [f.name for f in ds.schema])
-    catalog_url = os.environ.get("MEDIA_CATALOG_URL", "")
-    if catalog_url:
-        # A name's first segment is its warehouse: the catalog answers a one-segment namespace as a warehouse.
-        namespace = os.environ.get("MEDIA_CATALOG_NAMESPACE", "")
-        if namespace.count("$") < 1 or not all(namespace.split("$")):
-            raise SystemExit("set MEDIA_CATALOG_NAMESPACE to <warehouse>$<namespace> to seed the catalog")
-        table_id = seed_catalog(catalog_url, namespace, doc)
-        print(f"seeded the catalog too → {catalog_url} {table_id} (mode=overwrite)")

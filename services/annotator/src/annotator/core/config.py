@@ -14,19 +14,18 @@ from __future__ import annotations
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
 
 from pydantic import BaseModel, Field, model_validator
 
-from client_kit.media.config import Settings, TableBackend
+from client_kit.media.config import Settings
 from service_kit.governed.settings import GovernedAuthSettings
 
 
 class LineageSink(StrEnum):
-    """Where a save the annotator commits to a LOCAL table (no catalog behind it) logs its OpenLineage RunEvent.
+    """Where a save the annotator commits to a local directory catalog logs its OpenLineage RunEvent.
 
-    Only the local mode emits: a write through the catalog is announced by the catalog, so emitting here too would
-    count the run twice (`AnnotatorSettings.effective_lineage_sink`).
+    Only a directory catalog's save emits: a write through the catalog's REST door is announced by the catalog, so
+    emitting here too would count the run twice (`AnnotatorSettings.effective_lineage_sink`).
     """
 
     log = "log"
@@ -87,20 +86,11 @@ class AnnotatorSettings(GovernedAuthSettings, Settings):
     # wired and testable. The annotator only enqueues; the deriver is the caller's own job.
     jobs_url: str | None = Field(default=None, alias="ANNOTATOR_JOBS_URL")
 
-    @model_validator(mode="after")
-    def _the_corpus_is_read_through_the_catalog(self) -> Self:
-        """No store credential: a governed table is opened on what the catalog vends for the person (ADR 0171)."""
-        if self.s3_endpoint:
-            raise ValueError(
-                "MEDIA_S3_ENDPOINT is set, and the annotator reads no store directly: point MEDIA_CATALOG_URI at the "
-                "catalog, which vends each person the credential for the tables they may read"
-            )
-        return self
-
     @property
     def effective_lineage_sink(self) -> LineageSink:
-        """The sink a save uses: ``none`` whenever a LIVE catalog sits behind the writes, which announces the write itself."""
-        if self.write_backend is TableBackend.catalog and self.catalog_uri:
+        """The sink a save uses: ``none`` on the catalog's REST door, which announces the write itself; a local directory
+        catalog announces nothing, so there the annotator logs its own."""
+        if self.catalog_uri:
             return LineageSink.none
         return self.lineage_sink
 

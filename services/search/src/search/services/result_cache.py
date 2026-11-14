@@ -20,9 +20,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-import lance
-
 from client_kit.media.cache_bounds import evict_to_bounds
+from service_kit.exceptions import ServiceUnavailableError
 
 
 if TYPE_CHECKING:
@@ -57,7 +56,7 @@ def _search_tables(handle: DatasetHandle, table: str | None) -> list[str]:
     return sorted(tables)
 
 
-def version_signature(handle: DatasetHandle, table: str | None = None) -> str:
+def version_signature(handle: DatasetHandle, table: str | None = None) -> str | None:
     """A ``name@table:version|...`` signature over every table the SELECTED search reads.
 
     The resolved search's NAME leads the signature because two searches may declare the same row
@@ -65,20 +64,23 @@ def version_signature(handle: DatasetHandle, table: str | None = None) -> str:
     ``spec.table`` string) is also what collapses ``?table=<default's name>`` and an omitted
     selector onto one entry: they ask one question.
 
-    Reading a table's version is one cheap manifest read (a stat locally, one
-    small object read over S3) — far cheaper than the query it guards, so paying
-    it on every request (hit or miss) is a good trade. A table that can't be
-    opened contributes ``?`` (it degrades to a stable-but-uninvalidatable key
-    rather than crashing the request)."""
+    Each version is read by opening the table AS THE CALLER (``handle`` is the caller's), which is also the read that
+    entitles the caller to a cached result: the cache is shared by every caller of the app, so an entry is served only to
+    a caller whose own open of every table it was built from succeeded in this request. A refusal (the catalog's or the
+    store's) propagates to the caller rather than degrading to a key, and an outage answers ``None``: the request is run
+    uncached, so no entry is served or stored on a key the catalog was not asked about. The open is the caller's
+    reusable one (:meth:`DatasetHandle.dataset`), so the read is a manifest listing, far cheaper than the query it guards.
+    """
     search = handle.descriptor.declared.search_named(table)
     name = search.name if search is not None else "?"
     parts: list[str] = []
     for table_name in _search_tables(handle, table):
         try:
-            ds = lance.dataset(handle.table_uri(table_name), storage_options=handle.storage_options)
-            parts.append(f"{table_name}:{ds.version}")
-        except Exception:
-            parts.append(f"{table_name}:?")
+            ds = handle.dataset(table_name)
+        except ServiceUnavailableError:
+            logger.warning("search cache bypassed: the catalog could not be asked about %s", table_name)
+            return None
+        parts.append(f"{table_name}:{ds.version}")
     return f"{name}@{'|'.join(parts)}"
 
 
@@ -125,8 +127,13 @@ def cache_key(
     spec: SearchSpec,
     filters: Mapping[str, str] | None,
     image_bytes: bytes | None,
-) -> CacheKey:
-    return (handle.id, version_signature(handle, spec.table), query_hash(spec, filters, image_bytes))
+) -> CacheKey | None:
+    """The entry this query is cached under, or ``None`` when the tables' versions could not be read (see
+    :func:`version_signature`)."""
+    signature = version_signature(handle, spec.table)
+    if signature is None:
+        return None
+    return (handle.id, signature, query_hash(spec, filters, image_bytes))
 
 
 def entry_bytes(result: list[dict[str, Any]]) -> int:
@@ -157,6 +164,8 @@ def run_cached(
     if max_size <= 0:
         return produce()
     key = cache_key(handle, spec, filters, image_bytes)
+    if key is None:
+        return produce()
     hit = cache.get(key)
     if hit is not None:
         cache[key] = cache.pop(key)  # move-to-end → LRU recency

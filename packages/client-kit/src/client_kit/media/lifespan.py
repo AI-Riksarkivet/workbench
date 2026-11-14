@@ -27,10 +27,9 @@ from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI
-from starlette.concurrency import run_in_threadpool
 
 from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState, dataset_handle
+from client_kit.media.state import AppState
 from service_kit.draining import arm_drain_on_sigterm
 from service_kit.governed.auth_lifespan import _GovernedSettings, attach_auth
 from service_kit.governed.fga import dispose as fga_dispose
@@ -74,19 +73,13 @@ async def media_lifespan(
 
     1. Build ``AppState`` onto ``app.state.resources`` — the shape every media router reads through
        ``StateDep``.
-    2. Warm the DEFAULT dataset handle OFF THE STARTUP LOOP. ``settings.storage_options()`` is a
-       blocking Dapr secret fetch on the cold path, so it runs in a thread; because ``_store_secret``
-       is cached this also warms the secret before serving, making every request-path read a pure
-       dict build. A failure here is logged and TOLERATED: ``/livez`` stays green and per-request
-       resolution surfaces the problem as a domain 404, which is the honest answer for a service
-       whose other datasets are fine.
-    3. ``attach_auth``. Both halves default OFF and the service behaves exactly as it always did when
+    2. ``attach_auth``. Both halves default OFF and the service behaves exactly as it always did when
        they are. Built here, never at import — an ``OIDCVerifier`` fetches discovery, so module scope
        would make importing a main do I/O. A failure to BUILD is logged and non-fatal: the dependency
        then finds no verifier/client on ``app.state`` and answers 503, which is the honest reading.
        Falling back to a permissive checker would turn a broken authorization layer into an open one.
-    4. The service's own ``setup``, if any — before readiness is announced.
-    5. The lifecycle flags ``/readyz`` reads, then the SIGTERM drain.
+    3. The service's own ``setup``, if any — before readiness is announced.
+    4. The lifecycle flags ``/readyz`` reads, then the SIGTERM drain.
 
     THE DRAIN IS ARMED AT SIGTERM, not at lifespan shutdown: the ``shutting_down`` flag below flips in
     the ``finally``, which uvicorn only reaches AFTER it has stopped accepting connections and
@@ -100,11 +93,6 @@ async def media_lifespan(
     """
     state = make_media_state(settings)
     app.state.resources = state
-    try:
-        handle = await run_in_threadpool(dataset_handle, state)  # fail-fast open of the default descriptor
-        log.info("%s: default dataset %s ready (%d tables)", service, handle.id, len(handle.descriptor.tables))
-    except Exception:
-        log.exception("%s: default dataset failed to open — serving degraded", service)
     # CAST, not a widened parameter: `attach_auth` wants the structural `_GovernedSettings` (issuer,
     # audience, the FGA coordinates), and every settings object that reaches here is a `MediaSettings`
     # ALSO mixing in `GovernedAuthSettings` — `ViewerSettings` and `SearchSettings` do, and so must a

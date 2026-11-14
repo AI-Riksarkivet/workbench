@@ -14,14 +14,13 @@ signatures at runtime, so the annotations stay real objects.
 
 import re
 
-import lance
 from fastapi import APIRouter
 
-from client_kit.lancekit import store
 from client_kit.lancekit.predicate import eq
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from service_kit.exceptions import ValidationError
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import REQUIRE_CORPUS_DATA
 from viewer.schemas.diarization import DiarizationResponse, SpeakerTurn
 
@@ -44,9 +43,9 @@ def _not_built(doc_id: str) -> DiarizationResponse:
 
 
 @router.get("/{doc_id}", dependencies=[REQUIRE_CORPUS_DATA])
-def get_diarization(doc_id: str, state: StateDep, dataset: DatasetParam = None) -> DiarizationResponse:
+def get_diarization(doc_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> DiarizationResponse:
     """A recording's speaker turns (sorted by start), or ``built: false`` if absent."""
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     # Whitelist the path param against the descriptor's identity pattern BEFORE
     # it is inlined into the Lance filter literal below — otherwise a crafted
     # doc_id is a SQL-injection vector.
@@ -56,10 +55,9 @@ def get_diarization(doc_id: str, state: StateDep, dataset: DatasetParam = None) 
     if target is None:
         return _not_built(doc_id)
     table = target.partition(".")[0]
-    uri = handle.table_uri(table)
-    if not store.exists(uri, handle.storage_options):
+    if not handle.has_table(table):
         return _not_built(doc_id)
-    rows = lance.dataset(uri, storage_options=handle.storage_options).to_table(filter=eq(_TURN_DOC, doc_id)).to_pylist()
+    rows = handle.dataset(table).to_table(filter=eq(_TURN_DOC, doc_id)).to_pylist()
     if not rows:
         return _not_built(doc_id)
     # The columns are a writer-guaranteed contract (every row carries all five,

@@ -29,18 +29,6 @@ class ViewerSettings(Settings, GovernedAuthSettings):
     service_name: str = "viewer"
     service_port: int = Field(default=8101, alias="VIEWER_PORT")
 
-    #: The Dapr secret-store COMPONENT the per-store S3 credentials are read from (`objects.py`).
-    #:
-    #: Declared here rather than read where it is used (VS-24): a bare env read for
-    #: `WORKBENCH_SECRET_STORE` inside an endpoint module was the only such read in the service, and an undeclared
-    #: setting has no type, no discoverable default and no place a reader looks. The env NAME is kept
-    #: so no deployment moves. It names the same component as `s3_secret_store` (MEDIA_S3_SECRET_STORE)
-    #: does for the warehouse's own bundle; collapsing the two variables is a config-contract change, not a rename.
-    secret_store: str = Field(default="lance-secrets", alias="WORKBENCH_SECRET_STORE")
-    #: The stores the object browser may read, as the JSON array the chart renders from `storage.stores`. Kept as the
-    #: raw value and parsed by `viewer.core.stores.registered_stores`, which answers a malformed one with its defaults
-    #: and an error log rather than failing the whole service at boot.
-    stores: str = Field(default="", alias="WORKBENCH_STORES")
     #: Where the voiceprint runner's Ray Serve app answers. EMPTY DISABLES the upload form, and that
     #: is the honest default: the read plane no longer carries a speaker encoder, so an estate that
     #: has not deployed the runner cannot embed — and saying so at the door beats a 500 from a model

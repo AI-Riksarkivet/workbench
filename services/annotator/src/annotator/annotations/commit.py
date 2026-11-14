@@ -1,8 +1,8 @@
 """The shared commit choreography — one write ritual for every annotations save path.
 
 Both save routes (the per-unit review Save and the batch tag write) perform the same
-sequence around their different deltas: optimistic-concurrency check → write via the
-writer seam → delete-by-ids → re-open → OpenLineage emit → SaveResult. Extracted here
+sequence around their different deltas: optimistic-concurrency check → write through the
+catalog's doors → delete-by-ids → re-open → OpenLineage emit → SaveResult. Extracted here
 so the ritual exists ONCE and a change (e.g. the catalog-governed write at merge)
 lands in one place.
 """
@@ -15,8 +15,6 @@ from annotator.annotations.lineage import emit_save
 from annotator.annotations.schema import ANNOTATIONS_TABLE, SaveResult
 from annotator.core.config import AnnotatorSettings
 from client_kit.lancekit.predicate import isin
-from client_kit.lancekit.reader import open_reader
-from client_kit.lancekit.registry import table_dataset
 from service_kit.exceptions import ConflictError
 
 
@@ -24,14 +22,13 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from annotator.corpus import Corpus
-    from client_kit.lancekit.writer import TableWriter
+    from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport
     from client_kit.media.config import Settings
 
 
 def check_base_version_value(current: int, base_version: int | None, *, required: bool = False) -> None:
     """Optimistic concurrency, source-agnostic: 409 if the table advanced past the
-    version the client loaded — ``current`` may be a direct ``ds.version`` or the
-    catalog's version primitive.
+    version the client loaded; ``current`` is the table's Lance version.
 
     ``required`` is decided by WHAT THE WRITE CAN DESTROY, not by uniformity (#50):
 
@@ -49,7 +46,7 @@ def check_base_version_value(current: int, base_version: int | None, *, required
       fail an entire bulk tagging run, buying no safety for the cost. It stays optional, and
       that is a reasoned exemption rather than an oversight.
 
-    There is NO first-write exemption on the required path: ``table_dataset`` raises
+    There is NO first-write exemption on the required path: ``DatasetHandle.dataset`` raises
     ``NotFoundError`` when the annotations table is absent, so by the time this runs the table
     always exists and always has a version — and the client always has one, because the GET
     that served it the annotations carried it (``X-Annotations-Version``).
@@ -67,8 +64,8 @@ def check_base_version_value(current: int, base_version: int | None, *, required
         raise ConflictError(f"annotations changed on the server (loaded v{base_version}, now v{current})")
 
 
-def delete_by_ids(writer: TableWriter, ids: Sequence[str]) -> None:
-    """Delete rows by id through the writer seam — quoted, injection-guarded."""
+def delete_by_ids(writer: NamespaceCatalogWriteTransport, ids: Sequence[str]) -> None:
+    """Delete rows by id through the catalog's delete door — quoted, injection-guarded."""
     writer.delete(isin("id", ids))
 
 
@@ -78,24 +75,13 @@ def finalize_commit(
     *,
     touched: int,
     unit_key: str,
-    caller_token: str | None = None,
 ) -> SaveResult:
-    """Close out a write: report the post-write version FROM THE READER SEAM and
-    emit the local-mode OpenLineage RunEvent. In full catalog mode no local table is
-    touched — the version comes from the catalog and the catalog emits the RunEvent
-    for the same write (``effective_lineage_sink`` is ``none`` there)."""
-    table_id = settings.catalog_table_id(corpus.id, ANNOTATIONS_TABLE)
-    fresh = None if corpus.local is None else table_dataset(corpus.local, ANNOTATIONS_TABLE)
-    reader = open_reader(dataset=fresh, table_id=table_id, settings=settings, caller_token=caller_token)
-    version = reader.table_version()
+    """Close out a write: report the version the write committed, read off the table re-opened through the namespace, and
+    on a local directory catalog log the OpenLineage RunEvent the catalog's REST door would otherwise announce
+    (``effective_lineage_sink``)."""
+    fresh = corpus.handle.dataset(ANNOTATIONS_TABLE)
     # The sink is the annotator's own setting; media settings that carry none (a bare test state's) emit nothing.
     sink = settings.effective_lineage_sink if isinstance(settings, AnnotatorSettings) else "none"
-    if touched and sink != "none" and fresh is not None and corpus.local is not None:
-        emit_save(
-            ds=fresh,
-            table_uri=corpus.local.table_uri(ANNOTATIONS_TABLE),
-            table_name=ANNOTATIONS_TABLE,
-            unit_key=unit_key,
-            sink=sink,
-        )
-    return SaveResult(saved=touched, version=version)
+    if touched and sink != "none":
+        emit_save(ds=fresh, table_uri=fresh.uri, table_name=ANNOTATIONS_TABLE, unit_key=unit_key, sink=sink)
+    return SaveResult(saved=touched, version=int(fresh.version))

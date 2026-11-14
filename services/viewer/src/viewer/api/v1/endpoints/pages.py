@@ -36,7 +36,6 @@ import logging
 from io import BytesIO
 from typing import Annotated
 
-import httpx
 import lance
 import pyarrow as pa
 from fastapi import APIRouter, Query, Response
@@ -45,7 +44,9 @@ from fastapi.responses import StreamingResponse
 from lance.blob import BlobFile
 from pydantic import BaseModel, computed_field
 
+from client_kit.lancekit.absence import reads_as_absent
 from client_kit.lancekit.blobs import is_blob_field
+from client_kit.lancekit.catalog import bounded, connect_namespace, translate_catalog_errors
 from client_kit.lancekit.predicate import eq
 from client_kit.media.authz import table_object
 from client_kit.media.deps import StateDep
@@ -119,7 +120,7 @@ class Page(BaseModel):
 
 
 class PageListing(BaseModel):
-    #: The catalog table id these pages came from (e.g. bronze$pages).
+    #: The catalog table id these pages came from (e.g. acme$bronze$pages).
     dataset: str
     pages: list[Page]
 
@@ -160,86 +161,36 @@ def sniff_media_type(payload: bytes) -> str:
     return "application/octet-stream"
 
 
-def _resolve(state: StateDep, table: str, token: str | None) -> str:
-    """Resolve a catalog table id (``bronze$pages``) to its dataset location.
-
-    THROUGH THE CATALOG, never a caller-supplied URI. Taking an ``s3://`` parameter would let any
-    caller point this endpoint at any bucket the viewer's credentials can reach and have it stream
-    the bytes back — the viewer would become a read primitive for the whole object store. It also
-    made the viewer disagree with the catalog by construction: it could render a dataset the catalog
-    had never heard of, which is exactly the ungoverned state this gate exists to close.
-
-    The catalog is the one that knows where a registered table lives, so it is the one asked.
-    """
-    base = state.settings.catalog_uri
-    if not base:
-        raise NotFoundError("the viewer has no catalog configured (MEDIA_CATALOG_URI), so it cannot resolve a table")
-    # The CALLER's bearer, not a service credential (#90). `raw_bearer`'s own docstring says why:
-    # the catalog checks one relation on one `table:` object and injects no row predicate, so a
-    # service token answers 200 for a caller with no grant at all — the two identities diverge, not
-    # the rows. This call used to carry no Authorization header whatsoever, which meant it 401'd on
-    # any auth-enabled catalog and, when it did succeed, succeeded as nobody in particular.
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    # THE PROCESS-WIDE POOL, not a fresh client per call (VS-12). A new `httpx.Client(base_url=...)`
-    # here paid a TLS handshake and a throwaway connection pool on every `/api/page(s)`; the pooled
-    # client built once in the lifespan is on `state.http` and `system.py` already reuses it the same
-    # way. It carries no `base_url`, so the resolve passes the catalog URI as an absolute url. The
-    # module fallback only fires for bare `AppState` constructions in unit tests.
-    http = state.http if state.http is not None else httpx
-    try:
-        r = http.post(f"{base}/v1/table/{table}/describe", json={}, headers=headers, timeout=30.0)
-    except httpx.RequestError as exc:
-        # AN OUTAGE, NOT AN ABSENCE — and the old message said so ("catalog unreachable") while the
-        # class it raised said the opposite. `httpx.RequestError` is the base of ConnectError,
-        # ConnectTimeout, ReadTimeout and DNS failure: all transient, all clearing on their own. A 404
-        # is TERMINAL, so the zone rendered "page not found", the reader stopped, and nothing retried.
-        # This is the same laundering the 401/403 branch below refuses to do, for the same reason.
-        #
-        # The exception goes to the LOG, never the detail: `_problem` puts `str(exc)` verbatim into the
-        # client body with no redaction at any status, so interpolating it here put the internal host
-        # and port on the wire. `ns_errors` redacts every 5xx detail for exactly this reason and never
-        # applied, because the class chosen was a 4xx — mislabelling the outage is what made the leak
-        # reachable.
-        logger.exception("catalog unreachable while resolving %r", table)
-        raise ServiceUnavailableError(f"the catalog is unreachable, so {table!r} cannot be resolved right now") from exc
-    # 401/403 are NOT "unknown table". Reporting them as "catalog does not know table X" sends the
-    # next reader hunting for a missing registration that is not the problem; the annotator lost real
-    # debugging time to exactly this laundering. Say which failure it is — and now that the caller's
-    # bearer IS forwarded, say whether one was sent, because "no credential" and "credential refused"
-    # are different problems with different fixes.
-    if r.status_code in (401, 403):
-        detail = "no bearer was sent (the caller is anonymous)" if not token else "the caller's bearer was refused"
-        raise UnauthorizedError(f"the catalog rejected the credential resolving {table!r} (HTTP {r.status_code}) — {detail}")
-    if r.status_code >= 500:
-        # A 5xx RESPONSE is the same outage as a refused connection — the catalog (or a proxy in
-        # front of it) answered "I am broken", not "that table does not exist". This branch was
-        # `>= 400` and laundered it into a terminal 404; found by the adversarial re-audit, because
-        # the connection-level tests above raise before a response exists and never walk this path.
-        logger.error("catalog answered %s resolving %r", r.status_code, table)
-        raise ServiceUnavailableError(f"the catalog is failing (HTTP {r.status_code}), so {table!r} cannot be resolved right now")
-    if r.status_code >= 400:
-        raise NotFoundError(f"catalog does not know table {table!r} (HTTP {r.status_code})")
-    location = r.json().get("location")
-    if not location:
-        raise NotFoundError(f"catalog returned no location for {table!r}")
-    return str(location)
-
-
 def _open(state: StateDep, table: str, token: str | None) -> lance.LanceDataset:
-    """Open the dataset a catalog table points at.
+    """Open a catalog table by its id (``acme$bronze$pages``), through the namespace as the caller.
 
-    404 only when the table is genuinely absent (that decision belongs to `_resolve`); a driver
-    failure opening it is a 503, because it is an outage and a 404 would stop the reader for good.
+    THROUGH THE CATALOG, never a caller-supplied URI. Taking an ``s3://`` parameter would let a caller point this
+    endpoint at any object it names; resolving the id at the catalog keeps the viewer to the tables the catalog governs,
+    read on the credential the catalog vends this caller (DescribeTable's storage options), so the viewer holds no store
+    credential of its own.
+
+    The caller's own bearer rides the namespace client, never a service credential (#90): the catalog checks one relation
+    on one ``table:`` object and injects no row predicate, so a service token would answer for a caller with no grant.
+    Its refusals keep their meaning (`client_kit.lancekit.catalog.translate_catalog_errors`): absent is 404, an unknown
+    caller 401 (saying whether a bearer was sent at all), a refused one 403, and an unreachable or failing catalog 503, which a reader retries, never the terminal
+    404. A store failure behind a table the catalog resolved is a 503 too, with the location kept out of the detail: it
+    is a path the caller never supplied.
     """
-    location = _resolve(state, table, token)
+    client = connect_namespace(state.settings, token)
+    identifier = table.split(state.settings.catalog_delimiter)
     try:
-        return lance.dataset(location, storage_options=state.settings.storage_options())
-    except Exception as exc:  # noqa: BLE001 — any driver failure here is an outage, not an absence
-        # A RustFS outage, expired vended credentials and a corrupt manifest all land here, and every
-        # one of them was reported as a missing page. The location is deliberately absent from the
-        # detail as well as the exception text: it is an `s3://` path the caller never supplied and
-        # has no business learning from a failure.
-        logger.exception("table %r resolves to %r, which is unreadable", table, location)
+        with translate_catalog_errors():
+            # No shared session: one shared across callers serves a later caller the store an earlier caller's live open
+            # was vended (`client_kit.lancekit.registry.CallerSessions`); this open lives for the request alone.
+            return bounded(lambda: lance.dataset(namespace_client=client, table_id=identifier))
+    except UnauthorizedError as exc:
+        # "No credential sent" and "credential refused" send a reader in opposite directions, so the detail says which.
+        detail = "no bearer was sent (the caller is anonymous)" if not token else "the caller's bearer was refused"
+        raise UnauthorizedError(f"the catalog rejected the credential opening {table!r}: {detail}") from exc
+    except (ValueError, OSError) as exc:
+        if reads_as_absent(exc):
+            raise NotFoundError(f"catalog does not know table {table!r}") from exc
+        logger.exception("table %r is unreadable", table)
         raise ServiceUnavailableError(f"the storage backing {table!r} is unreadable right now") from exc
 
 
@@ -368,7 +319,7 @@ async def list_pages(
     checker: CheckerDep,
     subject: CurrentSubject,
     token: RawBearerToken,
-    table: Annotated[str, Query(description="Catalog table id, e.g. bronze$pages.")],
+    table: Annotated[str, Query(description="Catalog table id, e.g. acme$bronze$pages.")],
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> PageListing:
     """Page metadata, in dataset order.
@@ -412,7 +363,7 @@ async def get_page(
     checker: CheckerDep,
     subject: CurrentSubject,
     token: RawBearerToken,
-    table: Annotated[str, Query(description="Catalog table id, e.g. bronze$pages.")],
+    table: Annotated[str, Query(description="Catalog table id, e.g. acme$bronze$pages.")],
     page_id: Annotated[int, Query(alias="id", ge=0, description="The page's `id` column value.")],
 ) -> Response:
     """The raw image bytes for one page.

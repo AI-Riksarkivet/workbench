@@ -37,7 +37,7 @@ from search.audit_actions import SearchAuditAction
 from search.core.config import SearchSettings, get_search_settings
 from service_kit.exceptions import ForbiddenError
 from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.deps import FgaChecker, make_auth_deps
+from service_kit.governed.deps import FgaChecker, RawBearerToken, make_auth_deps
 
 
 if TYPE_CHECKING:
@@ -74,6 +74,7 @@ async def may_search(
     subject: str,
     checker: FgaChecker,
     settings: SearchSettings,
+    caller_token: str | None,
 ) -> bool:
     """May this caller search this corpus's `table`? `True` when FGA is off (dev is unchanged).
 
@@ -81,8 +82,8 @@ async def may_search(
     corpus default — the same value the handler passes to `resolve_target`, so the object checked
     here and the rows read there cannot diverge.
 
-    Resolution is threadpooled by the caller — opening a cold registry entry is Lance/S3 under a
-    lock, and this runs on the event loop.
+    Resolution is threadpooled: opening a cold registry entry is catalog calls and manifest reads, and this runs on
+    the event loop.
     """
     if not settings.fga_enabled:
         return True
@@ -90,7 +91,7 @@ async def may_search(
 
     from client_kit.media.state import dataset_handle
 
-    handle = await run_in_threadpool(dataset_handle, state, dataset_id)
+    handle = await run_in_threadpool(dataset_handle, state, dataset_id, caller_token)
     row_table = _row_table(handle, table)
     if row_table is None:
         return False
@@ -105,6 +106,7 @@ async def require_search(
     subject: str,
     checker: FgaChecker,
     settings: SearchSettings,
+    caller_token: str | None,
 ) -> None:
     """Refuse a search of ONE named corpus table the caller may not read.
 
@@ -112,7 +114,7 @@ async def require_search(
     fan-out, which is filtered (`datasets.list_datasets`: "the honest answer to 'what can I search'
     is a shorter list, not a 403").
     """
-    if await may_search(state, dataset_id, table=table, subject=subject, checker=checker, settings=settings):
+    if await may_search(state, dataset_id, table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token):
         return
     audit(SearchAuditAction.SEARCH_CORPUS_READ, AuditOutcome.FAILURE, subject=subject, resource=dataset_id or "<default>", relation=READ_DATA)
     raise ForbiddenError(f"{subject} lacks {READ_DATA} on corpus {dataset_id or '<default>'}")
@@ -124,6 +126,7 @@ async def authorized_corpora(
     subject: CurrentSubject,
     checker: CheckerDep,
     settings: SettingsDep,
+    caller_token: RawBearerToken = None,
     corpus: Annotated[list[str] | None, Query(description="Fan out across these corpora, fused by RRF")] = None,
 ) -> list[str] | None:
     """The corpora this caller may search, or ``None`` for the single-corpus case (already refused).
@@ -150,12 +153,14 @@ async def authorized_corpora(
             # passes one `spec.table` to all of them), so each corpus is checked on ITS row table
             # under that name — and a corpus that does not declare it is dropped, which is the same
             # answer `_fused_search` reaches by skipping it.
-            if await may_search(state, dataset_id, table=table, subject=subject, checker=checker, settings=settings):
+            if await may_search(state, dataset_id, table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token):
                 allowed.append(dataset_id)
             else:
                 audit(SearchAuditAction.SEARCH_CORPUS_READ, AuditOutcome.FAILURE, subject=subject, resource=dataset_id, relation=READ_DATA)
         return allowed
-    await require_search(state, request.query_params.get("dataset"), table=table, subject=subject, checker=checker, settings=settings)
+    await require_search(
+        state, request.query_params.get("dataset"), table=table, subject=subject, checker=checker, settings=settings, caller_token=caller_token
+    )
     return None
 
 

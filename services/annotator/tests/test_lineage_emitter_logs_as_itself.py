@@ -9,6 +9,7 @@ second record would count the run twice.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, cast
 
 import lance
@@ -66,7 +67,7 @@ def test_the_none_sink_still_emits_nothing() -> None:
     assert _emit(LineageSink.none) is None
 
 
-def test_a_save_through_a_live_catalog_leaves_its_lineage_to_the_catalog() -> None:
-    live = AnnotatorSettings.model_validate({"MEDIA_WRITE_BACKEND": "catalog", "MEDIA_CATALOG_URI": "http://catalog:2333"})
-    assert live.effective_lineage_sink is LineageSink.none
-    assert AnnotatorSettings.model_validate({}).effective_lineage_sink is LineageSink.log
+def test_a_save_through_the_catalogs_rest_door_leaves_its_lineage_to_the_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    assert AnnotatorSettings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}).effective_lineage_sink is LineageSink.log
+    monkeypatch.delenv("MEDIA_CATALOG_DIR")
+    assert AnnotatorSettings.model_validate({"MEDIA_CATALOG_URI": "http://catalog:2333"}).effective_lineage_sink is LineageSink.none

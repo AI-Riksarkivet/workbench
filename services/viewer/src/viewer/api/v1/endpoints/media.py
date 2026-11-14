@@ -28,15 +28,18 @@ from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from lance.blob import BlobFile
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
+from client_kit.lancekit.descriptor import DocumentBinding
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.lancekit.predicate import eq
 from client_kit.lancekit.registry import DatasetHandle, table_dataset
 from client_kit.media.authz import corpus_object
 from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
+from client_kit.media.state import AppState, dataset_handle
 from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import READ_DATA, REQUIRE_MEDIA_BYTES, CheckerDep, CurrentSubject, SettingsDep
 from viewer.audit_actions import ViewerAuditAction
 from viewer.services.clips import MAX_CLIP_S, ClipBusyError, build_clip
@@ -277,8 +280,8 @@ def _frames_binding(handle: DatasetHandle) -> tuple[str, str, str | None] | None
 
 
 @router.get("/thumbnail/{doc_id}", dependencies=[REQUIRE_MEDIA_BYTES])
-def thumbnail(doc_id: str, state: StateDep, dataset: DatasetParam = None) -> Response:
-    handle = dataset_handle(state, dataset)
+def thumbnail(doc_id: str, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> Response:
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document
@@ -310,12 +313,13 @@ def chunk_frame(
     state: StateDep,
     frame_idx: Annotated[int, Query(ge=0)] = 0,
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> Response:
     """A chunk's frame from the frames table; 404 until frames are extracted.
     ``frame_idx`` selects which frame when a chunk was sampled multiple times
     (0 = the representative frame). The path params map positionally onto the
     descriptor's identity key fields (doc key first)."""
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = _frames_binding(handle)
@@ -359,6 +363,19 @@ def chunk_frame(
     return blob_response(blob, mime=mime, empty_detail="frame body empty")
 
 
+def _clip_source(state: AppState, dataset: str | None, caller_token: str | None, doc_id: str) -> tuple[DatasetHandle, str, DocumentBinding]:
+    """The dataset, the validated doc key and the document binding a clip is cut from; 404 when the doc is absent."""
+    handle = dataset_handle(state, dataset, caller_token)
+    declared = handle.descriptor.declared
+    doc_id = validate_doc_key(declared, doc_id)
+    binding = declared.document
+    if binding is None:
+        raise NotFoundError("doc_id not found")
+    if rowid_for_doc(table_dataset(handle, binding.table), declared.identity.doc_key, doc_id) is None:
+        raise NotFoundError("doc_id not found")
+    return handle, doc_id, binding
+
+
 @router.get("/media-clip/{doc_id}")
 async def media_clip(
     doc_id: str,
@@ -370,6 +387,7 @@ async def media_clip(
     lo: Annotated[float, Query(ge=0)],
     hi: Annotated[float, Query(gt=0)],
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> FileResponse:
     """A windowed excerpt of the media with MP3 audio — built for MCP-app
     iframes in hosts whose webview lacks the AAC codec (VS Code). The clip is
@@ -377,19 +395,12 @@ async def media_clip(
     endpoint) and disk-cached; FileResponse serves it with Range support so
     in-clip seeking works. Timestamps are clip-local: second 0 == ``lo``.
     """
-    handle = dataset_handle(state, dataset)
-    declared = handle.descriptor.declared
-    doc_id = validate_doc_key(declared, doc_id)
     if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
         raise ValidationError("need finite seconds with hi > lo")
     if hi - lo > MAX_CLIP_S:
         raise ValidationError(f"clip window capped at {MAX_CLIP_S:.0f}s")
-    binding = declared.document
-    if binding is None:
-        raise NotFoundError("doc_id not found")
-    ds = table_dataset(handle, binding.table)
-    if rowid_for_doc(ds, declared.identity.doc_key, doc_id) is None:
-        raise NotFoundError("doc_id not found")
+    # Off the loop: resolving the dataset and opening its document table are catalog calls and manifest reads.
+    handle, doc_id, binding = await run_in_threadpool(_clip_source, state, dataset, caller_token, doc_id)
     # build_clip always emits an MP4 container (libx264 + mp3), so the response
     # mime is video/mp4 regardless of the source doc's stored mime.
     mime = "video/mp4"
@@ -460,8 +471,8 @@ async def media_clip(
 
 
 @router.get("/media/{doc_id}", dependencies=[REQUIRE_MEDIA_BYTES])
-def media(doc_id: str, request: Request, state: StateDep, dataset: DatasetParam = None) -> Response:
-    handle = dataset_handle(state, dataset)
+def media(doc_id: str, request: Request, state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> Response:
+    handle = dataset_handle(state, dataset, caller_token)
     declared = handle.descriptor.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document

@@ -33,21 +33,21 @@ def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytes
             with contextlib.suppress(threading.BrokenBarrierError):
                 overlap.wait()
 
-        def default(self) -> str:
+        def default(self, caller_token: str | None) -> str:
             return "handle"
 
-        def get(self, dataset_id: str) -> str:
+        def get(self, dataset_id: str, caller_token: str | None) -> str:
             return "handle"
 
     # dataset_handle imports DatasetRegistry from the registry module per call,
     # so patching the module attribute intercepts the construction.
     monkeypatch.setattr(registry_mod, "DatasetRegistry", RacedRegistry)
 
-    state = AppState(settings=Settings())
+    state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": "/catalog"}))
     results: list[object] = []
 
     def first_request() -> None:
-        results.append(state_mod.dataset_handle(state))
+        results.append(state_mod.dataset_handle(state, None, None))
 
     threads = [threading.Thread(target=first_request) for _ in range(2)]
     for t in threads:

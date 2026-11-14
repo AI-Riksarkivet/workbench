@@ -27,9 +27,6 @@ from annotator.api.security import CurrentSubject, RawBearerToken
 from annotator.corpus import resolve
 from client_kit.lancekit.descriptor import Declared
 from client_kit.lancekit.keys import validate_doc_key
-from client_kit.lancekit.reader import open_reader
-from client_kit.lancekit.registry import table_dataset
-from client_kit.lancekit.writer import open_writer
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.exceptions import ValidationError
 
@@ -106,16 +103,13 @@ def apply_tags(
     corpus = resolve(state, dataset, caller_token)
     declared = corpus.declared
     check_keys_arity(declared, [*body.adds, *body.removes])
-    ds = None if corpus.local is None else table_dataset(corpus.local, ANNOTATIONS_TABLE)
+    ds = corpus.handle.dataset(ANNOTATIONS_TABLE)
     # Optimistic concurrency degrades to table-GLOBAL for a cross-unit batch; optional +
-    # last-write-wins per deterministic id is the pragmatic contract. Version + schema
-    # come from the reader seam so catalog mode checks against the catalog's truth.
-    table_id = state.settings.catalog_table_id(corpus.id, ANNOTATIONS_TABLE)
-    reader = open_reader(dataset=ds, table_id=table_id, settings=state.settings, caller_token=caller_token)
-    check_base_version_value(reader.table_version(), body.base_version)
+    # last-write-wins per deterministic id is the pragmatic contract.
+    check_base_version_value(int(ds.version), body.base_version)
 
-    delta = tag_rows(body.adds, declared, author=author, schema=reader.schema)
-    writer = open_writer(dataset=ds, table_id=table_id, settings=state.settings, caller_token=caller_token)
+    delta = tag_rows(body.adds, declared, author=author, schema=ds.schema)
+    writer = corpus.handle.writer(ANNOTATIONS_TABLE)
     touched = 0
     if delta.num_rows:
         # INSERT-ONLY (not upsert): a tag that already exists is left untouched, so a
@@ -134,7 +128,6 @@ def apply_tags(
         state.settings,
         touched=touched,
         unit_key=f"tags:{len(body.adds)}+{len(body.removes)}",
-        caller_token=caller_token,
     )
     if touched:
         logger.info("tagged → v%d (%d add-rows, %d remove)", result.version, delta.num_rows, len(remove_ids))

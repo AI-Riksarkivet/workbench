@@ -51,16 +51,12 @@ def _governed_settings() -> SearchSettings:
 
 @pytest.fixture
 def hermetic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the lifespan off S3 and off the network; the auth wiring is what is under test."""
-    from client_kit.media import lifespan as media_lifespan_mod
+    """Keep the lifespan off the network; the auth wiring is what is under test."""
     from search import main as main_mod
 
     # `search.main._settings` resolves `get_search_settings` from this module's globals at LIFESPAN
     # time, so the patch reaches the real lifespan rather than a value captured at import.
     monkeypatch.setattr(main_mod, "get_search_settings", _governed_settings)
-    # `dataset_handle` moved with the lifespan itself (DUP-16): the three media services share one
-    # implementation in `client_kit.media.lifespan`, which is where the open now happens.
-    monkeypatch.setattr(media_lifespan_mod, "dataset_handle", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no dataset in this test")))
 
 
 @pytest.mark.asyncio

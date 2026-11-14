@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
 from service_kit.exceptions import ServiceUnavailableError, ValidationError
+from service_kit.governed.deps import RawBearerToken
 from viewer.api.security import REQUIRE_CORPUS_DATA, REQUIRE_CORPUS_METADATA
 from viewer.schemas.voice import VoiceIdentityResponse, VoiceSimilarResponse, VoiceStatusResponse
 from viewer.services import voice_service
@@ -74,9 +75,9 @@ def voice_encoder(state: AppState) -> "ServeEncoder":
 
 
 @router.get("/status", dependencies=[REQUIRE_CORPUS_METADATA])
-def voice_status(state: StateDep, dataset: DatasetParam = None) -> VoiceStatusResponse:
+def voice_status(state: StateDep, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> VoiceStatusResponse:
     """Whether the voice tables exist + their row counts (no error when absent)."""
-    return voice_service.voice_status(dataset_handle(state, dataset))
+    return voice_service.voice_status(dataset_handle(state, dataset, caller_token))
 
 
 @router.get("/similar", dependencies=[REQUIRE_CORPUS_DATA])
@@ -91,6 +92,7 @@ def voice_similar(
     n: Annotated[int, Query(ge=1, le=MAX_N)] = 20,
     exclude_same_doc: bool = True,
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> VoiceSimilarResponse:
     """Voice-ranked hits for exactly one anchor: ``turn_id`` | ``speaker`` | ``t``.
 
@@ -98,7 +100,7 @@ def voice_similar(
     is clamped to the service's cap. ``rerank`` is deliberately not offered —
     the cross-encoder scores transcript text, which says nothing about voice.
     """
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     require_valid_doc_id(handle, doc_id)
     return voice_service.similar_voices(
         handle,
@@ -112,14 +114,14 @@ def voice_similar(
 
 
 @router.get("/identity", dependencies=[REQUIRE_CORPUS_DATA])
-def voice_identity(state: StateDep, doc_id: str, speaker: str, dataset: DatasetParam = None) -> VoiceIdentityResponse:
+def voice_identity(state: StateDep, doc_id: str, speaker: str, dataset: DatasetParam = None, caller_token: RawBearerToken = None) -> VoiceIdentityResponse:
     """The global identity cluster for one (``doc_id``, ``speaker``).
 
     503 until the speakers table has been built; 404 for an unknown speaker;
     ``speaker_cluster`` is ``None`` (with the anchor as its only appearance)
     until a clustering pass has assigned it a cluster.
     """
-    handle = dataset_handle(state, dataset)
+    handle = dataset_handle(state, dataset, caller_token)
     require_valid_doc_id(handle, doc_id)
     return voice_service.speaker_identity(handle, doc_id=doc_id, speaker=speaker)
 
@@ -132,6 +134,7 @@ async def voice_similar_upload(
     # advertised an unbounded integer for a vector-search fan-out.
     n: Annotated[int, Query(ge=1, le=MAX_N)] = 20,
     dataset: DatasetParam = None,
+    caller_token: RawBearerToken = None,
 ) -> VoiceSimilarResponse:
     """Voice-ranked hits for an uploaded snippet (any container ffmpeg decodes).
 
@@ -154,7 +157,7 @@ async def voice_similar_upload(
     """
     # dataset_handle opens Lance on a cold miss — offload it so the async upload
     # handler never blocks the event loop (fastapi skill: no blocking I/O in async def).
-    handle = await run_in_threadpool(dataset_handle, state, dataset)
+    handle = await run_in_threadpool(dataset_handle, state, dataset, caller_token)
     file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
     return await run_in_threadpool(
         voice_service.similar_voices_for_upload,

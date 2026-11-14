@@ -3,9 +3,8 @@
 Read once at startup via `Settings()`; pass through DI as `SettingsDep`. Never
 re-read env vars in routes or services.
 
-Only the fields the `make_service_app` services read live here. S3 endpoint and
-credential resolution belongs to `storage` (env-driven: WORKBENCH_S3_* / AWS_* /
-HCP_* aliases), not to this class.
+Only the fields the `make_service_app` services read live here. No service holds an object-store endpoint or
+credential: data is read through lance-namespace, on the storage options the catalog vends.
 """
 
 from pydantic import Field
