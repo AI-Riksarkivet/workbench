@@ -28,6 +28,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -74,9 +75,27 @@ def ath_of(access_token: str) -> str:
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 
 
+#: RFC 3986 § 2.3: the characters a percent-encoding of which is equivalent to the character itself.
+_UNRESERVED: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+_PERCENT_ENCODED: Final = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def _normalised_path(path: str) -> str:
+    """``path`` after RFC 3986 § 6.2.2's syntax-based normalisation of percent-encoding: the hex digits of every
+    triplet upper-cased (§ 6.2.2.1) and the triplets of unreserved characters decoded (§ 6.2.2.2). A reserved character
+    stays as it was sent, encoded or not, since encoding one changes what the path says (§ 2.2)."""
+
+    def triplet(match: re.Match[str]) -> str:
+        char = chr(int(match.group(1), 16))
+        return char if char in _UNRESERVED else f"%{match.group(1).upper()}"
+
+    return _PERCENT_ENCODED.sub(triplet, path)
+
+
 def _without_query(url: str) -> str:
-    """``url`` in the form § 4.3 rule 9 compares: no query or fragment, the scheme and host lower-cased (RFC 3986
-    § 6.2.2.1), and the scheme-based normalisation of § 6.2.3: the scheme's default port dropped, an empty path ``/``."""
+    """``url`` in the form § 4.3 rule 9 compares: no query or fragment, the syntax-based normalisation of RFC 3986
+    § 6.2.2 (the scheme and host lower-cased, the path's percent-encoding normalised by `_normalised_path`), and the
+    scheme-based normalisation of § 6.2.3: the scheme's default port dropped, an empty path ``/``."""
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
@@ -89,7 +108,7 @@ def _without_query(url: str) -> str:
     netloc = host if port is None or port == _DEFAULT_PORTS.get(scheme) else f"{host}:{port}"
     if parts.username or parts.password:
         netloc = f"{parts.netloc.rsplit('@', 1)[0]}@{netloc}"
-    return urlunsplit((scheme, netloc, parts.path or "/", "", ""))
+    return urlunsplit((scheme, netloc, _normalised_path(parts.path) or "/", "", ""))
 
 
 class ReplayStore:

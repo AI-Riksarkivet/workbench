@@ -9,8 +9,8 @@ WHY `require_dapr_token` AND NOT THE NEIGHBOURS' FGA PAIR. `JobRequest` names a 
 scope and an OPTIONAL dataset — there is no project id to check a per-project relation against, and
 `scope.level="corpus"` is estate-wide by construction. Inventing a door for an object the request
 never identifies would be a worse answer than naming the boundary the seam actually sits behind, and
-it genuinely sits behind one: the cluster route publishes only `/api/explorer/annotations` →
-`/api/annotations` on the annotator, so `/api/jobs` has NO public row and is reachable in-cluster only.
+it genuinely sits behind one: the cluster route publishes only the annotator's browser doors (`/me` and
+`/api/annotations`, under `/api/annotator`), so `/api/jobs` has NO public row and is reachable in-cluster only.
 
 What `require_dapr_token` proves is "arrived via Dapr", never "trusted caller". That is exactly the
 claim being made here, so the tests below assert the service-only boundary, NOT a user-authorization one.

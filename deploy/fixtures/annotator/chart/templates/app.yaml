@@ -1,0 +1,148 @@
+{{- if .Values.app.enabled }}
+{{- $r := .Values.rask.release -}}
+{{- $name := printf "%s-workbench-app" $r -}}
+{{- $selector := dict "app.kubernetes.io/name" "rask" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" "workbench-app" -}}
+{{- $services := dict "viewer" .Values.app.services.viewer "search" .Values.app.services.search "annotator" .Values.route.prefix -}}
+{{- $config := dict "signIn" false "services" $services -}}
+{{- if .Values.auth.enabled }}
+{{- $config = dict "issuer" (required "auth.oidc.issuer: the provider's issuer the app signs in at" .Values.auth.oidc.issuer) "clientId" (required "app.oidc.clientId: the workbench's public client" .Values.app.oidc.clientId) "scopes" .Values.app.oidc.scopes "services" $services -}}
+{{- end }}
+# The app's runtime config, served at /config.json: the built image carries no environment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-config
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+data:
+  config.json: {{ toJson $config | quote }}
+---
+# The app calls no API as itself, so it is given no token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $r }}-sa-workbench-app
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.app.port }}
+      targetPort: http
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # A changed config rolls the pods: serve.ts reads /config.json once, at start.
+        checksum/config: {{ toJson $config | sha256sum | trunc 16 }}
+      labels:
+        {{- toYaml $selector | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $r }}-sa-workbench-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: "{{ .Values.app.image.repository }}:{{ required "app.image.tag must be set" .Values.app.image.tag }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - { name: PORT, value: {{ .Values.app.port | quote }} }
+            - { name: WORKBENCH_APP_CONFIG_FILE, value: /etc/workbench-app/config.json }
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.port }}
+          readinessProbe:
+            httpGet: { path: /config.json, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /config.json, port: http }
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/workbench-app, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}-config
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+{{- if .Values.route.enabled }}
+---
+# `/` to the app, on the Gateway the annotator's route attaches to. The services' `/api/*` routes are longer
+# prefixes, so they keep winning (Gateway API's longest-prefix rule).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.route.parentRefs | nindent 4 }}
+  {{- with .Values.route.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: {{ $name }}
+          port: {{ .Values.app.port }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# The Gateway's traffic on the app's port, and nothing out: the app serves files and dials nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: {{ .Values.app.port }} }
+  egress: []
+{{- end }}
+{{- end }}

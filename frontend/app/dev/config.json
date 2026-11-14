@@ -1,0 +1,8 @@
+{
+	"signIn": false,
+	"services": {
+		"viewer": "/api/viewer",
+		"search": "/api/search",
+		"annotator": "/api/annotator"
+	}
+}

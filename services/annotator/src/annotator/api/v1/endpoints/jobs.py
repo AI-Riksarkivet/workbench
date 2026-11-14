@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 # construction. Inventing a door for an object the request never identifies is a worse answer than
 # naming the boundary this seam actually sits behind.
 #
-# And it genuinely sits behind one: the annotator release's route publishes only `/api/explorer/annotations` →
-# `/api/annotations` (deploy/fixtures/annotator/chart/templates/route.yaml), so `/api/jobs` has NO public rule and is
-# reachable in-cluster only. `require_dapr_token` proves "arrived via Dapr", never "trusted caller"
+# And it genuinely sits behind one: the annotator release's route publishes only the doors `route.doors` names (`/me`
+# and `/api/annotations`, under `/api/annotator`; deploy/fixtures/annotator/chart/templates/route.yaml), so `/api/jobs`
+# has NO public rule and is reachable in-cluster only. `require_dapr_token` proves "arrived via Dapr", never "trusted caller"
 # (`dapr_auth.py:33-45`) — which is exactly the claim being made: a service-to-service seam until a
 # runner exists that can carry a user's identity, at which point this becomes a role check on the project the
 # job targets.

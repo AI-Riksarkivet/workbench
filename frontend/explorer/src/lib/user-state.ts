@@ -13,11 +13,7 @@
 import type { ApiResult } from '@workbench/api/client';
 
 /** The documents a person keeps. */
-export type UserStateDocument =
-	| 'workflow-graph'
-	| 'saved-views'
-	| 'dock-layout'
-	| 'dock-layout-library';
+export type UserStateDocument = 'workflow-graph' | 'saved-views';
 
 /** What a store answers for a document: `exists: false` is a genuine "never saved", and a value is only a value when
  *  both keys agree. */

@@ -1,0 +1,14 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@workbench/ui/styles/tokens.css';
+
+/* The dock: horizon-layout's structural sheet, then its palette mapped onto the tokens
+   (`#lib/dock/theme.css`), both under `base` so the Tailwind utilities a panel's content is styled
+   with win over them. Imported here rather than by the route so a popout window, which copies the
+   page's stylesheets when it opens, finds them already loaded. */
+@import 'horizon-layout/horizon-layout.css' layer(base);
+@import './lib/dock/theme.css' layer(base);
+
+/* Scan the shared @workbench/ui component library so its Tailwind classes are generated: Tailwind 4
+   ignores node_modules by default. */
+@source '../../packages/ui/src';

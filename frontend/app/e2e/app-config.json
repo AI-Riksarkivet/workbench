@@ -1,0 +1,10 @@
+{
+	"issuer": "/oidc",
+	"clientId": "workbench-app",
+	"scopes": ["openid", "profile", "email"],
+	"services": {
+		"viewer": "/api/viewer",
+		"search": "/api/search",
+		"annotator": "/api/annotator"
+	}
+}

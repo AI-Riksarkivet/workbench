@@ -66,11 +66,16 @@ ANONYMOUS_CALLER: Final = LakehouseCaller(subject=ANONYMOUS_SUBJECT)
 
 def _public_url(request: Request, settings: Any) -> str:
     """The URL a proof's `htu` must name: the configured public URL plus the path below the gateway's rewrite, or the
-    request's own URL when none is configured."""
+    request's own URL when none is configured.
+
+    The path is the one the request carried on the wire (ASGI's ``raw_path``), percent-encoding and all, as the browser
+    signed it: ``scope["path"]`` is percent-decoded, and decoding a reserved character changes the URL (RFC 3986 § 2.2),
+    so a dataset id like ``acme%24letters`` would never match. The comparison normalises both sides (`dpop`)."""
+    raw: bytes | None = request.scope.get("raw_path")
+    path = raw.decode("ascii", "replace") if raw is not None else request.url.path
     public_url: str | None = getattr(settings, "public_url", None)
     if not public_url:
-        return str(request.url.replace(query=""))
-    path = request.url.path
+        return str(request.url.replace(path=path, query=""))
     mount: str = getattr(settings, "public_mount", "")
     if mount and (path == mount or path.startswith(f"{mount.rstrip('/')}/")):
         path = path[len(mount.rstrip("/")) :]

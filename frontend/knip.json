@@ -9,6 +9,13 @@
 		"uv"
 	],
 	"workspaces": {
+		"app": {
+			"entry": [
+				"serve.ts",
+				"e2e/edge.ts",
+				"e2e/mock-*.ts"
+			]
+		},
 		"explorer": {
 			"entry": [
 				"src/**/*.remote.ts",

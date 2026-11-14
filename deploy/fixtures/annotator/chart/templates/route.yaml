@@ -15,15 +15,18 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
+    {{- range .Values.route.doors }}
+    {{- if not (regexMatch "^/[a-z0-9/_-]+$" .) }}{{ fail (printf "route.doors: %s is not a path" .) }}{{ end }}
     - matches:
-        - path: { type: PathPrefix, value: {{ .Values.route.prefix | quote }} }
+        - path: { type: PathPrefix, value: {{ printf "%s%s" $.Values.route.prefix . | quote }} }
       filters:
         - type: URLRewrite
           urlRewrite:
-            path: { type: ReplacePrefixMatch, replacePrefixMatch: /api/annotations }
+            path: { type: ReplacePrefixMatch, replacePrefixMatch: {{ . | quote }} }
       backendRefs:
         - name: {{ $name }}
-          port: {{ .Values.port }}
+          port: {{ $.Values.port }}
+    {{- end }}
 {{- end }}
 {{- if .Values.networkPolicy.enabled }}
 {{- if .Values.route.enabled }}

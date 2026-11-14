@@ -15,12 +15,18 @@ image:
 replicas: 1
 port: 8103
 
-# The Gateway route publishing /api/explorer/annotations on the Gateway rask's own routes attach to (rask's `route.*`):
-# the product chart renders no part of this service (ADR 0171), so it publishes itself.
+# The Gateway route publishing the annotator's browser doors on the Gateway rask's own routes attach to (rask's
+# `route.*`): the product chart renders no part of this service (ADR 0171), so it publishes itself.
 route:
   enabled: true
-  # The public prefix, rewritten to the service's own `/api/annotations` mount.
-  prefix: /api/explorer/annotations
+  # The annotator's public base: each door below is published at `<prefix><door>` and rewritten to the service's own
+  # `<door>`, so the base is what the browser's DPoP proofs name (`auth.oidc.publicUrl` is the origin and this prefix)
+  # and what the app's `/config.json` names as the annotator. Only these doors are published: the job and actor
+  # callbacks stay inside the cluster.
+  prefix: /api/annotator
+  doors:
+    - /me
+    - /api/annotations
   # rask's `route.parentRefs`. Required while `enabled`.
   parentRefs: []
   # rask's `route.hostnames`.
@@ -106,7 +112,7 @@ auth:
     # The idp id the provider's subjects are principals of (`<idp-id>~<sub>`). Required.
     idpId: ""
     # The URL the browser addresses this service by, which each DPoP proof's `htu` names: the public origin and this
-    # release's route prefix (`route.prefix`). Required.
+    # release's route prefix (`route.prefix`), e.g. `https://workbench.example/api/annotator`. Required.
     publicUrl: ""
     # How far a DPoP proof's `iat` may lie from now, and how long its `jti` is remembered against a replay.
     dpopWindowSeconds: 60
@@ -168,3 +174,30 @@ jobsUrl: ""
 resources:
   requests: { cpu: 100m, memory: 512Mi }
   limits: { cpu: "1", memory: 1536Mi }
+
+# The workbench app: the one browser-only single-page app (`frontend/app`, the `frontend` image), a Deployment that
+# serves only static files, published at `/` on the same Gateway. It signs people in with PKCE on the workbench's own
+# public client at the platform's OIDC provider, binds their tokens to the tab with DPoP, and calls every service
+# same-origin. Its `/config.json` is a ConfigMap rendered from these values and `auth`: with `auth.enabled` off it says
+# `{"signIn": false}`.
+app:
+  enabled: true
+  image:
+    repository: workbench-app
+    tag: dev
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 3000
+  # The workbench's own PUBLIC client at the provider (no secret): authorization code with PKCE, DPoP-bound tokens.
+  oidc:
+    clientId: workbench-app
+    # The workbench's audience reaches the token through the provider's client scopes (Keycloak's audience mapper).
+    scopes: [openid, profile, email]
+  # The public bases of the services this chart does not deploy, as their own releases publish them. The annotator's
+  # is `route.prefix`.
+  services:
+    viewer: /api/viewer
+    search: /api/search
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }

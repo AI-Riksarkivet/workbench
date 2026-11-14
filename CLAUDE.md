@@ -52,7 +52,7 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
 names, changed freely: service-kit, and the frontend packages `@workbench/ui`, `@workbench/api`,
-`@workbench/config`, `@workbench/dockview` and `@workbench/flow`. Its settings are `WORKBENCH_*` environment variables
+`@workbench/config` and `@workbench/flow`. Its settings are `WORKBENCH_*` environment variables
 (the `LANCE_*` ones name what it asks of a lakehouse). rask's repository is `AI-Riksarkivet/rask`;
 compute (Ray Serve, the runners) is a repository of its own, called over HTTP.
 
@@ -113,9 +113,9 @@ The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and w
 | Lint, format, type-check | `make check` |
 | The authorization model's tests | `make fga-test` (= `dagger call fga-test`); after editing `model.fga`, `make fga-model` |
 | The pinned OpenFGA server for the suite | `make openfga` (exported through Dagger to `.localbin/openfga`) |
-| Frontend gates | `make frontend-check` |
+| Frontend gates | `make frontend-check` (check, lint, fmt:check, vitest, knip); the app's Playwright suite `make app-e2e`, or `dagger call app-end-to-end` |
 | Build an image | `make image NAME=<stem>` (= `dagger call image --name=<stem>`) |
-| The CI gates locally | `dagger call lint`, `dagger call test`, `dagger call frontend-check` |
+| The CI gates locally | `dagger call lint`, `dagger call test`, `dagger call frontend-check`, `dagger call app-end-to-end` |
 
 ## Repository layout
 
@@ -133,18 +133,26 @@ Two language-pure planes, as in rask; never blur them.
 - `runners/assist`: the annotator's assist model server, a sealed environment with its own `uv.lock`; not a workspace
   member, so its model pins never enter the services' resolution.
 - `frontend/`: the bun workspace root (`package.json`, `bun.lock`, `knip.json`, oxlint/oxfmt config, `patches/`).
-  - `frontend/explorer`, `frontend/annotator`, `frontend/studio`: the three SvelteKit apps.
-  - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `dockview`, `flow`, `explorer-api`,
+  - `frontend/app`: THE app (#9): one browser-only SvelteKit 3 single-page app (adapter-static, `ssr = false`, no
+    server code), served by its own `serve.ts` with the strict CSP as a header. It signs in with PKCE on the
+    workbench's public client (oidc-client-ts), binds the tokens to the tab with DPoP (an in-memory, non-extractable
+    P-256 key), and calls each service same-origin at the public base `/config.json` names (`services`), which is also
+    what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`, its fetch seam `#lib/api/client.ts`, its
+    dock `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). Image `.docker/frontend.dockerfile`;
+    released by `deploy/fixtures/annotator` (`app.*`) at `/`.
+  - `frontend/explorer`, `frontend/annotator`, `frontend/studio`: the old SvelteKit 2 apps, moving into `frontend/app`
+    (#9 D2b to D4); never deployable.
+  - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `flow`, `explorer-api`,
     `engine`, `labeling`). `@workbench/ui` is read from source: its exports name `src/`, with no build step.
-- `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`),
+- `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),
   built from the repository root against the root `uv.lock`.
-- `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`).
+- `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`, `app-end-to-end`, `fga-test`).
 - `deploy/fixtures/annotator`: the annotator's development fixture.
 - `docs/rask/`: rask's published contract, vendored (`PROVENANCE.md` says from which sha and how to refresh it).
 - `scripts/`: dev and ops scripts.
 
 Workspace membership is globbed: `[tool.uv.workspace] members = ["packages/*", "services/*"]` and
-`frontend/package.json` `workspaces = ["explorer", "annotator", "studio", "packages/*"]`. A new Python member must ship a
+`frontend/package.json` `workspaces = ["app", "explorer", "annotator", "studio", "packages/*"]`. A new Python member must ship a
 `pyproject.toml` (uv refuses the workspace otherwise); a new JS package must ship a `package.json` (bun silently skips
 it otherwise). Add a new Python import name to ruff's `known-first-party` in the same change.
 

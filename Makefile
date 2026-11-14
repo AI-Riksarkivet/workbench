@@ -1,11 +1,11 @@
-.PHONY: help install sync test lint fmt typecheck check frontend-check frontend-fmt image claude-bootstrap openfga fga-test fga-model
+.PHONY: help install sync test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga fga-test fga-model
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
 PYTEST_WORKERS ?= 8
 
 help:
-	@echo "Targets: install test lint fmt typecheck check frontend-check fga-test fga-model openfga image NAME=<stem> claude-bootstrap"
+	@echo "Targets: install test lint fmt typecheck check frontend-check app-dev app-e2e fga-test fga-model openfga image NAME=<stem> claude-bootstrap"
 
 # The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
 # `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
@@ -63,8 +63,18 @@ frontend-check:
 	bun --cwd=frontend run lint
 	bun --cwd=frontend run fmt:check
 	bun --cwd=frontend run test
+	bun --cwd=frontend run knip
 
-# make image NAME=media    → .docker/media.dockerfile, built by Dagger (never docker)
+# The app (frontend/app) under `vite dev` on :5173: /config.json from WORKBENCH_APP_CONFIG_FILE (else
+# frontend/app/dev/config.json), /api proxied to the Gateway at WORKBENCH_EDGE_URL (default :8080).
+app-dev:
+	bun --cwd=frontend/app run dev
+
+# The app's Playwright suite on the BUILT app, behind e2e/edge.ts with its mock issuer and services.
+app-e2e:
+	bun --cwd=frontend/app run test:e2e
+
+# make image NAME=media    → .docker/media.dockerfile, built by Dagger (never docker); NAME=frontend is the app
 image:
 	$(DAGGER) call image --name=$(NAME)
 

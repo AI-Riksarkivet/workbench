@@ -49,7 +49,7 @@
 		"svelte/block-lang": "off",
 		// Carried over from the ESLint config these rules replaced — same rules, same reasons.
 		"svelte/prefer-svelte-reactivity": "off",
-		// Not using shallow routing.
+		// Off for the old apps, whose cross-app links carry their own base; on (an error) for `app/`, below.
 		"svelte/no-navigation-without-resolve": "off",
 
 		// A readability rule about `new Array(x)` being ambiguous between length and sole element.
@@ -59,6 +59,22 @@
 		"unicorn/no-new-array": "off"
 	},
 	"overrides": [
+		{
+			// The one browser-only app: every in-app href and `goto` goes through SvelteKit's `resolve()`
+			// (`$app/paths`), which fills a route id's parameters and adds any base path.
+			"files": ["app/**"],
+			"rules": {
+				"svelte/no-navigation-without-resolve": "error"
+			}
+		},
+		{
+			// The app's shell renders hrefs its caller made with `resolve()` (`#lib/nav.ts`, the `link`
+			// prop), so the rule, which reads only the expression at the attribute, cannot see them resolved.
+			"files": ["app/src/lib/shell/**"],
+			"rules": {
+				"svelte/no-navigation-without-resolve": "off"
+			}
+		},
 		{
 			"files": ["**/*.svelte", "**/*.svelte.ts", "**/*.svelte.js"],
 			"rules": {

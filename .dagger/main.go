@@ -3,7 +3,8 @@
 //	dagger call image --name=<stem>     build .docker/<stem>.dockerfile from the repository root
 //	dagger call lint                    ruff (check and format) and ty over the Python workspace
 //	dagger call test                    the offline Python suite (-m "not e2e")
-//	dagger call frontend-check          the frontend workspace's check, lint and fmt:check
+//	dagger call frontend-check          the frontend workspace's check, lint, fmt:check, vitest and knip
+//	dagger call app-end-to-end          the app's Playwright suite on the built app, behind its edge and mocks
 //	dagger call fga-test                the authorization model: valid, its own tests green, model.json its compiled form
 package main
 
@@ -26,6 +27,9 @@ const (
 	RustToolchain = "1.90.0"
 	// The bun the frontend workspace's lock was written by.
 	BunImage = "oven/bun:1.4.2"
+	// The browsers the app's Playwright suite runs in: Microsoft's image for the @playwright/test the lock resolves
+	// (1.65.1), so the browser revision is the one the runner expects. Pinned by digest.
+	PlaywrightImage = "mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579"
 	// The OpenFGA server the offline suite asserts authorization outcomes against (tests/openfga.py), and its CLI for the
 	// model's own tests. `make openfga` exports the server binary from the same image for a developer box.
 	OpenfgaImage = "openfga/openfga:v1.18.3"
@@ -113,7 +117,8 @@ func (m *Workbench) Test(
 		Stdout(ctx)
 }
 
-// FrontendCheck runs the frontend workspace's check, lint and fmt:check.
+// FrontendCheck runs the frontend workspace's check, lint, fmt:check, vitest (every member's, the app's included) and
+// knip over the whole JS graph.
 func (m *Workbench) FrontendCheck(
 	ctx context.Context,
 	// +ignore=["**/node_modules", "**/.svelte-kit", "**/build", "**/test-results", ".git", "**/.venv"]
@@ -128,6 +133,27 @@ func (m *Workbench) FrontendCheck(
 		WithExec([]string{"bun", "run", "check"}).
 		WithExec([]string{"bun", "run", "lint"}).
 		WithExec([]string{"bun", "run", "fmt:check"}).
+		WithExec([]string{"bun", "run", "test"}).
+		WithExec([]string{"bun", "run", "knip"}).
+		Stdout(ctx)
+}
+
+// AppEndToEnd runs the app's Playwright suite (frontend/app/e2e) on the BUILT app, behind `e2e/edge.ts` with its mock issuer
+// and services, in Microsoft's Playwright image with the workspace's bun beside it.
+func (m *Workbench) AppEndToEnd(
+	ctx context.Context,
+	// +ignore=["**/node_modules", "**/.svelte-kit", "**/build", "**/test-results", ".git", "**/.venv"]
+	// +defaultPath="/"
+	src *dagger.Directory,
+) (string, error) {
+	return dag.Container().From(PlaywrightImage).
+		WithFile("/usr/local/bin/bun", dag.Container().From(BunImage).File("/usr/local/bin/bun")).
+		WithMountedCache("/root/.bun/install/cache", dag.CacheVolume("workbench-bun")).
+		WithDirectory("/src", src).
+		WithWorkdir("/src/frontend").
+		WithExec([]string{"bun", "install", "--frozen-lockfile"}).
+		WithEnvVariable("CI", "1").
+		WithExec([]string{"bun", "--cwd=app", "run", "test:e2e"}).
 		Stdout(ctx)
 }
 

@@ -346,18 +346,14 @@ describe('topNav', () => {
 
 	it('Explorer carries its rows too — the panel that was never pinned', () => {
 		// Compute's rows and all five Lakehouse columns are asserted above; the EXPLORER's never were,
-		// so its panel could gain or lose a row with this suite still green. That omission had teeth:
-		// the explorer is the estate's ONE dock zone, `dock-reachability.test.ts` requires
-		// /explorer/workbench to appear here, and nothing in this file would have noticed it go missing.
+		// so its panel could gain or lose a row with this suite still green. The dock is the app's
+		// (`frontend/app`, a dataset's page), so the explorer offers none.
 		const explorer = topNav(false).find((e) => e.title === 'Explorer')!;
 		expect(explorer.items!.map((i) => i.title)).toEqual([
 			'Search',
 			'Atlas',
 			'Tree',
 			'Graph',
-			// The zone's own dock — its panels ARE this zone's components over one shared search
-			// store, so it is a row of this panel like every other area of the zone.
-			'Workbench',
 			'Workflow',
 		]);
 	});

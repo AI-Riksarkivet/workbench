@@ -74,7 +74,6 @@ secrets:
 - { name: WORKBENCH_OIDC_IDP_ID, value: {{ $idp | quote }} }
 - { name: WORKBENCH_OIDC_ALLOW_INSECURE, value: {{ ternary "false" "true" (hasPrefix "https://" $issuer) | quote }} }
 - { name: WORKBENCH_PUBLIC_URL, value: {{ required "auth.oidc.publicUrl: the URL the browser addresses this service by" $o.publicUrl | quote }} }
-- { name: WORKBENCH_PUBLIC_MOUNT, value: "/api/annotations" }
 - { name: WORKBENCH_DPOP_WINDOW_SECONDS, value: {{ $o.dpopWindowSeconds | quote }} }
 - { name: WORKBENCH_OIDC_CLIENT_ID, value: {{ required "auth.oidc.client.id: the workbench's confidential client" $o.client.id | quote }} }
 - { name: WORKBENCH_OIDC_CLIENT_SECRET_FILE, value: /var/run/secrets/workbench/oidc-client/client-secret }

@@ -1,0 +1,10 @@
+{
+	"//": "SvelteKit's generated config first (`$app/tsconfig`, written by `svelte-kit sync`), then strict with noUncheckedIndexedAccess. exactOptionalPropertyTypes stays off (Bits UI 'union too complex' in Svelte code).",
+	"extends": "$app/tsconfig",
+	"compilerOptions": {
+		"sourceMap": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true
+	},
+	"include": ["src", "vite.config.ts"]
+}

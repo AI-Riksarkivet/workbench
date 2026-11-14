@@ -245,13 +245,6 @@ const EXPLORER_ITEMS: TopNavItem[] = [
 	{ title: 'Atlas', href: '/explorer/atlas', description: 'The embedding map of the corpus.' },
 	{ title: 'Tree', href: '/explorer/tree', description: 'The corpus by topic hierarchy.' },
 	{ title: 'Graph', href: '/explorer/graph', description: 'Relations between media entities.' },
-	{
-		// The dock lives INSIDE this zone (its panels are the zone's own components sharing one
-		// search) — so it is a row of the zone's panel, exactly like every other area.
-		title: 'Workbench',
-		href: '/explorer/workbench',
-		description: 'Results, atlas and player in one arrangeable dock.',
-	},
 	{ title: 'Workflow', href: '/explorer/workflow', description: 'The derivation pipeline.' },
 ];
 

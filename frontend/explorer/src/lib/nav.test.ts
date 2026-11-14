@@ -178,12 +178,12 @@ describe('the rest of the rail', () => {
 		expect(nav.groups.flatMap((g) => g.items.map((i) => i.title))).not.toContain('Guide');
 	});
 
-	it('keeps Workflow and Workbench regardless of the corpus, in ONE pinned group', () => {
-		// Neither is a VIEW of the data, so neither depends on what the data declares — and by that
-		// same argument neither is an AREA, so both are pinned rather than scrolling among the areas.
+	it('keeps Workflow regardless of the corpus, in ONE pinned group', () => {
+		// It is no VIEW of the data, so it does not depend on what the data declares, and by the same
+		// argument it is no AREA, so it is pinned rather than scrolling among the areas.
 		const bare = explorerZoneNav(view());
 
-		expect(bare.footer?.items.map((i) => i.title)).toEqual(['Workflow', 'Workbench']);
+		expect(bare.footer?.items.map((i) => i.title)).toEqual(['Workflow']);
 	});
 
 	it('never renders the same group LABEL twice', () => {

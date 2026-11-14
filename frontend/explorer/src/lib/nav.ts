@@ -1,4 +1,4 @@
-import { FolderTree, LayoutDashboard, Map, Search, Share2, Workflow } from '@lucide/svelte';
+import { FolderTree, Map, Search, Share2, Workflow } from '@lucide/svelte';
 import { exact, seg, type ZoneNav } from '@workbench/ui/shell';
 import type { DatasetView } from '@workbench/explorer-api/descriptor';
 
@@ -139,8 +139,8 @@ export function explorerZoneNav(
 		// "Workspace" used to be declared TWICE — once here and once as a scrolling group above
 		// carrying Workflow — so the rail rendered the same heading in two places with one row under
 		// each, which reads as a rendering bug rather than a deliberate split. Both belong here by the
-		// footer's own argument: neither the workflow editor nor the dock is an AREA of the corpus,
-		// they are where you go to work ACROSS the areas.
+		// footer's own argument: the workflow editor is no AREA of the corpus, it is where you go to
+		// work ACROSS the areas.
 		footer: {
 			label: 'Workspace',
 			items: [
@@ -149,12 +149,6 @@ export function explorerZoneNav(
 					href: '/explorer/workflow',
 					match: seg('/explorer/workflow'),
 					icon: Workflow,
-				},
-				{
-					title: 'Workbench',
-					href: '/explorer/workbench',
-					match: seg('/explorer/workbench'),
-					icon: LayoutDashboard,
 				},
 			],
 		},

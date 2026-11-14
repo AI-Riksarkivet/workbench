@@ -46,11 +46,11 @@ describe('the browser store', () => {
 	});
 
 	it('answers unreadable, never absent, for a stored value that does not parse', async () => {
-		await writeUserStateDoc({ document: 'dock-layout', value: {} });
+		await writeUserStateDoc({ document: 'workflow-graph', value: {} });
 		const [key] = store.keys();
 		store.set(key ?? '', '{not json');
 
-		expect((await readUserState('dock-layout', readUserStateDoc)).status).toBe('unreadable');
+		expect((await readUserState('workflow-graph', readUserStateDoc)).status).toBe('unreadable');
 	});
 
 	it('answers unreadable when the browser refuses storage', async () => {
