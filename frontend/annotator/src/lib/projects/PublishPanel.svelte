@@ -166,7 +166,8 @@
 			<p class="text-muted-foreground text-xs">
 				Every row carries <span class="font-mono">annotated_by</span> and
 				<span class="font-mono">reviewed_by</span> — annotated by
-				{annotators.length > 0 ? annotators.join(', ') : 'nobody recorded'}; reviewed by {reviewers.length > 0
+				{annotators.length > 0 ? annotators.join(', ') : 'nobody recorded'}; reviewed by {reviewers.length >
+				0
 					? reviewers.join(', ')
 					: 'nobody (review waived or pending)'}.
 			</p>

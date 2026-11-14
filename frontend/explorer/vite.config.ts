@@ -4,12 +4,6 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
-	// OpenCV.js is dynamically imported by the scissors/magnetic tools (8MB wasm,
-	// lazy-loaded on first activation). Prebundle it at server start — otherwise the
-	// first in-session import triggers a dep re-optimize + full page reload mid-annotation.
-	optimizeDeps: {
-		include: ['@techstark/opencv-js'],
-	},
 	server: {
 		// Bind the port declared in microfrontends/home/microfrontends.json — the composition proxy
 		// routes by it. strictPort fails loudly on a clash instead of silently drifting to the next free

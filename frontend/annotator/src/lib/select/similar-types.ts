@@ -25,7 +25,6 @@ export const SimilarArgSchema = v.object({
 	 *  round trip — the same disagreement that made the send cap a delay before a refusal. */
 	n: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(MAX_SIMILAR_N)), 24),
 });
-export type SimilarArg = v.InferInput<typeof SimilarArgSchema>;
 
 /** The neighbours, or why there are none. */
 export type SimilarResult = ApiResult<Record<string, unknown>[]>;

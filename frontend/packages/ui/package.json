@@ -197,18 +197,18 @@
 		"tailwind-variants": "^3.2.2"
 	},
 	"devDependencies": {
-		"@storybook/addon-a11y": "^10.4.6",
-		"@storybook/addon-docs": "^10.4.6",
-		"@storybook/addon-svelte-csf": "^5.1.2",
-		"@storybook/svelte": "^10.4.6",
-		"@storybook/svelte-vite": "^10.4.6",
+		"@storybook/addon-a11y": "^10.6.7",
+		"@storybook/addon-docs": "^10.6.7",
+		"@storybook/addon-svelte-csf": "^5.1.6",
+		"@storybook/svelte": "^10.6.7",
+		"@storybook/svelte-vite": "^10.6.7",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@tailwindcss/vite": "^4.3.3",
-		"storybook": "^10.4.6",
+		"storybook": "^10.6.7",
 		"svelte": "^5.56.8",
 		"svelte-check": "^4.7.3",
 		"tailwindcss": "^4.3.3",
-		"vite": "^8.1.5",
+		"vite": "^8.3.8",
 		"vitest": "^4.1.10"
 	},
 	"peerDependencies": {

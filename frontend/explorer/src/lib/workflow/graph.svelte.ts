@@ -53,7 +53,7 @@ import { safeParseGraph, type PersistedConfig, type PersistedGraph } from './per
 
 // Re-export the public vocabulary so components keep importing it from here.
 export { DEFAULT_N, isNodeKind, MAX_N, MIN_N, NODE_KINDS, RERANK_TOP_N };
-export type { NodeKind, RunStatus, CombineMode, RefineScope, NodeConfig, NodeRuntime };
+export type { NodeKind, RunStatus, CombineMode, RefineScope };
 
 const STORAGE_KEY = 'lance-media-workflow-graph-v1';
 

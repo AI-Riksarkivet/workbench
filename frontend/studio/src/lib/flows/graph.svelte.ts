@@ -34,7 +34,6 @@ import {
 	DEFAULT_JSON_BODY,
 	DEFAULT_PROMPT,
 	isNodeKind,
-	NODE_KINDS,
 	type NodeConfig,
 	type NodeKind,
 	type NodeRuntime,
@@ -48,8 +47,8 @@ import {
 } from './persistence';
 
 // Re-export the public vocabulary so components keep importing it from here.
-export { isNodeKind, NODE_KINDS };
-export type { NodeConfig, NodeKind, NodeRuntime, RunStatus };
+export { isNodeKind };
+export type { NodeKind, RunStatus };
 
 /** Max undo/redo depth — bounds memory; older snapshots fall off the stack. */
 const HISTORY_LIMIT = 50;

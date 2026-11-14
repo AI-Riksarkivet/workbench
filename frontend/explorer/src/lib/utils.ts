@@ -2,16 +2,6 @@ import { activeView, type Row } from '@workbench/explorer-api/descriptor';
 
 /** shadcn-svelte's standard `cn` helper: clsx for conditionals, twMerge for conflicts. */
 export { cn } from '@workbench/ui/utils';
-export type {
-	WithElementRef,
-	WithoutChild,
-	WithoutChildren,
-	WithoutChildrenOrChild,
-} from '@workbench/ui/utils';
-
-// Type helpers expected by shadcn-svelte v1.2+ generated components (shared
-// with the sibling apps so UI primitives stay copy-paste compatible).
-
 /** Format seconds as `H:MM:SS` (or `M:SS` under an hour). */
 export function fmtTime(s: number): string {
 	const total = Math.round(s);

@@ -311,7 +311,6 @@ export const SendItemSchema = v.object({
 		),
 	),
 });
-export type SendItem = v.InferOutput<typeof SendItemSchema>;
 
 export const DraftSchema = v.object({
 	task_id: v.string(),
@@ -334,7 +333,7 @@ export type Draft = v.InferOutput<typeof DraftSchema>;
 
 /** One direct grant on a project. `user` is the FGA string as STORED (`user:gina`) — a revoke has to
  *  send it back verbatim, and a prettified name that cannot round-trip is a trap. */
-export const MemberSchema = v.object({ user: v.string(), relation: v.string() });
+const MemberSchema = v.object({ user: v.string(), relation: v.string() });
 
 export const MemberListSchema = v.object({
 	members: v.array(MemberSchema),

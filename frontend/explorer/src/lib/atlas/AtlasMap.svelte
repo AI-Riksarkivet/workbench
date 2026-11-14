@@ -404,8 +404,7 @@
 					continue;
 				}
 				if ((fIds !== null && !fIds.has(i)) || (selActive && !sel.has(i))) buf[i] = ST_DIMMED;
-				else if ((labels[code] ?? '') === '')
-					buf[i] = ST_NOISE; // empty label → muted
+				else if ((labels[code] ?? '') === '') buf[i] = ST_NOISE; // empty label → muted
 				else buf[i] = ST_NORMAL;
 			}
 			return buf;

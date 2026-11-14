@@ -59,7 +59,10 @@
 					onclick={() => onSeek(t.start)}
 					class="border-background/70 hover:bg-primary/30 absolute cursor-pointer border-r transition-colors {isCurrent
 						? 'bg-primary ring-primary -top-0.5 z-10 h-[calc(100%+0.25rem)] ring-1'
-						: key(c) === activeKey
+						: key(
+									c,
+							  ) ===
+							  activeKey
 							? 'bg-primary/40 top-0 h-full'
 							: 'bg-muted top-0 h-full'}"
 					style="left: {left}%; width: {width}%;"
