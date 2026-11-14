@@ -18,11 +18,15 @@ tool would:
 - every other call through the catalog's and lineage's doors (`docs/rask/*-openapi.json`);
 - the lakehouse's events as `docs/rask/COMMIT-EVENTS.md` describes them.
 
-**Its authentication and authorization are its own and have nothing to do with rask's.** The workbench signs its users
-in and decides what each may do in the workbench (projects, tasks, flows) with its own identity setup and its own
-authorization model and store; it never asks rask's decision door or rask's OpenFGA store, and rask knows nothing of the
-workbench's users or roles. Toward a lakehouse it is one more outside client, holding whatever credential that lakehouse
-grants it.
+**Its authentication and authorization are its own and have nothing to do with rask's.**
+- **Sign-in** is the platform's OIDC provider (Dex in development, Keycloak or the like in production). Neither rask nor
+  the workbench hosts identity. The workbench registers its own client and audience there, serves its own login
+  callback, and verifies tokens addressed to it.
+- **Authorization** is the workbench's own model and store: who may do what to its projects, tasks, corpora and flows.
+  It never asks rask's decision door or rask's OpenFGA store, and rask knows nothing of the workbench's users or roles.
+- **Data** in a rask lakehouse is rask's to govern. When the workbench reads or writes a table there, rask decides
+  whether that caller (the person, or the workbench's service identity) may. The workbench is one more outside client
+  there.
 
 Not there yet: service-kit's `governed/decider.py` still asks rask's decision door, and its OpenFGA setup still
 provisions rask's authorization model. Replacing both with the workbench's own is spec row WB-5.
