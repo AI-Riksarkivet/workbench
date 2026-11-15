@@ -59,6 +59,14 @@ compute (Ray Serve, the runners) is a repository of its own, called over HTTP.
 The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and what remains to do are on issue #1
 (the spec, rows WB-1 onward).
 
+## Where the work stands
+
+The open rows are issues #6 to #10 (WB-A to WB-E), each with its decisions in its body and comments. #9 (WB-D, the
+one app) is split into steps, and each landed step has a comment saying what landed, the gates, what was not
+confirmed and the next step: **read #9's latest comment before starting.** A row's live closes-when waits for rask's
+XC-214 (`AI-Riksarkivet/rask#829`, Keycloak for token exchange); until then the app is proven against the e2e mocks.
+Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
+
 ## Engineering principles (read first)
 
 **State-of-the-art work. Do things properly: no shortcuts, no band-aids.**
@@ -90,12 +98,23 @@ The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and w
 - **Stopping rules.** When a step needs no owner input, keep going; put status in the same message as the next action.
   Stop and ask only when you cannot continue without the owner, or before anything destructive or outward-facing.
 - **Comments carry rationale and provenance, never history.** "This used to say X" belongs in the commit message.
+- **Every canvas draws with WebGPU only** (#10): pixi with `preference: ['webgpu']` (an array; a string falls back to
+  WebGL), hand-written WebGPU in `#lib/gpu`, and the plain "WebGPU is required" state where it is missing.
+- **A step lands as one reviewed commit on `main`.** Two reviewers read it in parallel, one for standards and security
+  and one for the spec and usability (a browser walk with `playwright-cli` for UI), and every finding in the step's
+  own code is fixed, LOWs included. Then the gates (`dagger call frontend-check`, `dagger call app-end-to-end` at
+  0 failed and 0 flaky, the full `make test`), one commit with the tests delta, a push, and a comment on the row.
 
 ## Toolchain rules
 
 - **NEVER DOCKER. Dagger builds every image and runs every gate.** No `docker build`, `docker run`, `docker compose`,
   `docker ps` or any other docker command, for any purpose. `dagger call image --name=<stem>` builds
   `.docker/<stem>.dockerfile`; an ad-hoc container is `dagger core container from --address=<img> ...`.
+  - **On a host that runs a named engine** (the owner's runs `dagger-engine-rask`, shared with rask), prefix every
+    `dagger` command with `_EXPERIMENTAL_DAGGER_RUNNER_HOST=docker-container://dagger-engine-rask`: an unscoped CLI
+    removes engines named `dagger-engine-*` and breaks every session using it.
+  - **`dagger call app-end-to-end` uploads the working tree, not the index**, and two Playwright runs at once void
+    each other: run one at a time (a shared `flock`), and never while a test's red check has the code broken.
 - **JS/TS uses bun exclusively** (`bun`, `bunx`; no npm, npx or pnpm). Every call is scoped to the frontend root:
   `bun --cwd=frontend run <task>` (the `--cwd=` form; with a space it silently does nothing).
 - **JS/TS lint and format are oxlint and oxfmt** (`frontend/.oxlintrc.json`, `frontend/.oxfmtrc.json`); tabs, single
