@@ -53,55 +53,6 @@ test.beforeEach(async ({ page }) => {
 	});
 });
 
-test('the brush exposes radius and output — and the output toggle actually flips', async ({
-	page,
-}) => {
-	await page.goto(`/annotator/?keys=${KEY}`);
-	await expect(page.getByTestId('annotator-toolbar')).toBeVisible();
-
-	// No brush selected ⇒ no brush controls. The controls belong to the tool, not the bar.
-	await expect(page.getByTestId('brush-controls')).not.toBeVisible();
-
-	// `9` is the brush hotkey; the button needs the engine attached, the key does not wait on it.
-	await page.getByTitle(/^Brush/).click();
-
-	await expect(page.getByTestId('brush-controls')).toBeVisible();
-	// The default radius, printed beside the slider — the number an annotator tunes from.
-	await expect(page.getByTestId('brush-controls')).toContainText('20');
-
-	const output = page.getByTestId('brush-output');
-	await expect(output).toHaveText(/mask/i);
-	await output.click();
-	await expect(output).toHaveText(/poly/i);
-	await output.click();
-	await expect(output).toHaveText(/mask/i);
-});
-
-test('image adjustments open from the toolbar, and Reset only means something once adjusted', async ({
-	page,
-}) => {
-	await page.goto(`/annotator/?keys=${KEY}`);
-	await expect(page.getByTestId('annotator-toolbar')).toBeVisible();
-
-	await page.getByTestId('image-adjust-trigger').click();
-	const panel = page.getByTestId('image-adjust');
-	await expect(panel).toBeVisible();
-
-	// Neutral on open: all three axes at 1.00, nothing to reset.
-	await expect(panel.getByText('1.00')).toHaveCount(3);
-	const reset = page.getByTestId('image-adjust-reset');
-	await expect(reset).toBeDisabled();
-
-	// Nudge brightness off neutral (a click on the track jumps the thumb).
-	await panel.getByLabel('Brightness').click({ position: { x: 100, y: 5 } });
-	await expect(reset).toBeEnabled();
-	await expect(panel.getByText('1.00')).not.toHaveCount(3);
-
-	await reset.click();
-	await expect(panel.getByText('1.00')).toHaveCount(3);
-	await expect(reset).toBeDisabled();
-});
-
 test('a Detect prediction lands RANKED — its uncertainty rides the wire onto the sidebar', async ({
 	page,
 }) => {

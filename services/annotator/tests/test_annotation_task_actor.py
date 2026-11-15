@@ -572,6 +572,22 @@ async def test_a_draft_cannot_be_written_after_the_task_left_CLAIMED() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_reviewers_fix_lands_in_work_in_review_only_when_verified_and_never_from_the_submitter() -> None:
+    """In review the draft takes a reviewer's fix, and only the one the endpoint verified (`reviewing`): the submitter
+    may not rewrite the work under review, and an unverified write is refused in the turn as it was before review."""
+    actor = await _claimed_with_ontology({}, [{"shape_type": "tag", "label": "cat"}])
+    await actor.fire(_verified({"event": "submit", "actor": "gina"}))
+    fix = {"task_id": "t1", "project_id": "p1", "shapes": [{"shape_type": "bbox"}], "base_revision": 1}
+
+    for refused in ({**fix, "author": "rita"}, {**fix, "author": "gina", "reviewing": True}):
+        with pytest.raises(IllegalTransition, match="save_draft"):
+            await actor.save_draft(_verified(refused))
+    saved = await actor.save_draft(_verified({**fix, "author": "rita", "reviewing": True}))
+
+    assert (saved["author"], [s["shape_type"] for s in saved["shapes"]]) == ("rita", ["bbox"])
+
+
+@pytest.mark.asyncio
 async def test_a_CONSTRAINED_ontology_refuses_a_draftless_submit_even_with_nothing_required() -> None:
     """The other half of the same critical: a required class was the ONLY rule an empty shape set
     could fail, and the create dialog filled that from an OPTIONAL textarea."""

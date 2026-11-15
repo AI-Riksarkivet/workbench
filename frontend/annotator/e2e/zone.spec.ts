@@ -135,35 +135,6 @@ test('S9: the landing is PROJECTS; /browse hosts the data selection → canvas f
 	await expect(page.getByRole('heading', { name: 'Labeling tasks' })).toBeVisible();
 });
 
-test('?keys= deep link opens the canvas directly (the read-plane bridge)', async ({ page }) => {
-	await page.goto(`/annotator/?keys=${KEY}`);
-	await expect(page.getByTitle('Redo (Ctrl+Shift+Z)')).toBeVisible();
-	await expect(page.getByTestId('data-selection')).not.toBeVisible();
-	await expect.poll(() => apiPaths).toContain(`/annotator/api/annotations/${KEY}`);
-	expect(apiWrites).toHaveLength(0);
-});
-
-test('?dataset= deep link targets the picked dataset (frame + annotations carry it)', async ({
-	page,
-}) => {
-	// A NON-default dataset picked in the selection view rides the deep link; the canvas
-	// must fetch frame AND annotations (the save/versions endpoint) with ?dataset= — not
-	// silently the default dataset's.
-	await page.goto(`/annotator/?dataset=other&keys=${KEY}`);
-	await expect(page.getByTitle('Redo (Ctrl+Shift+Z)')).toBeVisible();
-	await expect.poll(() => apiPaths).toContain(`/annotator/api/annotations/${KEY}?dataset=other`);
-	await expect.poll(() => apiPaths).toContain(`/annotator/api/chunk-frame/${KEY}?dataset=other`);
-	expect(apiWrites).toHaveLength(0);
-});
-
-test('unreachable annotations surface on the status chip (no silent loading hang)', async ({
-	page,
-}) => {
-	await page.goto(`/annotator/?keys=${KEY}`);
-	// The stubbed annotations GET 404s — the chip must say so instead of hanging.
-	await expect(page.getByTestId('annotate-status')).toContainText('load failed');
-});
-
 test('AI assist is NOT offered on a canvas that cannot accept shapes', async ({ page }) => {
 	// This spec stubs the annotations GET to 404 for every test (see the status-chip test above), so
 	// the canvas here is always read-only. Assist WRITES predicted shapes, so offering it on a

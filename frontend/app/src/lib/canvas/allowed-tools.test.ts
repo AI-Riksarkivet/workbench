@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { COMMITS_SHAPE, engineToolsFor } from '@workbench/labeling/shape-types';
-import { TOOL_DEFS } from './tool-defs.js';
+import { TOOL_DEFS } from './tool-defs.ts';
 
 /** The rail's own predicate, mirrored: a drawing tool survives only if the task permits it. */
 function railFor(allowed: string[]): string[] {

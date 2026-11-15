@@ -14,6 +14,9 @@
 				"serve.ts",
 				"e2e/edge.ts",
 				"e2e/mock-*.ts"
+			],
+			"ignore": [
+				"scripts/gen-corner-fixture.ts"
 			]
 		},
 		"explorer": {
@@ -48,11 +51,6 @@
 			],
 			"project": [
 				"src/**/*.{ts,js,svelte}"
-			]
-		},
-		"packages/engine": {
-			"ignore": [
-				"scripts/gen-corner-fixture.ts"
 			]
 		}
 	}

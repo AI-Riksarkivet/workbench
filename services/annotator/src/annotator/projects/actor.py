@@ -44,8 +44,10 @@ from dapr.actor.runtime.failure_policy import ActorReminderFailurePolicy
 from pydantic import ValidationError as PydanticValidationError
 
 from annotator.projects.machines import (
+    EDIT_PERMISSION,
     FROZEN_PROJECT_STATES,
     IllegalTransition,
+    edit_violation,
     identity_violation,
     refuse_unreadable_ontology,
     submit_target,
@@ -379,16 +381,16 @@ class AnnotationTaskActor(Actor, AnnotationTaskActorInterface, Remindable):
         task = await self._load()
         if task is None:
             raise IllegalTransition("draft", "absent", "save_draft")
-        if task.state is not TaskState.CLAIMED:
+        # A task in review takes a reviewer's fix only when the endpoint verified the reviewer (`reviewing`); otherwise a
+        # draft is the claim's.
+        if task.state not in EDIT_PERMISSION or (task.state is TaskState.IN_REVIEW and not payload.get("reviewing")):
             raise IllegalTransition("draft", task.state.value, "save_draft")
-        # …and only by whoever holds the claim, checked HERE for the same reason the state is. The
-        # endpoint's holder check reads a pre-turn snapshot, so a lease that expired and was
-        # re-claimed by someone else in between let the OLD holder's save land on the new holder's
-        # task — `save_draft` replaces the whole shape set, so that is a silent overwrite of work
-        # somebody else is doing. `identity_violation` is the same rule the endpoint applies, read
-        # from the one place it is written.
+        # …and only by who may edit it NOW, checked HERE for the same reason the state is. The endpoint reads a pre-turn
+        # snapshot, so a lease that expired and was re-claimed by someone else in between would let the old holder's
+        # save land on the new holder's task: `save_draft` replaces the whole shape set. `edit_violation` is the rule
+        # the endpoint applies, read from the one place it is written.
         author = str(payload["author"])
-        violation = identity_violation(event="save_draft", subject=author, assignee=task.assignee, submitted_by=task.submitted_by)
+        violation = edit_violation(state=task.state, subject=author, assignee=task.assignee, submitted_by=task.submitted_by)
         if violation is not None:
             raise IllegalTransition("draft", violation, "save_draft")
         # A draft is a principal action in every sense but the transition table, so rule 5 applies:
@@ -431,12 +433,14 @@ class AnnotationTaskActor(Actor, AnnotationTaskActorInterface, Remindable):
         # one wrote drafts and touched neither `lease_expires_at` nor the reminder: an annotator
         # saving every 60s for half an hour made 30 successful writes, none of which re-armed
         # anything, and at `lease_seconds` the reminder expired the task out from under her.
-        seconds = int(payload.get("lease_seconds") or task.lease_seconds)
-        task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=seconds)
-        # Arm BEFORE persisting, the same rule `fire` follows. If the store then fails, the reminder
-        # is armed against a task that is still CLAIMED — safe. The reverse order strands a claimed
-        # task with no self-expiry, which is the hole the lease reminder exists to close.
-        await self._arm_lease(seconds)
+        # A task in review holds no lease, so a reviewer's fix renews none.
+        if task.state is TaskState.CLAIMED:
+            seconds = int(payload.get("lease_seconds") or task.lease_seconds)
+            task.lease_expires_at = datetime.now(UTC) + timedelta(seconds=seconds)
+            # Arm BEFORE persisting, the same rule `fire` follows. If the store then fails, the reminder
+            # is armed against a task that is still CLAIMED — safe. The reverse order strands a claimed
+            # task with no self-expiry, which is the hole the lease reminder exists to close.
+            await self._arm_lease(seconds)
         await self._state_manager.set_state(DRAFT_KEY, draft.model_dump_json())
         # One save commits both the draft and the renewed task: a draft that persisted without its
         # renewal would put the two back out of step, which is the defect arriving from the far side.

@@ -5,7 +5,7 @@
  * rows by id. The compare-versions panel is a thin view over this. See annotate.py's
  * /versions endpoint + the ?version time-travel read.
  */
-import { tableFromIPC } from 'apache-arrow';
+import { type Table, tableFromIPC } from 'apache-arrow';
 
 export interface AnnotationVersion {
 	version: number;
@@ -16,7 +16,7 @@ export interface AnnotationVersion {
 /** Parsed at the wire (#94), not cast: a drifted /versions answer must fail with a named error,
  *  not render an empty-looking history over a unit that has one. Hand-rolled rather than valibot
  *  because this package deliberately carries no valibot dependency (arrow + explorer-api only). */
-function parseVersions(raw: unknown): AnnotationVersion[] {
+export function parseVersions(raw: unknown): AnnotationVersion[] {
 	if (!Array.isArray(raw)) throw new Error('versions answered a non-array body');
 	return raw.map((entry: unknown, i) => {
 		if (entry === null || typeof entry !== 'object') {
@@ -83,7 +83,11 @@ export async function fetchVersionSignatures(
 ): Promise<Map<string, string>> {
 	const res = await fetch(buildUrl(annotationsUrl, '', { version: String(version) }));
 	if (!res.ok) throw new Error(`version read failed (HTTP ${res.status})`);
-	const table = tableFromIPC(new Uint8Array(await res.arrayBuffer()));
+	return signaturesOf(tableFromIPC(new Uint8Array(await res.arrayBuffer())));
+}
+
+/** A version's rows as id→signature, the shape {@link diffSignatures} compares. */
+export function signaturesOf(table: Table): Map<string, string> {
 	const sigs = new Map<string, string>();
 	for (const row of table.toArray()) {
 		const r = row as Record<string, unknown>;

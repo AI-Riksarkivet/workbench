@@ -146,12 +146,12 @@ Two language-pure planes, as in rask; never blur them.
     (`#lib/gpu`); a browser without it gets their plain refusal and fetches no points. The annotator's project plane
     is `/projects` and `/projects/[project]` (`#lib/projects`, its calls `#lib/api/projects.api.ts`): a project's
     read answers the reader's `permissions`, and a page offers only what its door would let through; a dataset's
-    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. Image
+    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, with `pixi.js/unsafe-eval` for the CSP; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`). Image
     `.docker/frontend.dockerfile`; released by `deploy/fixtures/annotator` (`app.*`) at `/`.
   - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
     its Atlas node opens, the player), until D4 merges it with studio's flows. `frontend/annotator`, `frontend/studio`:
     the old SvelteKit 2 apps, moving into `frontend/app` (#9 D3, D4); never deployable. The annotator's project pages
-    are in the app (D3a); its canvas, data manager and browse follow (D3b, D3c).
+    and its image canvas are in the app (D3a, D3b-1); its temporal and text viewers, compare and assist follow (D3b-2), then its data manager and browse (D3c), which deletes it and `@workbench/engine`, kept until then for it alone.
   - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `flow`, `explorer-api`,
     `engine`, `labeling`). `@workbench/ui` is read from source: its exports name `src/`, with no build step.
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),

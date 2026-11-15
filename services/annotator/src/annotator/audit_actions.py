@@ -18,6 +18,7 @@ class AnnotatorAuditAction(StrEnum):
     ANNOTATION_PROJECT_MEMBERS_LIST = "annotation_project.members.list"
     ANNOTATION_PROJECT_MEMBERS_REVOKE = "annotation_project.members.revoke"
     ANNOTATION_PROJECT_UPDATE_ONTOLOGY = "annotation_project.update_ontology"
+    ANNOTATION_SAVE = "annotation.save"
     ANNOTATOR_ASSIST = "annotator.assist"
     ANNOTATOR_AUTHORIZE = "annotator.authorize"
     PROJECT_ADJUDICATE = "project.adjudicate"

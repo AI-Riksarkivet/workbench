@@ -75,7 +75,7 @@ const TASK_EDGES: Record<string, Record<string, [string, string]>> = {
 };
 const TERMINAL = new Set(['accepted', 'skipped']);
 
-interface Task {
+export interface Task {
 	task_id: string;
 	project_id: string;
 	state: string;
@@ -90,6 +90,15 @@ interface Task {
 	review_action: string | null;
 	prediction: { shape_type: string; label: string; source: string }[];
 	review_notes: { by: string; at: string; action: string; message: string }[];
+	/** The ontology captured onto the task at send, which the canvas reads its rules from. */
+	ontology?: Record<string, unknown>;
+}
+
+/** A task's draft: the shapes and links the publish reads, guarded by its revision. */
+interface Draft {
+	shapes: Record<string, unknown>[];
+	links: { name: string; from_shape: string; to_shape: string }[];
+	revision: number;
 }
 
 interface Project {
@@ -115,6 +124,7 @@ interface World {
 	projects: Map<string, Project>;
 	tasks: Map<string, Task>;
 	grants: Map<string, { user: string; relation: string }[]>;
+	drafts: Map<string, Draft>;
 }
 
 const worlds = new Map<string, World>();
@@ -251,11 +261,80 @@ function seed(sub: string): World {
 			submitted_by: 'user:someone-else',
 		}),
 	);
+	// The canvas's project: image pages to draw on, with the reader's two claimed items, an ontology whose classes may
+	// be drawn with any tool, two item-level choices, an attribute, a transcribing class and one relation.
+	const pagesOntology = {
+		kind: 'object-detection',
+		modality: 'image',
+		classes: [
+			{
+				name: 'figure',
+				tools: [],
+				required: false,
+				transcribe: false,
+				attributes: [{ name: 'damaged', type: 'bool', choices: [], required: false }],
+			},
+			{
+				name: 'caption',
+				tools: [],
+				required: false,
+				transcribe: true,
+				attributes: [{ name: 'legible', type: 'bool', choices: [], required: false }],
+			},
+			{ name: 'letter', tools: ['tag'], required: false, transcribe: false, attributes: [] },
+			{ name: 'map', tools: ['tag'], required: false, transcribe: false, attributes: [] },
+		],
+		relations: [
+			{ name: 'caption_of', from_classes: [], to_classes: [], directed: true, required: false },
+		],
+		allow_empty: true,
+	};
+	const pages = project('pages', { title: 'Pages', ontology: pagesOntology });
+	projects.set(pages.project_id, pages);
+	for (const t of [
+		task('pages', 'pages-t1', 'claimed', 'letter-001/0', {
+			assignee: sub,
+			lease_expires_at: later(),
+			ontology: pagesOntology,
+		}),
+		task('pages', 'pages-t2', 'claimed', 'map-003/0', {
+			assignee: sub,
+			lease_expires_at: later(),
+			ontology: pagesOntology,
+		}),
+		// Another annotator's claim: the reader opens it read-only.
+		task('pages', 'pages-held', 'claimed', 'letter-002/0', {
+			assignee: 'user:someone-else',
+			lease_expires_at: later(),
+			ontology: pagesOntology,
+		}),
+		// A key the dataset's identity (doc_id/chunk_id) cannot name: the door refuses it in words.
+		task('pages', 'pages-bad', 'accepted', 'letter-001/0/0', { ontology: pagesOntology }),
+		// An item of two units: the canvas opens the first.
+		task('pages', 'pages-multi', 'accepted', 'letter-001/0', {
+			source: {
+				kind: 'chunks',
+				keys: ['letter-001/0', 'letter-001/1'],
+				where: 'acme$letters',
+				dataset_version: 3,
+			},
+			ontology: pagesOntology,
+		}),
+	])
+		tasks.set(t.task_id, t);
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
-	return { role, projects, tasks, grants };
+	return { role, projects, tasks, grants, drafts: new Map() };
 }
+
+/** One task of `sub`'s world, as the annotations door reads it to judge a unit. */
+export const taskOf = (sub: string, taskId: string): Task | undefined =>
+	worldOf(sub).tasks.get(taskId);
+
+/** The permissions `sub` holds on `projectId` in their world: what the annotations door asks. */
+export const permissionsOn = (sub: string, projectId: string): string[] =>
+	held(worldOf(sub), sub, projectId);
 
 const worldOf = (sub: string): World => {
 	let world = worlds.get(sub);
@@ -558,6 +637,45 @@ export async function projectsDoor(
 			const removed = world.tasks.delete(drop[1] ?? '');
 			return answer({ task_id: drop[1], removed });
 		}
+	}
+
+	const taskRead = /^\/tasks\/([\w-]+)(\/draft)?$/.exec(path);
+	if (taskRead && (req.method === 'GET' || (taskRead[2] && req.method === 'PUT'))) {
+		const [, id = '', draft] = taskRead;
+		const t = world.tasks.get(id);
+		const perms = t ? held(world, sub, t.project_id) : [];
+		if (!t || !perms.includes('can_view'))
+			return answer({ detail: `No task ${id} that you can see` }, 404);
+		const frozen = ['publishing', 'published', 'archived'].includes(
+			world.projects.get(t.project_id)?.state ?? '',
+		);
+		if (!draft) return answer({ ...t, legal_events: legalTask(t.state, frozen) });
+		const current = world.drafts.get(id);
+		const doc = (d: Draft) => ({
+			task_id: id,
+			project_id: t.project_id,
+			author: sub,
+			...d,
+			origin: 'human',
+		});
+		// No draft yet is an answer, null, as the service gives it.
+		if (req.method === 'GET') return answer(current ? doc(current) : null);
+		if (!perms.includes('can_annotate')) {
+			record(403);
+			return refuse(sub, 'can_annotate', `task:${id}`);
+		}
+		if (t.state !== 'claimed' || t.assignee !== sub)
+			return answer({ detail: `the task is held by ${t.assignee}` }, 409);
+		const b = (await body()) as Partial<Draft> & { base_revision?: number };
+		if ((b.base_revision ?? null) !== (current?.revision ?? null))
+			return answer({ detail: 'the draft moved: re-read it before saving' }, 409);
+		const next: Draft = {
+			shapes: b.shapes ?? [],
+			links: b.links ?? [],
+			revision: (current?.revision ?? 0) + 1,
+		};
+		world.drafts.set(id, next);
+		return answer(doc(next));
 	}
 
 	const taskPath = /^\/tasks\/([\w-]+)\/(events|import)$/.exec(path);

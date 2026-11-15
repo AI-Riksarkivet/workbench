@@ -1,18 +1,14 @@
 /**
  * The canvas-row → task-draft-shape mapping (S10 first half).
  *
- * This test USED TO LIE. It fed itself `shape_type: 'bbox'` — a value the canvas has never
- * produced — so it proved only that the function copies a string, while in production the canvas
- * emitted `rectangle` and the service accepted `bbox`, and five of seven drawing tools could not
- * submit at all. A fixture that invents its input cannot fail the way production does.
- *
- * Every fixture below now uses the literal the ENGINE commits, so a rename on either side of the
- * seam is a named failure here rather than shapes silently missing from a publish.
+ * Every fixture uses the literal the ENGINE commits, not a value it never produces: a fixture that invents its input
+ * cannot fail the way production does, and a rename on either side of the seam is a named failure here rather than
+ * shapes silently missing from a publish.
  */
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { rowsToShapes } from './draft-shapes.js';
+import { rowsToShapes } from './draft-shapes.ts';
 
 describe('rowsToShapes', () => {
 	it('maps the annotation columns onto draft shapes', () => {
@@ -57,9 +53,8 @@ describe('rowsToShapes', () => {
 
 describe('the engine/service vocabulary seam', () => {
 	it('normalizes every drawing tool the engine can commit', () => {
-		// The exact strings the tools emit — RectTool.ts:62, PointTool.ts:41, LineTool.ts:62,
-		// PolygonTool.ts:120, BrushTool.ts:199. Before the fix only polygon and mask reached the
-		// service intact, so the shipped `bbox-detection` preset was unsatisfiable by construction.
+		// The exact strings the tools emit (RectTool, PointTool, LineTool, PolygonTool, BrushTool), each of
+		// which must reach the service under a name its draft model accepts.
 		const table = tableFromArrays({
 			id: ['r', 'p', 'l', 'g', 'm', 'legacy'],
 			shape_type: ['rect', 'point', 'line', 'polygon', 'mask', 'rectangle'],

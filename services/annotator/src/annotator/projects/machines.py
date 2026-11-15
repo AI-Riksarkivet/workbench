@@ -281,6 +281,26 @@ HOLDER_OR_MANAGER: Final[frozenset[str]] = frozenset({"release"})
 FROZEN_PROJECT_STATES: Final[frozenset[ProjectState]] = frozenset({ProjectState.PUBLISHING, ProjectState.PUBLISHED, ProjectState.ARCHIVED})
 
 
+#: The task states whose shapes take edits, and the relation each asks of the editor: the claim's holder annotates, and
+#: a reviewer may fix the work under review before accepting it (`fix_and_accept`). Every other state is finished or not
+#: yet started, so an edit there would write shapes no annotator or reviewer is looking at.
+EDIT_PERMISSION: Final[dict[TaskState, str]] = {TaskState.CLAIMED: "can_annotate", TaskState.IN_REVIEW: "can_review"}
+
+
+def edit_violation(*, state: TaskState, subject: str, assignee: str | None, submitted_by: str | None) -> str | None:
+    """Why `subject` may not edit a task's shapes in `state`, or `None`.
+
+    The identity half of an edit, beside the relation `EDIT_PERMISSION` names: a claimed task is edited by its holder
+    alone (§5.2 rule 2, "even a manager"), and a task in review by a reviewer who did not submit it (§5.2's self-review
+    rule). Pure, like `identity_violation`, so the HTTP layer and the actor apply the one rule.
+    """
+    if state is TaskState.CLAIMED and assignee != subject:
+        return f"the task is held by {assignee}"
+    if state is TaskState.IN_REVIEW and submitted_by == subject:
+        return "a reviewer may not edit their own submission"
+    return None
+
+
 def identity_violation(
     *,
     event: str,

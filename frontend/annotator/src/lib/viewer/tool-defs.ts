@@ -37,7 +37,7 @@ export interface ToolDef {
 
 /** Reading order, top to bottom. The rail renders these bands in this sequence. */
 export type ToolGroup = 'navigate' | 'draw' | 'assist';
-export const TOOL_GROUPS: readonly ToolGroup[] = ['navigate', 'draw', 'assist'];
+const TOOL_GROUPS: readonly ToolGroup[] = ['navigate', 'draw', 'assist'];
 
 export const TOOL_DEFS: ToolDef[] = [
 	// ── navigate: move around and pick things. Commits nothing, so no task rule ever hides these.

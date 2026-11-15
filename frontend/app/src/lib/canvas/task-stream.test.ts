@@ -1,11 +1,6 @@
 /**
- * The label stream.
- *
- * Reported: "in anno i can't even naviagte between the claimed labling items???"
- *
- * The canvas could page WITHIN an item (`PageNav` over `keys`) and could not reach the next item you
- * had claimed. These pin the rules that make "next" always a legal move: whose items are in the
- * stream, that the queue's order wins, and that the ends are ends.
+ * The label stream: the items you claimed, which the canvas walks from one to the next. These pin the rules that make
+ * "next" always a legal move: whose items are in the stream, that the queue's order wins, and that the ends are ends.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -17,7 +12,7 @@ import {
 	streamPosition,
 	taskCanvasHref,
 	type StreamTask,
-} from './task-stream';
+} from './task-stream.ts';
 
 const task = (id: string, extra: Partial<StreamTask> = {}): StreamTask => ({
 	task_id: id,
@@ -121,73 +116,12 @@ describe('moving through the stream', () => {
 });
 
 describe('the URL a stream hop navigates to', () => {
-	it('carries `project` beside `task`, so the EXIT still reaches the queue', () => {
-		// The bug fixed one commit ago, and the one this feature could reintroduce: without `project`
-		// the exit falls back to the corpus browser, so hopping twice would lose your queue again.
-		const href = taskCanvasHref(task('c'), 'bind86', '/annotator');
-
-		expect(href).toContain('task=c');
-		expect(href).toContain('project=bind86');
-	});
-
-	it('carries the task’s OWN dataset and keys', () => {
-		// Items in one project can come from different corpora, so the hop cannot inherit the URL it
-		// came from — it must be rebuilt from the destination task.
-		const href = taskCanvasHref(
-			{
-				task_id: 'q',
-				state: 'claimed',
-				assignee: 'me',
-				source: { keys: ['k/1/1', 'k/1/2'], where: 'other_corpus' },
-			},
-			'p1',
-		);
-
-		expect(href).toContain('dataset=other_corpus');
-		expect(href).toContain(`keys=${encodeURIComponent('k/1/1,k/1/2')}`);
-	});
-
-	it('omits the dataset when the task declares none, rather than sending an empty one', () => {
-		const href = taskCanvasHref(
-			{ task_id: 'q', state: 'claimed', assignee: 'me', source: { keys: ['k'], where: null } },
-			'p1',
-		);
-
-		expect(href).not.toContain('dataset=');
-	});
-
-	it('carries the task’s MODALITY, so a text/audio/video task opens its OWN canvas', () => {
-		// `kind=` was hand-URL-only before this: the route understood it, the viewers existed, and
-		// no queue link ever produced it — a text task opened the image canvas from every surface.
-		const href = taskCanvasHref(
-			{ task_id: 'q', state: 'claimed', source: { keys: ['k'] }, media: { kind: 'text' } },
-			'p1',
-		);
-
-		expect(href).toContain('kind=text');
-	});
-
-	it('omits `kind` for image — the default — and for anything unknown', () => {
-		// An unrecognized modality must fall back to the image canvas, not ride the URL into a
-		// viewer-registry miss.
-		const image = taskCanvasHref(
-			{ task_id: 'q', state: 'claimed', source: { keys: ['k'] }, media: { kind: 'image' } },
-			'p1',
-		);
-		const odd = taskCanvasHref(
-			{ task_id: 'q', state: 'claimed', source: { keys: ['k'] }, media: { kind: 'hologram' } },
-			'p1',
-		);
-
-		expect(image).not.toContain('kind=');
-		expect(odd).not.toContain('kind=');
+	it('is the task’s labeling page inside its project, so the page’s way back is that queue', () => {
+		expect(taskCanvasHref(task('c'), 'bind86')).toBe('/projects/bind86/tasks/c');
 	});
 
 	it('percent-encodes ids that need it', () => {
-		const href = taskCanvasHref(task('a b'), 'proj/1');
-
-		expect(href).toContain('task=a%20b');
-		expect(href).toContain('project=proj%2F1');
+		expect(taskCanvasHref(task('a b'), 'proj/1')).toBe('/projects/proj%2F1/tasks/a%20b');
 	});
 });
 
@@ -223,11 +157,11 @@ describe('what the canvas renders', () => {
 		expect(last.prevHref).not.toBeNull();
 	});
 
-	it('respects the zone base in both directions', () => {
-		const at = streamPosition(stream, 'c', 'bind86', '/annotator');
+	it('resolves both directions through the page’s link', () => {
+		const at = streamPosition(stream, 'c', 'bind86', (path) => `${path}?project=bind86`);
 
-		expect(at.prevHref?.startsWith('/annotator/?')).toBe(true);
-		expect(at.nextHref?.startsWith('/annotator/?')).toBe(true);
+		expect(at.prevHref).toBe('/projects/bind86/tasks/a?project=bind86');
+		expect(at.nextHref).toBe('/projects/bind86/tasks/e?project=bind86');
 	});
 });
 

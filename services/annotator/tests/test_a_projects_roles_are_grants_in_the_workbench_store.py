@@ -22,9 +22,10 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from annotator.annotations import save, wire
+from annotator.annotations import save, tags, wire
 from annotator.api.security import authenticate, current_subject, get_authorizer
-from annotator.api.v1.endpoints import me, members, projects
+from annotator.api.v1.endpoints import me, members, project_events, projects
+from annotator.api.v1.endpoints import tasks as tasks_ep
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.exceptions import ServiceUnavailableError, register_handlers
@@ -58,11 +59,21 @@ class _Actor:
         return {"project_ids": ids, "total": len(ids)}
 
 
+class _Task:
+    """One task's actor: the document a test seeds into the door's `tasks`."""
+
+    def __init__(self, doc: dict[str, Any] | None) -> None:
+        self.doc = doc
+
+    async def get(self) -> dict[str, Any] | None:
+        return self.doc
+
+
 class _Door:
     """The doors as one person after another calls them: `as_(person)` names who the next request is."""
 
-    def __init__(self, client: TestClient, who: list[str]) -> None:
-        self._client, self._who = client, who
+    def __init__(self, client: TestClient, who: list[str], tasks: dict[str, dict[str, Any]]) -> None:
+        self._client, self._who, self.tasks = client, who, tasks
 
     def as_(self, person: str) -> TestClient:
         self._who[0] = f"keycloak~{person}"
@@ -71,17 +82,22 @@ class _Door:
 
 DOC = "a" * 16
 DATASET = "acme$media"
+#: The unit a task of the test's project names, and one it does not.
+UNIT = f"{DOC}/0/19"
+OTHER_UNIT = f"{DOC}/0/20"
 
 
 @pytest.fixture
 def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[_Door]:
-    write_table(
-        tmp_path, ["acme", "media", "chunks"], pa.table({"doc_id": [DOC]}), descriptor={"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}}
-    )
+    chunks = pa.table({"doc_id": [DOC], "speech_id": pa.array([0], pa.int64()), "chunk_id": pa.array([19], pa.int64())})
+    write_table(tmp_path, ["acme", "media", "chunks"], chunks, descriptor={"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}})
     openfga_store.write(("user:keycloak~olga", "admin", "org:acme"), ("user:keycloak~alice", "member", "org:acme"))
     actor = _Actor()
     monkeypatch.setattr(projects, "_create_actor", lambda _p: actor)
     monkeypatch.setattr(projects, "_tenant_actor", lambda _t: actor)
+    monkeypatch.setattr(project_events, "_project_proxy", lambda _p: actor)
+    tasks: dict[str, dict[str, Any]] = {}
+    monkeypatch.setattr(tasks_ep, "_proxy", lambda task_id: _Task(tasks.get(task_id)))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -97,6 +113,7 @@ def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path:
     register_handlers(app)
     app.include_router(projects.router)
     app.include_router(members.router)
+    app.include_router(tags.router)
     app.include_router(save.router)
     app.include_router(wire.router)
     app.include_router(me.router)
@@ -106,7 +123,7 @@ def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     app.dependency_overrides[get_authorizer] = _authz_of
     with respx.mock(assert_all_mocked=True, assert_all_called=False), TestClient(app) as client:
-        yield _Door(client, who)
+        yield _Door(client, who, tasks)
 
 
 def _authz_of(request: Request) -> fga.Authorizer:
@@ -159,24 +176,42 @@ def test_a_revoke_that_cannot_read_the_project_leaves_its_owner(door: _Door, ope
     assert ("user:keycloak~alice", "owner", f"project:{project}") in openfga_store.tuples(f"project:{project}")
 
 
-def _save(door: _Door, person: str, project: str, **body: Any) -> Any:
-    unit = f"/annotations/{DOC}/0/19"
-    return door.as_(person).post(unit, params={"project": project, "dataset": DATASET}, json={"base_version": 0, **body})
+def _task(door: _Door, project: str, task_id: str = "t1", **over: Any) -> None:
+    """Seed a task of `project` whose item is `UNIT`: claimed by fay unless `over` says otherwise."""
+    door.tasks[task_id] = {
+        "task_id": task_id,
+        "project_id": project,
+        "state": "claimed",
+        "assignee": "keycloak~fay",
+        "submitted_by": None,
+        "source": {"kind": "chunks", "keys": [UNIT], "where": DATASET},
+        "media": {"kind": "image"},
+        **over,
+    }
+
+
+def _save(door: _Door, person: str, project: str, *, task: str = "t1", unit: str = UNIT, **body: Any) -> Any:
+    params = {"project": project, "task": task, "dataset": DATASET}
+    return door.as_(person).post(f"/annotations/{unit}", params=params, json={"base_version": 0, **body})
+
+
+def _read(door: _Door, person: str, project: str, *, unit: str = UNIT) -> Any:
+    return door.as_(person).get(f"/annotations/{unit}", params={"project": project, "task": "t1", "dataset": DATASET})
 
 
 def _rows(door: _Door, project: str) -> list[str]:
-    response = door.as_("fay").get(f"/annotations/{DOC}/0/19", params={"project": project, "dataset": DATASET})
-    return sorted(pa.ipc.open_stream(response.content).read_all().column("id").to_pylist())
+    return sorted(pa.ipc.open_stream(_read(door, "fay", project).content).read_all().column("id").to_pylist())
 
 
 def test_a_project_member_cannot_write_or_delete_another_projects_annotations_of_a_shared_dataset(door: _Door, openfga_store: OpenFgaStore) -> None:
     """The confused deputy closed: a dataset two projects annotate holds no shared table the workbench writes for both.
 
-    Fay annotates P1 and saves two rows on D. Mallory, an org member, makes P2 and binds D to it (as sending one item does),
-    then asks the workbench to delete P1's rows: through P2 the ids are not P2's, through P1 she holds no role.
+    Fay holds P1's task t1 and saves two rows of its unit. Mallory, an org member, makes P2 and binds the dataset to it,
+    then asks the workbench to delete P1's rows: through P2 the task is not P2's, and on P1 she holds no role.
     """
     p1 = _create(door, "alice").json()["project_id"]
     openfga_store.write(("user:keycloak~fay", "annotator", f"project:{p1}"), ("user:keycloak~mallory", "member", "org:acme"))
+    _task(door, p1)
     saved = _save(door, "fay", p1, inserts=[{"id": "p1-a", "shape_type": "bbox"}, {"id": "p1-b", "shape_type": "bbox"}])
     assert saved.status_code == 200, saved.text
     p2 = _create(door, "mallory").json()["project_id"]
@@ -185,8 +220,90 @@ def test_a_project_member_cannot_write_or_delete_another_projects_annotations_of
     through_p2 = _save(door, "mallory", p2, deletes=["p1-a"])
     through_p1 = _save(door, "mallory", p1, deletes=["p1-a"])
 
-    assert (through_p2.status_code, through_p1.status_code) == (404, 403), (through_p2.text, through_p1.text)
+    assert (through_p2.status_code, through_p2.json()["detail"]) == (404, "No task t1 that you can see")
+    # An org member sees the org's projects and their tasks, and annotates none she holds no role on.
+    assert (through_p1.status_code, through_p1.json()["detail"]) == (403, "keycloak~mallory lacks can_annotate on task:t1")
     assert _rows(door, p1) == ["p1-a", "p1-b"]
+
+
+@pytest.mark.parametrize(
+    ("task", "person", "unit", "status", "detail"),
+    [
+        pytest.param({}, "fay", OTHER_UNIT, 404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's", id="a-unit-the-task-does-not-hold"),
+        pytest.param(
+            {"source": {"kind": "chunks", "keys": [f"{DOC}/0"], "where": DATASET}},
+            "fay",
+            f"{DOC}/0",
+            422,
+            f"unit key '{DOC}/0' has 2 part(s), and this dataset names a unit by 3: doc_id/speech_id/chunk_id",
+            id="a-key-the-dataset-cannot-name",
+        ),
+        pytest.param(
+            {"state": "accepted"}, "fay", UNIT, 409, "task t1 is accepted — its shapes take edits only while it is claimed or in review", id="a-finished-task"
+        ),
+        pytest.param({"assignee": "keycloak~rita"}, "fay", UNIT, 403, "the task is held by keycloak~rita", id="another-annotators-claim"),
+        pytest.param({"assignee": "keycloak~vic"}, "vic", UNIT, 403, "keycloak~vic lacks can_annotate on task:t1", id="a-viewer-holding-a-claim"),
+        pytest.param(
+            {"state": "in_review", "submitted_by": "keycloak~rita"},
+            "rita",
+            UNIT,
+            403,
+            "a reviewer may not edit their own submission",
+            id="a-reviewer-on-their-own-work",
+        ),
+        pytest.param({"state": "in_review", "submitted_by": "keycloak~fay"}, "rita", UNIT, 200, None, id="a-reviewer-fixing-work-in-review"),
+    ],
+)
+def test_a_save_is_an_edit_the_named_task_takes_from_its_caller_now(
+    door: _Door, openfga_store: OpenFgaStore, task: dict[str, Any], person: str, unit: str, status: int, detail: str | None
+) -> None:
+    """A save names its project, task, dataset and unit, and each is read against the task's own record: the unit is the
+    task's, the key one the dataset can name, the task's state takes edits, and the caller holds the relation the state
+    asks and is who may edit it now. The holder of a claim writes, and so does a reviewer fixing work in review."""
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(
+        ("user:keycloak~fay", "annotator", f"project:{project}"),
+        ("user:keycloak~rita", "reviewer", f"project:{project}"),
+        ("user:keycloak~vic", "viewer", f"project:{project}"),
+    )
+    _task(door, project, **task)
+
+    response = _save(door, person, project, unit=unit, inserts=[{"id": "n1", "shape_type": "bbox"}])
+
+    assert response.status_code == status, response.text
+    if detail is not None:
+        assert response.json()["detail"] == detail
+    if status != 422:  # that task's own unit is the key no read can name either
+        assert _rows(door, project) == (["n1"] if status == 200 else [])
+
+
+def test_a_tag_batch_tags_only_the_units_of_the_task_it_names(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """The tag door writes across units in one version, so each unit it tags is checked against the task: a batch
+    naming a unit the task does not hold writes nothing."""
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(("user:keycloak~fay", "annotator", f"project:{project}"))
+    _task(door, project)
+
+    def tag(*keys: int) -> Any:
+        body = {"adds": [{"doc_id": DOC, "keys": list(keys), "labels": ["letter"]}], "removes": [], "base_version": 0}
+        return door.as_("fay").post("/annotations/tags", params={"project": project, "task": "t1", "dataset": DATASET}, json=body)
+
+    outside, inside = tag(0, 20), tag(0, 19)
+
+    assert (outside.status_code, outside.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's")
+    assert inside.status_code == 200, inside.text
+    assert _rows(door, project) == [f"tag:{DOC}:0:19:letter"]
+
+
+def test_a_viewer_reads_the_unit_of_a_task_and_no_other(door: _Door, openfga_store: OpenFgaStore) -> None:
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(("user:keycloak~vic", "viewer", f"project:{project}"))
+    _task(door, project)
+
+    own, other = _read(door, "vic", project), _read(door, "vic", project, unit=OTHER_UNIT)
+
+    assert own.status_code == 200, own.text
+    assert (other.status_code, other.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's")
 
 
 def test_me_is_the_persons_standing_in_each_organisation_the_store_holds(door: _Door) -> None:

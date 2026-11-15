@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { COMMITS_SHAPE } from '@workbench/labeling/shape-types';
-import { TOOL_DEFS, TOOL_GROUPS, TOOL_KEYS, bandsOf as bands } from './tool-defs.js';
+import { TOOL_DEFS, TOOL_GROUPS, TOOL_KEYS, bandsOf as bands } from './tool-defs.ts';
 
 describe('the tool rail reads in bands', () => {
 	it('every tool declares a band', () => {

@@ -78,37 +78,6 @@ test.beforeEach(async ({ page }) => {
 	});
 });
 
-test('the bar appears from the ONTOLOGY, and a toggle round-trips into the review queue', async ({
-	page,
-}) => {
-	await page.request.post(`${MOCK_ANNOTATOR}/__mock/seed`, {
-		data: { routes: { 'GET /tasks/t1': TASK('image') } },
-	});
-	await page.goto(`/annotator/?keys=${encodeURIComponent(KEY)}&task=t1`);
-	const bar = page.getByTestId('classification-bar');
-	await expect(bar).toBeVisible();
-	// The bbox class is a SHAPE class — it must not appear as a choice.
-	await expect(bar.getByTestId('classify-letter')).toBeVisible();
-	await expect(bar.getByTestId('classify-stamp')).toHaveCount(0);
-
-	await bar.getByTestId('classify-letter').click();
-
-	// The chip is on, and the tag exists as an ordinary row the reviewer can see and undo.
-	await expect(bar.getByTestId('classify-letter')).toHaveAttribute('aria-pressed', 'true');
-	await expect(bar).toContainText('1 applied');
-	await page.keyboard.press('Escape');
-	await expect(
-		page.getByTestId('annotation-list').getByRole('button').filter({ hasText: 'letter' }),
-	).toHaveCount(1);
-
-	// Off again — chip clears and the row goes with it.
-	await bar.getByTestId('classify-letter').click();
-	await expect(bar.getByTestId('classify-letter')).toHaveAttribute('aria-pressed', 'false');
-	await expect(
-		page.getByTestId('annotation-list').getByRole('button').filter({ hasText: 'letter' }),
-	).toHaveCount(0);
-});
-
 test('the SAME bar composes over the text canvas — a question type, not an image widget', async ({
 	page,
 }) => {

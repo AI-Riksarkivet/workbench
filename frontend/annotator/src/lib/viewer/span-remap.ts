@@ -32,7 +32,7 @@ export interface RemappedSpan {
 
 /** The single replaced region between two versions of a string: `[from, toOld)` became
  *  `[from, toNew)`. Equal strings yield an empty region at the end. */
-export function editedRegion(
+function editedRegion(
 	oldText: string,
 	newText: string,
 ): { from: number; toOld: number; toNew: number } {

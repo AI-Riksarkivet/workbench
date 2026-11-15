@@ -109,26 +109,24 @@ test('a project is created from a template, its whole ontology in one document',
 	await expect(page.getByRole('link', { name: /Portraits.*draft/s })).toBeVisible();
 });
 
-test('until the canvas is in the app, no one is offered claim, submit or fix & accept, and the queue says why', async ({
+test('the queue offers the canvas’s events, claim, submit and fix & accept, and opens each item to annotate or to view', async ({
 	page,
 	context,
 }) => {
 	await as(context, 'Manager');
 	await letters(page);
+	await expect(row(page, 'letter-001/0').getByRole('button', { name: /^Claim/ })).toBeVisible();
+	await expect(row(page, 'letter-001/1').getByRole('button', { name: /^Submit/ })).toBeVisible();
 	await expect(
-		row(page, 'letter-002/0').getByRole('button', { name: 'Accept', exact: true }),
+		row(page, 'letter-002/0').getByRole('button', { name: /^Fix & accept/ }),
 	).toBeVisible();
-
-	await expect(page.getByTestId('canvas-notice')).toHaveText(
-		'Labeling opens in the canvas, which is not in this app yet: items can be reviewed, assigned and managed here.',
-	);
+	// The item the reader holds opens to annotate; one nobody holds opens to view.
 	await expect(
-		page.getByRole('button', { name: /^(Claim|Submit for review|Fix & accept)/ }),
-	).toHaveCount(0);
-	await page.getByRole('checkbox', { name: 'Select all rows' }).check();
+		row(page, 'letter-001/1').getByRole('link', { name: 'Annotate letter-001/1' }),
+	).toHaveAttribute('href', '/projects/letters/tasks/letters-t2?project=letters');
 	await expect(
-		page.getByTestId('bulk-bar').getByRole('button', { name: /^(Claim|Submit|Fix)/ }),
-	).toHaveCount(0);
+		row(page, 'letter-001/0').getByRole('link', { name: 'View letter-001/0' }),
+	).toHaveAttribute('href', '/projects/letters/tasks/letters-t1?project=letters');
 });
 
 test('an annotator is offered no review of others’ work', async ({ page, context }) => {

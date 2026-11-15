@@ -16,17 +16,17 @@ from datetime import UTC, datetime
 import pyarrow as pa
 from fastapi import APIRouter
 
+from annotator.annotations.access import MAY_EDIT_UNIT, UnitKey
 from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit, refuse_unknown_ids
 from annotator.annotations.schema import (
     EDITABLE_FIELDS,
     NewAnnotation,
     SaveAnnotations,
     SaveResult,
-    identity_values,
 )
-from annotator.api.security import MAY_ANNOTATE, AnnotationsDep, CallerDep, CurrentSubject
+from annotator.annotations.unit import parse_unit
+from annotator.api.security import AnnotationsDep, CallerDep, CurrentSubject
 from annotator.corpus import resolve
-from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.exceptions import NotFoundError
 
@@ -51,7 +51,7 @@ def new_rows(inserts: Sequence[NewAnnotation], ident: Mapping[str, object], sche
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-@router.post("/annotations/{doc_id}/{speech_id}/{chunk_id}", dependencies=[MAY_ANNOTATE])
+@router.post("/annotations/{key:path}", dependencies=[MAY_EDIT_UNIT])
 def save_annotations(
     caller: CallerDep,
     state: StateDep,
@@ -61,16 +61,14 @@ def save_annotations(
     # 503 when enabled-but-unwired — the same no-header-fallback rule the projects plane got.
     author: CurrentSubject,
     annotations: AnnotationsDep,
-    doc_id: str,
-    speech_id: int,
-    chunk_id: int,
+    key: UnitKey,
     body: SaveAnnotations,
     dataset: DatasetParam = None,
 ) -> SaveResult:
     """Flush a review delta to Lance as ONE atomic version (see module docstring)."""
     corpus = resolve(state, dataset, caller)
     declared = corpus.declared
-    doc_id = validate_doc_key(declared, doc_id)
+    unit = parse_unit(corpus.handle.descriptor, key)
     # The version check AND the carry-forward read are of the table the wire GET served, the project's own, so the 409
     # compares the version the client loaded against the same source. A project's first save creates it.
     table = annotations(corpus.id)
@@ -87,8 +85,7 @@ def save_annotations(
         refuse_unknown_ids(existing, body.deletes)
     ds = existing if existing is not None else table.open_or_create(declared, author)
 
-    where = chunk_key_filter(declared, doc_id, (speech_id, chunk_id))
-    current = ds.to_table(filter=where)
+    current = ds.to_table(filter=unit.where)
 
     # edits (patch existing) + inserts (new shapes) commit in ONE merge_insert; the
     # source is the union, keyed by id — matched ⇒ update, unmatched ⇒ insert.
@@ -112,7 +109,7 @@ def save_annotations(
     parts = [build_delta(current, edits_by_id)]
     if body.inserts:
         ident = {
-            **identity_values(declared, doc_id, (speech_id, chunk_id)),
+            **unit.values,
             "reviewer": author,
             "created_at": now,
             "updated_at": now,
@@ -135,12 +132,12 @@ def save_annotations(
         table,
         state.settings,
         touched=touched,
-        unit_key=f"{doc_id}/{speech_id}/{chunk_id}",
+        unit_key=unit.key,
     )
     if touched:
         logger.info(
             "saved %s→ v%d (%d edit+insert, %d delete)",
-            doc_id,
+            unit.key,
             result.version,
             delta.num_rows,
             len(body.deletes),

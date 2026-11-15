@@ -20,6 +20,7 @@ import type { DPoPState, UserManagerSettings } from 'oidc-client-ts';
 import { readConfig } from './config.ts';
 import { setSigner, type Signer } from './api/client.ts';
 import { setServices } from './api/services.ts';
+import { setCanvasSettings } from './canvas/settings.ts';
 import { sameOriginPath } from './return-path.ts';
 
 type DPoPStore = NonNullable<UserManagerSettings['dpop']>['store'];
@@ -102,10 +103,12 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
 		}
 		if (read.off) {
 			setServices(read.services);
+			setCanvasSettings(read.canvas);
 			return;
 		}
 		const config = read.config;
 		setServices(config.services);
+		setCanvasSettings(config.canvas);
 		manager = new UserManager({
 			authority: new URL(config.issuer, location.origin).href.replace(/\/$/, ''),
 			client_id: config.clientId,

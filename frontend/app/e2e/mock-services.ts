@@ -26,7 +26,8 @@ import {
 	vectorFromArray,
 } from 'apache-arrow';
 import { athOf, readToken, verifyProof } from './dpop';
-import { orgsOf, projectsDoor } from './mock-projects';
+import { annotationsDoor } from './mock-annotations';
+import { orgsOf, permissionsOn, projectsDoor, taskOf } from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
 /** One call as a service saw it. */
@@ -341,7 +342,10 @@ const TOPICS = {
 };
 
 /** Who asked a door to fail or to have nothing built, by person and path. */
-type Fault = 'fail' | 'unbuilt' | 'slow';
+/** What a spec plants on one path for one person: a failure, a dataset not built, a slow answer, or a session that
+ *  ended (`unauthorized` on every call, `unauthorized-write` on a write alone). */
+type Fault = 'fail' | 'unbuilt' | 'slow' | 'unauthorized' | 'unauthorized-write';
+const FAULTS: readonly string[] = ['fail', 'unbuilt', 'slow', 'unauthorized', 'unauthorized-write'];
 const faults = new Map<string, Map<string, Fault>>();
 const faultOf = (sub: string, path: string): Fault | undefined => faults.get(sub)?.get(path);
 
@@ -388,7 +392,7 @@ Bun.serve({
 			const kind = url.searchParams.get('kind');
 			const held = faults.get(sub) ?? new Map<string, Fault>();
 			if (kind === 'clear') held.delete(path);
-			else held.set(path, kind === 'unbuilt' || kind === 'slow' ? kind : 'fail');
+			else held.set(path, kind !== null && FAULTS.includes(kind) ? (kind as Fault) : 'fail');
 			faults.set(sub, held);
 			return json({ ok: true });
 		}
@@ -456,6 +460,10 @@ Bun.serve({
 			return json({ id, tables: DATASETS[id].tables, declared: DATASETS[id].declared });
 		}
 		if (url.pathname === '/api/signed-media' && req.method === 'POST') {
+			if (faultOf(who.sub, url.pathname) === 'fail') {
+				ok(503);
+				return json({ detail: 'the viewer could not sign the media' }, 503);
+			}
 			const date = new Date().toUTCString();
 			const body = (await req.json()) as {
 				dataset: string;
@@ -788,6 +796,13 @@ Bun.serve({
 		if (who instanceof Response) return who;
 		const ok = (status: number): void =>
 			record(who.sub, { service: 'annotator', method: req.method, path: url.pathname, status });
+		const fault = faultOf(who.sub, url.pathname);
+		if (fault === 'unauthorized' || (fault === 'unauthorized-write' && req.method !== 'GET')) {
+			ok(401);
+			return json({ detail: 'the token expired' }, 401, {
+				'www-authenticate': 'DPoP error="invalid_token"',
+			});
+		}
 		if (url.pathname === '/me' && req.method === 'GET') {
 			ok(200);
 			return json({
@@ -798,7 +813,23 @@ Bun.serve({
 				orgs: orgsOf(who.sub),
 			});
 		}
-		const projects = await projectsDoor(req, url, who.sub, ok, faultOf(who.sub, url.pathname));
+		const annotations = await annotationsDoor(
+			req,
+			url,
+			who.sub,
+			(projectId) => permissionsOn(who.sub, projectId),
+			(taskId) => taskOf(who.sub, taskId),
+			ok,
+			faultOf(who.sub, url.pathname),
+		);
+		if (annotations) return annotations;
+		const projects = await projectsDoor(
+			req,
+			url,
+			who.sub,
+			ok,
+			fault === 'fail' || fault === 'unbuilt' || fault === 'slow' ? fault : undefined,
+		);
 		if (projects) return projects;
 		ok(404);
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);

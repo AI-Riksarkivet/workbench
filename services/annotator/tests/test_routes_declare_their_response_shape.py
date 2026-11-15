@@ -92,14 +92,14 @@ def _full_project() -> dict[str, Any]:
 
 
 class _TaskActor:
-    def __init__(self, task: dict[str, Any], draft: dict[str, Any]) -> None:
+    def __init__(self, task: dict[str, Any], draft: dict[str, Any] | None) -> None:
         self.task, self.draft = task, draft
 
     async def get(self) -> dict[str, Any]:
         return dict(self.task)
 
-    async def get_draft(self) -> dict[str, Any]:
-        return dict(self.draft)
+    async def get_draft(self) -> dict[str, Any] | None:
+        return None if self.draft is None else dict(self.draft)
 
 
 class _ProjectActor:
@@ -110,8 +110,8 @@ class _ProjectActor:
         return dict(self.doc)
 
 
-def _client(monkeypatch: pytest.MonkeyPatch, router: Any) -> TestClient:
-    task, draft, project = _full_task(), _full_draft(), _full_project()
+def _client(monkeypatch: pytest.MonkeyPatch, router: Any, draft: dict[str, Any] | None = None) -> TestClient:
+    task, project = _full_task(), _full_project()
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _tid: _TaskActor(task, draft))
     monkeypatch.setattr(events_ep, "_project_proxy", lambda _pid: _ProjectActor(project))
 
@@ -127,13 +127,14 @@ def _client(monkeypatch: pytest.MonkeyPatch, router: Any) -> TestClient:
     return TestClient(api)
 
 
-def test_a_draft_read_publishes_the_draft_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _client(monkeypatch, tasks_ep.router)
+@pytest.mark.parametrize("written", [True, False], ids=["a-draft", "no-draft-yet"])
+def test_a_draft_read_publishes_the_draft_model_or_null_before_the_first(written: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, tasks_ep.router, _full_draft() if written else None)
 
     body = client.get("/tasks/t1/draft")
 
     assert body.status_code == 200, body.text
-    assert body.json() == _full_draft()
+    assert body.json() == (_full_draft() if written else None)
 
 
 def test_an_actor_document_that_has_drifted_does_not_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None:

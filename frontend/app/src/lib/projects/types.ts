@@ -110,6 +110,18 @@ const LabelOntologySchema = v.object({
 });
 /** The ontology as a write sends it: the whole document. */
 export type Ontology = v.InferInput<typeof LabelOntologySchema>;
+type LabelOntology = v.InferOutput<typeof LabelOntologySchema>;
+
+/**
+ * The shape types a task's ontology permits: the union of every class's tools, derived so it cannot disagree with the
+ * taxonomy. Empty means unconstrained: an ontology that declares nothing, or one with a class that may be drawn with
+ * anything (restricting the rail would hide a tool that class permits). Mirrors `LabelOntology.tools` in the service.
+ */
+export function ontologyTools(ontology: LabelOntology | undefined): string[] {
+	if (!ontology || (ontology.classes.length === 0 && ontology.relations.length === 0)) return [];
+	if (ontology.classes.some((c) => c.tools.length === 0)) return [];
+	return [...new Set(ontology.classes.flatMap((c) => c.tools))];
+}
 
 /** Consensus v1's merge step: the manager's canonical PICK for one replica group. */
 export const AdjudicationSchema = v.object({
@@ -297,7 +309,7 @@ export const SendReceiptSchema = v.object({
 });
 export type SendReceipt = v.InferOutput<typeof SendReceiptSchema>;
 
-const DraftSchema = v.object({
+export const DraftSchema = v.object({
 	task_id: v.string(),
 	project_id: v.string(),
 	author: v.string(),
@@ -314,6 +326,8 @@ const DraftSchema = v.object({
 	revision: v.number(),
 	origin: v.optional(v.string(), 'human'),
 });
+
+export type Draft = v.InferOutput<typeof DraftSchema>;
 
 /** What an import did: shapes and links appended to the task's draft. */
 export const DraftImportSchema = v.object({

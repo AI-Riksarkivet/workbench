@@ -1,17 +1,16 @@
 /**
- * Regenerates `src/tools/corners.golden.json` — the recorded output of the two OpenCV ops
- * the magnetic tool used to call, against a deterministic synthetic image.
+ * Regenerates `src/lib/canvas/engine/tools/corners.golden.json` — the recorded output of the two OpenCV ops the
+ * magnetic tool's corner detection reproduces, against a deterministic synthetic image.
  *
- * `src/tools/corners.ts` is a hand-written replacement for `cv.cvtColor(COLOR_RGBA2GRAY)`
- * and `cv.cornerMinEigenVal(blockSize=5, ksize=3, BORDER_DEFAULT)`. Those two calls were the
- * ONLY reason the annotator shipped 3.9 MB (gzipped) of OpenCV wasm, deferred but real. The
- * fixture is how the replacement stays pinned to OpenCV's numbers without shipping OpenCV:
+ * `src/lib/canvas/engine/tools/corners.ts` is a hand-written equivalent of `cv.cvtColor(COLOR_RGBA2GRAY)`
+ * and `cv.cornerMinEigenVal(blockSize=5, ksize=3, BORDER_DEFAULT)`, which spares the app 3.9 MB (gzipped) of
+ * OpenCV wasm for two ops. The fixture is how it stays pinned to OpenCV's numbers without shipping OpenCV:
  * `corners.test.ts` asserts the response map matches to float32 precision and — the part
  * that actually matters — that `pickCorners` returns the IDENTICAL corner set.
  *
  * The dependency is deliberately NOT in package.json. To regenerate:
  *
- *   cd frontend/packages/engine
+ *   cd frontend/app
  *   bun add --dev @techstark/opencv-js@5.0.0-release.1
  *   bun run scripts/gen-corner-fixture.ts
  *   bun remove @techstark/opencv-js
@@ -113,7 +112,7 @@ cv.cornerMinEigenVal(gray, response, 5, 3, cv.BORDER_DEFAULT);
 const b64 = (view: Uint8Array | Float32Array) =>
 	Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString('base64');
 
-const out = resolve(import.meta.dirname, '../src/tools/corners.golden.json');
+const out = resolve(import.meta.dirname, '../src/lib/canvas/engine/tools/corners.golden.json');
 writeFileSync(
 	out,
 	`${JSON.stringify(

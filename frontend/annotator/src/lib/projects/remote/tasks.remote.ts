@@ -41,9 +41,13 @@ export const fetchTask = query(TaskIdArg, async ({ taskId }): Promise<ApiResult<
 /** The task draft as the publish will read it. A 404 here means "not written yet" and MUST stay
  *  distinguishable from a failure — `draft-sync.ts` omits `base_revision` on 404 and aborts on
  *  anything else. */
-export const fetchDraft = query(TaskIdArg, async ({ taskId }): Promise<ApiResult<Draft>> =>
-	parsed(await annotatorJSON(`/tasks/${taskId}/draft`), DraftSchema),
-);
+export const fetchDraft = query(TaskIdArg, async ({ taskId }): Promise<ApiResult<Draft>> => {
+	// The door answers null for a draft not written yet; this module's callers read that as the 404 it was.
+	const read = await annotatorJSON(`/tasks/${taskId}/draft`);
+	if (read.ok && read.data === null)
+		return { ok: false, status: 404, detail: `task ${taskId} has no draft` };
+	return parsed(read, DraftSchema);
+});
 
 /** Fire a task transition. Every optional field rides only when the caller set it: `assignee` is the
  *  manager's distribution edge, `message` the reviewer's note, `shape_ids` the shapes a note points

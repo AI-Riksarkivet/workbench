@@ -66,7 +66,7 @@ export function claimedStream(
 }
 
 /** Where the open task sits in the stream, or -1 when it is not in it at all. */
-export function streamIndex(stream: StreamTask[], taskId: string | null): number {
+function streamIndex(stream: StreamTask[], taskId: string | null): number {
 	if (!taskId) return -1;
 	return stream.findIndex((t) => t.task_id === taskId);
 }
@@ -83,11 +83,7 @@ export function streamIndex(stream: StreamTask[], taskId: string | null): number
  * lapsed), and silently teleporting to someone else's first claimed task would be the worst possible
  * answer to pressing an arrow.
  */
-export function neighbour(
-	stream: StreamTask[],
-	taskId: string | null,
-	step: 1 | -1,
-): StreamTask | null {
+function neighbour(stream: StreamTask[], taskId: string | null, step: 1 | -1): StreamTask | null {
 	const at = streamIndex(stream, taskId);
 	if (at < 0) return null;
 	return stream[at + step] ?? null;

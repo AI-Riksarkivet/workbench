@@ -28,12 +28,12 @@ export default defineConfig({
 	// must refuse plainly. `webgpu` runs the specs that draw on Chromium's software adapter (SwiftShader
 	// over Vulkan, `--enable-unsafe-webgpu`), in the new headless mode (`channel: 'chromium'`), whose
 	// screenshots composite a WebGPU canvas (the headless shell's show it blank, measured 2026-11-14), so a
-	// spec reads what the renderer drew.
+	// spec reads what the renderer drew. The labeling canvas (`canvas.spec.ts`) draws with WebGPU too.
 	projects: [
-		{ name: 'chromium', testIgnore: /webgpu\.spec\.ts$/ },
+		{ name: 'chromium', testIgnore: /(webgpu|canvas)\.spec\.ts$/ },
 		{
 			name: 'webgpu',
-			testMatch: /webgpu\.spec\.ts$/,
+			testMatch: /(webgpu|canvas)\.spec\.ts$/,
 			use: {
 				channel: 'chromium',
 				launchOptions: {

@@ -12,7 +12,7 @@
 	// belongs on the canvas.
 	import { Badge } from '@workbench/ui/badge';
 	import { Button } from '@workbench/ui/button';
-	import { ChevronLeft, ChevronRight, X } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, ExternalLink, X } from '@lucide/svelte';
 
 	import { datasetVersionText, predictedLabels } from './item-columns.ts';
 	import { EVENT_LABELS, taskStateVariant } from './presentation.ts';
@@ -26,6 +26,8 @@
 		tasks,
 		busy = false,
 		onfire,
+		canvasHref,
+		canvasVerb,
 	}: {
 		open?: boolean;
 		/** Which task is open. Bindable so prev/next move it without the parent mediating. */
@@ -37,6 +39,10 @@
 		/** Fire one of the task's own legal events. The parent owns the call so the drawer and the
 		 *  row buttons share one code path and one refusal surface. */
 		onfire?: (task: TaskDetail, event: string) => void;
+		/** The item's labeling page, for one that needs shapes drawn. */
+		canvasHref: (task: TaskDetail) => string;
+		/** What opening it does for this reader: annotate, or view read-only. */
+		canvasVerb: (task: TaskDetail) => string;
 	} = $props();
 
 	const nav = $derived(neighbours(tasks, taskId));
@@ -147,6 +153,10 @@
 					{EVENT_LABELS[event] ?? event}
 				</Button>
 			{/each}
+			<Button size="sm" variant="ghost" href={canvasHref(task)}>
+				<ExternalLink class="size-3.5" />
+				{canvasVerb(task)}
+			</Button>
 		</div>
 
 		<div class="mt-auto flex items-center justify-between gap-2 border-t pt-3">

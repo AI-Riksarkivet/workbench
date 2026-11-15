@@ -6,5 +6,8 @@
 		"viewer": "/api/viewer",
 		"search": "/api/search",
 		"annotator": "/api/annotator"
+	},
+	"canvas": {
+		"autosaveIdleSeconds": 3600
 	}
 }

@@ -13,7 +13,6 @@
 	"scripts": {
 		"check": "bunx tsc --noEmit",
 		"check:tsgo": "tsgo --noEmit -p tsconfig.json",
-		"test": "vitest run",
 		"lint": "oxlint .",
 		"fmt": "rsvelte-fmt .",
 		"fmt:check": "rsvelte-fmt --check ."
@@ -26,7 +25,6 @@
 	},
 	"devDependencies": {
 		"@workbench/config": "workspace:*",
-		"typescript": "^6.0.3",
-		"vitest": "^4.1.10"
+		"typescript": "^6.0.3"
 	}
 }

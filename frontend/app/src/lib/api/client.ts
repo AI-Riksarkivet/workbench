@@ -168,12 +168,13 @@ export async function readJSONDated<T>(
 	return result.ok ? { ok: true, data: { body: result.data, date } } : result;
 }
 
-/** The binary sibling of {@link readJSON}: the response's bytes (an Arrow IPC stream) and its ETag. */
+/** The binary sibling of {@link readJSON}: the response's bytes (an Arrow IPC stream), its ETag, and its
+ *  headers for a door that answers more beside the body (the annotations' version). */
 export async function readBytes(
 	url: string,
 	upstream: string,
 	init: RequestInit = {},
-): Promise<ApiResult<{ bytes: Uint8Array; etag: string | null }>> {
+): Promise<ApiResult<{ bytes: Uint8Array; etag: string | null; headers: Headers }>> {
 	let res: Response;
 	try {
 		res = await authorizedFetch(url, { ...init, signal: timeoutSignal() });
@@ -183,7 +184,11 @@ export async function readBytes(
 	if (!res.ok) return failure(res, upstream);
 	return {
 		ok: true,
-		data: { bytes: new Uint8Array(await res.arrayBuffer()), etag: res.headers.get('etag') },
+		data: {
+			bytes: new Uint8Array(await res.arrayBuffer()),
+			etag: res.headers.get('etag'),
+			headers: res.headers,
+		},
 	};
 }
 

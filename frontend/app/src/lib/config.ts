@@ -10,6 +10,8 @@
  * - `issuer`, `clientId` and `scopes` are the workbench's own public client at the platform's OIDC
  *   provider. A stack that signs nobody in says `{"signIn": false}` instead; a missing or malformed
  *   config is an error the app refuses to run past, never a quiet fall-back to signing nobody in.
+ * - `canvas` (optional) tunes the labeling canvas: `autosaveIdleSeconds`, how long after the last edit an autosave
+ *   writes (4 by default).
  */
 import * as v from 'valibot';
 
@@ -43,18 +45,29 @@ function secureIssuer(issuer: string, origin: string): boolean {
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
+const CanvasSchema = v.object({
+	autosaveIdleSeconds: v.optional(v.pipe(v.number(), v.minValue(1), v.maxValue(86_400)), 4),
+});
+export type CanvasSettings = v.InferOutput<typeof CanvasSchema>;
+const DEFAULT_CANVAS: CanvasSettings = { autosaveIdleSeconds: 4 };
+
 const SignInSchema = v.object({
 	/** Absolute, or a path on this origin when the Gateway serves the issuer same-origin. */
 	issuer: v.pipe(v.string(), v.minLength(1)),
 	clientId: v.pipe(v.string(), v.minLength(1)),
 	scopes: v.array(v.string()),
 	services: ServicesSchema,
+	canvas: v.optional(CanvasSchema, DEFAULT_CANVAS),
 });
-const SignInOffSchema = v.object({ signIn: v.literal(false), services: ServicesSchema });
+const SignInOffSchema = v.object({
+	signIn: v.literal(false),
+	services: ServicesSchema,
+	canvas: v.optional(CanvasSchema, DEFAULT_CANVAS),
+});
 export type SignInConfig = v.InferOutput<typeof SignInSchema>;
 
 export type ConfigRead =
-	| { off: true; services: Services }
+	| { off: true; services: Services; canvas: CanvasSettings }
 	| { off: false; config: SignInConfig }
 	| { error: string };
 
@@ -77,7 +90,8 @@ export async function readConfig(
 	const off = typeof body === 'object' && body !== null && 'signIn' in body;
 	const read = off ? v.safeParse(SignInOffSchema, body) : v.safeParse(SignInSchema, body);
 	if (!read.success) return { error: `/config.json is malformed: ${v.summarize(read.issues)}` };
-	if ('signIn' in read.output) return { off: true, services: read.output.services };
+	if ('signIn' in read.output)
+		return { off: true, services: read.output.services, canvas: read.output.canvas };
 	if (!secureIssuer(read.output.issuer, origin)) {
 		return {
 			error: `/config.json names an issuer that is not https: ${read.output.issuer} (http only on a loopback host)`,

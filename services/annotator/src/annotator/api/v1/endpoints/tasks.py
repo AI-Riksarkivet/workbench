@@ -37,10 +37,12 @@ from annotator.audit_actions import AnnotatorAuditAction
 from annotator.projects.actor import AnnotationTaskActorInterface
 from annotator.projects.imports import shapes_from_ipc
 from annotator.projects.machines import (
+    EDIT_PERMISSION,
     FROZEN_PROJECT_STATES,
     HOLDER_OR_MANAGER,
     TASK_EDGES,
     IllegalTransition,
+    edit_violation,
     identity_violation,
     refuse_unreadable_ontology,
     task_transition,
@@ -189,6 +191,36 @@ async def _verified_project_state(project_id: str, event: str) -> ProjectState |
     return state
 
 
+async def viewed_task(task_id: str, checker: Checker, subject: str) -> dict[str, Any]:
+    """One task the caller may view, as its actor holds it; the uniform refusal (`unseen_task`) otherwise."""
+    return await _viewed(_proxy(task_id), checker, subject, task_id)
+
+
+async def require_editable(current: dict[str, Any], checker: Checker, subject: str, what: AnnotatorAuditAction) -> ProjectState | None:
+    """The caller may edit this viewed task's shapes now, or the refusal that says why.
+
+    The one rule every write of a task's shapes answers to: its draft (`save_draft`) and its unit's annotations
+    (`annotator.annotations.access`). Asked in D3a's order, so a refusal names no more than its step:
+    - 409 when the task's state takes no edits (`EDIT_PERMISSION`), or its project is frozen;
+    - 403 when the caller lacks the state's relation on the task, or is not who may edit it now (`edit_violation`).
+
+    Answers the project state it verified, for the actor to re-assert in its own turn.
+    """
+    task_id = str(current["task_id"])
+    project_id = str(current["project_id"])
+    state = TaskState(current["state"])
+    permission = EDIT_PERMISSION.get(state)
+    if permission is None:
+        raise ConflictError(f"task {task_id} is {state} — its shapes take edits only while it is claimed or in review")
+    project_state = await _verified_project_state(project_id, "save_draft")
+    await _authorize(checker, subject, permission, task_id, project_id, what)
+    violation = edit_violation(state=state, subject=subject, assignee=current.get("assignee"), submitted_by=current.get("submitted_by"))
+    if violation is not None:
+        audit(what, AuditOutcome.FAILURE, subject=subject, resource=f"task:{task_id}", reason="identity_bound")
+        raise ForbiddenError(violation)
+    return project_state
+
+
 async def _refuse_second_replica(task_id: str, current: dict[str, Any], recipient: str) -> None:
     """Consensus v1's independence rule, enforced where claims happen.
 
@@ -315,21 +347,9 @@ async def save_draft(task_id: TaskId, payload: SaveDraftRequest, checker: Checke
     409, which is how two tabs of one annotator are stopped from silently clobbering each other."""
     actor = _proxy(task_id)
     current = await _viewed(actor, checker, subject, task_id)
-    await _authorize(checker, subject, "can_annotate", task_id, str(current["project_id"]), AnnotatorAuditAction.TASK_SAVE_DRAFT)
-
-    # A draft is only writable while the task is CLAIMED. Without this an ACCEPTED task's shapes
-    # could be rewritten after review — and during a publish — which would put annotations into the
-    # lakehouse that no reviewer ever saw. `TASK_EDGES` already says `save_draft` is legal only from
-    # CLAIMED; this is the HTTP surface honouring the machine instead of writing around it.
-    project_state = await _verified_project_state(str(current["project_id"]), "save_draft")
-    if TaskState(current["state"]) is not TaskState.CLAIMED:
-        raise ConflictError(f"task {task_id} is {current['state']} — a draft is only writable while the task is claimed")
-    # §5.2 rule 2, read from the ONE place it is written. `save_draft` is the event the actor applies
-    # this rule under for a draft write, so naming it here makes the 403 and the in-turn 409 the same
-    # rule rather than two that happen to agree today — the drift a hand-rolled copy invites.
-    violation = identity_violation(event="save_draft", subject=subject, assignee=current.get("assignee"), submitted_by=current.get("submitted_by"))
-    if violation is not None:
-        raise ForbiddenError(violation)
+    # The holder of a claim, or a reviewer of work in review (`require_editable`): an accepted task's shapes are never
+    # rewritten after review, and never during a publish.
+    project_state = await require_editable(current, checker, subject, AnnotatorAuditAction.TASK_SAVE_DRAFT)
 
     try:
         draft = await actor.save_draft(
@@ -343,6 +363,8 @@ async def save_draft(task_id: TaskId, payload: SaveDraftRequest, checker: Checke
                 "origin": payload.origin,
                 # The verified observation the actor re-asserts rule 5 against, exactly as on `fire`.
                 "project_state": None if project_state is None else str(project_state),
+                # A verified input like `project_state`: the caller holds `can_review` on this task in review.
+                "reviewing": TaskState(current["state"]) is TaskState.IN_REVIEW,
             }
         )
     except IllegalTransition as exc:
@@ -442,10 +464,10 @@ async def import_annotations(task_id: TaskId, request: Request, checker: Checker
 
 
 @router.get("/{task_id}/draft")
-async def get_draft(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject) -> Draft:
+async def get_draft(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject) -> Draft | None:
+    """The task's draft, or null when none is written yet: an answer, not a failure, so a client tells "start the first
+    draft" from a read that failed without a refusal on the wire."""
     actor = _proxy(task_id)
     await _viewed(actor, checker, subject, task_id)
     draft = await actor.get_draft()
-    if draft is None:
-        raise NotFoundError(f"task {task_id} has no draft")
-    return Draft.model_validate(draft)
+    return None if draft is None else Draft.model_validate(draft)

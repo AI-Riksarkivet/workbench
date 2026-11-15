@@ -286,11 +286,9 @@ def test_the_draft_save_records_the_verified_subject_as_author(monkeypatch: pyte
 
 
 @pytest.mark.parametrize("state", [TaskState.ACCEPTED])
-def test_a_draft_is_only_writable_while_the_task_is_claimed(state: TaskState, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The defect this replaces: `save_draft` consulted the assignee but never the STATE, so an
-    ACCEPTED task's shapes could be rewritten after review — and during a publish — putting
-    annotations into the lakehouse no reviewer ever saw. `TASK_EDGES` already says `save_draft` is
-    legal only from CLAIMED; the route now honours the machine instead of writing around it."""
+def test_a_draft_is_only_writable_while_the_task_is_claimed_or_in_review(state: TaskState, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ACCEPTED task's shapes are never rewritten after review, and never during a publish: the shapes take edits
+    only while the task is claimed or in review (`EDIT_PERMISSION`)."""
     actor = _FakeActor(_task(state=state, assignee=SUBJECT))
     monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
     client = TestClient(_app(allow=True))
@@ -299,6 +297,21 @@ def test_a_draft_is_only_writable_while_the_task_is_claimed(state: TaskState, mo
 
     assert r.status_code == 409, r.text
     assert actor.drafts == [], f"a draft was written to a {state} task"
+
+
+def test_a_reviewer_saves_a_fix_into_work_in_review_and_the_actor_is_told_it_was_verified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`fix_and_accept` records a fix: a reviewer who did not submit the work saves it into the draft under `can_review`,
+    and the actor is handed that verification (`reviewing`) to re-assert in its own turn."""
+    actor = _FakeActor(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
+    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
+    seen: list[dict[str, Any]] = []
+    client = TestClient(_app(allow={"can_view", "can_review"}, seen=seen))
+
+    r = client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
+
+    assert r.status_code == 200, r.text
+    assert actor.drafts[0]["reviewing"] is True
+    assert {"user": SUBJECT, "relation": "can_review", "obj": "task:t1"} in seen
 
 
 def test_a_draft_save_by_a_non_holder_is_403(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,6 +25,7 @@ export interface CorpusRows {
 }
 import {
 	DraftImportSchema,
+	DraftSchema,
 	MemberListSchema,
 	ProjectDetailSchema,
 	ProjectListSchema,
@@ -32,6 +33,7 @@ import {
 	SendReceiptSchema,
 	TaskDetailSchema,
 	TaskListingSchema,
+	type Draft,
 	type DraftImport,
 	type MemberList,
 	type Ontology,
@@ -148,6 +150,35 @@ export const corpusRows = query(
 			: { rows: [], keyFields: [] };
 	},
 );
+
+/** One task: its source, its captured ontology and the transitions out of its state. A task door names only the task:
+ *  the annotator reads its project from the task's own record. */
+export const fetchTask = query(
+	'unchecked',
+	({ taskId }: { taskId: string }): Promise<ApiResult<TaskDetail>> =>
+		readJSON(at(`/tasks/${enc(taskId)}`), TaskDetailSchema, UPSTREAM),
+);
+
+/** The task's draft as the publish will read it, or null when none is written yet (the canvas then writes the first
+ *  with no `base_revision`; on a failed read it writes nothing). Read fresh on every call, since a save is guarded by
+ *  the revision this answers. */
+export function fetchDraft(taskId: string): Promise<ApiResult<Draft | null>> {
+	return readJSON(at(`/tasks/${enc(taskId)}/draft`), v.nullable(DraftSchema), UPSTREAM);
+}
+
+/** The canvas's save of one unit's shapes and links into the task's draft, guarded by `base_revision` (a stale one is
+ *  a 409, never an overwrite). Not a `command`: autosave writes every few idle seconds, and the activity log keeps the
+ *  person's deliberate writes. */
+export function saveDraft(
+	taskId: string,
+	body: {
+		shapes: Record<string, unknown>[];
+		links: { name: string; from_shape: string; to_shape: string }[];
+		base_revision?: number;
+	},
+): Promise<ApiResult<Draft>> {
+	return send('PUT', `/tasks/${enc(taskId)}/draft`, body, DraftSchema);
+}
 
 // ── writes ───────────────────────────────────────────────────────────────────────────────────
 

@@ -20,9 +20,10 @@ import lance
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from annotator.api.security import MAY_VIEW, AnnotationsDep, CallerDep
+from annotator.annotations.access import MAY_READ_UNIT, UnitKey
+from annotator.annotations.unit import parse_unit
+from annotator.api.security import AnnotationsDep, CallerDep
 from annotator.corpus import resolve
-from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.exceptions import NotFoundError
 
@@ -69,14 +70,12 @@ class AnnotationVersion(BaseModel):
     count: int
 
 
-@router.get("/annotations/{doc_id}/{speech_id}/{chunk_id}/versions", dependencies=[MAY_VIEW])
+@router.get("/annotations/{key:path}/versions", dependencies=[MAY_READ_UNIT])
 def annotation_versions(
     caller: CallerDep,
     state: StateDep,
     annotations: AnnotationsDep,
-    doc_id: str,
-    speech_id: int,
-    chunk_id: int,
+    key: UnitKey,
     dataset: DatasetParam = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
 ) -> list[AnnotationVersion]:
@@ -85,13 +84,11 @@ def annotation_versions(
     panel — the read-side of the write-plane provenance story (who=reviewer, when=version,
     what=lineage)."""
     corpus = resolve(state, dataset, caller)
-    declared = corpus.declared
-    doc_id = validate_doc_key(declared, doc_id)
+    unit = parse_unit(corpus.handle.descriptor, key)
     ds = annotations(corpus.id).open()
     if ds is None:
         return []
-    where = chunk_key_filter(declared, doc_id, (speech_id, chunk_id))
-    return table_annotation_versions(ds, where, limit=limit)
+    return table_annotation_versions(ds, unit.where, limit=limit)
 
 
 def table_annotation_versions(ds: lance.LanceDataset, where: str, *, limit: int) -> list[AnnotationVersion]:

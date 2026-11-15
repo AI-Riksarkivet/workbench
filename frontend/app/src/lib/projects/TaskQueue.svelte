@@ -36,7 +36,10 @@
 		predictedLabels,
 	} from './item-columns.ts';
 	import { Textarea } from '@workbench/ui/textarea';
-	import { Eye, LayoutGrid, Rows3, Trash2 } from '@lucide/svelte';
+	import { linkWith } from '#lib/project.ts';
+	import { taskCanvasHref } from '#lib/canvas/task-stream.ts';
+	import { readOnlyReason } from '#lib/canvas/editability.ts';
+	import { ExternalLink, Eye, LayoutGrid, Rows3, Trash2 } from '@lucide/svelte';
 
 	import ImportButton from './ImportButton.svelte';
 	import TaskGrid from './TaskGrid.svelte';
@@ -76,19 +79,22 @@
 		droppable?: boolean;
 	} = $props();
 
-	/** The events that need the drawing canvas, which is not in this app yet: claiming takes a lease on an item the
-	 *  reader cannot draw on, submitting sends nothing drawn, and "fix & accept" records a fix nobody made. They are not
-	 *  offered until the canvas is. */
-	const CANVAS_EVENTS: ReadonlySet<string> = new Set(['claim', 'submit', 'fix_and_accept']);
+	/** The item's labeling page, carrying the reader's project. */
+	const link = $derived(linkWith(projectId));
+	function canvasHref(task: TaskDetail): string {
+		return link(taskCanvasHref(task, projectId));
+	}
+	/** "Annotate" where the canvas takes this reader's edits, "View" where it opens read-only (`readOnlyReason`). */
+	function canvasVerb(task: TaskDetail): 'Annotate' | 'View' {
+		return readOnlyReason(task, permissions, me) === null ? 'Annotate' : 'View';
+	}
 
 	// Every task as the READER may act on it: its legal events narrowed to the ones their role permits, so every
 	// button below, the row's, the selection's and the review pane's, offers only what its door would let through.
 	const tasks = $derived(
 		allTasks.map((t) => ({
 			...t,
-			legal_events: t.legal_events.filter(
-				(e) => permissions.includes(e.permission) && !CANVAS_EVENTS.has(e.event),
-			),
+			legal_events: t.legal_events.filter((e) => permissions.includes(e.permission)),
 		})),
 	);
 
@@ -642,6 +648,16 @@
 		>
 			<Eye class="size-3.5" />
 		</Button>
+		<Button
+			variant="outline"
+			size="sm"
+			href={canvasHref(task)}
+			aria-label="{canvasVerb(task)} {task.source.keys[0] ?? task.task_id}"
+			title="Open this item on the labeling canvas"
+		>
+			<ExternalLink class="size-3.5" />
+			{canvasVerb(task)}
+		</Button>
 		{#if task.state === 'claimed'}
 			<!-- Only on a CLAIMED task, mirroring the server: importing is annotating, so it obeys the
 			     same state rule as a draft save rather than being a second way in. -->
@@ -897,12 +913,6 @@
 			</div>
 		{/if}
 
-		{#if allTasks.length > 0}
-			<p class="text-muted-foreground text-sm" role="note" data-testid="canvas-notice">
-				Labeling opens in the canvas, which is not in this app yet: items can be reviewed, assigned
-				and managed here.
-			</p>
-		{/if}
 		{#if allTasks.length === 0}
 			<div
 				class="flex flex-col gap-1 rounded-md border px-4 py-6 text-sm"
@@ -934,6 +944,8 @@
 		tasks={pageRows}
 		busy={busy !== null}
 		onfire={(task, event) => void fireFromQuick(task, event)}
+		{canvasHref}
+		{canvasVerb}
 	/>
 {/snippet}
 
