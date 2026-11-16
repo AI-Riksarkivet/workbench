@@ -4,10 +4,15 @@
 	 * restored once, autosaved after every change, and can be saved as a named view; where both are kept
 	 * is `#lib/dock/store.ts`'s decision alone (this browser, per person).
 	 *
+	 * Below a tablet's width the dock shows the stacked arrangement instead (`defaultLayout(true)`), from
+	 * the moment the window crosses the breakpoint, whichever way: the person's own arrangement is kept,
+	 * saved and shown again once the window is wide, and the stacked one is never saved over it.
+	 *
 	 * The page also hosts what every panel shares and none owns: the health poll the search modes read,
 	 * and the keyboard's `/` and Escape.
 	 */
 	import { onMount } from 'svelte';
+	import { MediaQuery } from 'svelte/reactivity';
 	import type { LayoutConfig } from 'horizon-layout';
 	import { Button } from '@workbench/ui/button';
 	import { auth } from '#lib/auth.svelte.ts';
@@ -24,6 +29,10 @@
 	const id = $derived(data.id);
 
 	let layout = $state<LayoutConfig | null>(null);
+	/** Whether the window is below a tablet's width, followed as it is resized. */
+	const narrow = new MediaQuery('width < 768px');
+	/** What the dock shows while narrow: the stacked arrangement, its edits kept for the page's life only. */
+	let narrowLayout = $state<LayoutConfig>(defaultLayout(true));
 	let session = $state.raw<WorkbenchSession | null>(null);
 	/** Why the stored layout could not be read; while set, nothing is saved over it. */
 	let unreadable = $state<string | null>(null);
@@ -111,9 +120,8 @@
 		views?.activate(viewId);
 	}
 
-	/** The first visit's arrangement, stacked below a tablet's width. */
-	const firstLayout = (): LayoutConfig =>
-		defaultLayout(window.matchMedia('(width < 768px)').matches);
+	/** The first visit's arrangement: the wide one, which a narrow window shows stacked meanwhile. */
+	const firstLayout = (): LayoutConfig => defaultLayout();
 
 	/** The person's explicit choice to replace a stored layout that could not be read. */
 	function resetLayout(): void {
@@ -153,7 +161,11 @@
 		{#if layout}
 			<!-- Each dataset mounts its panels afresh: they read the dataset's view when they mount. -->
 			{#key id}
-				<Dock bind:layout />
+				{#if narrow.current}
+					<Dock bind:layout={narrowLayout} />
+				{:else}
+					<Dock bind:layout />
+				{/if}
 			{/key}
 		{/if}
 	</div>

@@ -1,22 +1,33 @@
 #!/usr/bin/env python
-"""Seed a REAL, SEARCHABLE dev corpus, so every media surface shows something.
+"""Seed REAL, SEARCHABLE dev datasets, so every media surface has something to show.
 
 The media plane reads its datasets from a lance-namespace catalog: a dataset is a namespace ``<warehouse>$<namespace>``
-and its tables are what ListTables answers there. So the corpus is written through the same catalog the services read,
-``MEDIA_CATALOG_DIR`` (lance-namespace's directory catalog, for a local stack) or ``MEDIA_CATALOG_URI`` (the catalog's
-REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), and its descriptor is stamped on the ``chunks`` table's schema metadata,
-where the registry reads it.
+and its tables are what ListTables answers there. So the datasets are written through the same catalog the services
+read, ``MEDIA_CATALOG_DIR`` (lance-namespace's directory catalog, for a local stack) or ``MEDIA_CATALOG_URI`` (the
+catalog's REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), and each one's descriptor is stamped on its row table's schema
+metadata, where the registry reads it.
 
-**Why this is a corpus and not one row.** A fixture that declared no `search` answered every query with zero hits and
-looked broken while being "correct". So: several documents, several chunks each, distinct prose per chunk, and an FTS
-index — a query for a common word returns MANY hits across MANY documents.
+Two datasets in one warehouse:
 
-This is a DEV FIXTURE, not production data. Every page image is drawn here rather than shipped as a binary, so the
+- ``<warehouse>$corpus``: page images. Three volumes of a few pages each, every page a drawn PNG with distinct prose and
+  an FTS index, a thumbnail per volume, and an atlas projection.
+- ``<warehouse>$recordings``: audio. Three short WAV recordings synthesized here, each a few seconds of two alternating
+  voices, cut into timed segments with an FTS index, word alignments (the transcript window) and speaker turns (the
+  speakers timeline).
+
+There is no video dataset: a browser's ``<video>`` plays H.264, VP8/9 or AV1, and no encoder for any of them is in the
+lockfile, so a video could only be a binary shipped beside this script.
+
+**Why a corpus and not one row.** A dataset that declared no `search` answered every query with zero hits and looked
+broken while being "correct". So: several documents, several rows each, distinct prose per row, and an FTS index, so a
+query for a common word returns MANY hits across MANY documents.
+
+This is a DEV FIXTURE, not production data. Every image and sound is made here rather than shipped as a binary, so the
 fixture stays reviewable in a diff.
 
-    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_demo_corpus.py [<warehouse>$<namespace>]
+    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_demo_corpus.py [<warehouse>]
 
-Then run the media services with the same ``MEDIA_CATALOG_DIR`` (and ``MEDIA_DEFAULT_DATASET`` naming the dataset).
+Then run the media services with the same ``MEDIA_CATALOG_DIR`` (``MEDIA_DEFAULT_DATASET=<warehouse>$corpus``).
 """
 
 from __future__ import annotations
@@ -27,25 +38,39 @@ import io
 import json
 import math
 import os
+import struct
 import sys
+import wave
+from collections.abc import Sequence
 
 import lance
 import lance_namespace
 import lancedb
 import lancedb.index
 import pyarrow as pa
-from lance_namespace import CreateNamespaceRequest, DropTableRequest, LanceNamespace, NamespaceAlreadyExistsError, TableNotFoundError
+from lance_namespace import (
+    CreateNamespaceRequest,
+    DropTableRequest,
+    LanceNamespace,
+    ListTablesRequest,
+    NamespaceAlreadyExistsError,
+    TableNotFoundError,
+)
 from PIL import Image, ImageDraw
 
+from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, Declared
+from service_kit.naming import CATALOG_DELIMITER
 
-#: The dataset the fixture is written as when the command line names none: a namespace, warehouse first.
-DEFAULT_DATASET = "demo$corpus"
 
-#: The fixture corpus: three volumes, each a handful of pages. The prose is deliberately
-#: OVERLAPPING — every page mentions the archive and most mention a protokoll — so a one-word
-#: query returns hits across several documents rather than a single row, and DIFFERENT enough that
-#: a narrower query (e.g. "sjöfart") narrows the result set. That is the property that makes the
-#: fixture able to demonstrate search at all.
+#: The warehouse the fixture is written in when the command line names none.
+DEFAULT_WAREHOUSE = "demo"
+#: The two datasets' namespaces inside the warehouse.
+PAGES = "corpus"
+RECORDINGS = "recordings"
+
+#: The page fixture: three volumes, each a handful of pages. The prose is deliberately OVERLAPPING (every page mentions
+#: the archive and most a protokoll) so a one-word query returns hits across several documents, and DIFFERENT enough
+#: that a narrower query (e.g. "sjöfart") narrows the result set.
 DOCUMENTS: list[dict] = [
     {
         "doc_id": "fe00cd746463ad2c",
@@ -77,13 +102,48 @@ DOCUMENTS: list[dict] = [
     },
 ]
 
+#: The audio fixture: three recordings, each a few segments of two speakers taking turns. Each segment is one turn, so
+#: the transcript window and the speakers timeline agree on who spoke when.
+RECORDINGS_FIXTURE: list[dict] = [
+    {
+        "doc_id": "c41f0e2a9b7d3e15",
+        "title": "Intervju om hamnen 1952",
+        "segments": [
+            ("A", "Berätta om hamnen och tullen när ni började arbeta där."),
+            ("B", "Hamnen var full av fartyg som lastade salt och järn varje sommar."),
+            ("A", "Och protokollen från tullen, var förvarades de?"),
+        ],
+    },
+    {
+        "doc_id": "d82e6b1c4a0f9e73",
+        "title": "Minnen från tinget 1961",
+        "segments": [
+            ("B", "På tinget avkunnade nämnden dom i tvisten om fiskevattnet."),
+            ("A", "Var det många vittnen som hördes i målet?"),
+            ("B", "Fyra vittnen, och registret finns kvar i arkivet."),
+        ],
+    },
+    {
+        "doc_id": "e6a3d9f20c5b1847",
+        "title": "Samtal om arkivet 1974",
+        "segments": [
+            ("A", "Riksarkivet tog emot handlingarna från landskapet samma år."),
+            ("B", "Jordeböckerna och skattelängderna kom i flera omgångar."),
+        ],
+    },
+]
+
+#: Each speaker's voice: a fundamental and its overtones' weights, so the two are told apart by ear.
+VOICES: dict[str, tuple[float, tuple[float, ...]]] = {"A": (196.0, (1.0, 0.5, 0.25)), "B": (294.0, (1.0, 0.35, 0.15))}
+SAMPLE_RATE = 16_000
+SEGMENT_SECONDS = 2.0
+
 
 def page_image(title: str, page_no: int, width: int = 900, height: int = 1200) -> bytes:
     """Render a page-like image: ruled lines and blocks a bbox can plausibly enclose.
 
-    Drawn rather than shipped as a binary so the fixture stays reviewable in a diff. The title and
-    page number are stamped on so a screenshot of the canvas is self-identifying — otherwise every
-    page looks identical and a drive cannot show it opened the page it meant to.
+    The title and page number are stamped on so a screenshot of the canvas is self-identifying: otherwise every page
+    looks identical and a drive cannot show it opened the page it meant to.
     """
     img = Image.new("RGB", (width, height), (250, 248, 242))
     draw = ImageDraw.Draw(img)
@@ -94,19 +154,29 @@ def page_image(title: str, page_no: int, width: int = 900, height: int = 1200) -
         run = 760 if row % 4 != 3 else 420
         draw.rectangle([70, y, 70 + run, y + 18], fill=(70, 66, 62))
         y += 42
+    return _png(img)
+
+
+def thumbnail(title: str) -> bytes:
+    """A volume's cover, small enough for a gallery tile."""
+    img = Image.open(io.BytesIO(page_image(title, 0)))
+    img.thumbnail((180, 240))
+    return _png(img)
+
+
+def _png(img: Image.Image) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
 def _atlas_xy(doc_index: int, page_no: int) -> tuple[float, float]:
-    """A STABLE 2-D position per chunk — one loose cluster per document.
+    """A STABLE 2-D position per chunk, one loose cluster per document.
 
-    Not a real projection and not pretending to be: the fixture has no embedding model, and
-    inventing one would make the atlas look meaningful when it is fixture data. What it must be is
-    DETERMINISTIC (re-seeding cannot reshuffle the map under a saved lasso) and SEPARATED (pages of
-    one volume land together, so a selection is visibly a selection). A document's angle around the
-    unit circle plus a hashed jitter gives both, with no numpy dependency in a seeding script.
+    Not a real projection and not pretending to be: the fixture has no embedding model. What it must be is
+    DETERMINISTIC (re-seeding cannot reshuffle the map under a saved lasso) and SEPARATED (pages of one volume land
+    together, so a selection is visibly a selection). A document's angle around the unit circle plus a hashed jitter
+    gives both, with no numpy dependency in a seeding script.
     """
     theta = 2.0 * math.pi * doc_index / max(len(DOCUMENTS), 1)
     digest = hashlib.sha256(f"{doc_index}:{page_no}".encode()).digest()
@@ -115,27 +185,37 @@ def _atlas_xy(doc_index: int, page_no: int) -> tuple[float, float]:
     return (math.cos(theta) + jitter_x, math.sin(theta) + jitter_y)
 
 
-def _chunk_rows() -> dict[str, list]:
-    """Flatten the fixture into columns. `speech_id` is the page and `chunk_id` its ordinal —
-    the identity triple the whole media plane keys on."""
-    keys = ("doc_id", "speech_id", "chunk_id", "frame_idx", "image", "mime", "caption", "text", "title", "atlas_x", "atlas_y", "atlas_cluster")
-    columns: dict[str, list] = {k: [] for k in keys}
-    for doc_index, document in enumerate(DOCUMENTS):
-        for page_no, prose in enumerate(document["pages"]):
-            columns["doc_id"].append(document["doc_id"])
-            columns["speech_id"].append(page_no)
-            columns["chunk_id"].append(page_no)
-            columns["frame_idx"].append(0)
-            columns["image"].append(page_image(document["title"], page_no))
-            columns["mime"].append("image/png")
-            columns["caption"].append(f"{document['title']} · page {page_no}")
-            columns["text"].append(prose)
-            columns["title"].append(document["title"])
-            x, y = _atlas_xy(doc_index, page_no)
-            columns["atlas_x"].append(x)
-            columns["atlas_y"].append(y)
-            columns["atlas_cluster"].append(doc_index)
-    return columns
+def speech(turns: Sequence[str]) -> bytes:
+    """A mono 16-bit WAV of ``turns``, one :data:`SEGMENT_SECONDS` turn per speaker named: each turn a voice's tone,
+    pulsed at a syllable's pace and faded at both ends so turns do not click."""
+    frames = bytearray()
+    per_turn = int(SAMPLE_RATE * SEGMENT_SECONDS)
+    for speaker in turns:
+        fundamental, overtones = VOICES[speaker]
+        norm = sum(overtones)
+        for i in range(per_turn):
+            t = i / SAMPLE_RATE
+            tone = sum(weight * math.sin(2 * math.pi * fundamental * (n + 1) * t) for n, weight in enumerate(overtones)) / norm
+            syllables = 0.55 + 0.45 * math.sin(2 * math.pi * 4.0 * t) ** 2
+            fade = min(1.0, i / 800, (per_turn - i) / 800)
+            frames += struct.pack("<h", int(12_000 * tone * syllables * fade))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(SAMPLE_RATE)
+        out.writeframes(bytes(frames))
+    return buf.getvalue()
+
+
+def _alignments(text: str, start: float, end: float) -> str:
+    """One segment's word alignments as the transcript window reads them: the words spread evenly over the segment, each
+    after the first carrying its leading space, as a speech recognizer's word tokens do (the window renders them as
+    written)."""
+    words = text.split()
+    step = (end - start) / len(words)
+    timed = [{"text": w if i == 0 else f" {w}", "start": round(start + i * step, 3), "end": round(start + (i + 1) * step, 3)} for i, w in enumerate(words)]
+    return json.dumps([{"start": start, "end": end, "text": text, "words": timed}], ensure_ascii=False)
 
 
 def _catalog() -> tuple[LanceNamespace, lancedb.DBConnection]:
@@ -158,9 +238,9 @@ def _fresh_table(client: LanceNamespace, table_id: list[str], data: pa.Table) ->
     """Write ``data`` as a NEW table at ``table_id``, dropping any table already there.
 
     Dropped rather than overwritten: an overwrite rewrites the data but leaves earlier ``_indices/<uuid>`` behind, and a
-    re-index can leave the table pointing at an index whose files were collected — the reader then dies with
+    re-index can leave the table pointing at an index whose files were collected; the reader then dies with
     ``tokens.lance not found`` and every query 400s. Re-seeding must be idempotent, so the fixture is rebuilt from
-    nothing rather than layered onto its own history. Blob-v2 needs file format >= 2.2, named here rather than left to
+    nothing rather than layered onto its own history. Blob v2 needs file format >= 2.2, named here rather than left to
     the default, and stable row ids are what the media routes take blobs by.
     """
     with contextlib.suppress(TableNotFoundError):
@@ -168,163 +248,240 @@ def _fresh_table(client: LanceNamespace, table_id: list[str], data: pa.Table) ->
     return lance.write_dataset(data, namespace_client=client, table_id=table_id, mode="create", data_storage_version="2.2", enable_stable_row_ids=True)
 
 
-def seed(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:
-    """Write the fixture's ``chunks`` and ``documents`` tables into ``namespace``, creating its levels the catalog lacks,
-    index ``chunks.text`` for FTS, and stamp the descriptor on ``chunks``."""
+def _namespace(client: LanceNamespace, namespace: list[str]) -> None:
+    """Create each level of ``namespace`` the catalog lacks."""
     for depth in range(1, len(namespace) + 1):
         with contextlib.suppress(NamespaceAlreadyExistsError):
             client.create_namespace(CreateNamespaceRequest(id=namespace[:depth]))
 
-    # The page image must be a Lance **blob-v2** column or the registry refuses the dataset
-    # ("document.media_blob is not a lance.blob.v2 column"). Blob-v2 is a STRUCT — raw
-    # large_binary is rejected outright — and it needs file format >= 2.2, which is named here
-    # rather than left to the pylance default.
-    # speech_id/chunk_id are INTEGERS: the viewer builds its frame filter as
-    # `speech_id = 0 AND chunk_id = 19` with unquoted numeric literals, so string columns
-    # fail with "Received literal Int64(0) and could not convert to literal of type Utf8".
-    # `lance.blob_field` rather than a hand-rolled struct + `ARROW:extension:name` metadata. The two are not
-    # equivalent: the helper yields a real Arrow EXTENSION type (`extension<lance.blob.v2<BlobType>>`),
-    # while the hand-rolled struct only carries the name as field metadata — which any process that
-    # has imported lance will fail to reconstruct across an Arrow-IPC boundary.
-    image_field = lance.blob_field("image")
-    schema = pa.schema(
+
+def _index_and_stamp(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str], row_table: str, declared: Declared) -> None:
+    """Index ``row_table.text`` for FTS and stamp ``declared`` on it.
+
+    The FTS index is built through LANCEDB: the search service opens the row table with `lancedb` and runs
+    `tbl.search(MatchQuery(...), query_type="fts")`, which needs an index built by that same stack; an unindexed column
+    answers zero hits for every query, indistinguishable from an empty corpus. The registry reads a dataset's declared
+    roles off the `lance_media.descriptor` schema-metadata stamp of its first table (by name) that carries one, so the
+    descriptor rides the data rather than a file beside it; it is stamped on the latest version, which the index made.
+    """
+    connection.open_table(row_table, namespace_path=namespace).create_index("text", config=lancedb.index.FTS(), replace=True)
+    lance.dataset(namespace_client=client, table_id=[*namespace, row_table]).update_schema_metadata(
+        {DESCRIPTOR_METADATA_KEY.decode(): declared.model_dump_json()}
+    )
+
+
+def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:
+    """The page-image dataset: ``chunks`` (one row per page), ``documents`` (one row per volume) and the descriptor."""
+    _namespace(client, namespace)
+    rows: list[dict] = []
+    for doc_index, document in enumerate(DOCUMENTS):
+        for page_no, prose in enumerate(document["pages"]):
+            x, y = _atlas_xy(doc_index, page_no)
+            rows.append(
+                {
+                    "doc_id": document["doc_id"],
+                    "speech_id": page_no,
+                    "chunk_id": page_no,
+                    "frame_idx": 0,
+                    "image": page_image(document["title"], page_no),
+                    "image_mime": "image/png",
+                    "caption": f"{document['title']} · page {page_no}",
+                    "text": prose,
+                    "title": document["title"],
+                    "atlas_x": x,
+                    "atlas_y": y,
+                    "atlas_cluster": doc_index,
+                }
+            )
+    # speech_id/chunk_id are INTEGERS: the viewer builds its frame filter with unquoted numeric literals. The page image
+    # is a blob v2 column (`lance.blob_field`, a real Arrow extension type), or the registry refuses the dataset.
+    # `image_mime` is the frames' type column: the viewer serves a frame by the first `*_mime` column beside its blob,
+    # else as image/jpeg.
+    chunks = pa.schema(
         [
             pa.field("doc_id", pa.utf8()),
             pa.field("speech_id", pa.int64()),
             pa.field("chunk_id", pa.int64()),
-            # The frames capability selects a frame per chunk by `frame_idx` (0 = representative);
-            # the endpoint projects this column, so it must exist even for a single-frame chunk.
+            # The frames capability selects a frame per chunk by `frame_idx` (0 = representative).
             pa.field("frame_idx", pa.int64()),
-            image_field,
-            pa.field("mime", pa.utf8()),
+            lance.blob_field("image"),
+            pa.field("image_mime", pa.utf8()),
             pa.field("caption", pa.utf8()),
-            # The SEARCHABLE body and its document title — without these the dataset can be
-            # browsed but never found, which is the failure this fixture exists to prevent.
             pa.field("text", pa.utf8()),
             pa.field("title", pa.utf8()),
-            # The ATLAS projection. `AtlasSpace` binds x/y/cluster to real COLUMNS — it wants a
-            # projection, not raw embeddings — so a fixture without them left `/api/explorer/atlas/
-            # points` answering 404 and the atlas panel showing "this dataset has no embedding map"
-            # forever. That made the whole atlas surface, and any dock panel over it, impossible to
-            # exercise in the dev estate.
+            # The atlas projection: `AtlasSpace` binds x/y/cluster to real columns.
             pa.field("atlas_x", pa.float32()),
             pa.field("atlas_y", pa.float32()),
             pa.field("atlas_cluster", pa.int32()),
         ]
     )
-    columns = _chunk_rows()
-    chunks = pa.table(
-        {
-            "doc_id": pa.array(columns["doc_id"]),
-            "speech_id": pa.array(columns["speech_id"], pa.int64()),
-            "chunk_id": pa.array(columns["chunk_id"], pa.int64()),
-            "frame_idx": pa.array(columns["frame_idx"], pa.int64()),
-            "image": lance.blob_array(columns["image"]),
-            "mime": pa.array(columns["mime"]),
-            "caption": pa.array(columns["caption"]),
-            "text": pa.array(columns["text"]),
-            "title": pa.array(columns["title"]),
-            "atlas_x": pa.array(columns["atlas_x"], pa.float32()),
-            "atlas_y": pa.array(columns["atlas_y"], pa.float32()),
-            "atlas_cluster": pa.array(columns["atlas_cluster"], pa.int32()),
-        },
-        schema=schema,
-    )
-    _fresh_table(client, [*namespace, "chunks"], chunks)
+    columns = {name: [row[name] for row in rows] for name in chunks.names}
+    columns["image"] = lance.blob_array(columns["image"])
+    _fresh_table(client, [*namespace, "chunks"], pa.table(columns, schema=chunks))
 
-    # The doc-level table `document.table` points at — ONE row per document, and it carries its own
-    # cover blob because `document.media_blob` must name a column in THIS table (the descriptor
-    # validator refuses the dataset outright otherwise: "document.media_blob 'image' missing").
-    # The cover is page 0, which is what a gallery thumbnail should show.
-    doc_schema = pa.schema(
+    # The doc-level table `document.table` points at: ONE row per document, since `/api/documents` pages it row for row.
+    # Its cover and thumbnail are page 0. `document.media_blob`, `mime`, `thumbnail` and `thumbnail_mime` each name a
+    # column of THIS table.
+    documents = pa.schema(
         [
             pa.field("doc_id", pa.utf8()),
             pa.field("title", pa.utf8()),
             pa.field("n_chunks", pa.int32()),
-            # The SAME blob-v2 helper the chunks table uses — a bare struct is refused with
-            # "document.media_blob 'image' is not a lance.blob.v2 column".
             lance.blob_field("image"),
+            pa.field("mime", pa.utf8()),
+            lance.blob_field("thumb"),
+            pa.field("thumb_mime", pa.utf8()),
+        ]
+    )
+    doc_columns = {
+        "doc_id": [d["doc_id"] for d in DOCUMENTS],
+        "title": [d["title"] for d in DOCUMENTS],
+        "n_chunks": [len(d["pages"]) for d in DOCUMENTS],
+        "image": lance.blob_array([page_image(d["title"], 0) for d in DOCUMENTS]),
+        "mime": ["image/png"] * len(DOCUMENTS),
+        "thumb": lance.blob_array([thumbnail(d["title"]) for d in DOCUMENTS]),
+        "thumb_mime": ["image/png"] * len(DOCUMENTS),
+    }
+    _fresh_table(client, [*namespace, "documents"], pa.table(doc_columns, schema=documents))
+
+    # Built through the model the registry reads it with, so a malformed descriptor fails here, at seed time.
+    declared = Declared.model_validate(
+        {
+            "identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"], "doc_key": "doc_id"},
+            "document": {"table": "documents", "media_blob": "image", "kind": "image", "mime": "mime", "thumbnail": "thumb", "thumbnail_mime": "thumb_mime"},
+            # `/api/documents` projects exactly `doc_key + metadata`, so a title declared only under `display.title` comes
+            # back null in the browse gallery.
+            "display": {
+                "title": ["title"],
+                "body": "text",
+                "caption": "caption",
+                "metadata": [{"field": "title", "label": "Title"}, {"field": "n_chunks", "label": "Pages"}],
+            },
+            "search": {"row_table": "chunks", "fts": {"table": "chunks", "column": "text"}, "filterable": ["doc_id"]},
+            # The channel colours points by volume, which makes a lasso selection legible as a selection.
+            "atlas": [
+                {
+                    "name": "text",
+                    "table": "chunks",
+                    "x": "atlas_x",
+                    "y": "atlas_y",
+                    "cluster": "atlas_cluster",
+                    "source_column": "text",
+                    "channels": [{"name": "volume", "column": "title"}],
+                }
+            ],
+            # Declared, not probed: the frames capability is what gives the annotator and the player each page's image.
+            "capabilities": {"frames": "chunks.image"},
+        }
+    )
+    _index_and_stamp(client, connection, namespace, "chunks", declared)
+
+
+def seed_recordings(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:
+    """The audio dataset: ``segments`` (one timed row per turn), ``recordings`` (one row per recording, its WAV),
+    ``turns`` (the speaker turns) and the descriptor."""
+    _namespace(client, namespace)
+    segments: list[dict] = []
+    turns: list[dict] = []
+    for recording in RECORDINGS_FIXTURE:
+        for index, (speaker, text) in enumerate(recording["segments"]):
+            start, end = index * SEGMENT_SECONDS, (index + 1) * SEGMENT_SECONDS
+            segments.append(
+                {
+                    "doc_id": recording["doc_id"],
+                    "speech_id": 0,
+                    "chunk_id": index,
+                    "start": start,
+                    "end": end,
+                    "speaker": speaker,
+                    "text": text,
+                    "title": recording["title"],
+                    "alignments": _alignments(text, start, end),
+                }
+            )
+            # The turns table's columns are the diarization capability's contract (`viewer.api.v1.endpoints.diarization`).
+            turns.append({"doc_id": recording["doc_id"], "turn_id": index, "speaker_label": f"Speaker {speaker}", "start": start, "end": end})
+    segment_schema = pa.schema(
+        [
+            pa.field("doc_id", pa.utf8()),
+            pa.field("speech_id", pa.int64()),
+            pa.field("chunk_id", pa.int64()),
+            pa.field("start", pa.float64()),
+            pa.field("end", pa.float64()),
+            pa.field("speaker", pa.utf8()),
+            pa.field("text", pa.utf8()),
+            pa.field("title", pa.utf8()),
+            pa.field("alignments", pa.utf8()),
+        ]
+    )
+    _fresh_table(client, [*namespace, "segments"], pa.Table.from_pylist(segments, schema=segment_schema))
+    turn_schema = pa.schema(
+        [
+            pa.field("doc_id", pa.utf8()),
+            pa.field("turn_id", pa.int64()),
+            pa.field("speaker_label", pa.utf8()),
+            pa.field("start", pa.float64()),
+            pa.field("end", pa.float64()),
+        ]
+    )
+    _fresh_table(client, [*namespace, "turns"], pa.Table.from_pylist(turns, schema=turn_schema))
+    recording_schema = pa.schema(
+        [
+            pa.field("doc_id", pa.utf8()),
+            pa.field("title", pa.utf8()),
+            pa.field("duration", pa.float64()),
+            lance.blob_field("audio"),
             pa.field("mime", pa.utf8()),
         ]
     )
-    documents = pa.table(
-        {
-            "doc_id": pa.array([d["doc_id"] for d in DOCUMENTS]),
-            "title": pa.array([d["title"] for d in DOCUMENTS]),
-            "n_chunks": pa.array([len(d["pages"]) for d in DOCUMENTS], pa.int32()),
-            "image": lance.blob_array([page_image(d["title"], 0) for d in DOCUMENTS]),
-            "mime": pa.array(["image/png"] * len(DOCUMENTS)),
-        },
-        schema=doc_schema,
-    )
-    _fresh_table(client, [*namespace, "documents"], documents)
-
-    # The FTS index, through the LANCEDB api — the search service opens the row table with
-    # `lancedb` and runs `tbl.search(MatchQuery(...), query_type="fts")`, which needs an index
-    # built by that same stack. Writing the column without indexing it yields zero hits for every
-    # query, indistinguishable from an empty corpus.
-    connection.open_table("chunks", namespace_path=namespace).create_index("text", config=lancedb.index.FTS(), replace=True)
-
-    # `capabilities` is DECLARED, not probed: it maps a capability name to the `table.column` it
-    # needs, and `capability_available` just checks that column exists. Without the `frames` entry
-    # the dataset lists with `capabilities: []` and the annotator has no page images to open.
-    # `search` is the same shape of declaration — absent, the search plane has no row table and
-    # answers every query with nothing.
-    declared = {
-        "identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"], "doc_key": "doc_id"},
-        # `document.table` is the DOC-LEVEL table: `/api/documents` pages it row-for-row with no
-        # DISTINCT (viewer/api/v1/endpoints/system.py:151), so it must hold exactly one row per
-        # document. Pointing it at the page-level `chunks` made the browse gallery list the same
-        # doc_id four times, and the media zone keys that list by doc id — so Svelte threw
-        # `each_key_duplicate` and the whole route died client-side. The blob binding stays on the
-        # page-level image via `capabilities.frames` below.
-        "document": {"table": "documents", "media_blob": "image", "mime": "image/png"},
-        # `metadata` is not decoration: `/api/documents` projects exactly `doc_key + these fields`,
-        # so a title declared ONLY under `display.title` comes back null and the browse gallery
-        # renders three untitled cards.
-        "display": {
-            "title": ["title"],
-            "body": "text",
-            "caption": "caption",
-            "metadata": [{"field": "title", "label": "Title"}, {"field": "n_chunks", "label": "Pages"}],
-        },
-        "search": {"row_table": "chunks", "fts": {"table": "chunks", "column": "text"}, "filterable": ["doc_id"]},
-        # The ATLAS space. `x`/`y`/`cluster` name COLUMNS on `table` (descriptor.py:210-214
-        # validates each one exists), so this declaration and the three seeded columns must land
-        # together — declaring it over a table without them fails validation rather than degrading.
-        # `source_column` is the text the atlas shows on hover; the channel colours points by
-        # volume, which is what makes a lasso selection legible as a selection.
-        "atlas": [
-            {
-                "name": "text",
-                "table": "chunks",
-                "x": "atlas_x",
-                "y": "atlas_y",
-                "cluster": "atlas_cluster",
-                "source_column": "text",
-                "channels": [{"name": "volume", "column": "title"}],
-            }
-        ],
-        "capabilities": {"frames": "chunks.image"},
+    recordings = {
+        "doc_id": [r["doc_id"] for r in RECORDINGS_FIXTURE],
+        "title": [r["title"] for r in RECORDINGS_FIXTURE],
+        "duration": [len(r["segments"]) * SEGMENT_SECONDS for r in RECORDINGS_FIXTURE],
+        "audio": lance.blob_array([speech([speaker for speaker, _ in r["segments"]]) for r in RECORDINGS_FIXTURE]),
+        "mime": ["audio/wav"] * len(RECORDINGS_FIXTURE),
     }
-    # The registry reads a dataset's declared roles off the `lance_media.descriptor` schema-metadata stamp of its first
-    # table (by name) that carries one, so the descriptor rides the data rather than a file beside it. Re-opened at its
-    # latest version: the FTS index above committed a version after the write.
-    lance.dataset(namespace_client=client, table_id=[*namespace, "chunks"]).update_schema_metadata({"lance_media.descriptor": json.dumps(declared)})
+    _fresh_table(client, [*namespace, "recordings"], pa.table(recordings, schema=recording_schema))
+
+    declared = Declared.model_validate(
+        {
+            "identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"], "doc_key": "doc_id"},
+            "document": {"table": "recordings", "media_blob": "audio", "kind": "audio", "mime": "mime"},
+            # The time axis the player seeks a hit to and the chunk timeline draws.
+            "time": {"start": "start", "end": "end"},
+            "display": {
+                "title": ["title"],
+                "body": "text",
+                "caption": "speaker",
+                "metadata": [{"field": "title", "label": "Title"}, {"field": "duration", "label": "Seconds"}],
+            },
+            "search": {"row_table": "segments", "fts": {"table": "segments", "column": "text"}, "filterable": ["doc_id", "speaker"]},
+            # The transcript window reads `alignments`, the speakers timeline `diarization`.
+            "capabilities": {"alignments": "segments.alignments", "diarization": "turns"},
+        }
+    )
+    _index_and_stamp(client, connection, namespace, "segments", declared)
+
+
+def seed(client: LanceNamespace, connection: lancedb.DBConnection, warehouse: str) -> list[str]:
+    """Write both datasets into ``warehouse``; their ids."""
+    pages, recordings = [warehouse, PAGES], [warehouse, RECORDINGS]
+    seed_pages(client, connection, pages)
+    seed_recordings(client, connection, recordings)
+    return [CATALOG_DELIMITER.join(pages), CATALOG_DELIMITER.join(recordings)]
 
 
 def main() -> None:
-    dataset = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DATASET
-    namespace = dataset.split("$")
-    if len(namespace) < 2 or not all(namespace):
-        raise SystemExit("name the dataset as <warehouse>$<namespace>: a name's first segment is its warehouse")
+    warehouse = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_WAREHOUSE
+    if not warehouse or CATALOG_DELIMITER in warehouse:
+        raise SystemExit("name the warehouse as one segment: the datasets are <warehouse>$corpus and <warehouse>$recordings")
     client, connection = _catalog()
-    seed(client, connection, namespace)
-    for name in ("chunks", "documents"):
-        ds = lance.dataset(namespace_client=client, table_id=[*namespace, name])
-        print(f"  {name}: {ds.count_rows()} rows, v{ds.version}")
-    print(f"  fts index on chunks.text (searchable: {sum(len(d['pages']) for d in DOCUMENTS)} pages across {len(DOCUMENTS)} documents)")
-    print(f"seeded {dataset}")
+    for dataset in seed(client, connection, warehouse):
+        namespace = dataset.split(CATALOG_DELIMITER)
+        for name in sorted(client.list_tables(ListTablesRequest(id=namespace)).tables or []):
+            ds = lance.dataset(namespace_client=client, table_id=[*namespace, name])
+            print(f"  {dataset}${name}: {ds.count_rows()} rows, v{ds.version}")
+        print(f"seeded {dataset}")
 
 
 if __name__ == "__main__":

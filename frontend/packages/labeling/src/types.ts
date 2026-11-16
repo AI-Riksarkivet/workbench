@@ -58,7 +58,7 @@ export type ProducerKind = 'human' | 'model' | 'propagate' | 'judge';
 export type Op = 'set' | 'verdict' | 'predict' | 'propagate' | 'judge';
 
 /** Where the op runs. Interactive = local-first overlay → Save (merge_insert);
- *  batch = a silver deriver / lance-ray job (async, replace-protects-humans). */
+ *  batch = a deriver, a lance-ray job (async, replace-protects-humans). */
 export type Execution = 'interactive' | 'batch';
 
 /** One labeling operation — the single verb spanning all three modes. */

@@ -33,7 +33,7 @@ from pydantic import BaseModel
 
 from annotator.projects import lakehouse
 from annotator.projects.lakehouse import CatalogPublisher
-from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan
+from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, PublishRefusal
 from service_kit.exceptions import ServiceUnavailableError
 
 
@@ -72,6 +72,10 @@ class _Catalog:
         self.calls: list[_Call] = []
         self.version = 7
         self.unavailable = 0
+        #: Each namespace the catalog holds, by its id, with its properties; any other is not found.
+        self.namespaces: dict[str, dict[str, str]] = {}
+        #: Namespaces the catalog refuses to describe to this caller (403, the spec's PermissionDenied).
+        self.refused: set[str] = set()
 
 
 @pytest.fixture
@@ -86,6 +90,14 @@ def catalog() -> Iterator[_Catalog]:
             door.unavailable -= 1
             return JSONResponse({"error": "the catalog is not taking writes", "code": 17}, status_code=503)
         return JSONResponse({"version": door.version})
+
+    @app.post("/v1/namespace/{namespace_id}/describe")
+    async def describe(namespace_id: str) -> JSONResponse:
+        if namespace_id in door.refused:
+            return JSONResponse({"error": f"permission denied on {namespace_id}", "code": 15}, status_code=403)
+        if namespace_id not in door.namespaces:
+            return JSONResponse({"error": f"namespace {namespace_id} not found", "code": 1}, status_code=404)
+        return JSONResponse({"properties": door.namespaces[namespace_id]})
 
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -107,15 +119,15 @@ async def test_create_posts_exist_ok_with_schema_typed_rows_and_its_run(catalog:
     publisher = CatalogPublisher(catalog.url, token=lambda: "svc-token", originator="alice")
 
     version = await publisher.create_table(
-        "silver$vasa_0123456789ab", _plan(rows=2), properties={"annotation.project_id": "p1"}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07"
+        "acme$published$vasa_0123456789ab", _plan(rows=2), properties={"annotation.project_id": "p1"}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[]
     )
 
     [call] = catalog.calls
-    assert (version, call.table_id) == (9, "silver$vasa_0123456789ab")
+    assert (version, call.table_id) == (9, "acme$published$vasa_0123456789ab")
     assert call.params["mode"] == "exist_ok", "the saga's retry safety RELIES on exist_ok — any other mode re-creates or errors on replay"
     assert json.loads(call.params["properties"]) == {"annotation.project_id": "p1"}
     named = (call.headers["x-rask-run-id"], call.headers["x-rask-job-namespace"], call.headers["x-rask-job"], "x-rask-inputs" in call.headers)
-    assert named == ("0199a1b2c3d47e5f8a9b0c1d2e3f4a07", "annotator", "annotate.publish", False), "an absent pin names no input (§7.2 — never fabricate)"
+    assert named == ("0199a1b2c3d47e5f8a9b0c1d2e3f4a07", "annotator", "annotate.publish", False), "no captured input names none (§7.2: never fabricate)"
     # The service's bearer authors the events, so the originator header is the only place the human survives.
     assert (call.headers["authorization"], call.headers["x-lance-originator"]) == ("Bearer svc-token", "alice")
     # A readable Arrow-IPC STREAM carrying the published schema: an IPC file, or inferred types, would fail the
@@ -125,13 +137,34 @@ async def test_create_posts_exist_ok_with_schema_typed_rows_and_its_run(catalog:
 
 
 @pytest.mark.asyncio
-async def test_the_pin_reaches_the_create_as_the_runs_input(catalog: _Catalog) -> None:
-    """§7.2 over the wire: the one pinned source is the run's input in the catalog Context."""
+async def test_every_input_reaches_the_create_as_the_runs_inputs(catalog: _Catalog) -> None:
+    """§7.2 over the wire: each captured table version is one of the run's inputs in the catalog Context."""
     await CatalogPublisher(catalog.url).create_table(
-        "silver$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", source="demo$pages", source_version=24
+        "acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[("acme$media$pages", 24), ("acme$media$letters", 3)]
     )
 
-    assert json.loads(catalog.calls[0].headers["x-rask-inputs"]) == [{"table": ["demo", "pages"], "version": 24}]
+    assert json.loads(catalog.calls[0].headers["x-rask-inputs"]) == [
+        {"table": ["acme", "media", "pages"], "version": 24},
+        {"table": ["acme", "media", "letters"], "version": 3},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("namespaces", "required"),
+    [
+        pytest.param({"acme": {}, "acme$published": {"rask.requires_run": "true"}}, True, id="the-target-declares-it"),
+        pytest.param({"acme": {}, "acme$labels": {"rask.requires_run": "true"}, "acme$labels$mine": {}}, True, id="a-parent-declares-it"),
+        pytest.param({"acme": {}, "acme$published": {}}, False, id="none-declares-it"),
+        pytest.param({"acme": {}}, False, id="the-target-does-not-exist"),
+    ],
+)
+async def test_the_run_rule_is_read_off_every_namespace_on_the_targets_path(catalog: _Catalog, namespaces: dict[str, dict[str, str]], required: bool) -> None:
+    """As the catalog judges a write: the rule binds every namespace beneath the one that declares it."""
+    catalog.namespaces = namespaces
+    target = max(namespaces, key=len) if required else "acme$published"
+
+    assert await CatalogPublisher(catalog.url).requires_run(target) is required
 
 
 @pytest.mark.asyncio
@@ -144,8 +177,8 @@ async def test_every_publish_call_presents_the_workbench_token_of_the_moment_and
     issued = iter(["token-1", "token-2"])
     publisher = CatalogPublisher(catalog.url, token=lambda: next(issued), originator="keycloak~gina")
 
-    await publisher.create_table("acme$silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
-    await publisher.create_table("acme$silver$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
+    await publisher.create_table("acme$published$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[])
+    await publisher.create_table("acme$published$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[])
 
     presented = [(call.headers["authorization"], call.headers["x-lance-originator"]) for call in catalog.calls]
     assert presented == [("Bearer token-1", "keycloak~gina"), ("Bearer token-2", "keycloak~gina")]
@@ -158,7 +191,9 @@ async def test_a_create_the_catalog_does_not_take_is_sent_again(catalog: _Catalo
     monkeypatch.setattr(lakehouse, "CREATE_BACKOFF_S", 0.0)
     catalog.unavailable = lakehouse.CREATE_ATTEMPTS - 1
 
-    version = await CatalogPublisher(catalog.url).create_table("silver$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
+    version = await CatalogPublisher(catalog.url).create_table(
+        "acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[]
+    )
 
     assert (version, len(catalog.calls)) == (7, lakehouse.CREATE_ATTEMPTS)
 
@@ -171,5 +206,16 @@ async def test_a_create_the_catalog_never_takes_fails_after_its_attempts(catalog
     catalog.unavailable = lakehouse.CREATE_ATTEMPTS
 
     with pytest.raises(ServiceUnavailableError, match="the catalog is unavailable"):
-        await CatalogPublisher(catalog.url).create_table("silver$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07")
+        await CatalogPublisher(catalog.url).create_table("acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[])
     assert len(catalog.calls) == lakehouse.CREATE_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_a_namespace_the_catalog_will_not_describe_refuses_the_publish_naming_it(catalog: _Catalog) -> None:
+    """Whether the target requires a run is a check, and a check the catalog refused proves nothing: the publish fails
+    closed, naming the namespace it could not read."""
+    catalog.namespaces = {"acme": {}, "acme$published": {}}
+    catalog.refused = {"acme$published"}
+
+    with pytest.raises(PublishRefusal, match=r"does not let the workbench read namespace acme\$published"):
+        await CatalogPublisher(catalog.url).requires_run("acme$published")

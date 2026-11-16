@@ -176,12 +176,19 @@ export class WorkbenchStore {
 	}
 }
 
-async function keyFor(principal: string | null): Promise<string> {
-	if (principal === null) return ANONYMOUS;
+/**
+ * A per-person storage key under `prefix`: the prefix and the SHA-256 of the principal's id, so the key never
+ * carries the id itself; `<prefix>local` where nobody signs in. Throws where there is no hash to key by (an
+ * insecure context has no `crypto.subtle`).
+ */
+export async function personKey(prefix: string, principal: string | null): Promise<string> {
+	if (principal === null) return `${prefix}local`;
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(principal));
 	const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-	return `${PREFIX}${hex}`;
+	return `${prefix}${hex}`;
 }
+
+const keyFor = (principal: string | null): Promise<string> => personKey(PREFIX, principal);
 
 /** The store for one person (`principal`, the signed-in subject; null where nobody signs in). */
 export async function openWorkbenchStore(

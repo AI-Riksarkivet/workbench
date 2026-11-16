@@ -37,7 +37,7 @@ export interface paths {
         };
         /**
          * List Parked
-         * @description The runs whose deliveries the parking route keeps, each with how many, for the estate admin ([[LH-148]]).
+         * @description The runs whose deliveries the ingest lane's park keeps, each with how many, for the estate admin ([[LH-148]]).
          */
         get: operations["list_parked_admin_dlq_parked_get"];
         put?: never;
@@ -59,16 +59,16 @@ export interface paths {
         put?: never;
         /**
          * Replay Parked
-         * @description Re-present the deliveries of ``run_id`` the parking route kept, once their cause is fixed ([[LH-148]]).
+         * @description Re-present the deliveries of ``run_id`` the ingest lane's park kept, once their cause is fixed ([[LH-148]]).
          *
-         *     Each kept CloudEvent goes through the subscription's own ingest (``handle_cloud_event`` under
+         *     Each kept CloudEvent goes through the ingest lane's own handling (``handle_cloud_event`` under
          *     :func:`enforce_bus_authz`: the signature over the bytes that arrived, and what the stamped author may record), so
          *     this admits nothing the bus refuses, however trusted the operator is. It writes to the feed directly and publishes
          *     nothing: the run's subscribers heard the original publish, and the feed is what was missing it. Each delivery is
          *     judged on its own feed row: one the feed then holds is RECOVERED and no longer kept, and one it still lacks stays
          *     kept, so a run whose START landed while its COMPLETE is still refused keeps the COMPLETE.
          *
-         *     The estate admin's door (:func:`require_estate_admin`, asked before any kept row is read, so it names no run to
+         *     The estate admin's door (:func:`require_parks_replayer`, asked before any kept row is read, so it names no run to
          *     anyone else).
          *
          *     Raises:
@@ -154,23 +154,6 @@ export interface paths {
          *     it can't write). Both are no-ops when auth is off.
          */
         post: operations["ingest_event_api_v1_lineage_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/dapr/subscribe": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Subscriptions */
-        get: operations["_get_subscriptions_dapr_subscribe_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -493,7 +476,7 @@ export interface components {
         LivenessStatus: "ok";
         /**
          * ParkedRuns
-         * @description The runs whose deliveries the parking route keeps, each with how many, for the estate admin ([[LH-148]]).
+         * @description The runs whose deliveries the ingest lane's park keeps, each with how many, for the estate admin ([[LH-148]]).
          */
         ParkedRuns: {
             /** Runs */
@@ -525,7 +508,7 @@ export interface components {
          * ReadinessStatus
          * @enum {string}
          */
-        ReadinessStatus: "starting" | "ready" | "shutting_down" | "degraded";
+        ReadinessStatus: "starting" | "ready" | "degraded" | "unhealthy" | "shutting_down";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -796,26 +779,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    _get_subscriptions_dapr_subscribe_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
         };

@@ -21,7 +21,7 @@ import {
 	type Row,
 } from './descriptor';
 
-function view(id: string, mime: string): DatasetView {
+function view(id: string, kind: 'image' | 'audio' | 'video'): DatasetView {
 	return new DatasetView(
 		v.parse(DatasetDescriptorSchema, {
 			id,
@@ -36,7 +36,7 @@ function view(id: string, mime: string): DatasetView {
 			},
 			declared: {
 				identity: { key_fields: ['item_id'], doc_key: 'item_id', doc_key_pattern: '.*' },
-				document: { table: 'items', media_blob: 'blob', mime },
+				document: { table: 'items', media_blob: 'blob', kind },
 				time: null,
 				display: { title: ['label'], body: 'caption', caption: null, metadata: [] },
 				search: { row_table: 'items', fts: null, vectors: {}, filterable: [], rerank: false },
@@ -54,8 +54,8 @@ describe('viewForHit', () => {
 	it('resolves the view the hit NAMES, not the active one', () => {
 		// The defect, stated directly: with `pages` active, an audio hit from `voices` would have been
 		// described as an image.
-		setActiveView(view('pages', 'image/png'));
-		registerView(view('voices', 'audio/wav'));
+		setActiveView(view('pages', 'image'));
+		registerView(view('voices', 'audio'));
 
 		expect(viewForHit(hit('voices')).mediaKind).toBe('audio');
 		expect(viewForHit(hit('pages')).mediaKind).toBe('image');
@@ -63,8 +63,8 @@ describe('viewForHit', () => {
 
 	it('renders two corpora correctly in ONE list', () => {
 		// The case the whole change exists for.
-		setActiveView(view('pages', 'image/png'));
-		registerView(view('voices', 'audio/wav'));
+		setActiveView(view('pages', 'image'));
+		registerView(view('voices', 'audio'));
 
 		const kinds = [hit('pages'), hit('voices'), hit('pages')].map((h) => viewForHit(h).mediaKind);
 
@@ -74,7 +74,7 @@ describe('viewForHit', () => {
 	it('falls back to the ACTIVE view for a hit that names no corpus', () => {
 		// Not a guess: it reproduces the previous behaviour exactly for the single-corpus case, which
 		// is the case where reading the active view was right.
-		setActiveView(view('pages', 'image/png'));
+		setActiveView(view('pages', 'image'));
 
 		expect(viewForHit(hit()).id).toBe('pages');
 	});
@@ -82,7 +82,7 @@ describe('viewForHit', () => {
 	it('falls back to the ACTIVE view for a corpus that was never loaded', () => {
 		// The honest floor. Throwing mid-render would surface a failed descriptor fetch on a list that
 		// is otherwise fine, and a hit is not where that should be discovered.
-		setActiveView(view('pages', 'image/png'));
+		setActiveView(view('pages', 'image'));
 
 		expect(viewForHit(hit('never-loaded')).id).toBe('pages');
 	});
@@ -90,16 +90,16 @@ describe('viewForHit', () => {
 	it('setActiveView also REGISTERS, so the active corpus resolves by name', () => {
 		// Otherwise the commonest hit of all — one from the corpus you are looking at — would take the
 		// fallback path and only work by accident.
-		setActiveView(view('pages', 'image/png'));
+		setActiveView(view('pages', 'image'));
 
 		expect(viewForHit(hit('pages')).id).toBe('pages');
 	});
 
 	it('a later registration REPLACES an earlier one for the same id', () => {
 		// A corpus reloaded after a schema change must not keep answering from the stale descriptor.
-		setActiveView(view('pages', 'image/png'));
-		registerView(view('voices', 'audio/wav'));
-		registerView(view('voices', 'video/mp4'));
+		setActiveView(view('pages', 'image'));
+		registerView(view('voices', 'audio'));
+		registerView(view('voices', 'video'));
 
 		expect(viewForHit(hit('voices')).mediaKind).toBe('video');
 	});

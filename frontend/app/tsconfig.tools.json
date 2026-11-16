@@ -1,5 +1,5 @@
 {
-	"//": "The app's code that never ships to the browser: `serve.ts` (the image's server, under Bun), `playwright.config.ts` and `e2e/**` (Bun and Playwright). `tsconfig.json` stays on `$app/tsconfig`, whose `types: [\"$app/types\"]` and browser libs describe the app, not these. DOM stays in `lib` because a spec's `page.evaluate` callback runs in the page. Same strictness as the app.",
+	"//": "The app's code that never ships to the browser: `serve.ts` (the image's server, under Bun), `edge.ts` (the Gateway stand-in, under Bun), `playwright.config.ts` and `e2e/**` (Bun and Playwright). `tsconfig.json` stays on `$app/tsconfig`, whose `types: [\"$app/types\"]` and browser libs describe the app, not these. DOM stays in `lib` because a spec's `page.evaluate` callback runs in the page. Same strictness as the app.",
 	"compilerOptions": {
 		"target": "esnext",
 		"module": "esnext",
@@ -17,5 +17,5 @@
 		"strict": true,
 		"noUncheckedIndexedAccess": true
 	},
-	"include": ["serve.ts", "playwright.config.ts", "e2e"]
+	"include": ["serve.ts", "edge.ts", "playwright.config.ts", "e2e"]
 }

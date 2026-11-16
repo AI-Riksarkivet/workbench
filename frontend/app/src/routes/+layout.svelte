@@ -7,6 +7,7 @@
 	import { AppShell, type NavUser } from '#lib/shell/index.ts';
 	import { auth, expired, login } from '#lib/auth.svelte.ts';
 	import { activity } from '#lib/activity.svelte.ts';
+	import { track } from '#lib/view-transition.svelte.ts';
 	import { appSidebar, PAGE_NAMES } from '#lib/nav.ts';
 	import { linkWith, projectOf } from '#lib/project.ts';
 	import type { LayoutData } from './$types';
@@ -63,10 +64,12 @@
 	onNavigate((navigation) => {
 		if (!document.startViewTransition) return;
 		return new Promise((done) => {
-			document.startViewTransition(async () => {
-				done();
-				await navigation.complete;
-			});
+			track(
+				document.startViewTransition(async () => {
+					done();
+					await navigation.complete;
+				}),
+			);
 		});
 	});
 </script>
@@ -82,6 +85,7 @@
 		routeId={page.route.id}
 		{user}
 		authEnabled={data.authEnabled}
+		principal={auth.enabled ? (auth.session?.sub ?? null) : null}
 		{pageNav}
 		pages={PAGE_NAMES}
 		activity={activityFeed}

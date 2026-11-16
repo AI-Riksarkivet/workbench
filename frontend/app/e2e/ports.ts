@@ -1,5 +1,5 @@
 // The e2e suite's ports, one place. The edge is the origin the browser uses; serve.ts listens behind
-// it on EDGE_PORT + 1000 (`edge.ts`).
+// it on EDGE_PORT + 1000 (`../edge.ts`).
 export const EDGE_PORT = 4310;
 export const EDGE = `http://localhost:${EDGE_PORT}`;
 export const MOCK_OIDC_PORT = 4321;

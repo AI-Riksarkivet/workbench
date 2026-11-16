@@ -1,12 +1,13 @@
 <script lang="ts">
 	import SignedImage from '#lib/explore/components/signed-image.svelte';
-	import { type Hit, isVoiceHit, voiceBandOf } from '@workbench/explorer-api';
-	import { chunkFrameUrl, thumbnailUrl } from '#lib/explore/media.ts';
+	import RowPreview from '#lib/explore/components/row-preview.svelte';
+	import { type Hit, isVoiceHit, viewForHit, voiceBandOf } from '@workbench/explorer-api';
+	import { chunkFrameUrl } from '#lib/explore/media.ts';
 	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
 	import { audioPreview } from '#lib/explore/audio-preview.svelte.ts';
 	import { fmtTime, queryTerms, makeHighlighter, cn, hitKey } from '#lib/explore/utils.ts';
-	import { AudioLines, Play, Pause } from '@lucide/svelte';
+	import { AudioLines, FileText, Film, Image as ImageIcon, Play, Pause } from '@lucide/svelte';
 	import { Badge } from '@workbench/ui';
 
 	type Props = {
@@ -43,9 +44,21 @@
 	const body = $derived(view.body(hit));
 	const caption = $derived(view.caption(hit));
 	const time = $derived(view.time(hit));
-	// The chunk's frame, signed with the page's other media; none until it is, or when it has none.
-	const frame = $derived(chunkFrameUrl(hit));
+	// The chunk's frame beside the thumbnail, signed with the page's other media; none until it is, when it has none,
+	// or when the dataset declares no thumbnail, where the preview itself is the frame (`previewUrl`).
+	const frame = $derived(viewForHit(hit).hasThumbnail ? chunkFrameUrl(hit) : undefined);
 	const highlight = $derived(highlightProp ?? makeHighlighter(queryTerms(query)));
+	// A caption is marked with the icon of the dataset's own media kind, so a page is not shown as a film.
+	const captionKind = $derived(viewForHit(hit).mediaKind);
+	const CaptionIcon = $derived(
+		captionKind === 'audio'
+			? AudioLines
+			: captionKind === 'video'
+				? Film
+				: captionKind === 'image'
+					? ImageIcon
+					: FileText,
+	);
 
 	// Compact meta line: the time span (when the dataset has one) followed by the
 	// declared metadata values (empties already dropped), skipping any row that
@@ -167,8 +180,8 @@
 			)}
 		>
 			<div class="bg-muted relative aspect-video w-full overflow-hidden">
-				<SignedImage
-					src={thumbnailUrl(hit)}
+				<RowPreview
+					row={hit}
 					class="h-full w-full object-cover transition-transform group-hover:scale-105"
 				/>
 				{#if frame}
@@ -198,7 +211,7 @@
 				</div>
 				{#if caption}
 					<div class="text-muted-foreground line-clamp-2 text-[0.7rem] italic" title={caption}>
-						🎬 {caption}
+						<CaptionIcon class="mr-0.5 inline size-3 align-[-2px]" aria-hidden="true" />{caption}
 					</div>
 				{/if}
 			</div>
@@ -237,10 +250,7 @@
 			)}
 		>
 			<div class="relative flex-none">
-				<SignedImage
-					src={thumbnailUrl(hit)}
-					class="h-[54px] w-[96px] rounded-md bg-black object-cover"
-				/>
+				<RowPreview row={hit} class="h-[54px] w-[96px] rounded-md object-cover" />
 				{#if frame}
 					<SignedImage
 						src={frame}
@@ -264,7 +274,7 @@
 				</div>
 				{#if caption}
 					<div class="text-muted-foreground line-clamp-1 text-xs italic" title={caption}>
-						🎬 {caption}
+						<CaptionIcon class="mr-0.5 inline size-3 align-[-2px]" aria-hidden="true" />{caption}
 					</div>
 				{/if}
 			</div>

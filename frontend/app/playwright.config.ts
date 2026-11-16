@@ -9,7 +9,7 @@ import {
 } from './e2e/ports';
 
 // Hermetic e2e for the app, against the BUILT app (`vite build` first; `test:e2e` does it) served by
-// its own `serve.ts` behind `e2e/edge.ts`, which routes each service's public base as the Gateway does.
+// its own `serve.ts` behind `edge.ts`, which routes each service's public base as the Gateway does.
 // The app has no backend, so every call it makes is the browser's own, to a seed-driven mock service
 // (`e2e/mock-services.ts`) that holds it to the services' DPoP rule. Sign-in runs the app's real PKCE and
 // DPoP round trip against `e2e/mock-oidc.ts`, same-origin under `/oidc`.
@@ -34,6 +34,10 @@ export default defineConfig({
 		{
 			name: 'webgpu',
 			testMatch: /(webgpu|canvas)\.spec\.ts$/,
+			// Every frame here is drawn on the CPU, page transitions included: measured 2026-11-16 at 8 workers on a
+			// loaded host, a 0.25 s view transition took 2.4 s to finish and the labeling canvas was ready 5-6 s
+			// after the page load, past the 5 s default. An assertion in this project waits up to 10 s.
+			expect: { timeout: 10_000 },
 			use: {
 				channel: 'chromium',
 				launchOptions: {
@@ -50,12 +54,13 @@ export default defineConfig({
 	],
 	webServer: [
 		{
-			command: 'bun e2e/edge.ts',
+			command: 'bun edge.ts',
 			port: EDGE_PORT,
 			reuseExistingServer: !process.env.CI,
 			timeout: 60_000,
 			env: {
 				PORT: String(EDGE_PORT),
+				HOST: '127.0.0.1',
 				WORKBENCH_APP_CONFIG_FILE: './e2e/app-config.json',
 				OIDC_MOCK: local(MOCK_OIDC_PORT),
 				VIEWER_API: local(MOCK_VIEWER_PORT),

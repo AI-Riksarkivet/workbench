@@ -122,6 +122,31 @@ def test_a_known_dataset_sends_normally(monkeypatch: pytest.MonkeyPatch, catalog
     assert len(task_actor.seeded) == 1
 
 
+@pytest.mark.parametrize(
+    ("version", "status", "kept"),
+    [
+        # The dataset's row table has versions 1 and 2 (its rows, then its descriptor stamp).
+        pytest.param(1, 201, 1, id="an-honest-older-version-is-kept"),
+        pytest.param(99, 409, None, id="a-fabricated-version-is-refused"),
+        pytest.param(0, 422, None, id="version-zero-is-no-version"),
+    ],
+)
+def test_an_items_version_is_kept_only_when_its_table_has_it(
+    monkeypatch: pytest.MonkeyPatch, catalog: Settings, version: int, status: int, kept: int | None
+) -> None:
+    """The version an item names is the sender's, and the publish names it as an input: the send keeps it only once the
+    catalog shows the stamped table at that version, and seeds nothing otherwise."""
+    task_actor = _FakeTaskActor()
+    client = TestClient(_app(monkeypatch, task_actor, catalog))
+    body = _items("acme$demo")
+    body["items"][0]["source"]["dataset_version"] = version
+
+    r = client.post("/projects/p1/items", json=body)
+
+    assert r.status_code == status, r.text
+    assert [(t["source"]["table"], t["source"]["dataset_version"]) for t in task_actor.seeded] == ([("acme$demo$chunks", kept)] if kept else [])
+
+
 def test_an_unverifiable_catalog_refuses_the_send_and_seeds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Whether the sender may read what they send is a check, and a check that did not run proves nothing: the send fails
     closed (503) and is tried again once the catalog answers."""

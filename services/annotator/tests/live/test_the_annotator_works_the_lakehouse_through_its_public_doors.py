@@ -1,19 +1,21 @@
 """The annotator, driven from its own release, works the lakehouse through its public doors only (XC-167, ADR 0171).
 
 The annotator is a client of the lakehouse like Label Studio would be: it keeps its projects, tasks and roles in its own
-state, reads a governed media table through the catalog as the person on the credential the catalog vends them, and
-publishes into the tenant's silver as its own ServiceAccount, which a project admin granted writer there through the
-catalog's grant door. One drive, against the deployed estate:
+state, reads a governed media table through the catalog as the person, and writes annotations and publishes as the
+workbench's own confidential client, which a project admin granted writer on the publish target through the catalog's
+grant door. Which principal that client is, the catalog says (`GET /management/v1/me` on its client-credentials token).
+One drive, against the deployed estate:
 
-* a scratch tenant's admin seeds a governed media dataset in bronze (a chunks table stamped with its descriptor, and an
-  empty annotations table), grants the annotating person writer on it, and grants the annotator's account writer on
-  the tenant's silver and read on its inputs;
+* a scratch tenant's admin seeds a governed media dataset (a chunks table stamped with its descriptor), grants the
+  annotating person reader on it, creates the publish target under the run rule (`rask.requires_run`), and grants the
+  workbench's client writer on the target and reader on the inputs;
 * the admin creates a project over the dataset; the annotating person, a member of no tenant, is refused it until the
   admin grants them a role on the project, which is the annotator's own decision;
-* the person saves an annotation on the corpus, which the annotator writes through the catalog on the person's own
-  token, so the commit is theirs;
-* the admin sends the item, assigns it to the person, who drafts and submits it; the admin accepts it, freezes the
-  project and publishes it, and the annotator's account commits the published table for the admin;
+* the admin sends the item and assigns it to the person, who saves an annotation on its unit: the annotator writes the
+  project's own annotations table in the workbench's namespace (`<namespace>$<project>__<dataset digest>`) as the
+  workbench's client, naming the person as the commit's originator;
+* the person drafts and submits; the admin accepts, freezes the project and publishes it, and the workbench's client
+  commits the published table, naming the selected version of the row table as its input;
 * every table the drive wrote is read back through the catalog with pylance's stock client.
 
 Run against a deployed rask lakehouse with the annotator installed beside it, naming the endpoints in the
@@ -22,6 +24,7 @@ Run against a deployed rask lakehouse with the annotator installed beside it, na
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -37,23 +40,32 @@ import requests
 from lakehouse_doors import CATALOG, Identity, Tenant, ok, rask_properties
 from pydantic import BaseModel
 
-from annotator.annotations.schema import EMPTY_SCHEMA
 from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
 
 
 ANNOTATOR = os.environ.get("LANCE_E2E_ANNOTATOR_URL", "").rstrip("/")
-RELEASE = os.environ.get("LANCE_E2E_RELEASE", "rask")
-RELEASE_NAMESPACE = os.environ.get("LANCE_E2E_RELEASE_NAMESPACE", "default")
-#: The principal the catalog verifies the annotator's projected ServiceAccount token as.
-ANNOTATOR_ACCOUNT = os.environ.get("LANCE_E2E_ANNOTATOR_PRINCIPAL", f"kubernetes~system:serviceaccount:{RELEASE_NAMESPACE}:{RELEASE}-sa-annotator")
+#: The annotator's `ANNOTATOR_ANNOTATIONS_NAMESPACE`, where each project's annotation tables live.
+ANNOTATIONS_NAMESPACE = os.environ.get("LANCE_E2E_ANNOTATIONS_NAMESPACE", "workbench$annotations")
+#: The annotator's `ANNOTATOR_PUBLISH_NAMESPACE`: the namespace of a project's warehouse a publish naming none lands in.
+PUBLISH_NAMESPACE = os.environ.get("LANCE_E2E_PUBLISH_NAMESPACE", "published")
 SETTLE_SECONDS = float(os.environ.get("LANCE_E2E_SETTLE_SECONDS", "180"))
 
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.annotator,
     pytest.mark.skipif(
-        not (ANNOTATOR and CATALOG and lakehouse_doors.DEX and lakehouse_doors.DEX_CLIENT and lakehouse_doors.DEX_AUDIENCE),
-        reason="LANCE_E2E_ANNOTATOR_URL, LANCE_E2E_CATALOG_URL, LANCE_E2E_DEX, LANCE_E2E_OIDC_CLIENT_ID and LANCE_E2E_OIDC_AUDIENCE",
+        not (
+            ANNOTATOR
+            and CATALOG
+            and lakehouse_doors.DEX
+            and lakehouse_doors.DEX_CLIENT
+            and lakehouse_doors.DEX_AUDIENCE
+            and lakehouse_doors.WORKBENCH_CLIENT
+            and lakehouse_doors.WORKBENCH_CLIENT_SECRET_FILE
+            and lakehouse_doors.LAKEHOUSE_AUDIENCE
+        ),
+        reason="LANCE_E2E_ANNOTATOR_URL, LANCE_E2E_CATALOG_URL, LANCE_E2E_DEX, LANCE_E2E_OIDC_CLIENT_ID, LANCE_E2E_OIDC_AUDIENCE, "
+        "LANCE_E2E_WORKBENCH_CLIENT_ID, LANCE_E2E_WORKBENCH_CLIENT_SECRET_FILE and LANCE_E2E_LAKEHOUSE_AUDIENCE",
     ),
 ]
 
@@ -71,7 +83,10 @@ class Drive(BaseModel):
     #: The annotating person's answer for the project before and after the admin granted them a role on it.
     refused: int
     admitted: int
-    #: The corpus's annotations table, read back as the person, and who the catalog announced each write to it as.
+    #: The principal the catalog names the workbench's client by.
+    workbench: str
+    #: The project's annotations table, read back as the workbench's client, and who the catalog announced each write to
+    #: it as.
     annotations: list[dict[str, Any]]
     annotation_authors: list[str]
     #: The version of the corpus's row table the person selected the item from.
@@ -97,16 +112,19 @@ def _create_table(admin: Identity, table_id: str, table: pa.Table) -> None:
 
 
 def _seed_corpus(tenant: Tenant) -> None:
-    """The governed media dataset in bronze: chunks stamped with the descriptor, and an empty annotations table."""
+    """The governed media dataset: chunks stamped with the descriptor."""
     chunks = pa.Table.from_pylist(
         [{"doc_id": UNIT[0], "speech_id": UNIT[1], "chunk_id": UNIT[2], "text": "a line"}],
         schema=pa.schema([*IDENTITY, ("text", pa.string())], metadata={DESCRIPTOR_METADATA_KEY: json.dumps(DESCRIPTOR).encode()}),
     )
-    annotations = pa.schema([*IDENTITY, *EMPTY_SCHEMA]).empty_table()
-    for name, table in (("chunks", chunks), ("annotations", annotations)):
-        table_id = f"{tenant.bronze}${name}"
-        _create_table(tenant.admin, table_id, table)
-        tenant.tables.append(table_id)
+    table_id = f"{tenant.media}$chunks"
+    _create_table(tenant.admin, table_id, chunks)
+    tenant.tables.append(table_id)
+
+
+def _annotations_table(project_id: str, dataset: str) -> str:
+    """The project's annotations table on ``dataset``, named as `annotator.annotations.store.table_name` names it."""
+    return f"{ANNOTATIONS_NAMESPACE}${project_id}__{hashlib.sha256(dataset.encode()).hexdigest()[:16]}"
 
 
 def _grant(admin: Identity, namespace: str, user: str, relation: str) -> None:
@@ -162,19 +180,20 @@ def _authors(reader: Identity, table_id: str, *, since: int, after: int) -> list
 
 @pytest.fixture(scope="module")
 def tenant() -> Iterator[Tenant]:
-    yield from lakehouse_doors.provisioned("annot", grants=("writer",))
+    yield from lakehouse_doors.provisioned("annot", grants=("reader",))
 
 
 @pytest.fixture(scope="module")
 def drive(tenant: Tenant) -> Iterator[Drive]:
     """The drive, and the project archived after it: its state is the annotator's, which the tenant's teardown never reaches."""
     admin, person = tenant.admin, tenant.job
-    silver = f"{tenant.project}$silver"
-    ok(admin.http.post(f"{CATALOG}/v1/namespace/{silver}/create", json={"properties": {"rask.tier": "silver"}}))
+    workbench = lakehouse_doors.Identity.workbench()
+    target = f"{tenant.project}${PUBLISH_NAMESPACE}"
+    ok(admin.http.post(f"{CATALOG}/v1/namespace/{target}/create", json={"properties": {"rask.requires_run": "true"}}))
     _seed_corpus(tenant)
-    # A project admin hands the annotator's account what its publish needs, and nothing more.
-    _grant(admin, silver, ANNOTATOR_ACCOUNT, "writer")
-    _grant(admin, tenant.bronze, ANNOTATOR_ACCOUNT, "reader")
+    # A project admin hands the workbench's client what its publish needs, and nothing more.
+    _grant(admin, target, workbench.principal, "writer")
+    _grant(admin, tenant.media, workbench.principal, "reader")
 
     as_admin, as_person = _annotator(admin), _annotator(person)
     project_id = str(_answer(as_admin.post(f"{ANNOTATOR}/projects", json={"tenant": tenant.project, "slug": "seals"}, timeout=30), 201)["project_id"])
@@ -182,26 +201,31 @@ def drive(tenant: Tenant) -> Iterator[Drive]:
     _answer(as_admin.put(f"{ANNOTATOR}/projects/{project_id}/members", json={"user": person.principal, "relation": "annotator"}, timeout=30))
     admitted = as_person.get(f"{ANNOTATOR}/projects/{project_id}", timeout=30).status_code
 
-    # The person annotates the corpus itself: the annotator resolves the dataset through the catalog and writes the
-    # annotations table on the person's own token.
-    unit = f"{ANNOTATOR}/api/annotations/{UNIT[0]}/{UNIT[1]}/{UNIT[2]}"
+    # The item carries the version of the corpus's row table the person selected from, as the app captures it, which
+    # the publish names as its input.
+    selected = lance.dataset(namespace_client=person.namespace(), table_id=[tenant.media, "chunks"]).version
+    key = "/".join(map(str, UNIT))
+    source = {"kind": "chunks", "keys": [key], "where": tenant.media, "dataset_version": selected}
+    [task_id] = _answer(
+        as_admin.post(f"{ANNOTATOR}/projects/{project_id}/items", json={"items": [{"source": source, "media": {"kind": "image"}}]}, timeout=60), 201
+    )["task_ids"]
+    _answer(as_admin.post(f"{ANNOTATOR}/projects/{project_id}/events", json={"event": "open"}, timeout=30))
+    _answer(as_admin.post(f"{ANNOTATOR}/tasks/{task_id}/events", json={"event": "assign", "assignee": person.principal}, timeout=30))
+
+    # The person annotates the unit their task holds: the annotator writes the project's own table as the workbench's
+    # client, after its own check on the project and the task.
+    unit = f"{ANNOTATOR}/api/annotations/{key}"
+    scope = {"project": project_id, "task": task_id, "dataset": tenant.media}
+    annotations_table = _annotations_table(project_id, tenant.media)
     reader = Identity(admin.bearer)
     feed = lakehouse_doors.feed_start(reader)
-    before = lance.dataset(namespace_client=person.namespace(), table_id=[tenant.bronze, "annotations"]).version
-    loaded = as_person.get(unit, params={"dataset": tenant.bronze}, timeout=60)
+    loaded = as_person.get(unit, params=scope, timeout=60)
     assert loaded.status_code == 200, f"GET {unit} -> {loaded.status_code}: {loaded.text[:300]}"
     save = {"inserts": [{"id": "a1", "shape_type": "rectangle", "x": 10, "y": 10, "width": 20, "height": 20, "label": LABEL}]}
     save["base_version"] = int(loaded.headers["X-Annotations-Version"])
-    _answer(as_person.post(unit, params={"dataset": tenant.bronze}, json=save, timeout=60))
+    _answer(as_person.post(unit, params=scope, json=save, timeout=60))
+    tenant.tables.append(annotations_table)
 
-    # The task plane: send, assign, draft, submit, accept, freeze, publish. The item carries the version of the corpus's
-    # row table the person selected from, as the zone captures it, which the publish names as its input.
-    selected = lance.dataset(namespace_client=person.namespace(), table_id=[tenant.bronze, "chunks"]).version
-    source = {"kind": "chunks", "keys": ["/".join(map(str, UNIT))], "where": tenant.bronze, "dataset_version": selected}
-    item = {"source": source, "media": {"kind": "image"}}
-    [task_id] = _answer(as_admin.post(f"{ANNOTATOR}/projects/{project_id}/items", json={"items": [item]}, timeout=60), 201)["task_ids"]
-    _answer(as_admin.post(f"{ANNOTATOR}/projects/{project_id}/events", json={"event": "open"}, timeout=30))
-    _answer(as_admin.post(f"{ANNOTATOR}/tasks/{task_id}/events", json={"event": "assign", "assignee": person.principal}, timeout=30))
     shape = {"shape_type": "bbox", "x": 1, "y": 2, "width": 3, "height": 4, "label": LABEL}
     _answer(as_person.put(f"{ANNOTATOR}/tasks/{task_id}/draft", json={"shapes": [shape]}, timeout=30))
     _answer(as_person.post(f"{ANNOTATOR}/tasks/{task_id}/events", json={"event": "submit"}, timeout=30))
@@ -213,14 +237,15 @@ def drive(tenant: Tenant) -> Iterator[Drive]:
     published_table = str(project["published"]["table_id"])
     tenant.tables.append(published_table)
 
-    annotations, _ = _commit(person, f"{tenant.bronze}$annotations")
+    annotations, _ = _commit(workbench, annotations_table)
     published, published_commit = _commit(admin, published_table)
     yield Drive(
         project_id=project_id,
         refused=refused,
         admitted=admitted,
+        workbench=workbench.principal,
         annotations=annotations,
-        annotation_authors=_authors(reader, f"{tenant.bronze}$annotations", since=feed, after=before),
+        annotation_authors=_authors(reader, annotations_table, since=feed, after=0),
         selected=selected,
         published_table=published_table,
         published=published,
@@ -233,15 +258,16 @@ def test_the_annotator_works_the_lakehouse_through_its_public_doors(drive: Drive
     """The closes-when of XC-167, read off the one drive.
 
     The annotator decides its own project roles: a person of no tenant is refused the project until the admin grants them
-    a role on it. It holds no store credential: the person's annotation is written through the catalog on their own
-    token, so the catalog announces the write as theirs. Its publish is its own account's commit in the tenant's silver,
-    and the row names who annotated and who reviewed from the task's own record.
+    a role on it. It holds no store credential: the annotation and the publish are written through the catalog as the
+    workbench's client, so the catalog announces both as that client, and the published rows name who annotated and who
+    reviewed from the task's own record. The publish lands in the project's own warehouse, under the run rule, naming the
+    selected version of the row table as its input.
     """
     assert (drive.refused, drive.admitted) == (403, 200)
-    assert [(row["id"], row["label"], row["reviewer"]) for row in drive.annotations] == [("a1", LABEL, tenant.job.principal)]
-    assert drive.annotation_authors and set(drive.annotation_authors) == {tenant.job.principal}, drive.annotation_authors
+    assert [(row["id"], row["label"]) for row in drive.annotations] == [("a1", LABEL)]
+    assert drive.annotation_authors and set(drive.annotation_authors) == {drive.workbench}, drive.annotation_authors
     rows = [(row["project_id"], row["label"], row["annotated_by"], row["reviewed_by"]) for row in drive.published]
     assert rows == [(drive.project_id, LABEL, tenant.job.principal, tenant.admin.principal)]
-    assert drive.published_table.startswith(f"{tenant.project}$silver$")
-    assert drive.published_commit.get("rask.author") == ANNOTATOR_ACCOUNT
-    assert drive.published_commit.get("rask.inputs") == [{"table": [tenant.bronze, "chunks"], "version": drive.selected}]
+    assert drive.published_table.startswith(f"{tenant.project}${PUBLISH_NAMESPACE}$")
+    assert drive.published_commit.get("rask.author") == drive.workbench
+    assert drive.published_commit.get("rask.inputs") == [{"table": [tenant.media, "chunks"], "version": drive.selected}]

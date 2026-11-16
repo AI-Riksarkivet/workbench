@@ -21,10 +21,25 @@ function frameItem(row: Row): MediaItem | null {
 
 const urlOf = (link: MediaLink | undefined): string | undefined => link?.url ?? undefined;
 
-export function thumbnailUrl(row: Row): string | undefined {
+function thumbnailUrl(row: Row): string | undefined {
 	const view = viewForHit(row);
 	if (!view.hasThumbnail) return undefined;
 	return urlOf(mediaLinks.link(view.id, { role: 'thumbnail', doc_id: view.docId(row) }));
+}
+
+/**
+ * What a tile or a table row shows for a row: its thumbnail when the dataset declares one, else its chunk's frame
+ * (when the dataset declares frames and the row names one), else, for a still-image dataset, its document's image.
+ * `undefined` while that link is being signed or when the viewer named none; `null` when the dataset has no image to
+ * show for the row at all, where a renderer shows the media kind instead of an empty box.
+ */
+export function previewUrl(row: Row): string | undefined | null {
+	const view = viewForHit(row);
+	if (view.hasThumbnail) return thumbnailUrl(row);
+	const frame = frameItem(row);
+	if (frame !== null && view.hasCapability('frames')) return urlOf(mediaLinks.link(view.id, frame));
+	if (view.mediaKind === 'image') return urlOf(mediaLink(row));
+	return null;
 }
 
 export function chunkFrameUrl(row: Row): string | undefined {
@@ -51,4 +66,11 @@ export function frameLink(row: Row): MediaLink | undefined {
 export function resolveMedia(row: Row, fresh = false): Promise<MediaLink> {
 	const view = viewForHit(row);
 	return mediaLinks.resolve(view.id, { role: 'media', doc_id: view.docId(row) }, fresh);
+}
+
+/** The row's frame link once signed; `fresh` signs a new one (a reader asking again after a failure). */
+export function resolveFrame(row: Row, fresh = false): Promise<MediaLink> {
+	const item = frameItem(row);
+	if (item === null) return Promise.resolve({ url: null, detail: 'the row names no frame' });
+	return mediaLinks.resolve(viewForHit(row).id, item, fresh);
 }

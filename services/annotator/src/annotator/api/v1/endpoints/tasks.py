@@ -80,7 +80,8 @@ def require_actor_plane(request: Request) -> None:
     fail on their own terms exactly as they do today.
     """
     if getattr(request.app.state, "actors_registered", None) is False:
-        raise ServiceUnavailableError("the task plane is unavailable: its actor types are not registered with the Dapr sidecar")
+        reason = getattr(request.app.state, "actor_plane_unavailable", None) or "its actor types are not registered with the Dapr sidecar"
+        raise ServiceUnavailableError(f"the task plane is unavailable: {reason}")
 
 
 router = APIRouter(prefix="/tasks", tags=["annotation-tasks"], dependencies=[Depends(require_actor_plane)])

@@ -1,6 +1,6 @@
 # The commit-event contract: following writes and telling people
 
-A pipeline that reacts to writes (trigger the next tier, refresh a cache, run a check) follows lineage's
+A pipeline that reacts to writes (trigger the next table's build, refresh a cache, run a check) follows lineage's
 durable feed. This page is the contract it polls; rask code is not needed to read it (LH-472, ADR 0156). It is also the
 contract the lakehouse's events publish for any notifier, a client that tells a person what the lakehouse did
 ([§ Telling people](#telling-people-the-notifier-contract),
@@ -115,11 +115,11 @@ OpenLineage `RunEvent` whose `producer` is the catalog's emitter
 
 ### A publication
 
-The table's `published` tag moved: the version readers of a governed tier read changed, and no row was committed
+The table's `published` tag moved: the version readers of `@published` read changed, and no row was committed
 ([ADR 0161](adr/0161-the-tag-gate-runs-at-publish.md)). `event_type` is `COMPLETE` and `event` is a `RunEvent` from the
 catalog's emitter whose `run.facets.rask_lance.operation` is `publish_table` and whose `version` is the version now
 published, a version an earlier row already committed. `run.facets.rask_author.sub` is who moved it: the publisher when the
-project's gate passed the version, or the validator who approved it when the gate held it. Trigger the next tier on
+project's gate passed the version, or the validator who approved it when the gate held it. Trigger the next table's build on
 this row when it should read only what readers of `@published` read. Its run id is derived from the table, the version
 and the time the tag moved, so one publication is one row however many times it is announced, and a version published
 again later (after an erasure dropped the tag) is a new row.
@@ -153,7 +153,7 @@ an outside source, and so is a dataset under another catalog's `lance-namespace:
   publishing; from there, delivery into the feed is at least once, and lineage records each event once
   (an insert-only merge on the row's key), so a redelivery lands no second row.
 - A crash between the Lance commit and the stage loses that announcement, not the write: the catalog recorded the
-  caller it authorized the commit for and the commit names its operation, and the catalog's reconcile cron (`catalog.commitReconcile`, every 10 minutes by default) announces
+  caller it authorized the commit for and the commit names its operation, and the catalog's reconcile timer (`catalog.commitReconcile`, every 10 minutes by default) announces
   every committed version older than `catalog.commitReconcile.graceSeconds` that the feed holds no row for, from the
   table's version log (LH-497). A write's run id is derived from its commit (the table's uuid, ref, ref incarnation and
   version, keyed by a secret only the catalog holds), so the write's own announcement and a re-announcement are one
@@ -166,10 +166,10 @@ an outside source, and so is a dataset under another catalog's `lance-namespace:
   looked at from its register on (LH-550): the versions it held then were committed past the catalog, so none is
   announced, whatever author it names, and the register's own `register_table` event is the one the feed carries.
 - A publication is recovered the same way (LH-552, [ADR 0188](adr/0188-a-lost-publication-is-announced-from-its-tag-and-lifecycle-markers-stay-best-effort.md)):
-  the reconcile cron reads the version each table's `published` tag names and when the tag moved there, and when the feed
+  the reconcile timer reads the version each table's `published` tag names and when the tag moved there, and when the feed
   holds no `publish_table` for that move, announces it for the person the catalog recorded moving the tag. A tag moved past the catalog's doors names no
   such person: it is counted unauthored, which pages, and never announced. Only the version the tag names now is looked
-  for, so a publication the tag moved past before the cron ran is not announced; the newer one is.
+  for, so a publication the tag moved past before the reconcile ran is not announced; the newer one is.
 - A table's lifecycle markers (a declare, a register, a rename, a drop, a deregister, an undrop) and the control
   events the doors that change grants, roles, projects and principals send are filed on the control root before their
   change ([ADR 0205](adr/0205-a-changes-announcements-are-filed-before-it-and-a-failed-doors-are-finished.md)). A door
@@ -210,8 +210,8 @@ emitted):
 | `outputs[].facets.rask_lance.tableUuid` | each table the run wrote, as the object `table:<tableUuid>` every check is asked on; an output without one names no object a grant could reach |
 
 A value is an address only when it is one person's principal: `<idp-id>~<subject>`, where the idp id is `[a-z0-9-]+`
-(so the first `~` ends it) and is neither `kubernetes` (a service account) nor `dex-client` (a Dex client signed in for
-itself), and the subject is non-empty and carries no control character. A role literal, a service account's
+(so the first `~` ends it) and is neither `kubernetes` (a service account) nor ends in `-client` (an issuer's client
+signed in for itself, ADR 0208), and the subject is non-empty and carries no control character. A role literal, a service account's
 principal, a userset, an OpenFGA object id and `*` address nobody.
 
 ### Whom a control event names
@@ -258,9 +258,10 @@ above holds unchanged. Who is told stays gated per person by `can_be_notified`, 
 observes and never what a person receives.
 
 The bus carries the run events too, on `lineage.events.v1`, but only the feed holds the ones producers post over HTTP,
-so a notifier that must not miss a run walks the feed. The topics are internal: the NATS stream Job deletes every
-`-durable` on a stream it walks that no component in the release renders (`chart/templates/nats-stream-job.yaml`), so a
-durable a client creates there does not outlive the next upgrade.
+so a notifier that must not miss a run walks the feed. The topics are internal, and nothing about them is a contract.
+The NATS stream Job removes only a consumer that carries the release's mark (`rask.dev/release`) and that the chart no
+longer declares (`chart/templates/nats-stream-job.yaml`), so a consumer a subscriber outside the release creates on a
+stream is left in place, reading a topic that may change with any release.
 
 ### The envelope on the bus
 
@@ -282,14 +283,18 @@ event rides the envelope its first publish rode.
   event published twice inside it is stored once. A run's `START` and its `COMPLETE` share a run id and are two events,
   which is why the state is part of it. One event is told under one id by design: every failure of maintenance's pass
   over a table carries the run id derived from that table, so a failure repeated inside the window is stored once, as
-  the feed keeps its row once. The id is the key lineage's feed keeps the row of a run's event, and of a signed dataset
+  the feed keeps its row once. A publisher counts a publish the stream answers as a duplicate as delivered only when
+  the stored message carries the same event (`lakehouse.bus` reads it back), so a repeat that differs stays staged
+  where its lane stages, and its relay delivers it once the window has passed. The id is the key lineage's feed keeps the row of a run's event, and of a signed dataset
   change, under, so a reader of the bus and a walker of the feed key those alike; the feed keys an unsigned dataset
   change under the subject it was recorded for as well.
 - **A signature covers `data`, never the envelope.** Verify the event; an envelope attribute is a routing hint that
   anything able to publish can write.
 - **`traceparent` and `tracestate`** (CloudEvents' distributed tracing extension) carry the W3C trace context of the
-  publish. Any other attribute a message holds (`topic`, `pubsubname`, `traceid`) is its transport's and carries no
-  contract.
+  publish, which runs in the trace of the request that caused the event (ADR 0209): its trace id is the one the
+  request's log lines, audit records (`audit.trace_id`), problem body (`instance`) and commits (`rask.traceparent`) carry.
+  A relay's copy of a staged event is published in the trace the event was staged under, so it carries the same trace
+  id as the first publish would have. Any other attribute a reader finds on a message carries no contract.
 - **A `type` ends in its version.** A change that breaks a reader of an event or of its envelope is a new version.
 
 ### The names that carry the contract

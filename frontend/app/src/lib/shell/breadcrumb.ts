@@ -20,8 +20,8 @@ export type Crumb = {
 const INITIALISMS = new Set(['dlq']);
 
 /** Percent-decode a path segment for display, falling back to the raw text on a malformed
- *  escape (`decodeURIComponent` throws on a lone `%`). Ids like `silver$features` reach the
- *  URL encoded (`silver%24features`), and the raw form is unreadable in a breadcrumb. */
+ *  escape (`decodeURIComponent` throws on a lone `%`). Ids like `acme$features` reach the
+ *  URL encoded (`acme%24features`), and the raw form is unreadable in a breadcrumb. */
 function decode(seg: string): string {
 	try {
 		return decodeURIComponent(seg);
@@ -33,11 +33,11 @@ function decode(seg: string): string {
 /** A route word for display: dashes to spaces, sentence case, initialisms uppercased. */
 function humanise(seg: string): string {
 	const decoded = decode(seg);
-	// A segment that is not plain lowercase words is an IDENTIFIER — `silver$features`, `A0060198`, a
+	// A segment that is not plain lowercase words is an IDENTIFIER — `acme$features`, `A0060198`, a
 	// uuid, a table name — and is left EXACTLY as it is, for a pathname whose route is unknown (a
 	// 404). Capitalising a dataset id would misreport the data the page is about, which is a worse
 	// failure than an ugly crumb. The guard tests the WHOLE label, not just its first character:
-	// `gold$catalog` starts with a lowercase letter but is an identifier.
+	// `media$catalog` starts with a lowercase letter but is an identifier.
 	if (!/^[a-z][a-z-]*$/.test(decoded)) return decoded;
 	const spaced = decoded.replace(/-/g, ' ');
 

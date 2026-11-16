@@ -3,8 +3,8 @@
 The runtime starts ONLY when a sidecar is actually there. `DAPR_GRPC_PORT` is the signal: the Dapr
 injector sets it in the pod, and nothing sets it in dev. Without that check the service would build a
 gRPC worker aimed at a port nobody is listening on, retry it forever in the background, and fill the
-log of every local `make dev-micro` run with connection errors about a lane the operator did not ask
-for. With it, `make dev-micro` is silent and in-cluster runs are durable — one code path, decided by
+log of every local stack (`make local`) with connection errors about a lane the operator did not ask
+for. With it, `make local` is silent and in-cluster runs are durable — one code path, decided by
 the environment that can actually answer the question.
 
 The import of `flows.workflow` is INSIDE that branch on purpose (see `runtime.py`): importing it is
@@ -88,7 +88,7 @@ def make_lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContex
         # variable is the DAPR INJECTOR'S, not the estate's: its whole value as a signal is that only
         # a sidecar sets it. `FlowsSettings` carries `env_file=".env"`, so binding it there would let
         # a stale developer `.env` claim a sidecar that is not there — the service would build a gRPC
-        # worker aimed at nothing and every `make dev-micro` run would fill with connection errors
+        # worker aimed at nothing and every `make local` run would fill with connection errors
         # about a lane nobody asked for, which is exactly what this branch exists to prevent.
         if os.environ.get("DAPR_GRPC_PORT"):
             # UNGUARDED, and that is the fix. Importing the module IS the registration

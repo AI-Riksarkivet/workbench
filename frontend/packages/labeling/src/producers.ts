@@ -7,7 +7,7 @@
  * Read/write separation: NOTHING here reads or renders — that's the view+analyze
  * plane. These only PRODUCE annotation deltas from a Selection. `interactive`
  * producers run in the annotator (local-first → Save); `batch` producers run as
- * silver derivers (lance-ray) and surface async by media id + Lance version.
+ * derivers (lance-ray jobs) and surface async by media id + Lance version.
  */
 import type { Execution, Op, ProducerKind } from './types';
 
@@ -89,7 +89,7 @@ export const PRODUCERS: Record<string, ProducerSpec> = {
 		needsExemplars: false,
 		outputs: 'text',
 		status: 'prediction',
-		note: 'HTR/OCR transcription as a silver deriver over bronze — whole-corpus batch, not interactive.',
+		note: 'HTR/OCR transcription as a deriver over the corpus: whole-corpus batch, not interactive.',
 	},
 	'vlm-judge': {
 		name: 'vlm-judge',

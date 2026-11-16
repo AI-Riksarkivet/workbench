@@ -12,6 +12,7 @@ re-reads tasks from their own actors precisely to catch that, so it is tested di
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -120,11 +121,16 @@ class _Task:
 class _Publisher:
     """A catalog that behaves like the real one must: create is idempotent on table id."""
 
-    def __init__(self, fail_on: str | None = None) -> None:
+    def __init__(self, fail_on: str | None = None, *, run_rule: bool = False) -> None:
         self.tables: dict[str, int] = {}
         self.creates = 0
-        self.pin: tuple[str, int | None] | None = None
+        self.inputs: list[tuple[str, int]] | None = None
         self.fail_on = fail_on
+        #: Whether the target namespace declares the run rule, as the catalog would answer.
+        self.run_rule = run_rule
+
+    async def requires_run(self, namespace: str) -> bool:
+        return self.run_rule
 
     async def create_table(
         self,
@@ -133,10 +139,9 @@ class _Publisher:
         *,
         properties: dict[str, str],
         run_id: str,
-        source: str | None = None,
-        source_version: int | None = None,
+        inputs: list[tuple[str, int]],
     ) -> int:
-        self.pin = (source, source_version) if source is not None else None
+        self.inputs = inputs
         if self.fail_on == "create":
             raise RuntimeError("catalog unreachable")
         self.creates += 1
@@ -160,7 +165,7 @@ async def _run(project: _Project, tasks: dict[str, _Task], publisher: _Publisher
         project_handle=project,
         task_handle=_wire(tasks, project),
         publisher=publisher,
-        namespace="silver",
+        namespace="acme$published",
         subject="henry",
     )
 
@@ -194,7 +199,7 @@ async def test_the_saga_narrates_its_steps_so_a_publish_is_not_just_a_spinner() 
 
     assert project.progress_steps[0] == "reading tasks"
     assert project.progress_steps[1] == "building plan"
-    assert project.progress_steps[2].startswith("creating table silver$vasa_")
+    assert project.progress_steps[2].startswith("creating table acme$published$vasa_")
     assert project.progress_steps[3] == "recording publish"
 
 
@@ -221,12 +226,12 @@ async def test_the_table_id_is_derived_from_the_token_not_the_slug_alone() -> No
     """Two publishes of one project (a republish after `reopen`) are two datasets. A slug-only id
     would collide and silently overwrite the first."""
     p = AnnotationProject(project_id="p1", tenant="acme", slug="vasa")
-    a = table_id_for(p, "aaaaaaaaaaaaaaaa", "silver")
-    b = table_id_for(p, "bbbbbbbbbbbbbbbb", "silver")
+    a = table_id_for(p, "aaaaaaaaaaaaaaaa", "acme$published")
+    b = table_id_for(p, "bbbbbbbbbbbbbbbb", "acme$published")
 
     assert a != b
-    assert a.startswith("silver$vasa_")
-    assert table_id_for(p, "aaaaaaaaaaaaaaaa", "silver") == a, "the id must be deterministic in the token"
+    assert a.startswith("acme$published$vasa_")
+    assert table_id_for(p, "aaaaaaaaaaaaaaaa", "acme$published") == a, "the id must be deterministic in the token"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -300,7 +305,7 @@ async def test_a_stale_index_cannot_let_an_unreviewed_task_into_the_lakehouse() 
     project.index["t1"] = str(TaskState.ACCEPTED)  # the index LIES — the report never landed
 
     with pytest.raises(PublishRefusal, match="stale"):
-        await run_publish(project_handle=project, task_handle=handle, publisher=publisher, namespace="silver", subject="henry")
+        await run_publish(project_handle=project, task_handle=handle, publisher=publisher, namespace="acme$published", subject="henry")
 
     assert publisher.creates == 0, "unreviewed work reached the lakehouse"
     assert project.doc["state"] == ProjectState.PUBLISH_FAILED
@@ -322,7 +327,7 @@ async def test_an_indexed_task_whose_actor_lost_its_state_refuses_the_publish() 
     project.index = {"ghost": str(TaskState.ACCEPTED)}
 
     with pytest.raises(PublishRefusal, match="holds no state"):
-        await run_publish(project_handle=project, task_handle=lambda _t: _Empty(), publisher=publisher, namespace="silver", subject="henry")
+        await run_publish(project_handle=project, task_handle=lambda _t: _Empty(), publisher=publisher, namespace="acme$published", subject="henry")
     assert publisher.creates == 0
 
 
@@ -363,8 +368,8 @@ async def test_a_crash_between_record_and_succeeded_does_not_strand_the_project(
 
     # Simulate the crash: the record landed, the transition never fired.
     project.doc["published"] = {
-        "table_id": "silver$vasa_0123456789ab",
-        "namespace": "silver",
+        "table_id": "acme$published$vasa_0123456789ab",
+        "namespace": "acme$published",
         "version": 7,
         "publish_id": PUBLISH_TOKEN,
         "published_at": MINTED_AT.isoformat(),
@@ -396,33 +401,54 @@ async def test_a_failure_while_recording_the_failure_keeps_the_original_error() 
         await _run(project, {"t0": _Task("t0", TaskState.ACCEPTED, 1)}, publisher)
 
 
-@pytest.mark.asyncio
-async def test_the_pin_reaches_the_publisher_when_the_plan_pins() -> None:
-    """§7.2: single dataset, single captured version → the create carries the pin (the lineage
-    READ edge). The saga computes it from the plan — the publisher never guesses."""
-    project, publisher = _Project(), _Publisher()
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1), "t1": _Task("t1", TaskState.ACCEPTED, 1)}
-    for t in tasks.values():
-        # A namespace-qualified CATALOG TABLE id, because that is what the pin BECOMES on the wire.
-        # This used to say "demo" — a bare word — and so asserted the defect: sending a media dataset
-        # name as a table reference made the catalog authorize an object that does not exist, and the
-        # whole publish died with "can_get_metadata required on table:transcripts_v2".
-        t.doc["source"]["where"] = "bronze$pages"
-        t.doc["source"]["dataset_version"] = 24
-
-    await _run(project, tasks, publisher)
-
-    assert publisher.pin == ("bronze$pages", 24)
+def _captured(tasks: dict[str, _Task], *sources: tuple[str | None, int | None]) -> None:
+    """Each task's send capture: the table the server stamped and the version kept of it. No table is a dataset that
+    declares no search, sent with the version the sender saw."""
+    for task, (table, version) in zip(tasks.values(), sources, strict=True):
+        task.doc["source"]["where"] = table or "acme$notes"
+        task.doc["source"]["table"] = table
+        task.doc["source"]["dataset_version"] = version
 
 
 @pytest.mark.asyncio
-async def test_no_pin_travels_when_the_capture_is_ambiguous() -> None:
-    project, publisher = _Project(), _Publisher()
+async def test_every_captured_table_version_reaches_the_publisher_as_an_input() -> None:
+    """§7.2: the create names each table version the items came from, several of them alike; the saga computes them from
+    the plan, and the publisher never guesses."""
+    project, publisher = _Project(), _Publisher(run_rule=True)
     tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1), "t1": _Task("t1", TaskState.ACCEPTED, 1)}
-    tasks["t0"].doc["source"]["where"] = "demo"
-    tasks["t0"].doc["source"]["dataset_version"] = 24
-    tasks["t1"].doc["source"]["where"] = "other"
+    _captured(tasks, ("acme$media$pages", 24), ("acme$media$letters", 3))
 
     await _run(project, tasks, publisher)
 
-    assert publisher.pin is None
+    assert publisher.inputs == [("acme$media$letters", 3), ("acme$media$pages", 24)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run_rule", "sources", "refusal"),
+    [
+        pytest.param(
+            True, [("acme$media$pages", 24), (None, 24)], "acme$published requires every write to name the tables", id="uncaptured-under-the-run-rule"
+        ),
+        pytest.param(False, [("acme$media$pages", 24), (None, 24)], None, id="uncaptured-with-no-run-rule"),
+        pytest.param(False, [(f"acme$media$t{i}", 1) for i in range(65)], "one publish names at most 64 inputs", id="more-inputs-than-one-run-names"),
+    ],
+)
+async def test_a_publish_the_catalog_could_not_take_fails_before_it_writes(run_rule: bool, sources: list[tuple[str | None, int]], refusal: str | None) -> None:
+    """Every item's input is named or the run rule cannot be met, and the publish says so in plain words before any
+    table is created; with no run rule an uncaptured item publishes and names no input, its dataset least of all."""
+    project, publisher = _Project(), _Publisher(run_rule=run_rule)
+    tasks = {f"t{i}": _Task(f"t{i}", TaskState.ACCEPTED, 1) for i in range(len(sources))}
+    _captured(tasks, *sources)
+
+    if refusal is None:
+        await _run(project, tasks, publisher)
+    else:
+        with pytest.raises(PublishRefusal, match=re.escape(refusal)):
+            await _run(project, tasks, publisher)
+
+    assert publisher.creates == (1 if refusal is None else 0)
+    assert publisher.inputs == ([("acme$media$pages", 24)] if refusal is None else None)
+    assert project.fired == (["publish_succeeded"] if refusal is None else ["publish_failed"])
+    if refusal is not None:
+        assert refusal in project.doc["publish_error"]

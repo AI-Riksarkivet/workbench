@@ -1,11 +1,11 @@
-.PHONY: help install sync test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga fga-test fga-model
+.PHONY: help install sync local test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga fga-test fga-model
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
 PYTEST_WORKERS ?= 8
 
 help:
-	@echo "Targets: install test lint fmt typecheck check frontend-check app-dev app-e2e fga-test fga-model openfga image NAME=<stem> claude-bootstrap"
+	@echo "Targets: install local test lint fmt typecheck check frontend-check app-dev app-e2e fga-test fga-model openfga image NAME=<stem> claude-bootstrap"
 
 # The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
 # `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
@@ -37,6 +37,15 @@ sync:
 	uv sync --all-packages
 	bun --cwd=frontend install
 
+# The workbench on this machine, with real data: install, build the app, seed the demo datasets into a local directory
+# catalog, and run the services and the app behind its Gateway stand-in on one origin, on the loopback
+# (`scripts/local-stack.sh`, which prints the URL to open, by default http://127.0.0.1:8700/datasets). LOCAL_CATALOG
+# names the catalog's directory; EDGE_PORT and the *_PORT variables move the ports, and a port already in use is refused.
+LOCAL_CATALOG ?= $(or $(TMPDIR),/tmp)/workbench-catalog
+local: sync
+	bun --cwd=frontend/app run build
+	SEED=1 MEDIA_CATALOG_DIR=$(LOCAL_CATALOG) bash scripts/local-stack.sh
+
 test: $(OPENFGA_BIN)
 	uv run pytest -m "not e2e" -n $(PYTEST_WORKERS)
 
@@ -66,11 +75,11 @@ frontend-check:
 	bun --cwd=frontend run knip
 
 # The app (frontend/app) under `vite dev` on :5173: /config.json from WORKBENCH_APP_CONFIG_FILE (else
-# frontend/app/dev/config.json), /api proxied to the Gateway at WORKBENCH_EDGE_URL (default :8080).
+# frontend/app/dev/config.json), /api proxied to the Gateway at WORKBENCH_EDGE_URL (default :8700, the local stack's edge).
 app-dev:
 	bun --cwd=frontend/app run dev
 
-# The app's Playwright suite on the BUILT app, behind e2e/edge.ts with its mock issuer and services.
+# The app's Playwright suite on the BUILT app, behind edge.ts with its mock issuer and services.
 app-e2e:
 	bun --cwd=frontend/app run test:e2e
 

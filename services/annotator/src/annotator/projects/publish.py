@@ -22,14 +22,13 @@ Three rules carry the weight:
    collapsed into one "who did this", which would credit the wrong person in either direction.
 
 Provenance rides the rows: they carry `annotated_by` / `reviewed_by`, so a consumer answers "who annotated
-this row" with no graph query. The publish names its run (the publish id) and its one pinned source in the
-catalog Context, and the catalog commits both with the table and records the derivation edge.
+this row" with no graph query. The publish names its run (the publish id) and every input its items captured in the
+catalog Context, and the catalog commits both with the table and records the derivation edges.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Final
@@ -158,10 +157,10 @@ class PublishPlan(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     attributions: list[Attribution] = Field(default_factory=list)
     #: Per source dataset, the DISTINCT captured versions (sorted, `None` = uncaptured). Collected
-    #: at plan time from the tasks' send captures, so the facet and the pin read one truth.
+    #: at plan time from the tasks' send captures, so the facet and the inputs read one truth.
     dataset_versions: dict[str, list[int | None]] = Field(default_factory=dict)
     #: Items whose send recorded NO dataset at all. They appear nowhere in `dataset_versions`, so
-    #: without this count a plan mixing captured and uncaptured items would still pin — stamping a
+    #: without this count a plan mixing captured and uncaptured items would name inputs as though complete — stamping a
     #: READ edge that claims provenance for items that never recorded any (the A-1 audit finding).
     sources_uncaptured: int = 0
     #: Consensus v1: replica group id → its member task ids (sorted). Only groups that reached the
@@ -314,9 +313,10 @@ def build_plan(
             if task.task_id not in group:
                 group.append(task.task_id)
                 group.sort()
-        # Version capture per source, from the SEND capture — one truth for the facet + the pin. The table the server
-        # named at send when there is one (a dataset is a namespace, which no input can be), else the dataset.
-        if source := task.source.table or task.source.where:
+        # Version capture per source, from the SEND capture: one truth for the facet and the inputs. Only the table the
+        # server stamped at send is an input; a source with none (a dataset that declares no search, a send that named
+        # no dataset) is uncaptured.
+        if source := task.source.table:
             versions = plan.dataset_versions.setdefault(source, [])
             if task.source.dataset_version not in versions:
                 versions.append(task.source.dataset_version)
@@ -364,33 +364,31 @@ def build_plan(
     return plan
 
 
-def source_pin(plan: PublishPlan, *, delimiter: str = CATALOG_DELIMITER) -> tuple[str, int] | None:
-    """The reproducibility pin (§7.2): the ONE (dataset, version) every published item came from.
+class PublishInputs(BaseModel):
+    """What a publish names as its run's inputs: every catalog table its items came from, at the version each was
+    captured at, and how many sources could name none."""
 
-    Pins only when EVERY published item names the same one dataset with the same one CAPTURED
-    version. Two datasets, two versions of one dataset, any uncaptured version, or any item that
-    recorded no dataset at all → None: a single fabricated pin would be a lie, and the pin becomes the
-    publish's input in the catalog's lineage, which downstream reproduction trusts.
+    #: ``(table id, version)``, sorted: each distinct pair the items captured.
+    tables: list[tuple[str, int]] = Field(default_factory=list)
+    #: Sources that name no input: a table recorded with no captured version, and items whose source names no table.
+    uncaptured: int = 0
 
-    …and the same rule applies to the NAME. The pin travels to the catalog as a table reference, so
-    it must BE one: a namespace-qualified id like ``bronze$pages``. `ItemSource.where` carries the
-    MEDIA dataset name, which for an unregistered corpus (a Lance directory the catalog has never
-    heard of) is a bare word. Sending it made the catalog authorize `table:transcripts_v2` — an
-    object that does not exist — and FGA denies before it checks existence, so the ENTIRE publish
-    failed for the sake of a provenance nicety. Observed live, 2026-08-03.
 
-    An unregistered corpus simply has no lineage edge to draw: there is no catalog node at the other
-    end. Refusing to name one is the same discipline as refusing to fabricate a version. With a live
-    catalog a dataset is a namespace, so the plan reads the table the server named at send
-    (`ItemSource.table`, the dataset's row table) and that table is what pins."""
-    if plan.sources_uncaptured or len(plan.dataset_versions) != 1:
-        return None
-    dataset, versions = next(iter(plan.dataset_versions.items()))
-    if len(versions) != 1 or versions[0] is None:
-        return None
-    if delimiter not in dataset:
-        return None
-    return dataset, versions[0]
+def publish_inputs(plan: PublishPlan) -> PublishInputs:
+    """The inputs a publish names (§7.2): every table version its items captured at send, never fabricated.
+
+    A plan's sources are only the tables the server stamped at send (`ItemSource.table`), each a governed table the
+    sender could read, so every captured pair is a table reference the catalog can check; a version not captured counts
+    as uncaptured with the items that named no table. The catalog takes several datasets and several versions alike."""
+    tables: list[tuple[str, int]] = []
+    uncaptured = plan.sources_uncaptured
+    for table, versions in plan.dataset_versions.items():
+        for version in versions:
+            if version is None:
+                uncaptured += 1
+            else:
+                tables.append((table, version))
+    return PublishInputs(tables=sorted(tables), uncaptured=uncaptured)
 
 
 def table_properties(project: AnnotationProject, plan: PublishPlan) -> dict[str, str]:
@@ -412,19 +410,10 @@ def table_properties(project: AnnotationProject, plan: PublishPlan) -> dict[str,
     }
 
 
-def tier_namespace(tier: str) -> str:
-    """The namespace NAME a governed tier writes into, overridable per tier by ``MEDALLION_<TIER>_NAMESPACE``.
+def publish_namespace(warehouse: str, leaf: str) -> str:
+    """The namespace ``leaf`` of ``warehouse`` a publish lands in: ``acme$published``.
 
-    Not a constant, because a tier name every writer and reader must agree on is configuration: a tier
-    two of them disagree about is a write nothing downstream ever sees.
-    """
-    return os.getenv(f"MEDALLION_{tier.upper()}_NAMESPACE", tier)
-
-
-def namespace_for(warehouse: str, tier: str) -> str:
-    """The namespace a publish into ``tier`` of ``warehouse`` lands in: ``acme$silver``.
-
-    A name's first segment is its warehouse (`docs/rask/COMMIT-EVENTS.md`), so the tier is a namespace inside the
+    A name's first segment is its warehouse (`docs/rask/COMMIT-EVENTS.md`), so the target is a namespace inside the
     project's warehouse; one with no warehouse names nothing rask serves. The door authorizes this same string and the
     actor pins the table id from it, so it is composed here and nowhere else.
 
@@ -433,4 +422,21 @@ def namespace_for(warehouse: str, tier: str) -> str:
     """
     if not is_safe_project(warehouse):
         raise ValueError(f"warehouse {warehouse!r} is not a lakehouse warehouse id")
-    return f"{warehouse}{CATALOG_DELIMITER}{tier_namespace(tier)}"
+    return f"{warehouse}{CATALOG_DELIMITER}{leaf}"
+
+
+def require_in_warehouse(target: str, warehouse: str) -> str:
+    """``target``, when it names a namespace inside ``warehouse``.
+
+    A project publishes into its own warehouse only: a target outside it would land the project's labels where its
+    grants and its readers are not.
+
+    Raises:
+        ValueError: ``target`` is not ``<warehouse>$<namespace>[$...]`` with every segment non-empty.
+    """
+    segments = target.split(CATALOG_DELIMITER)
+    if len(segments) < 2 or not all(segments) or segments[0] != warehouse:
+        raise ValueError(
+            f"the publish target {target!r} is not a namespace in the project's warehouse {warehouse!r} (name it {warehouse}{CATALOG_DELIMITER}<namespace>)"
+        )
+    return target

@@ -215,7 +215,7 @@ class AnnotationTaskActor(Actor, AnnotationTaskActorInterface, Remindable):
         this task's lock, for a residual the publish saga already covers — it re-reads every task
         from its own actor and refuses a project whose tasks are not all terminal (`saga.collect`,
         `saga._refuse_if_not_terminal`), so a task that moves during `publishing` fails the publish
-        rather than riding into silver.
+        rather than riding into a publish.
         """
         if not principal:
             return
@@ -346,7 +346,7 @@ class AnnotationTaskActor(Actor, AnnotationTaskActorInterface, Remindable):
 
         Non-fatal on purpose. An annotator's submit must not fail because the project actor is
         briefly unreachable; the cost is a delayed publish, and the publish workflow re-reads the
-        tasks it is about to commit, so a stale index cannot let unreviewed work into silver.
+        tasks it is about to commit, so a stale index cannot let unreviewed work into a publish.
         """
         try:
             from annotator.projects.proxies import typed_proxy  # noqa: PLC0415 - opens a sidecar channel
@@ -376,7 +376,7 @@ class AnnotationTaskActor(Actor, AnnotationTaskActorInterface, Remindable):
         # in the endpoint. The endpoint reads the state and then invokes the actor as two separate
         # steps, so a concurrent `submit` can win the actor's turn in between: the template
         # validates the conforming draft, the task moves to `in_review`, and this write then lands
-        # violating shapes into an already-reviewed task — which publish carries into silver.
+        # violating shapes into an already-reviewed task — which a publish carries into the lakehouse.
         # Inside the actor's own serialised turn the state cannot change under the check.
         task = await self._load()
         if task is None:

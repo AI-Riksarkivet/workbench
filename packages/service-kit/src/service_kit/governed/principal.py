@@ -1,9 +1,11 @@
 """Who a verified caller is: `<idp-id>~<subject>`, the one key every grant and attribution names.
 
 The idp id names the identity provider that vouched for the caller (`WORKBENCH_OIDC_IDP_ID`), so two providers'
-subjects never share a namespace; the subject is the token's `sub` (`service_kit.governed.identity`). `kubernetes` is
-reserved for the cluster's service-account issuer, a machine, so no person's provider may be given it. The idp id's
-grammar excludes `~`, so the first `~` ends it and the subject may carry any other character.
+subjects never share a namespace; the subject is the token's `sub` (`service_kit.governed.identity`). Two kinds of idp id
+name machines, as the lakehouse names them (`docs/rask/COMMIT-EVENTS.md` § Whom a run names): `kubernetes`, the
+cluster's service-account issuer, and `<idp id>-client`, an OpenID client of the issuer `<idp id>` signed in for itself
+with the client-credentials grant. So no person's provider may be given either. The idp id's grammar excludes `~`, so
+the first `~` ends it and the subject may carry any other character.
 
 A string that names no identity provider is no principal. Every place that requires one parses it here: a grant, a
 seed, an admin list, an inbox address. A bare name is refused there, because no token can ever prove it.
@@ -22,13 +24,18 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 SEPARATOR: Final = "~"
 #: The idp id of the cluster's service-account issuer, a machine. No person's provider may be given it.
 SERVICE_ACCOUNT_IDP: Final = "kubernetes"
-#: The idp ids whose principals are machines: a person is a principal under any other.
-MACHINE_IDPS: Final = frozenset({SERVICE_ACCOUNT_IDP})
+#: What ends the idp id of an issuer's clients signed in with the client-credentials grant: `<issuer's idp id>-client`.
+CLIENT_IDP_SUFFIX: Final = "-client"
 #: The idp-id grammar: it holds no `~`, so the first `~` ends it.
 _IDP_ID: Final = re.compile(r"[a-z0-9-]+")
 #: OpenFGA's ceiling on a tuple's `user` (`TupleKey.user`, `max_bytes: 512` in openfga.proto, v1.18.3). A principal
 #: whose `user` would not fit is refused when it forms, so it is never authenticated and then refused at its first check.
 FGA_USER_MAX_BYTES: Final = 512
+
+
+def is_machine_idp(idp_id: str) -> bool:
+    """Whether `idp_id`'s principals are machines: the cluster's service accounts, or an issuer's signed-in clients."""
+    return idp_id == SERVICE_ACCOUNT_IDP or idp_id.endswith(CLIENT_IDP_SUFFIX)
 
 
 def require_idp_id(idp_id: str) -> str:

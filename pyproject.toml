@@ -92,6 +92,7 @@ known-first-party = [
     "annotator",
     "client_kit",
     "flows",
+    "scripts",
     "search",
     "service_kit",
     "tests",

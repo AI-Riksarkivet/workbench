@@ -50,9 +50,8 @@ export interface ServeProxyOptions {
  *     REST/status API. Inference lives on the Serve HTTP INGRESS at `:8000`, a different port
  *     speaking a different protocol. Nothing in the fleet routes to it.
  *
- * So this talks to the Serve ingress DIRECTLY, exactly as the only other production consumer does
- * (`services/medallion/.../htr_transcribe.py:38-42` posts image bytes to `MEDALLION_HTRFLOW_URL` and
- * also bypasses the gateway). Routing inference through `/api/serve` is a real backend change — a
+ * So this talks to the Serve ingress DIRECTLY, as a pipeline posting image bytes to a Serve app does, and
+ * bypasses the gateway. Routing inference through `/api/serve` is a real backend change — a
  * POST row on the compute proxy pointed at the Serve port, behind auth — not something a zone may
  * invent, so this does not pretend the door exists.
  *

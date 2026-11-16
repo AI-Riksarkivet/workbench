@@ -81,7 +81,7 @@ class FrameItem(BaseModel):
 
 
 class PageItem(BaseModel):
-    """A page's payload in a page table, named by its catalog id (``acme$bronze$pages``) and its ``id`` column."""
+    """A page's payload in a page table, named by its catalog id (``acme$media$pages``) and its ``id`` column."""
 
     role: Literal["page"]
     table: str = Field(min_length=1)

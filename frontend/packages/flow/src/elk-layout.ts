@@ -53,7 +53,7 @@ import type { LayoutEdge, Placed } from './layout';
  */
 let elk: InstanceType<typeof ELK> | null = null;
 
-/** The medallion/job cards, when a node has not been measured yet. */
+/** The table/job cards, when a node has not been measured yet. */
 const DEFAULT_W = 200;
 const DEFAULT_H = 64;
 

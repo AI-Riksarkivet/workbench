@@ -7,7 +7,7 @@
  * SAME `hueCss` hues the WebGPU scatter uses, so a swatch can never disagree
  * with its points. Every function here is single-responsibility + unit-testable.
  */
-import { hueCss } from './atlas-colors.ts';
+import { ATLAS_PALETTE, hueCss } from './atlas-colors.ts';
 import type { ColorBy } from './cross-filter.svelte.ts';
 
 export type ClusterLegendRow = { id: number; color: string; count: number; frac: number };
@@ -82,7 +82,9 @@ export function buildClusterLegend(
 		.map(([id, count]) => {
 			const rank = slotOf.get(id) ?? -1;
 			const color =
-				rank < 0 ? (isDark ? '#71717a' : '#a1a1aa') : hueCss(rank + 1, distinct + 1, isDark);
+				rank < 0
+					? (isDark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light).other
+					: hueCss(rank + 1, distinct + 1, isDark);
 			return { id, color, count, frac: count / max };
 		})
 		.sort((a, b) => b.count - a.count);
@@ -115,8 +117,7 @@ export function buildCategoryLegend(
 	if (!channel) return [];
 	const { codes, labels } = channel;
 	const distinct = Math.min(maxDistinct, labels.length);
-	const grey = isDark ? '#71717a' : '#a1a1aa';
-	const noiseCss = isDark ? '#52525b' : '#cccccc';
+	const { other: grey, noise: noiseCss } = isDark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light;
 	const counts = tally(codes, visible);
 	const max = maxCount(counts.values());
 	return [...counts.entries()]

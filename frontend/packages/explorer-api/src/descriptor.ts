@@ -51,6 +51,7 @@ const IdentitySchema = v.object({
 const DocumentBindingSchema = v.object({
 	table: v.string(),
 	media_blob: v.string(),
+	kind: v.optional(v.nullable(v.picklist(['image', 'audio', 'video'])), null),
 	mime: v.optional(v.nullable(v.string()), null),
 	thumbnail: v.optional(v.nullable(v.string()), null),
 	thumbnail_mime: v.optional(v.nullable(v.string()), null),
@@ -469,20 +470,16 @@ export class DatasetView {
 	/** What KIND of media the corpus holds, from its own declaration.
 	 *
 	 *  `hasMedia` only answers "is there a document binding", which is true for a page-image corpus
-	 *  as much as for video — so a consumer that branches on it alone hands a PNG to a `<video>` and
-	 *  gets `MEDIA_ERR_SRC_NOT_SUPPORTED`. The descriptor already carries the answer in
-	 *  `document.mime`; this reads it instead of assuming.
+	 *  as much as for video, so a consumer that branches on it alone hands a PNG to a `<video>` and
+	 *  gets `MEDIA_ERR_SRC_NOT_SUPPORTED`. The descriptor declares the kind in `document.kind`;
+	 *  `document.mime` names the COLUMN holding each row's media type, not a type.
 	 *
-	 *  `time` (start/end columns) is the secondary tell: only a TIMED corpus declares it, so an
-	 *  untyped mime plus a time binding still resolves to playable rather than falling back to a
-	 *  still. Order matters — mime is explicit, time is inferred. */
+	 *  `time` (start/end columns) is the fallback for a corpus that declares no kind: only a TIMED
+	 *  corpus declares it, so it resolves to playable rather than to a still. */
 	get mediaKind(): 'video' | 'audio' | 'image' | 'none' {
 		const doc = this.declared.document;
 		if (doc === null) return 'none';
-		const mime = doc.mime ?? '';
-		if (mime.startsWith('video/')) return 'video';
-		if (mime.startsWith('audio/')) return 'audio';
-		if (mime.startsWith('image/')) return 'image';
+		if (doc.kind !== null) return doc.kind;
 		return this.declared.time !== null ? 'video' : 'image';
 	}
 

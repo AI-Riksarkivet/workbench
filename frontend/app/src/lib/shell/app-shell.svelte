@@ -12,6 +12,7 @@
 	import { gsap } from 'gsap';
 	import type { ActivityFeed, NavUser, PageNav } from './nav-config.ts';
 	import { collapseCrumbs, pathCrumbs, type Crumb } from './breadcrumb.ts';
+	import { rememberOpen, rememberedOpen, sidebarKey } from './sidebar-memory.ts';
 
 	// Subtle content settle-in. Runs once when the shell MOUNTS — i.e. on a fresh
 	// document load, which is every full-page landing — so the page gently
@@ -46,6 +47,7 @@
 		// account named after the product.
 		user = null,
 		authEnabled = false,
+		principal = null,
 		pageNav = null,
 		activity = null,
 		pages = null,
@@ -60,6 +62,8 @@
 		/** `null` = no resolved identity: signed out on an auth-on stack, or auth off entirely. */
 		user?: NavUser | null;
 		authEnabled?: boolean;
+		/** Whose sidebar choice is remembered: the signed-in subject, or null where nobody signs in. */
+		principal?: string | null;
 		/** The sidebar's routes; null renders an empty rail. */
 		pageNav?: PageNav | null;
 		/** The reader's activity for the bell (see `ActivityFeed`). The shell never stores it; `null`
@@ -108,8 +112,26 @@
 	/** A crumb, and whether its path is a page a link can open. */
 	type ShellCrumb = Crumb & { page: boolean };
 
-	// Bound, so the trigger and cmd/ctrl+b open and close the rail.
-	let sidebarOpen = $state(true);
+	// Bound, so the trigger and cmd/ctrl+b open and close the rail. It starts as the collapsed icon rail and
+	// opens as the person last left it in this browser (`sidebar-memory.ts`); on a phone the sidebar is the
+	// off-canvas sheet, which this does not touch.
+	let sidebarOpen = $state(false);
+	let memoryKey: string | null = null;
+	$effect(() => {
+		let current = true;
+		void sidebarKey(principal).then((key) => {
+			if (!current) return;
+			memoryKey = key;
+			const remembered = key === null ? null : rememberedOpen(key);
+			if (remembered !== null) sidebarOpen = remembered;
+		});
+		return () => {
+			current = false;
+		};
+	});
+	function remember(open: boolean): void {
+		if (memoryKey !== null) rememberOpen(memoryKey, open);
+	}
 </script>
 
 {#snippet ancestor(crumb: ShellCrumb)}
@@ -135,7 +157,7 @@
 		document.getElementById('main-content')?.focus();
 	}}>Skip to content</a
 >
-<Sidebar.Provider bind:open={sidebarOpen} class="h-svh overflow-hidden">
+<Sidebar.Provider bind:open={sidebarOpen} onOpenChange={remember} class="h-svh overflow-hidden">
 	<!-- The one navigation, on every page. -->
 	<AppSidebar {pathname} {pageNav} />
 	<Sidebar.Inset class="flex min-w-0 flex-col overflow-hidden">

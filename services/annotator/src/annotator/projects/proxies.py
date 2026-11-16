@@ -14,7 +14,10 @@ mapping is declared — it cannot drift.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, cast
+import os
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+
+from service_kit.exceptions import ServiceUnavailableError
 
 
 if TYPE_CHECKING:
@@ -99,10 +102,31 @@ def _translating(call: Any) -> Any:
     return invoke
 
 
+#: Why the actor plane refuses in a process started without a Dapr sidecar.
+NO_SIDECAR: Final = "no Dapr sidecar is configured (DAPR_HTTP_PORT and DAPR_GRPC_PORT are unset)"
+
+
+def sidecar_configured() -> bool:
+    """Whether a Dapr sidecar runs beside this process: the sidecar announces itself to its app through
+    `DAPR_HTTP_PORT` and `DAPR_GRPC_PORT`."""
+    return bool(os.environ.get("DAPR_HTTP_PORT") or os.environ.get("DAPR_GRPC_PORT"))
+
+
 def typed_proxy(actor_type: str, actor_id: str, interface: type) -> Any:
     """A `TypedActorProxy` over a fresh sidecar channel — the lazy-import pattern every call site
     already uses (`ActorProxy` opens a channel, so importing it at module scope would make merely
-    importing an endpoint module require daprd)."""
+    importing an endpoint module require daprd).
+
+    Refused at once where no sidecar is configured: the SDK's first proxy waits for a sidecar in a blocking loop
+    (`DAPR_HEALTH_TIMEOUT`, 60 s) on the caller's thread, which is the event loop for an `async` route, so one
+    request for a project froze every request the process served (measured 2026-11-16 on the local stack: a
+    `GET /projects` held `/livez` for over 5 s).
+
+    Raises:
+        ServiceUnavailableError: No Dapr sidecar is configured.
+    """
+    if not sidecar_configured():
+        raise ServiceUnavailableError(f"the task plane is unavailable: {NO_SIDECAR}")
     from dapr.actor import ActorId, ActorProxy  # noqa: PLC0415 - deliberate, see docstring
 
     # `cast`, not a signature change: callers hand the concrete interface class, and narrowing the

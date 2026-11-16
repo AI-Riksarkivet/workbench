@@ -214,7 +214,7 @@ const DATA_ITEMS: TopNavItem[] = [
 	{
 		title: 'Namespaces',
 		href: '/lakehouse/catalog/namespaces',
-		description: 'Medallion namespaces and their maintenance policies.',
+		description: 'Namespaces and their maintenance policies.',
 	},
 	{
 		title: 'Tables',
@@ -306,7 +306,7 @@ const COMPUTE_ITEMS: TopNavItem[] = [
 		// the plane was hard to find.
 		title: 'ETL',
 		href: '/compute/etl',
-		description: 'Harvest a source into bronze — an S3 prefix, or a local directory.',
+		description: 'Harvest a source into a table: an S3 prefix, or a local directory.',
 	},
 	{ title: 'Jobs', href: '/compute/jobs', description: 'Submitted Ray jobs and their lifecycle.' },
 	{ title: 'Cluster', href: '/compute/cluster', description: 'Nodes and their resource load.' },

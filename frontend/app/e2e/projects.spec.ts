@@ -182,6 +182,9 @@ test('a manager freezes and publishes a project whose items are all finished', a
 	await page.goto('/projects/charters');
 	await page.getByTestId('tab-publish').click();
 	await page.getByRole('button', { name: 'Publish…' }).click();
+	const sent = page.waitForRequest(
+		(r) => r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/projects/charters/events'),
+	);
 
 	await page
 		.getByRole('dialog')
@@ -189,6 +192,8 @@ test('a manager freezes and publishes a project whose items are all finished', a
 		.click();
 
 	await expect(page.getByRole('heading', { level: 1, name: /Charters\s*published/ })).toBeVisible();
+	// No target named, none sent: the service publishes into its default namespace of the project's own warehouse.
+	expect((await sent).postDataJSON()).toEqual({ event: 'publish' });
 	expect(await annotatorCalls(page, who)).toContainEqual({
 		service: 'annotator',
 		method: 'POST',

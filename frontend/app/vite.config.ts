@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin, type ProxyOptions } from 'vite';
 
 // The dev server's runtime config: `WORKBENCH_APP_CONFIG_FILE` when set, else the committed
-// `dev/config.json`, which names an issuer and the workbench's own public client. The preview server
-// serves the built app as the image does, so it reads `WORKBENCH_APP_CONFIG_FILE` alone. Either way a
-// config the app cannot use fails closed; sign-in is off only where the file says `{"signIn": false}`.
+// `dev/config.json`, which turns sign-in off (`{"signIn": false}`) and names each service's public base,
+// as the local stack runs them (`scripts/local-stack.sh`). A config with sign-in names an issuer and the
+// workbench's own public client instead. The preview server serves the built app as the image does, so
+// it reads `WORKBENCH_APP_CONFIG_FILE` alone. Either way a config the app cannot use fails closed.
 const DEV_CONFIG = fileURLToPath(new URL('./dev/config.json', import.meta.url));
 
 /** The issuer's origin, when the config names an absolute issuer. */
@@ -74,9 +75,9 @@ function appConfig(): Plugin {
 }
 
 // Every `/api/*` call is same-origin. The dev server forwards them to the Gateway at
-// `WORKBENCH_EDGE_URL`, the same routes a deployed app takes. (The Playwright suite runs the built app
-// behind `e2e/edge.ts` instead.)
-const EDGE = process.env.WORKBENCH_EDGE_URL ?? 'http://localhost:8080';
+// `WORKBENCH_EDGE_URL`, the same routes a deployed app takes: the local stack's `edge.ts` serves them.
+// (The Playwright suite runs the built app behind `edge.ts` with its mocks instead.)
+const EDGE = process.env.WORKBENCH_EDGE_URL ?? 'http://127.0.0.1:8700';
 const proxy: Record<string, ProxyOptions> = { '/api': { target: EDGE, changeOrigin: true } };
 
 export default defineConfig({

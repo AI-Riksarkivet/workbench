@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { callsOf, person, signIn } from './session';
 import { EDGE } from './ports';
 
@@ -23,10 +23,177 @@ test('before a search the dataset’s documents are browsed, and one opens in th
 	const documents = page.getByRole('list', { name: 'Documents' });
 	await expect(page.getByText('Browsing 3 documents')).toBeVisible();
 	await expect(documents.getByRole('listitem')).toHaveCount(3);
+	// Each row carries its preview and its metadata with the label that says what the value is.
+	const first = documents.getByRole('listitem').first();
+	await expect(first).toContainText('Collection: Letters');
+	await expect
+		.poll(() => first.locator('img').evaluate((img: HTMLImageElement) => img.naturalWidth))
+		.toBeGreaterThan(0);
 	await documents.getByRole('button', { name: /A map of the harbour/ }).click();
 
 	const player = page.getByRole('region', { name: 'Player' });
 	await expect(player.getByRole('img', { name: 'A map of the harbour' })).toBeVisible();
+});
+
+test('media the viewer cannot sign is said plainly in the player, with no image, and a retry shows it', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await page.route('**/api/viewer/api/signed-media', (route) =>
+		route.request().method() === 'POST'
+			? route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } })
+			: route.continue(),
+	);
+	await page.goto('/datasets/acme%24letters');
+	await page
+		.getByRole('list', { name: 'Documents' })
+		.getByRole('button', { name: /A map of the harbour/ })
+		.click();
+
+	const player = page.getByRole('region', { name: 'Player' });
+	await expect(player.getByRole('alert')).toHaveText("This item's media could not be loaded.");
+	await expect(player.getByRole('img')).toHaveCount(0);
+
+	await page.unroute('**/api/viewer/api/signed-media');
+	await player.getByRole('button', { name: 'Try again' }).click();
+	await expect(player.getByRole('img', { name: 'A map of the harbour' })).toBeVisible();
+	await expect(player.getByRole('alert')).toHaveCount(0);
+});
+
+test('a recording whose media and transcript both fail says so, and one Try again brings both back', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	// The stand-in's dataset as a timed recording with a transcript.
+	await page.route('**/api/viewer/api/datasets/*/descriptor', async (route) => {
+		const answer = await route.fetch();
+		const body = await answer.json();
+		body.declared.document.kind = 'audio';
+		body.declared.time = { start: 'start', end: 'end' };
+		body.declared.capabilities = { ...body.declared.capabilities, alignments: 'chunks.alignments' };
+		await route.fulfill({ response: answer, json: body });
+	});
+	const failing = ['**/api/viewer/api/signed-media', '**/api/viewer/api/doc-chunks/**'];
+	for (const pattern of failing)
+		await page.route(pattern, (route) =>
+			route.request().method() === 'POST' || pattern.includes('doc-chunks')
+				? route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } })
+				: route.continue(),
+		);
+	await page.goto('/datasets/acme%24letters');
+	await page
+		.getByRole('list', { name: 'Documents' })
+		.getByRole('button', { name: /A map of the harbour/ })
+		.click();
+
+	const player = page.getByRole('region', { name: 'Player' });
+	await expect(player.getByRole('alert')).toHaveText("This item's media could not be loaded.");
+	await expect(player.locator('audio')).toHaveCount(0);
+
+	for (const pattern of failing) await page.unroute(pattern);
+	await player.getByRole('button', { name: 'Try again' }).click();
+	await expect(player.locator('audio')).toHaveAttribute('src', /\/api\/signed-media\//);
+	await expect(player.getByRole('alert')).toHaveCount(0);
+	await expect(player.getByText('Transcript')).toBeVisible();
+});
+
+test('a diarized dataset without voice tables says so in its search modes and its Speakers tab', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	// The stand-in's letters as a diarized recording whose voice tables are not built.
+	await page.route('**/api/viewer/api/datasets/*/descriptor', async (route) => {
+		const answer = await route.fetch();
+		const body = await answer.json();
+		body.declared.document.kind = 'audio';
+		body.declared.capabilities = { ...body.declared.capabilities, diarization: 'turns' };
+		await route.fulfill({ response: answer, json: body });
+	});
+	await page.route('**/api/viewer/api/voice/status*', (route) =>
+		route.fulfill({ json: { built: false, turns: 0, speakers: 0 } }),
+	);
+	await page.goto('/datasets/acme%24letters');
+
+	await page.getByLabel('Search mode').click();
+	await expect(
+		page.getByRole('option', { name: 'Voice — needs voice tables this dataset has not built' }),
+	).toHaveAttribute('data-disabled');
+	await page.keyboard.press('Escape');
+
+	await page
+		.getByRole('list', { name: 'Documents' })
+		.getByRole('button', { name: /A map of the harbour/ })
+		.click();
+	const player = page.getByRole('region', { name: 'Player' });
+	await player.getByRole('button', { name: 'Speakers' }).click();
+	await expect(player.getByTestId('voice-absent')).toHaveText(
+		'Voice search needs voice tables this dataset has not built.',
+	);
+	// A recording is named a recording, not a video.
+	await expect(player.getByText('No speaker turns for this recording.')).toBeVisible();
+});
+
+for (const { kind, shows } of [
+	{ kind: null, shows: "the document's image" },
+	{ kind: 'audio', shows: 'an icon of its kind' },
+] as const) {
+	test(`with no thumbnail declared, a ${kind ?? 'still-image'} document's tile shows ${shows}`, async ({
+		page,
+		context,
+	}) => {
+		await signIn(context, person('Ada'));
+		// The stand-in's dataset as one that declares no thumbnail (and, for the second case, holds audio).
+		await page.route('**/api/viewer/api/datasets/*/descriptor', async (route) => {
+			const answer = await route.fetch();
+			const body = await answer.json();
+			delete body.declared.document.thumbnail;
+			if (kind) body.declared.document.kind = kind;
+			await route.fulfill({ response: answer, json: body });
+		});
+		await page.goto('/datasets/acme%24letters');
+		await page.getByRole('button', { name: 'Grid', exact: true }).click();
+
+		const tiles = page.getByRole('list', { name: 'Documents' }).getByRole('listitem');
+		await expect(tiles).toHaveCount(3);
+		if (kind === 'audio') {
+			await expect(tiles.getByRole('img', { name: 'A recording' })).toHaveCount(3);
+		} else {
+			const image = tiles.first().locator('img');
+			await expect
+				.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth))
+				.toBeGreaterThan(0);
+		}
+	});
+}
+
+test('a dock narrowed past the breakpoint stacks its panels, and widened again shows the person’s own', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await page.goto('/datasets/acme%24letters');
+	const search = page.getByRole('searchbox');
+	const player = page.getByRole('region', { name: 'Player' });
+	await expect(player).toBeVisible();
+	/** Whether the Player sits beside the Results (wide) rather than under them (stacked); null while either is
+	 *  not laid out (the dock remounts its panels as it rearranges them). */
+	const beside = async (): Promise<boolean | null> => {
+		const [p, s] = [await player.boundingBox(), await search.boundingBox()];
+		return p && s ? p.x > s.x + 100 : null;
+	};
+	await expect.poll(beside).toBe(true);
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await expect.poll(beside).toBe(false);
+	const stacked = (await player.boundingBox())!;
+	expect(stacked.y).toBeGreaterThan((await search.boundingBox())!.y);
+
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await expect.poll(beside).toBe(true);
 });
 
 test('the hits are a list, a grid or a table, and a still-image dataset offers no clip to play', async ({
@@ -216,20 +383,11 @@ test('a thumbnail whose signed link expired is signed again and shown, not hidde
 	}
 });
 
-test('a search match is readable in dark mode: its text on its highlight meets 4.5:1', async ({
-	page,
-	context,
-}) => {
-	await signIn(context, person('Margaret'));
-	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'dark'));
-	await page.goto('/datasets/acme%24letters');
-	await searchFor(page, 'harbour');
-	const match = results(page).locator('mark').first();
-	await expect(match).toBeVisible();
-
-	// Every colour resolved by the browser itself (a canvas paints the computed CSS colour), the
-	// highlight composited over the opaque surface behind it, then WCAG 2.2's contrast ratio.
-	const ratio = await match.evaluate((mark: HTMLElement) => {
+/** WCAG 2.2's contrast ratio of an element's text on what is painted behind it: its own background composited over
+ *  the first opaque surface beneath it. Every colour is resolved by the browser itself (a canvas paints the computed
+ *  CSS colour). */
+function textContrast(target: Locator): Promise<number> {
+	return target.evaluate((el: HTMLElement) => {
 		const context = document
 			.createElement('canvas')
 			.getContext('2d', { willReadFrequently: true })!;
@@ -240,7 +398,7 @@ test('a search match is readable in dark mode: its text on its highlight meets 4
 			const [r = 0, g = 0, b = 0, a = 0] = context.getImageData(0, 0, 1, 1).data;
 			return [r, g, b, a / 255];
 		};
-		let surface: HTMLElement | null = mark.parentElement;
+		let surface: HTMLElement | null = el.parentElement;
 		let behind = rgba('white');
 		while (surface) {
 			const color = rgba(getComputedStyle(surface).backgroundColor);
@@ -250,21 +408,41 @@ test('a search match is readable in dark mode: its text on its highlight meets 4
 			}
 			surface = surface.parentElement;
 		}
-		const [hr, hg, hb, ha] = rgba(getComputedStyle(mark).backgroundColor);
+		const [hr, hg, hb, ha] = rgba(getComputedStyle(el).backgroundColor);
 		const over = (front: number, back: number): number => front * ha + back * (1 - ha);
 		const background = [over(hr, behind[0]), over(hg, behind[1]), over(hb, behind[2])];
-		const text = rgba(getComputedStyle(mark).color).slice(0, 3);
+		const text = rgba(getComputedStyle(el).color).slice(0, 3);
 		const luminance = (rgb: number[]): number => {
 			const [r = 0, g = 0, b = 0] = rgb.map((c) => {
-				const s = c / 255;
-				return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+				const v = c / 255;
+				return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 			});
 			return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 		};
 		const [hi, lo] = [luminance(text), luminance(background)].sort((x, y) => y - x);
 		return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
 	});
-	expect(ratio).toBeGreaterThanOrEqual(4.5);
+}
+
+test('dark mode is readable: a search match on its highlight and the Search button each meet 4.5:1', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Margaret'));
+	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'dark'));
+	await page.goto('/datasets/acme%24letters');
+	await searchFor(page, 'harbour');
+	const match = results(page).locator('mark').first();
+	await expect(match).toBeVisible();
+
+	const ratios = [
+		await textContrast(match),
+		await textContrast(page.getByRole('button', { name: 'Search', exact: true })),
+	];
+	expect(
+		ratios.every((ratio) => ratio >= 4.5),
+		`contrast ${ratios.map((r) => r.toFixed(2))}`,
+	).toBe(true);
 });
 
 test('a dataset opened while another one is still loading is the one the page reads', async ({

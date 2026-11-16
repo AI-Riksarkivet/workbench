@@ -73,6 +73,7 @@ def test_the_check_is_skipped_when_oidc_is_off() -> None:
         pytest.param({"WORKBENCH_OIDC_IDP_ID": None}, "WORKBENCH_OIDC_IDP_ID are required", id="no-idp-id-names-anyone"),
         pytest.param({"WORKBENCH_OIDC_AUDIENCE": None}, "WORKBENCH_OIDC_AUDIENCE", id="no-audience-of-the-workbench-own"),
         pytest.param({"WORKBENCH_OIDC_IDP_ID": "kubernetes"}, "a machine identity's idp id", id="the-clusters-idp-id"),
+        pytest.param({"WORKBENCH_OIDC_IDP_ID": "keycloak-client"}, "a machine identity's idp id", id="an-issuers-clients-idp-id"),
         pytest.param({"WORKBENCH_OIDC_IDP_ID": "Corp~1"}, "lower-case letters", id="an-idp-id-outside-the-grammar"),
         pytest.param({"WORKBENCH_OIDC_ENABLED": False}, "would serve every route to anyone", id="authentication-off-unacknowledged"),
         pytest.param({"WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": True}, "contradicts", id="authentication-on-and-acknowledged-off"),

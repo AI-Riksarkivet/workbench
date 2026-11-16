@@ -15,7 +15,7 @@ therefore leaves the index holding the task's OLD state — which is the safe di
 that moves a task toward terminal (a stale `in_review` BLOCKS publish), and the unsafe direction for
 `reopen`, the one edge that moves a task backwards out of `accepted`. That single hole is closed by
 the publish workflow re-reading the tasks it is about to publish, so drift can delay a publish but
-cannot let an unreviewed annotation into silver.
+cannot let an unreviewed annotation into a publish.
 
 Counts are derived from the index rather than stored beside it. A stored counter and a stored index
 are two truths that disagree the first time one write lands and the other does not.
@@ -37,6 +37,7 @@ from dapr.actor import Actor, ActorInterface, Remindable, actormethod
 from dapr.actor.runtime.failure_policy import ActorReminderFailurePolicy
 from pydantic import ValidationError as PydanticValidationError
 
+from annotator.core.config import get_annotator_settings
 from annotator.projects.machines import IllegalTransition, may_publish, project_transition, refuse_unreadable_ontology
 from annotator.projects.models import (
     TERMINAL_TASK_STATES,
@@ -49,7 +50,7 @@ from annotator.projects.models import (
     new_id,
 )
 from annotator.projects.ontology import LabelOntology
-from annotator.projects.publish import namespace_for
+from annotator.projects.publish import publish_namespace
 
 
 logger = logging.getLogger(__name__)
@@ -320,8 +321,8 @@ class AnnotationProjectActor(Actor, AnnotationProjectActorInterface, Remindable)
             # every published row, so a per-attempt timestamp would make a retry rewrite the dataset
             # with different values than the attempt it is resuming.
             # The door resolves this and sends it explicitly. The fallback is for a payload that
-            # names none: the silver namespace of the project's own warehouse.
-            requested_ns = str(payload.get("target_namespace") or namespace_for(project.publish_warehouse, "silver"))
+            # names none: the default publish namespace of the project's own warehouse.
+            requested_ns = str(payload.get("target_namespace") or publish_namespace(project.publish_warehouse, get_annotator_settings().publish_namespace))
             if project.pending_publish_id is None:
                 project.pending_publish_id = new_id()
                 project.pending_publish_at = datetime.now(UTC)

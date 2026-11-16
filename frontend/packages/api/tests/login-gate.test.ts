@@ -51,10 +51,10 @@ const run = (cfg: ReturnType<typeof makeOidcConfig>, event: ReturnType<typeof fa
 
 describe('login-first gate', () => {
 	test('a signed-out browser page navigation redirects to /auth/login?redirect=<original path>', async () => {
-		const res = await run(CFG, fakeEvent('/data/tables?ns=bronze'));
+		const res = await run(CFG, fakeEvent('/data/tables?ns=media'));
 		expect(res.status).toBe(302);
 		expect(res.headers.get('location')).toBe(
-			`/auth/login?redirect=${encodeURIComponent('/data/tables?ns=bronze')}`,
+			`/auth/login?redirect=${encodeURIComponent('/data/tables?ns=media')}`,
 		);
 	});
 

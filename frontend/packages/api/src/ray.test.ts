@@ -2,8 +2,8 @@
  * The Ray job payload contract, and the one field that took the operator's whole view of the cluster
  * down.
  *
- * `metadata` was required. Ray OMITS the key entirely when the submitter set none — and only the
- * medallion's own submit path sets it (`rask.originator`, `rask.project`). So a job submitted by a
+ * `metadata` was required. Ray OMITS the key entirely when the submitter set none, and only some
+ * submitters set it (`rask.originator`, `rask.project`). So a job submitted by a
  * person at the CLI, by another tool, or by a workload that opted out made `getRayJobs` throw
  * `ValiError: Invalid key: Expected "metadata" but received undefined`, and `/compute/jobs` answered
  * 500 with `{"message":"Internal Error"}`.
@@ -49,14 +49,13 @@ describe('RayJobSchema', () => {
 	});
 
 	it('tolerates metadata when it is present — which, through rask, it never is', () => {
-		// THIS DOES NOT DESCRIBE `/api/ray/jobs`, and its previous name ("the medallion path") claimed
-		// it did. `ray_kit.schemas.RayJob` is `extra="ignore"` and does not declare `metadata`, so the
+		// THIS DOES NOT DESCRIBE `/api/ray/jobs`. `ray_kit.schemas.RayJob` is `extra="ignore"` and does not declare `metadata`, so the
 		// compute service strips it from every row and this field can only ever be its `{}` default
 		// there. A suite on each side of the wire can assert its own declaration of this field and stay
 		// green while the two disagree.
 		//
-		// Stripping is CORRECT and security-motivated rather than an oversight: the medallion's own
-		// submitter puts `rask.token` into that dict (`ray_submit.py:166`) alongside `rask.originator`
+		// Stripping is CORRECT and security-motivated rather than an oversight: a submitter may put
+		// `rask.token` into that dict (`ray_submit.py:166`) alongside `rask.originator`
 		// and `rask.project`, so retaining it whole would put a token into every jobs-board row.
 		//
 		// The schema still accepts it because this parser is also pointed at Ray's OWN dashboard API,

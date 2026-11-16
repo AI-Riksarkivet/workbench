@@ -551,7 +551,7 @@ async def test_a_draft_cannot_be_written_after_the_task_left_CLAIMED() -> None:
     """The TOCTOU the audit proved: the endpoint reads the state and invokes the actor as two
     steps, so a concurrent submit can land in between — the ontology validates the conforming
     draft, the task moves on, and the late write puts never-validated shapes into a reviewed task
-    that publish then carries into silver. Inside the actor's own turn the state cannot move."""
+    that publish then carries into the lakehouse. Inside the actor's own turn the state cannot move."""
     ontology = {"classes": [{"name": "cat", "tools": ["tag"], "required": True}]}
     actor = await _claimed_with_ontology(ontology, [{"shape_type": "tag", "label": "cat"}])
     assert (await actor.fire(_verified({"event": "submit", "actor": "gina"})))["state"] in {"in_review", "accepted"}

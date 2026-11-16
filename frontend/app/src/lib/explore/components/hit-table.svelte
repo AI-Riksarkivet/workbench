@@ -166,8 +166,7 @@
 </script>
 
 <script lang="ts">
-	import SignedImage from '#lib/explore/components/signed-image.svelte';
-	import { thumbnailUrl } from '#lib/explore/media.ts';
+	import RowPreview from '#lib/explore/components/row-preview.svelte';
 	import { queryTerms, makeHighlighter, hitKey } from '#lib/explore/utils.ts';
 	import { audioPreview } from '#lib/explore/audio-preview.svelte.ts';
 	import { ChevronDown, ChevronUp, Play, Pause } from '@lucide/svelte';
@@ -498,10 +497,7 @@
 							</td>
 						{:else if c.key === 'thumbnail'}
 							<td class="px-3 py-1.5 align-top">
-								<SignedImage
-									src={thumbnailUrl(hit)}
-									class="bg-muted h-9 w-16 rounded-md object-cover"
-								/>
+								<RowPreview row={hit} class="bg-muted h-9 w-16 rounded-md object-cover" />
 							</td>
 						{:else if c.key === 'text'}
 							{@const body = view.body(hit)}

@@ -46,13 +46,13 @@ describe('pathCrumbs', () => {
 	});
 
 	it('percent-decodes a segment for the label but keeps the href encoded', () => {
-		// A table/dataset id reaches the URL encoded (silver$features -> silver%24features);
+		// A table/dataset id reaches the URL encoded (acme$features -> acme%24features);
 		// the crumb must READ as the id, while still linking to the path that resolves.
-		const crumbs = pathCrumbs('/lineage/datasets/silver%24features');
+		const crumbs = pathCrumbs('/lineage/datasets/acme%24features');
 		expect(crumbs.at(-1)).toEqual({
-			id: 'lineage/datasets/silver%24features',
-			label: 'silver$features',
-			href: '/lineage/datasets/silver%24features',
+			id: 'lineage/datasets/acme%24features',
+			label: 'acme$features',
+			href: '/lineage/datasets/acme%24features',
 		});
 	});
 
@@ -86,7 +86,7 @@ describe('projectFromHost', () => {
 // ellipsis menu. The invariant that matters: the current page — the last crumb — is never what
 // disappears, and nothing is lost, only moved off the row.
 describe('collapseCrumbs', () => {
-	const trail = pathCrumbs('/data/warehouses/acme-wh/namespaces/gold/tables/gold$catalog');
+	const trail = pathCrumbs('/data/warehouses/acme-wh/namespaces/media/tables/media$catalog');
 
 	it('leaves a trail that already fits untouched', () => {
 		const fits = pathCrumbs('/data/tables');
@@ -96,7 +96,7 @@ describe('collapseCrumbs', () => {
 	it('folds the middle, keeping the first crumb and the current page', () => {
 		const { lead, hidden, tail } = collapseCrumbs(trail, 4);
 		expect(lead.map((c) => c.label)).toEqual(['Data']);
-		expect(tail.map((c) => c.label)).toEqual(['Gold', 'Tables', 'gold$catalog']);
+		expect(tail.map((c) => c.label)).toEqual(['Media', 'Tables', 'media$catalog']);
 		expect(hidden.map((c) => c.label)).toEqual(['Warehouses', 'Acme wh', 'Namespaces']);
 		// Nothing is dropped — every crumb is still somewhere, so every ancestor stays reachable.
 		expect([...lead, ...hidden, ...tail]).toEqual(trail);
@@ -105,7 +105,7 @@ describe('collapseCrumbs', () => {
 	it('keeps the current page at the narrowest setting', () => {
 		const { lead, hidden, tail } = collapseCrumbs(trail, 2);
 		expect(lead.map((c) => c.label)).toEqual(['Data']);
-		expect(tail.map((c) => c.label)).toEqual(['gold$catalog']);
+		expect(tail.map((c) => c.label)).toEqual(['media$catalog']);
 		expect([...lead, ...hidden, ...tail]).toEqual(trail);
 	});
 

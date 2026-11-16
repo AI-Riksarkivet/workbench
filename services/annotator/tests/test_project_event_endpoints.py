@@ -150,6 +150,26 @@ def test_publish_asks_the_projects_own_role_and_nothing_of_the_lakehouse(wired: 
     assert project.fired, "the transition never reached the actor"
 
 
+@pytest.mark.parametrize(
+    ("named", "status", "pinned"),
+    [
+        pytest.param(None, 200, "acme$published", id="none-named-is-the-default-of-its-warehouse"),
+        pytest.param("acme$labels$v2", 200, "acme$labels$v2", id="a-namespace-of-its-warehouse"),
+        pytest.param("labels", 400, None, id="a-bare-name-is-no-warehouse"),
+        pytest.param("other$labels", 400, None, id="another-warehouse"),
+    ],
+)
+def test_a_publish_lands_in_its_projects_own_warehouse(wired: Any, named: str | None, status: int, pinned: str | None) -> None:
+    """The target the actor pins is a namespace of the project's own warehouse: the default one when the request names
+    none, the one it names when that is inside it, and anything else is refused before the project moves."""
+    client, project, _t, _seen = wired(ALL_PUBLISH_DOORS)
+
+    r = client.post("/projects/p1/events", json={"event": "publish", **({"target_namespace": named} if named else {})})
+
+    assert r.status_code == status, r.text
+    assert [fired["target_namespace"] for fired in project.fired] == ([pinned] if pinned else [])
+
+
 def test_publish_without_the_projects_publish_role_is_403(wired: Any) -> None:
     client, project, _t, _seen = wired({"can_view"})
 

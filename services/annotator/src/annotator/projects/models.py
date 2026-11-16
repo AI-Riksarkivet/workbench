@@ -89,16 +89,16 @@ class ItemSource(BaseModel):
     kind: Literal["chunks", "scope", "corpus"]
     keys: list[str] = Field(default_factory=list)
     where: str | None = None
-    #: The source dataset's version AT SEND TIME — §4.5's reproducibility capture, informational
-    #: for lineage only, never load-bearing for correctness. When every published item shares one
-    #: dataset at one captured version, the publish pins it (`publish.source_pin`) and the CREATE
-    #: RunEvent gains its READ edge; anything mixed or uncaptured pins nothing — a fabricated pin
-    #: is a lie (§7.2).
-    dataset_version: int | None = None
+    #: The version of `table` the sender was looking at when they sent the item (§4.5's reproducibility capture). The
+    #: sender names it; the send keeps it only once the catalog confirms `table` has that version, as the sender reads it
+    #: (`project_events._refuse_unheld_versions`), and drops it when the source names no table. Every kept
+    #: (table, version) of the published items is an input the publish names (`publish.publish_inputs`); an item with
+    #: none names none, and a target under the run rule then refuses the publish before it writes.
+    dataset_version: int | None = Field(default=None, ge=1)
     #: The governed table `dataset_version` is a version of, written by the server at send and never taken from the
     #: sender: the source itself when it names a table, else its dataset's default row table as the catalog showed the
-    #: sender (`annotator.corpus.input_tables`). The publish pins this table. None on a local stack, where the pin reads
-    #: `where`.
+    #: sender (`annotator.corpus.input_tables`); None for a dataset that declares no search. Only this table is ever a
+    #: publish's input.
     table: str | None = None
 
 
@@ -329,7 +329,8 @@ class AnnotationProject(BaseModel):
 
     project_id: str = Field(default_factory=new_id)
     tenant: str
-    #: The lakehouse warehouse this project's publishes land in, as `<warehouse>$silver`. A rask project can hold
+    #: The lakehouse warehouse this project's publishes land in (`<warehouse>$<ANNOTATOR_PUBLISH_NAMESPACE>` unless a publish
+    #: names another namespace in it). A rask project can hold
     #: several warehouses, so the warehouse is the project creator's choice; empty means the warehouse named like the
     #: tenant, which is the one rask's tenant set-up makes for a project (`docs/rask/COMMIT-EVENTS.md`).
     warehouse: str = Field(default="", pattern=rf"^(?:{CONTROL_ID_PATTERN})?$")

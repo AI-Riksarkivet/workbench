@@ -3,7 +3,7 @@
 	import { fmtTime } from '#lib/explore/utils.ts';
 	import { AudioLines } from '@lucide/svelte';
 
-	/** "Find this voice" pick: a whole lane (per-video speaker centroid) or one
+	/** "Find this voice" pick: a whole lane (per-item speaker centroid) or one
 	 *  diarized turn (right-click on a segment). The host owns doc_id and turns
 	 *  this into a `VoiceAnchor` — the timeline never navigates itself. */
 	type VoicePick = { speaker: string } | { turnId: number };
@@ -19,6 +19,8 @@
 		/** Gates the voice affordances on GET /api/voice/status `built`. */
 		voiceEnabled?: boolean;
 		onFindVoice?: (pick: VoicePick) => void;
+		/** What one item of the dataset is called (`mediaNoun`): the whole-item scope and the voice search name it. */
+		noun?: string;
 	};
 	let {
 		turns,
@@ -29,13 +31,15 @@
 		onSeek,
 		voiceEnabled = false,
 		onFindVoice,
+		noun = 'recording',
 	}: Props = $props();
+	const Noun = $derived(noun.charAt(0).toUpperCase() + noun.slice(1));
 
 	const showVoice = $derived(voiceEnabled && onFindVoice !== undefined);
 
 	// Zoom: 'chunk' = just the playing chunk (compact — a chunk has 1–3 speakers);
-	// 'video' = the whole recording (every speaker).
-	let scope = $state<'chunk' | 'video'>('chunk');
+	// 'whole' = the whole item (every speaker).
+	let scope = $state<'chunk' | 'whole'>('chunk');
 	const canChunk = $derived(chunkStart != null && chunkEnd != null && chunkEnd > chunkStart);
 
 	const win = $derived.by(() => {
@@ -113,16 +117,18 @@
 				</button>
 				<button
 					type="button"
-					onclick={() => (scope = 'video')}
-					class="border-border border-l px-1.5 py-0.5 transition-colors {scope === 'video'
+					onclick={() => (scope = 'whole')}
+					class="border-border border-l px-1.5 py-0.5 transition-colors {scope === 'whole'
 						? 'bg-secondary text-foreground'
 						: 'hover:bg-muted hover:text-foreground'}"
 				>
-					Video
+					{Noun}
 				</button>
 			</div>
 			<span class="tabular-nums">
-				{fmtTime(win.lo)} – {fmtTime(win.hi)} · {scope === 'chunk' ? 'current chunk' : 'full video'}
+				{fmtTime(win.lo)} – {fmtTime(win.hi)} · {scope === 'chunk'
+					? 'current chunk'
+					: `whole ${noun}`}
 			</span>
 		</div>
 
@@ -144,8 +150,8 @@
 					{#if showVoice}
 						<button
 							type="button"
-							title="Find this voice in other videos"
-							aria-label={`Find ${speaker}'s voice in other videos`}
+							title="Find this voice in other {noun}s"
+							aria-label={`Find ${speaker}'s voice in other ${noun}s`}
 							onclick={() => onFindVoice?.({ speaker })}
 							class="text-muted-foreground hover:bg-muted hover:text-foreground ml-auto shrink-0 rounded-md p-0.5 transition-colors"
 						>

@@ -1,6 +1,6 @@
-"""The document viewer's read path — page images out of a BRONZE blob-v2 dataset.
+"""The document viewer's read path — page images out of a blob-v2 page dataset.
 
-Bronze page datasets store the image bytes in a blob-v2 column (``payload``) alongside the tabular
+Page datasets store the image bytes in a blob-v2 column (``payload``) alongside the tabular
 columns that say which page each one is. Serving them needs two things to be right, and each of them
 has already been got wrong once.
 
@@ -67,7 +67,7 @@ _PAGE_COLUMNS = ["id", "source_uri", "stage"]
 
 
 class Page(BaseModel):
-    """One page in a bronze dataset — metadata only; the bytes come from ``GET /api/page``."""
+    """One page in a page dataset — metadata only; the bytes come from ``GET /api/page``."""
 
     id: int
     source_uri: str
@@ -118,7 +118,7 @@ class Page(BaseModel):
 
 
 class PageListing(BaseModel):
-    #: The catalog table id these pages came from (e.g. acme$bronze$pages).
+    #: The catalog table id these pages came from (e.g. acme$media$pages).
     dataset: str
     pages: list[Page]
 
@@ -160,7 +160,7 @@ def sniff_media_type(payload: bytes) -> str:
 
 
 def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lance.LanceDataset:
-    """Open a catalog table by its id (``acme$bronze$pages``), through the namespace as the caller.
+    """Open a catalog table by its id (``acme$media$pages``), through the namespace as the caller.
 
     THROUGH THE CATALOG, never a caller-supplied URI. Taking an ``s3://`` parameter would let a caller point this
     endpoint at any object it names; resolving the id at the catalog keeps the viewer to the tables the catalog governs,
@@ -283,11 +283,11 @@ def _read_all(blob: BlobFile | BytesIO, size: int) -> bytes:
         return f.read(size)
 
 
-@router.get("/pages", summary="Pages in a bronze page dataset")
+@router.get("/pages", summary="Pages in a page dataset")
 async def list_pages(
     state: StateDep,
     caller: CallerDep,
-    table: Annotated[str, Query(description="Catalog table id, e.g. acme$bronze$pages.")],
+    table: Annotated[str, Query(description="Catalog table id, e.g. acme$media$pages.")],
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> PageListing:
     """Page metadata, in dataset order.
@@ -329,7 +329,7 @@ async def list_pages(
 async def get_page(
     state: StateDep,
     caller: CallerDep,
-    table: Annotated[str, Query(description="Catalog table id, e.g. acme$bronze$pages.")],
+    table: Annotated[str, Query(description="Catalog table id, e.g. acme$media$pages.")],
     page_id: Annotated[int, Query(alias="id", ge=0, description="The page's `id` column value.")],
 ) -> Response:
     """The raw image bytes for one page.

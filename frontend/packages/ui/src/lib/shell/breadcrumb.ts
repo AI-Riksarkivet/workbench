@@ -40,8 +40,8 @@ const INITIALISMS = new Set([
 ]);
 
 /** Percent-decode a path segment for display, falling back to the raw text on a malformed
- *  escape (`decodeURIComponent` throws on a lone `%`). Ids like `silver$features` reach the
- *  URL encoded (`silver%24features`), and the raw form is unreadable in a breadcrumb. */
+ *  escape (`decodeURIComponent` throws on a lone `%`). Ids like `acme$features` reach the
+ *  URL encoded (`acme%24features`), and the raw form is unreadable in a breadcrumb. */
 function humanise(seg: string): string {
 	let decoded = seg;
 	try {
@@ -50,11 +50,11 @@ function humanise(seg: string): string {
 		// keep the raw segment
 	}
 	const spaced = decoded.replace(/-/g, ' ');
-	// A segment that is not plain lowercase words is an IDENTIFIER — `silver$features`, `A0060198`, a
+	// A segment that is not plain lowercase words is an IDENTIFIER — `acme$features`, `A0060198`, a
 	// uuid, a table name — and is left EXACTLY as it is. Capitalising a dataset id would misreport
 	// the data the page is about, which is a worse failure than an ugly crumb. The guard tests the
-	// WHOLE label, not just its first character: `gold$catalog` starts with a lowercase letter but is
-	// an identifier, and a first-char-only check rendered it `Gold$catalog`.
+	// WHOLE label, not just its first character: `media$catalog` starts with a lowercase letter but is
+	// an identifier, and a first-char-only check rendered it `Media$catalog`.
 	if (!/^[a-z][a-z ]*$/.test(spaced)) return spaced;
 
 	// Uppercase the initialisms, then sentence-case the rest. Per-word TITLE case is still refused —

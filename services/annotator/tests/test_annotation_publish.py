@@ -238,66 +238,48 @@ def test_the_plan_converts_to_arrow_under_the_declared_schema() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-# The reproducibility pin (the lineage READ edge) — captured at send, never fabricated
+# The inputs (the lineage READ edges) — captured at send, never fabricated
 # --------------------------------------------------------------------------------------------------
 
 
-def _pin_task(task_id: str, dataset: str | None, version: int | None) -> Task:
+def _pin_task(task_id: str, table: str | None, version: int | None, where: str | None = None) -> Task:
+    """A task whose send stamped ``table`` (the server's) and kept ``version`` of it; ``where`` is the dataset sent."""
     return Task(
         task_id=task_id,
         project_id="p1",
         state=TaskState.ACCEPTED,
         submitted_by="gina",
-        source={"kind": "chunks", "keys": [task_id], "where": dataset, "dataset_version": version},
+        source={"kind": "chunks", "keys": [task_id], "where": where or table, "table": table, "dataset_version": version},
         media={"kind": "image"},
     )
 
 
-def test_source_pin_pins_exactly_one_dataset_at_one_version() -> None:
-    """The dataset is a namespace-qualified CATALOG TABLE id, because that is what the pin becomes.
-
-    This case used to assert a bare `"demo"`, which pinned the defect: the pin travels to the
-    catalog as a table reference and a bare word is not one."""
-    from annotator.projects.publish import source_pin
-
-    project = AnnotationProject(project_id="p1", tenant="acme", slug="vasa")
-    pairs = [(_pin_task("t0", "bronze$pages", 24), None), (_pin_task("t1", "bronze$pages", 24), None)]
-    plan = build_plan(project, pairs, publish_id="tok", published_at=NOW)
-
-    assert source_pin(plan) == ("bronze$pages", 24)
-
-
 @pytest.mark.parametrize(
-    ("specs", "why"),
+    ("specs", "tables", "uncaptured"),
     [
-        ([("bronze$pages", 24), ("bronze$other", 3)], "two datasets — a single pin would lie about one of them"),
-        ([("bronze$pages", 24), ("bronze$pages", 25)], "two VERSIONS of one dataset — same lie"),
-        pytest.param([(None, None)], "no dataset recorded", id="specs4-no dataset recorded"),
+        pytest.param([("acme$media$pages", 24), ("acme$media$pages", 24)], [("acme$media$pages", 24)], 0, id="one-table-one-version"),
         pytest.param(
-            [(None, None), ("bronze$pages", 24)],
-            "an item with NO recorded dataset mixed with a captured one — a pin would claim provenance some items never had",
-            id="specs5-an item with NO recorded dataset mixed with a captured one — a pin would claim provenance some items never had",
+            [("acme$media$pages", 25), ("acme$media$pages", 24), ("acme$media$other", 3)],
+            [("acme$media$other", 3), ("acme$media$pages", 24), ("acme$media$pages", 25)],
+            0,
+            id="every-table-and-version",
         ),
-        # Observed live 2026-08-03: `where` carries the MEDIA dataset name, and for an unregistered
-        # corpus that is a bare word. Sent as a table reference it made the catalog authorize
-        # `table:transcripts_v2` — an object that does not exist — and FGA denies before checking
-        # existence, so the WHOLE publish failed with "can_get_metadata required" for a provenance
-        # nicety. An unregistered corpus has no catalog node to draw a READ edge to.
-        pytest.param(
-            [("transcripts_v2", 1)],
-            "a bare media dataset name is not a catalog table reference",
-            id="specs6-a bare media dataset name is not a catalog table reference",
-        ),
+        pytest.param([(None, None), ("acme$media$pages", 24)], [("acme$media$pages", 24)], 1, id="an-item-that-names-no-table"),
+        pytest.param([("acme$media$pages", None)], [], 1, id="a-version-not-captured"),
     ],
 )
-def test_source_pin_refuses_anything_ambiguous(specs: list, why: str) -> None:
-    from annotator.projects.publish import source_pin
+def test_publish_inputs_name_every_captured_table_version_and_count_the_rest(
+    specs: list[tuple[str | None, int | None]], tables: list[tuple[str, int]], uncaptured: int
+) -> None:
+    from annotator.projects.publish import publish_inputs
 
     project = AnnotationProject(project_id="p1", tenant="acme", slug="vasa")
-    pairs = [(_pin_task(f"t{i}", ds, v), None) for i, (ds, v) in enumerate(specs)]
+    pairs = [(_pin_task(f"t{i}", table, v, where="acme$notes" if table is None else None), None) for i, (table, v) in enumerate(specs)]
     plan = build_plan(project, pairs, publish_id="tok", published_at=NOW)
 
-    assert source_pin(plan) is None, why
+    inputs = publish_inputs(plan)
+
+    assert (inputs.tables, inputs.uncaptured) == (tables, uncaptured)
 
 
 # --------------------------------------------------------------------------------------------------

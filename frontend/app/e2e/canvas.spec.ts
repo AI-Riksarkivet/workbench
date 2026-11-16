@@ -23,12 +23,18 @@ async function as(context: BrowserContext, name: string): Promise<MockIdentity> 
 	return who;
 }
 
-/** Open the item's labeling page and wait for its annotations to be on the canvas, and, beside it, for the filmstrip
- *  the queue's read fills: the canvas refits the picture when the strip takes its width, and a click aimed before that
- *  lands beside the shape. */
+/** Wait until the canvas says it takes input (`data-ready`, `aria-busy` off): the picture fitted, the annotations drawn,
+ *  the controller attached, and no page transition covering it, during which every press goes to the document root. */
+async function ready(page: Page): Promise<void> {
+	await expect(page.getByTestId('canvas-region')).toHaveAttribute('data-ready', 'true');
+}
+
+/** Open the item's labeling page and wait for the canvas to be ready, and, beside it, for the filmstrip the queue's
+ *  read fills: the canvas refits the picture when the strip takes its width, and a click aimed before that lands
+ *  beside the shape. */
 async function openItem(page: Page, { strip = true } = {}): Promise<void> {
 	await page.goto('/projects/pages/tasks/pages-t1?project=pages');
-	await expect(page.getByTestId('annotate-status')).toContainText('2 annotations');
+	await ready(page);
 	if (strip)
 		await expect(
 			page.getByRole('navigation', { name: 'Your claimed items' }).getByRole('link'),
@@ -60,6 +66,7 @@ async function onScreen(
 	page: Page,
 	at: { x: number; y: number },
 ): Promise<{ x: number; y: number }> {
+	await ready(page);
 	await fitted(page);
 	const box = await page.locator('canvas').first().boundingBox();
 	if (!box) throw new Error('the canvas has no box: the engine never rendered');
@@ -767,8 +774,18 @@ test('the queue’s next claimed item is one step away, in the stream and the fi
 	await expect(
 		page.getByRole('navigation', { name: 'Your claimed items' }).getByRole('link'),
 	).toHaveCount(2);
+	// The step is a page transition, slowed here so the next item has loaded while it still runs: until it ends the
+	// browser sends every press to the document root, so the canvas says it is busy and only then ready.
+	await page.addStyleTag({
+		content:
+			'::view-transition-old(*), ::view-transition-new(*) { animation-duration: 3s !important; }',
+	});
 	await stream.getByRole('link', { name: 'Next item in your queue' }).click();
 	await expect(page).toHaveURL(/\/projects\/pages\/tasks\/pages-t2\?project=pages$/);
-	await expect(page.getByRole('application', { name: 'Labeling canvas: map-003/0' })).toBeVisible();
+	const region = page.getByRole('application', { name: 'Labeling canvas: map-003/0' });
+	await expect(page.getByTestId('annotate-status')).toContainText(/\d+ annotations?/);
+	await expect(region).toHaveAttribute('aria-busy', 'true');
+	await expect(region).toHaveAttribute('data-ready', 'true');
+	await expect(region).toHaveAttribute('aria-busy', 'false');
 	await expect(stream).toContainText('item 2 / 2');
 });

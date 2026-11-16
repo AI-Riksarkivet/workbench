@@ -8,7 +8,7 @@
 	 * widths and wrap and the grid's column count are the reader's preferences, kept in this browser.
 	 */
 	import { page } from '$app/state';
-	import SignedImage from '#lib/explore/components/signed-image.svelte';
+	import RowPreview from '#lib/explore/components/row-preview.svelte';
 	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
 	import { selectionKeys } from '#lib/projects/send.ts';
 	import { projectOf } from '#lib/project.ts';
@@ -40,7 +40,6 @@
 	import SearchBar from '#lib/explore/components/search-bar.svelte';
 	import ColumnsMenu from '#lib/explore/components/columns-menu.svelte';
 	import { explore, MAP_ROWS_MAX, PAGE_STEP, PER_PAGE } from '#lib/explore/explore.svelte.ts';
-	import { thumbnailUrl } from '#lib/explore/media.ts';
 	import {
 		loadCols,
 		loadTablePrefs,
@@ -467,10 +466,7 @@
 									{#each docCols as c (c.key)}
 										{#if c.key === 'thumbnail'}
 											<td class="px-3 py-1.5 align-top">
-												<SignedImage
-													src={thumbnailUrl(doc)}
-													class="bg-muted h-9 w-16 rounded-md object-cover"
-												/>
+												<RowPreview row={doc} class="bg-muted h-9 w-16 rounded-md object-cover" />
 											</td>
 										{:else}
 											<td
@@ -499,6 +495,7 @@
 			{:else}
 				<ul class="divide-border divide-y" aria-label="Documents">
 					{#each docs as doc (ds.docId(doc))}
+						{@const shownMeta = ds.metadata(doc).find((m) => m.value !== ds.title(doc))}
 						<li>
 							<button
 								type="button"
@@ -506,10 +503,14 @@
 								aria-pressed={activeDocId === ds.docId(doc)}
 								class="hover:bg-muted/60 focus-visible:ring-ring aria-pressed:bg-primary/10 flex w-full items-center gap-3 px-4 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset"
 							>
+								<RowPreview row={doc} class="h-9 w-16 shrink-0 rounded-md object-cover" />
 								<span class="min-w-0 flex-1 truncate text-sm">{ds.title(doc)}</span>
-								<span class="text-muted-foreground shrink-0 truncate font-mono text-xs">
-									{ds.metadata(doc).find((m) => m.value !== ds.title(doc))?.value ?? ''}
-								</span>
+								<!-- A value is shown with its declared label, so a count or a length is never a bare number. -->
+								{#if shownMeta}
+									<span class="text-muted-foreground shrink-0 truncate text-xs">
+										{shownMeta.label}: <span class="font-mono">{shownMeta.value}</span>
+									</span>
+								{/if}
 							</button>
 						</li>
 					{/each}

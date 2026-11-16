@@ -40,13 +40,33 @@ export function hexToRgb(hex: string): Rgb {
 
 /** Ranked hue for index `i` of `n` distinct categories. `dark` follows the app
  *  theme (the lightness the inline `hsl()` used). */
+/**
+ * The atlas's colour tokens per theme: the lightness of every cluster or category hue, the grey of the points past the
+ * ranked hues (`other`), and the grey of the clustering's noise. One place, read by the WebGPU scatter (which takes
+ * bytes, not CSS) and by the legend, so a swatch and its points cannot disagree.
+ *
+ * On the dark `--background` (oklch(0.13 0.006 270)) each is a graphic that must clear WCAG 2.2 1.4.11's 3:1, measured
+ * 2026-11-16 by the sRGB relative-luminance formula: the darkest hue at lightness 0.58 (the blues) 3.37:1, `other`
+ * 4.16:1, `noise` 3.81:1. None is decorative: a click on any point, a noise point included, opens its row, so each
+ * is drawn opaque (`NOISE_ALPHA`), and the noise is told apart by being grey, not by fading.
+ */
+export const ATLAS_PALETTE = {
+	light: { hueLightness: 0.48, other: '#a1a1aa', noise: '#cccccc' },
+	dark: { hueLightness: 0.58, other: '#71717a', noise: '#6b6b73' },
+} as const;
+
+/** The opacity, out of 255, the scatter draws noise points at: opaque, so their grey keeps its 3:1. */
+export const NOISE_ALPHA = 255;
+
+const paletteOf = (dark: boolean) => (dark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light);
+
 export function hueRgb(i: number, n: number, dark: boolean): Rgb {
-	return hslToRgb(Math.round((i * 360) / Math.max(1, n)), 0.62, dark ? 0.58 : 0.48);
+	return hslToRgb(Math.round((i * 360) / Math.max(1, n)), 0.62, paletteOf(dark).hueLightness);
 }
 
 /** The matching CSS string for a legend swatch — same hue as `hueRgb`. */
 export function hueCss(i: number, n: number, dark: boolean): string {
-	return `hsl(${Math.round((i * 360) / Math.max(1, n))} 62% ${dark ? 58 : 48}%)`;
+	return `hsl(${Math.round((i * 360) / Math.max(1, n))} 62% ${Math.round(paletteOf(dark).hueLightness * 100)}%)`;
 }
 
 /** Precompute the `distinct` ranked hues once (rank → Rgb), so a per-point

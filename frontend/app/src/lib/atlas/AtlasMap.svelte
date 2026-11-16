@@ -28,7 +28,14 @@
 	import { gpuUnsupportedReason } from '#lib/gpu/gpu-support.ts';
 	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { buildGrid, nearestIndex, type SpatialGrid } from './atlas-grid.ts';
-	import { hexToRgb, hueRgb, buildHuePalette, type Rgb } from './atlas-colors.ts';
+	import {
+		ATLAS_PALETTE,
+		NOISE_ALPHA,
+		hexToRgb,
+		hueRgb,
+		buildHuePalette,
+		type Rgb,
+	} from './atlas-colors.ts';
 	import { indicesInPolygon, type Pt } from './atlas-geometry.ts';
 	import AtlasTooltip from './AtlasTooltip.svelte';
 	import AtlasLegend from './AtlasLegend.svelte';
@@ -82,6 +89,18 @@
 	let yBits = $state.raw<Uint16Array | null>(null);
 	// Data extent computed from the decoded f32 x/y (same source the grid uses) so
 	// GpuScatter's camera fit matches the rendered f16 positions.
+	// The toolbar's and the status bar's heights, so the fit keeps the points out from under them: each sits 12 px
+	// (`top-3`, `bottom-3`) from its edge, and the points keep 8 px clear of it.
+	let toolbarH = $state(0);
+	let statusH = $state(0);
+	const OVERLAY_EDGE = 12;
+	const OVERLAY_CLEAR = 8;
+	const fitInsets = $derived({
+		top: toolbarH > 0 ? toolbarH + OVERLAY_EDGE + OVERLAY_CLEAR : 0,
+		right: 0,
+		bottom: statusH > 0 ? statusH + OVERLAY_EDGE + OVERLAY_CLEAR : 0,
+		left: 0,
+	});
 	let fitBounds = $state.raw<{ minX: number; minY: number; maxX: number; maxY: number }>({
 		minX: 0,
 		minY: 0,
@@ -235,13 +254,11 @@
 
 	// Colour math (hslToRgb / hexToRgb / hueRgb / hueCss / buildHuePalette) is in
 	// ./atlas-colors; the derived swatch/point colours below pass the live theme.
-	const NOISE_RGB = $derived(hexToRgb(isDark ? '#52525b' : '#cccccc'));
-	const OTHER_RGB = $derived(hexToRgb(isDark ? '#71717a' : '#a1a1aa'));
+	const NOISE_RGB = $derived(hexToRgb((isDark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light).noise));
+	const OTHER_RGB = $derived(hexToRgb((isDark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light).other));
 	const ACCENT_RGB = $derived(hueRgb(1, 4, isDark));
 	// The canvas clears to the page's own `--background`, read again when the theme changes.
 	const BG_COLOR = $derived((void isDark, themeBackground()));
-
-	const NOISE_ALPHA = 70; // HDBSCAN noise: muted so coloured clusters dominate
 
 	/**
 	 * THEME-INDEPENDENT size ranking. `slotOf` maps clusterId → its dense rank
@@ -703,6 +720,7 @@
 					onLasso={onScatterLasso}
 					{mode}
 					markerXY={activeMarkerXY}
+					insets={fitInsets}
 				/>
 			{/if}
 
@@ -710,6 +728,7 @@
 
 			<!-- toolbar -->
 			<div
+				bind:offsetHeight={toolbarH}
 				class="border-border bg-card/85 absolute top-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1.5 rounded-lg border p-1 text-xs shadow-sm backdrop-blur"
 			>
 				<span class="text-muted-foreground px-1.5">{(pts.count ?? 0).toLocaleString()} pts</span>
@@ -859,6 +878,7 @@
 
 			<!-- selection status + actions -->
 			<div
+				bind:offsetHeight={statusH}
 				class="border-border bg-card/85 absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-lg border p-1 pl-2 text-xs shadow-sm backdrop-blur"
 			>
 				{#if tableLoading}

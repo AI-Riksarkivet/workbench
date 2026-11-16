@@ -10,6 +10,7 @@
 	 */
 	import { Eye, EyeOff } from '@lucide/svelte';
 	import { Button } from '@workbench/ui';
+	import { ATLAS_PALETTE } from './atlas-colors.ts';
 	import type { ClusterLegendRow, CategoryLegendRow } from './atlas-legend.ts';
 	import type { ColorBy } from './cross-filter.svelte.ts';
 
@@ -124,7 +125,7 @@
 				>
 					<span
 						class="size-2.5 shrink-0 rounded-full"
-						style:background={isDark ? '#52525b' : '#cccccc'}
+						style:background={(isDark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light).noise}
 					></span>
 					<span class={{ 'line-through': noiseHidden }}>noise (unclustered)</span>
 					<span class="ml-auto font-mono">{clusterStats.noise.toLocaleString()}</span>

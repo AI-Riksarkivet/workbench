@@ -71,7 +71,7 @@ class DaprDoorSettings(BaseSettings):
 
     #: Permit an UNCONFIGURED door — never a wrong token. Owner decision 2026-09-15.
     #:
-    #: THE LOCAL LOOP IS WHY AN OPEN DOOR EXISTS AT ALL: `make dev-micro` runs these apps with no
+    #: THE LOCAL LOOP IS WHY AN OPEN DOOR EXISTS AT ALL: `make local` runs these apps with no
     #: sidecar and no secret store, so every Dapr-guarded route would be unreachable without it. What
     #: the flag buys over an implicit skip is that the decision is made by a person and is greppable —
     #: an estate-wide search finds every deployment running open, which an absent variable cannot be.

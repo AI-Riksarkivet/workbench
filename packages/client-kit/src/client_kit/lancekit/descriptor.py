@@ -16,7 +16,7 @@ FixedSizeList column with the declared dimension.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
@@ -37,10 +37,16 @@ class Identity(BaseModel):
 
 
 class DocumentBinding(BaseModel):
-    """Where a document's media bytes and thumbnail live."""
+    """Where a document's media bytes and thumbnail live, and what kind of media they are.
+
+    ``media_blob``, ``mime``, ``thumbnail`` and ``thumbnail_mime`` each name a COLUMN of ``table``: the mime columns hold
+    each row's media type. ``kind`` is the one fact about the media no column states, which element a player hands it
+    to; undeclared, a corpus with a time binding is read as video and any other as images.
+    """
 
     table: str
     media_blob: str
+    kind: Literal["image", "audio", "video"] | None = None
     mime: str | None = None
     thumbnail: str | None = None
     thumbnail_mime: str | None = None
@@ -241,6 +247,12 @@ def validate_descriptor(declared: Declared, tables: dict[str, TableInfo]) -> lis
                 problems.append(f"document.media_blob {declared.document.media_blob!r} missing")
             elif not blob_col.is_blob:
                 problems.append(f"document.media_blob {declared.document.media_blob!r} is not a lance.blob.v2 column")
+            # Each is read as a column when a document's media is signed, so one that names none is refused here, when
+            # the dataset opens, rather than failing that read.
+            for role in ("mime", "thumbnail", "thumbnail_mime"):
+                column = getattr(declared.document, role)
+                if column is not None and doc_table.column(column) is None:
+                    problems.append(f"document.{role} {column!r} is not a column of {declared.document.table!r}")
 
     for search in declared.searches:
         for mode, binding in search.vectors.items():

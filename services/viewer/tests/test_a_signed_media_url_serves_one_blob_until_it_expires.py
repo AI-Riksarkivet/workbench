@@ -208,6 +208,28 @@ def test_a_plain_payload_too_large_to_serve_whole_is_not_signed(tmp_path: Path) 
     ]
 
 
+@pytest.mark.parametrize(
+    ("role", "binding"),
+    [
+        pytest.param("media", {"mime": "image/png"}, id="mime-names-a-type"),
+        pytest.param("thumbnail", {"thumbnail": "thumb"}, id="thumbnail-names-no-column"),
+        pytest.param("thumbnail", {"thumbnail": "media", "thumbnail_mime": "thumb_mime"}, id="thumbnail-mime-names-no-column"),
+    ],
+)
+def test_a_document_binding_naming_no_column_is_refused_when_the_dataset_opens(tmp_path: Path, role: str, binding: dict[str, str]) -> None:
+    """Each of `document.mime`, `thumbnail` and `thumbnail_mime` names a column of the documents table; a descriptor whose
+    one names none is refused as the dataset opens, so the batch answers why for the item, not a 500 for the batch."""
+    descriptor = {**_DOCUMENTS, "document": {"table": "docs", "media_blob": "media", **binding}}
+    write_table(tmp_path, ["wh", "corpus", "docs"], _docs(), descriptor=descriptor)
+
+    with TestClient(_app(tmp_path)) as client:
+        answer = _sign(client, [{"role": role, "doc_id": "d1"}])
+
+    [only] = answer
+    assert only["url"] is None
+    assert "is not a column of 'docs'" in str(only["detail"])
+
+
 def test_a_key_short_of_32_decoded_bytes_signs_nothing(tmp_path: Path) -> None:
     """A 32-character hex string looks long and carries 16 bytes of entropy; as base64 it decodes to 24 bytes."""
     write_table(tmp_path, ["wh", "corpus", "docs"], _docs(), descriptor=_DOCUMENTS)

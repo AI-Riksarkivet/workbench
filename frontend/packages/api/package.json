@@ -17,21 +17,9 @@
 			"types": "./src/client.ts",
 			"default": "./src/client.ts"
 		},
-		"./generated/catalog": {
-			"types": "./src/generated/catalog.ts",
-			"default": "./src/generated/catalog.ts"
-		},
 		"./generated/lineage": {
 			"types": "./src/generated/lineage.ts",
 			"default": "./src/generated/lineage.ts"
-		},
-		"./identifiers": {
-			"types": "./src/identifiers.ts",
-			"default": "./src/identifiers.ts"
-		},
-		"./inbox": {
-			"types": "./src/inbox.ts",
-			"default": "./src/inbox.ts"
 		},
 		"./lineage": {
 			"types": "./src/lineage/index.ts",

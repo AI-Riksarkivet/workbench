@@ -1,7 +1,7 @@
 """The annotation-project actor — the task index, and what makes publish decidable.
 
 The index is the only place that knows which tasks belong to a project, so these tests are mostly
-about one question: can an unreviewed annotation reach silver? Every path that could answer "yes"
+about one question: can an unreviewed annotation reach a publish? Every path that could answer "yes"
 is pinned here — a non-terminal task, an empty project, a drifted index, a replayed publish.
 
 Driven against the real actor with a fake state manager, so no sidecar, no placement service and no
@@ -121,7 +121,7 @@ async def test_counts_are_derived_from_the_index_not_accumulated() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-# The publish precondition — the answer to "can unreviewed work reach silver?"
+# The publish precondition — the answer to "can unreviewed work reach a publish?"
 # --------------------------------------------------------------------------------------------------
 
 
@@ -166,9 +166,9 @@ async def test_an_empty_project_cannot_be_published() -> None:
 async def test_a_failed_publish_is_a_resting_state_a_retry_can_leave() -> None:
     actor = await _with_tasks(TaskState.ACCEPTED)
     await actor.fire({"event": "publish"})
-    failed = await actor.fire({"event": "publish_failed", "error": "silver write rejected"})
+    failed = await actor.fire({"event": "publish_failed", "error": "the target refused the write"})
     assert failed["state"] == ProjectState.PUBLISH_FAILED
-    assert failed["publish_error"] == "silver write rejected"
+    assert failed["publish_error"] == "the target refused the write"
 
     retried = await actor.fire({"event": "publish"})
     assert retried["state"] == ProjectState.PUBLISHING
@@ -187,8 +187,8 @@ async def test_the_publish_record_is_written_once_so_a_replay_cannot_contradict_
     actor = await _with_tasks(TaskState.ACCEPTED)
     await actor.fire({"event": "publish"})
     record = {
-        "table_id": "silver$annotations",
-        "namespace": "silver",
+        "table_id": "acme$published$annotations",
+        "namespace": "acme$published",
         "version": 7,
         "publish_id": "pub-1",
         "published_at": "2026-07-28T00:00:00Z",
@@ -214,15 +214,15 @@ async def test_a_retry_naming_a_different_namespace_is_refused() -> None:
     a SECOND table under a different id while the first may already exist — the exact orphan the
     token exists to prevent. The retry must restate the pinned target or say nothing."""
     actor = await _with_tasks(TaskState.ACCEPTED)
-    await actor.fire({"event": "publish", "actor": "henry", "target_namespace": "silver"})
+    await actor.fire({"event": "publish", "actor": "henry", "target_namespace": "acme$published"})
     await actor.fire({"event": "publish_failed", "error": "boom"})
 
     with pytest.raises(IllegalTransition, match="pending publish targets"):
         await actor.fire({"event": "publish", "actor": "henry", "target_namespace": "gold"})
 
-    retried = await actor.fire({"event": "publish", "actor": "maria", "target_namespace": "silver"})
+    retried = await actor.fire({"event": "publish", "actor": "maria", "target_namespace": "acme$published"})
     assert retried["state"] == ProjectState.PUBLISHING
-    assert retried["pending_target_namespace"] == "silver"
+    assert retried["pending_target_namespace"] == "acme$published"
     assert retried["pending_publish_by"] == "maria", "the retry must record who drove it"
 
 
@@ -386,7 +386,7 @@ async def test_a_dropped_task_does_not_re_block_the_publish() -> None:
 
     await actor.task_state_changed({"task_id": "t1", "state": str(TaskState.UNASSIGNED)})
 
-    await actor.fire({"event": "publish", "namespace": "acme$silver", "token": "tok-1"})
+    await actor.fire({"event": "publish", "namespace": "acme$published", "token": "tok-1"})
     assert (await _state(actor))["state"] == str(ProjectState.PUBLISHING), "a removed task re-blocked a legal publish"
 
 

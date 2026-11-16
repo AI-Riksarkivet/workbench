@@ -175,3 +175,28 @@ def test_the_flag_is_defined_before_the_first_request() -> None:
     from annotator.main import app as annotator_app
 
     assert isinstance(getattr(annotator_app.state, "actors_registered", None), bool)
+
+
+@pytest.fixture
+def refuse_sidecar_channels() -> None:
+    """This module's own: its last test drives the real proxy seam, which refuses on its own with no sidecar."""
+
+
+def test_a_process_started_with_no_sidecar_refuses_the_task_plane_at_once_and_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The service the pod runs, its real lifespan, with no sidecar announced: the task plane is marked
+    unregistered at start, without waiting for a sidecar; a task route's 503 names the missing sidecar, and so does a
+    project route, which reaches the actors through the proxy seam rather than the task router's gate."""
+    from annotator.main import app as annotator_app
+    from annotator.projects.proxies import NO_SIDECAR
+
+    monkeypatch.delenv("DAPR_HTTP_PORT", raising=False)
+    monkeypatch.delenv("DAPR_GRPC_PORT", raising=False)
+
+    with TestClient(annotator_app) as client:
+        ready = client.get("/readyz")
+        refused = client.post("/tasks/t1/events", json={"event": "claim"})
+        projects = client.get("/projects", params={"tenant": "demo"})
+
+    assert (ready.status_code, ready.json()["components"]["actors"]) == (200, "unregistered")
+    assert (refused.status_code, refused.json()["detail"]) == (503, f"the task plane is unavailable: {NO_SIDECAR}")
+    assert (projects.status_code, projects.json()["detail"]) == (503, f"the task plane is unavailable: {NO_SIDECAR}")

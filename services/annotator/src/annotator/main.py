@@ -22,6 +22,7 @@ from annotator.api.v1.router import router as api_router
 from annotator.core.config import get_annotator_settings
 from annotator.projects.actor import AnnotationTaskActor
 from annotator.projects.project_actor import AnnotationProjectActor
+from annotator.projects.proxies import NO_SIDECAR, sidecar_configured
 from annotator.projects.tenant_actor import TenantProjectsActor
 from client_kit.media.app import build_media_app
 from client_kit.media.config import MediaSettings
@@ -50,22 +51,30 @@ async def _start_task_plane(app: FastAPI, _state: AppState) -> None:
     state (`ActorRuntime._actor_managers`, and the entity list `/dapr/config` advertises) — a side
     effect that merely importing this module for `--help` or an image build must not have.
 
-    **What it proves is LOCAL, and `actors_registered` must not be read as more.** `register_actor`
-    builds the type info, constructs an actor client WITHOUT invoking it, and stores an
-    `ActorManager` in a dict; daprd learns the entity list afterwards by POLLING `/dapr/config`.
-    Nothing here talks to the sidecar, so this block raises only for an actor CLASS this service
-    cannot register — never because daprd is absent, which is why the flag is `True` in a no-sidecar
-    composition (dev-micro, the e2e-py harness) and the task plane there fails per request exactly as
-    it did before. A failure is logged and left non-fatal: the read-plane annotation routes do not
-    need actors, so a broken task plane must not take the media surface down with it.
-    `tasks.require_actor_plane` gates every task route on the flag (503, with the reason), and
-    `/readyz` reports it as a component.
+    **No sidecar configured, no actor plane.** The Dapr sidecar announces itself to its app through
+    `DAPR_HTTP_PORT` and `DAPR_GRPC_PORT`; with neither set nothing would answer, so the plane is marked
+    unregistered at once, with that reason, and the warm-up (which waits up to
+    `WARMUP_TIMEOUT_SECONDS` for a sidecar) and the state-store probe are never started. The service then
+    starts in the time its read plane takes (the local stack, `scripts/local-stack.sh`).
+
+    **What registration proves is LOCAL, and `actors_registered` must not be read as more.**
+    `register_actor` builds the type info, constructs an actor client WITHOUT invoking it, and stores an
+    `ActorManager` in a dict; daprd learns the entity list afterwards by POLLING `/dapr/config`, which is
+    why the warm-up and the probe below ask the sidecar what it can actually do. A failure is logged and
+    left non-fatal: the read-plane annotation routes do not need actors, so a broken task plane must not
+    take the media surface down with it. `tasks.require_actor_plane` gates every task route on the flag
+    (503, with the reason), and `/readyz` reports it as a component.
     """
     from annotator.projects.lakehouse import use_publish_tokens  # noqa: PLC0415 - the publish module imports pyarrow lazily
 
     use_publish_tokens(getattr(app.state, "lakehouse_tokens", None))
 
     if actor_ext is None:
+        return
+    if not sidecar_configured():
+        app.state.actors_registered = False
+        app.state.actor_plane_unavailable = NO_SIDECAR
+        logger.warning("annotator: %s; the task plane will 503", NO_SIDECAR)
         return
     try:
         await actor_ext.register_actor(AnnotationTaskActor)

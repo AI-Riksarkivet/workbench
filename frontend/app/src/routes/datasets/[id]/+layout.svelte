@@ -2,13 +2,18 @@
 	/**
 	 * Every page of one dataset: its dock (`/datasets/[id]`, named by the dataset's id) and its views, the
 	 * atlas, the graph and the tree (`#lib/dataset-nav.ts`), reached from one row of links. A view the
-	 * dataset cannot show stays in the row, disabled, and says why when chosen, so a keyboard and a touch
-	 * reach the reason as a pointer does.
+	 * dataset cannot show stays in the row, disabled, and says why in a tooltip anchored to it while it is focused or
+	 * hovered, and while chosen (a tap), so a keyboard, a screen reader and a touch reach the reason as a pointer does,
+	 * and nothing below the row moves.
 	 */
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import { invalidateAll } from '$app/navigation';
+	import LoadFailure from '#lib/shell/load-failure.svelte';
+	import { datasetView } from '#lib/api/explore.api.ts';
 	import { datasetPages, type DatasetPage } from '#lib/dataset-nav.ts';
 	import { projectOf } from '#lib/project.ts';
+	import * as Tooltip from '@workbench/ui/tooltip';
 
 	let { data, children } = $props();
 	const id = $derived(data.id);
@@ -43,15 +48,29 @@
 		Object.entries(routes).find(([, route]) => route === page.route.id)?.[0] ?? null,
 	);
 
-	/** The disabled view whose reason is shown, chosen by the reader. */
+	/** The disabled view whose reason is shown: the one focused or hovered, else the one chosen. */
 	let explained = $state<DatasetPage | null>(null);
-	const explanation = $derived(entries.find((e) => e.page === explained)?.unavailable ?? null);
+	let peeked = $state<DatasetPage | null>(null);
+	const shown = $derived(peeked ?? explained);
 
 	const tab =
 		'focus-visible:ring-ring/50 inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-sm outline-none focus-visible:ring-3';
 </script>
 
-{#if data.failure !== null}
+{#if data.failure !== null && data.unreachable}
+	<div class="flex flex-col items-start p-6">
+		<h1 class="sr-only">{id}</h1>
+		<LoadFailure
+			what="The viewer could not be reached, so this dataset cannot be shown right now."
+			hint="Try again. If it keeps failing, the viewer may be down."
+			detail={data.failure}
+			onretry={() =>
+				void datasetView(id)
+					.refresh()
+					.finally(() => invalidateAll())}
+		/>
+	</div>
+{:else if data.failure !== null}
 	<div class="flex flex-col gap-2 p-6">
 		<h1 class="sr-only">{id}</h1>
 		<p class="text-sm" role="alert">
@@ -97,27 +116,45 @@
 					]}>{entry.name}</a
 				>
 			{:else}
-				<button
-					type="button"
-					aria-disabled="true"
-					aria-describedby="why-{entry.page}"
-					aria-expanded={explained === entry.page}
-					class={[tab, 'text-muted-foreground cursor-not-allowed opacity-70']}
-					onclick={() => (explained = explained === entry.page ? null : entry.page)}
-					>{entry.name}</button
+				<!-- Controlled: the tooltip shows while the tab is focused or hovered, and stays for a tab that was
+				     chosen, which is how a touch, which neither hovers nor focuses, reaches the reason. -->
+				<Tooltip.Root
+					open={shown === entry.page}
+					onOpenChange={(open) => {
+						if (open) peeked = entry.page;
+						else if (peeked === entry.page) peeked = null;
+					}}
 				>
-				<span id="why-{entry.page}" hidden>{entry.unavailable}</span>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<button
+								{...props}
+								type="button"
+								aria-disabled="true"
+								aria-describedby="why-{entry.page}"
+								aria-expanded={explained === entry.page}
+								class={[tab, 'text-muted-foreground cursor-not-allowed opacity-70']}
+								onclick={() => (explained = explained === entry.page ? null : entry.page)}
+								onfocus={() => (peeked = entry.page)}
+								onmouseenter={() => (peeked = entry.page)}
+								onmouseleave={() => {
+									if (peeked === entry.page) peeked = null;
+								}}
+								onblur={() => {
+									if (peeked === entry.page) peeked = null;
+									if (explained === entry.page) explained = null;
+								}}>{entry.name}</button
+							>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content side="bottom" role="tooltip">
+						{entry.name} is not available: {entry.unavailable}.
+					</Tooltip.Content>
+				</Tooltip.Root>
+				<span id="why-{entry.page}" class="sr-only">{entry.unavailable}</span>
 			{/if}
 		{/each}
 	</nav>
-	{#if explanation}
-		<p
-			class="text-muted-foreground border-border shrink-0 border-b px-3 py-1.5 text-xs"
-			role="status"
-		>
-			{entries.find((e) => e.page === explained)?.name} is not available: {explanation}.
-		</p>
-	{/if}
 	<!-- Another dataset mounts its pages afresh: no page's state (a map, an open entity, a chosen topic)
 	     or late answer outlives the dataset it was read for. -->
 	{#key data.id}

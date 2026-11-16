@@ -7,8 +7,9 @@ cannot drift from the model.
 **Publish crosses into the lakehouse, and each side decides its own half.** The annotator checks
 `can_publish` on `project:<project_id>` in the workbench's own store; the publish then writes as the
 workbench's own identity, and the lakehouse decides whether that identity may create the table in the
-target namespace (and its tier judge, under the tier the namespace declares). The person needs no
-lakehouse write grant, and the commit names them as the run's originator.
+target namespace (and, under the run rule the namespace may declare, whether the run names its inputs). The
+target is a namespace of the project's own warehouse. The person needs no lakehouse write grant, and the commit
+names them as the run's originator.
 
 The third precondition — every task terminal — is NOT checked here. It lives in the project actor
 (`fire`), so it holds for any caller, including the publish workflow retrying after a crash.
@@ -29,7 +30,8 @@ from starlette.concurrency import run_in_threadpool
 from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, require_view, unseen_project
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
-from annotator.corpus import input_tables
+from annotator.core.config import get_annotator_settings
+from annotator.corpus import input_tables, unheld_versions
 from annotator.projects.machines import (
     FROZEN_PROJECT_STATES,
     PROJECT_EDGES,
@@ -41,9 +43,9 @@ from annotator.projects.machines import (
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Shape, Task, TaskState, new_id, publish_warehouse_of
 from annotator.projects.ontology import LabelOntology, ShapeLike, membership_violation
 from annotator.projects.project_actor import AnnotationProjectActorInterface
-from annotator.projects.publish import namespace_for
+from annotator.projects.publish import publish_namespace, require_in_warehouse
 from client_kit.media.deps import StateDep
-from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError
+from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Grant
 from service_kit.governed.token_exchange import LakehouseCaller
@@ -62,11 +64,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["annotation-projects"])
 
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
-
-#: The TIER human labels are curated into (§6.2) — the NAME is composed per project, because a bare
-#: literal put every tenant's labels in one namespace with one parent and one set of grants.
-#: A publish may name another target; the doors are checked wherever it points.
-DEFAULT_TARGET_TIER: Final[str] = "silver"
 
 #: Project edges caused by the SYSTEM (the publish saga), never by a principal. Refused on the HTTP
 #: surface: `TASK_EDGES`/`PROJECT_EDGES` giving them no permission means "no principal fires this",
@@ -89,8 +86,8 @@ class ProjectEventRequest(BaseModel):
     """
 
     event: str = Field(min_length=1)
-    #: Empty means "the project's default tier", resolved by the door once it has loaded the project
-    #: — the request cannot compose it, because the tenant is on the document rather than in the path.
+    #: Empty means the project's default target (`<warehouse>$<ANNOTATOR_PUBLISH_NAMESPACE>`), resolved by the door
+    #: once it has loaded the project; a named one must be a namespace of the project's own warehouse.
     target_namespace: str = ""
 
 
@@ -208,10 +205,16 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
     # request named. Only a publish has a target.
     target: str | None = None
     if payload.event == "publish":
+        warehouse = publish_warehouse_of(current)
         try:
-            target = payload.target_namespace or namespace_for(publish_warehouse_of(current), DEFAULT_TARGET_TIER)
+            target = publish_namespace(warehouse, get_annotator_settings().publish_namespace)
         except ValueError as exc:
             raise ConflictError(f"annotation project {project_id} names no publish warehouse: {exc}") from exc
+        if payload.target_namespace:
+            try:
+                target = require_in_warehouse(payload.target_namespace, warehouse)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
         await _check(checker, subject, "can_publish", obj, AnnotatorAuditAction.PROJECT_PUBLISH)
     elif permission is not None:
         await _check(checker, subject, permission, obj, AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
@@ -350,6 +353,28 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller:
     return found
 
 
+def _refuse_unheld_versions(state: AppState, payload: SendItemsRequest, tables: dict[str, str | None], caller: LakehouseCaller) -> None:
+    """Refuse the WHOLE send (409) when an item names a version its table does not have.
+
+    The version an item carries is the sender's: the row table's version they were looking at, which the publish then
+    names as its run's input. So the server holds it to the catalog before anything is seeded: the table the send stamps
+    (`ItemSource.table`) must have that version, as the sender reads it. A version of an item whose source names no
+    table is never an input, and the send drops it. Unverifiable is a 503, as `_refuse_unknown_datasets` is.
+    """
+    captured = {
+        (table, item.source.dataset_version)
+        for item in payload.items
+        if item.source.dataset_version is not None and (table := tables.get(item.source.where or "")) is not None
+    }
+    if not captured:
+        return
+    unheld = unheld_versions(state, captured, caller)
+    if unheld is None:
+        raise ServiceUnavailableError("the catalog could not be consulted about the items' versions, so nothing was sent: try again")
+    if unheld:
+        raise ConflictError(f"the catalog holds no {', '.join(unheld)}: send the items again from what the dataset shows now")
+
+
 #: What `send` stamps onto a pre-annotation's `source`. The `import` precedent (§ `projects.imports`
 #: `IMPORT_SOURCE`): a free-form provenance string written by the SERVER, which `publish` carries
 #: through verbatim (`shape.source or "human"`). "bulk" is the honest word — a human chose the label,
@@ -445,6 +470,7 @@ async def send_items(
     # body asks the catalog or the registry (blocking) per named dataset — inline it froze every
     # in-flight request on a cold miss (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-01).
     tables = await run_in_threadpool(_refuse_unknown_datasets, state, payload, caller)
+    await run_in_threadpool(_refuse_unheld_versions, state, payload, tables, caller)
 
     # BIND each corpus the items come from to this project (`corpus:<dataset>#project`), so the people who annotate
     # here may write that corpus's annotations through the workbench (`can_annotate` on the corpus). The send's own
@@ -473,8 +499,10 @@ async def send_items(
         # Every provenance and state field takes its model default, so a sender cannot pre-set
         # `state=accepted` or name someone else as the annotator.
         group_id = item.task_id or new_id()
-        # The input table is the server's to name, whatever the sender put there.
-        source = item.source.model_copy(update={"table": tables.get(item.source.where or "")})
+        # The input table is the server's to name, whatever the sender put there, and a version is kept only as a version
+        # of that table, which `_refuse_unheld_versions` checked the catalog holds.
+        table = tables.get(item.source.where or "")
+        source = item.source.model_copy(update={"table": table, "dataset_version": item.source.dataset_version if table else None})
         capture: dict[str, Any] = {
             "review_required": bool(project.get("review_required", True)),
             "lease_seconds": int(project.get("lease_seconds") or 1800),

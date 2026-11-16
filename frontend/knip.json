@@ -12,7 +12,7 @@
 		"app": {
 			"entry": [
 				"serve.ts",
-				"e2e/edge.ts",
+				"edge.ts",
 				"e2e/mock-*.ts"
 			],
 			"ignore": [

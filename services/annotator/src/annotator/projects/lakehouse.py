@@ -38,12 +38,14 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from lance_namespace import DescribeNamespaceRequest, LanceNamespace
+
 from annotator.core.config import get_annotator_settings
 from annotator.projects.models import publish_warehouse_of
-from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, namespace_for
+from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, PublishRefusal, publish_namespace
 from annotator.projects.saga import PublishOutcome, run_publish
-from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog
-from service_kit.exceptions import ServiceUnavailableError
+from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog, translate_catalog_errors
+from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseTokens
 from service_kit.naming import CATALOG_DELIMITER
 
@@ -56,6 +58,8 @@ RUN_ID_HEADER = "x-rask-run-id"
 JOB_NAMESPACE_HEADER = "x-rask-job-namespace"
 JOB_HEADER = "x-rask-job"
 INPUTS_HEADER = "x-rask-inputs"
+#: The namespace property under which the catalog requires every data write beneath to name its run and inputs.
+REQUIRES_RUN_PROPERTY = "rask.requires_run"
 #: The job a publish is a run of.
 PUBLISH_JOB = ("annotator", "annotate.publish")
 
@@ -124,20 +128,55 @@ class CatalogPublisher:
         *,
         properties: dict[str, str],
         run_id: str,
-        source: str | None = None,
-        source_version: int | None = None,
+        inputs: list[tuple[str, int]],
     ) -> int:
         """Create (or converge on) the published table; return its version."""
         body = _arrow_stream_bytes(plan)
         headers = {**self._headers(), RUN_ID_HEADER: run_id, JOB_NAMESPACE_HEADER: PUBLISH_JOB[0], JOB_HEADER: PUBLISH_JOB[1]}
-        if source is not None and source_version is not None:
-            headers[INPUTS_HEADER] = json.dumps([{"table": source.split(self._delimiter), "version": source_version}])
+        if inputs:
+            headers[INPUTS_HEADER] = json.dumps([{"table": table.split(self._delimiter), "version": version} for table, version in inputs])
         catalog = NamespaceCatalogWriteTransport(
             connect_catalog(self._base_url, token=self._token, delimiter=self._delimiter, headers=headers),
             table_id.split(self._delimiter),
         )
         version = await asyncio.to_thread(_create_with_retries, catalog, body, properties)
         return version or 1
+
+    async def requires_run(self, namespace: str) -> bool:
+        """Whether any namespace on ``namespace``'s path, the warehouse first, declares the run rule, read as the catalog
+        reads it (`docs/rask/WRITE-GOVERNANCE.md`): ``rask.requires_run = "true"`` among its properties. A namespace that
+        does not exist declares nothing; the create then answers its own refusal.
+
+        Every row on the path is one the workbench's client may describe once it holds a grant on the target: the
+        lakehouse lets a grant beneath a warehouse or namespace see that container (`can_get_metadata` is
+        `reader_effective or visible_below from child` on both, rask `packages/lakehouse/src/lakehouse/governed/auth/
+        model.fga` at `f9c2c4e02`), and serves a describe on a warehouse's own one-segment name.
+
+        Raises:
+            PublishRefusal: The catalog refused to describe a namespace on the path, so whether the target requires a run
+                cannot be told; the publish is refused rather than guessed.
+        """
+        path = namespace.split(self._delimiter)
+        client = connect_catalog(self._base_url, token=self._token, delimiter=self._delimiter, headers=self._headers())
+        return await asyncio.to_thread(_declares_run_rule, client, path, self._delimiter)
+
+
+def _declares_run_rule(client: LanceNamespace, path: list[str], delimiter: str) -> bool:
+    for depth in range(1, len(path) + 1):
+        try:
+            with translate_catalog_errors():
+                described = client.describe_namespace(DescribeNamespaceRequest(id=path[:depth]))
+        except NotFoundError:
+            continue
+        except ForbiddenError as exc:
+            namespace = delimiter.join(path[:depth])
+            raise PublishRefusal(
+                f"the catalog does not let the workbench read namespace {namespace}, so whether a publish into it must name its run "
+                "cannot be told: grant the workbench's client a role on the publish target"
+            ) from exc
+        if (described.properties or {}).get(REQUIRES_RUN_PROPERTY) == "true":
+            return True
+    return False
 
 
 def _create_with_retries(catalog: NamespaceCatalogWriteTransport, body: bytes, properties: dict[str, str]) -> int | None:
@@ -227,7 +266,7 @@ async def run_publish_for(project_id: str) -> PublishOutcome | None:
         return None
     # The project's own warehouse: this is the crash-resume path, so the namespace it picks is the one a
     # publish lands in with no request left to correct it.
-    namespace = str(raw.get("pending_target_namespace") or namespace_for(publish_warehouse_of(raw), "silver"))
+    namespace = str(raw.get("pending_target_namespace") or publish_namespace(publish_warehouse_of(raw), get_annotator_settings().publish_namespace))
     subject = str(raw.get("pending_publish_by") or "system")
 
     settings = get_annotator_settings()

@@ -29,6 +29,7 @@
 
 	type Mode = 'lasso' | 'pan';
 	type FitBounds = { minX: number; minY: number; maxX: number; maxY: number };
+	type Insets = { top: number; right: number; bottom: number; left: number };
 
 	let {
 		xBits,
@@ -49,6 +50,7 @@
 		onLasso,
 		mode,
 		markerXY = null,
+		insets = { top: 0, right: 0, bottom: 0, left: 0 },
 	}: {
 		xBits: Uint16Array; // raw float16 bits, length count — GPU position X
 		yBits: Uint16Array; // raw float16 bits, length count — GPU position Y
@@ -67,6 +69,8 @@
 		onLasso: (polyDataXY: number[]) => void; // flat [x0,y0,x1,y1,...] in DATA coords
 		mode: Mode;
 		markerXY?: [number, number] | null; // active point in DATA coords → highlight ring
+		/** Css px the overlays drawn over the map cover at each edge: the fit keeps the points out of them. */
+		insets?: Insets;
 	} = $props();
 
 	const dpr = Math.min(globalThis.devicePixelRatio ?? 1, 1.5);
@@ -78,6 +82,8 @@
 	// ── camera (data coords at canvas centre + device-px per data unit) ───────
 	let center = $state.raw<[number, number]>([0, 0]);
 	let scale = $state(1);
+	/** Whether the reader moved the camera since the last fit: a fit on an overlay's resize never undoes their view. */
+	let moved = false;
 
 	// ── GPU handles (plain refs; not reactive) ────────────────────────────────
 	let device: GPUDevice | null = null;
@@ -353,8 +359,18 @@ fn fs(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 		const spanY = maxY - minY || 1;
 		const w = Math.max(1, width);
 		const h = Math.max(1, height);
-		scale = 0.9 * Math.min((w * dpr) / spanX, (h * dpr) / spanY);
-		center = [(minX + maxX) / 2, (minY + maxY) / 2];
+		// The points fit the area the overlays leave free, centred in it: the camera's centre is the canvas's,
+		// so the data's midpoint is placed off it by the free area's offset from the canvas centre.
+		const freeW = Math.max(1, w - insets.left - insets.right);
+		const freeH = Math.max(1, h - insets.top - insets.bottom);
+		scale = 0.9 * Math.min((freeW * dpr) / spanX, (freeH * dpr) / spanY);
+		const offsetX = insets.left + freeW / 2 - w / 2;
+		const offsetY = insets.top + freeH / 2 - h / 2;
+		center = [
+			(minX + maxX) / 2 - (offsetX * dpr) / scale,
+			(minY + maxY) / 2 - (offsetY * dpr) / scale,
+		];
+		moved = false;
 	}
 
 	// ── coalesced redraw (one rAF, never a synchronous loop) ──────────────────
@@ -501,6 +517,18 @@ fn fs(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 		requestDraw();
 	});
 
+	// The overlays measure after the map mounts and change size as the toolbar wraps: refit to the area they leave
+	// free, unless the reader has moved the camera since.
+	$effect(() => {
+		void insets.top;
+		void insets.right;
+		void insets.bottom;
+		void insets.left;
+		if (!ready || moved) return;
+		fit();
+		requestDraw();
+	});
+
 	// Re-upload the base hue only when it swaps identity (colorBy / theme change).
 	$effect(() => {
 		void baseRgb;
@@ -595,6 +623,7 @@ fn fs(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 			if (drag.kind === 'pan') {
 				// center -= deltaDevicePx / scale
 				center = [center[0] - (dxCss * dpr) / scale, center[1] - (dyCss * dpr) / scale];
+				moved = true;
 			} else {
 				drag.lassoPts.push([cx, cy]);
 				drawLassoOverlay();
@@ -659,6 +688,7 @@ fn fs(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 		const cyDev = cy * dpr - resH * 0.5;
 		scale = next;
 		center = [dx - cxDev / next, dy - cyDev / next];
+		moved = true;
 	}
 
 	// ── lasso overlay (2D canvas, kept off the GPU surface) ───────────────────

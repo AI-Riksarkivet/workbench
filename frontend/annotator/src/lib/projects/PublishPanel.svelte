@@ -31,7 +31,9 @@
 	} = $props();
 
 	let confirmOpen = $state(false);
-	let namespace = $state('silver');
+	// Empty sends no target, and the service publishes into its default namespace of the project's own warehouse; a
+	// named one must be a namespace of that warehouse, which the service holds it to.
+	let namespace = $state('');
 	let firing = $state(false);
 	let error = $state('');
 
@@ -59,7 +61,7 @@
 		const result = await fireProjectEvent({
 			projectId: project.project_id,
 			event: 'publish',
-			targetNamespace: namespace.trim() || 'silver',
+			targetNamespace: namespace.trim() || undefined,
 		});
 		firing = false;
 		if (result.ok) {
@@ -119,7 +121,7 @@
 					class="w-fit"
 					disabled={firing}
 					onclick={() => {
-						namespace = project.pending_target_namespace ?? 'silver';
+						namespace = project.pending_target_namespace ?? '';
 						void publish();
 					}}
 				>
@@ -173,9 +175,15 @@
 			</p>
 			<label class="flex flex-col gap-1 text-sm">
 				<span>Target namespace</span>
-				<Input bind:value={namespace} class="font-mono" />
+				<Input
+					bind:value={namespace}
+					class="font-mono"
+					placeholder="the default namespace of the project's warehouse"
+				/>
 				<span class="text-muted-foreground text-xs">
-					Crossing two doors: publish rights here, table-create rights there.
+					Empty publishes into the project's default namespace; a named one is a namespace of the
+					project's own warehouse, written as warehouse$namespace. Crossing two doors: publish
+					rights here, table-create rights there.
 				</span>
 			</label>
 			{#if error}
@@ -185,7 +193,7 @@
 		<div class="flex justify-end gap-2">
 			<Button variant="outline" onclick={() => (confirmOpen = false)}>Cancel</Button>
 			<Button disabled={firing} onclick={() => void publish()}>
-				{firing ? 'Publishing…' : `Publish to ${namespace.trim() || 'silver'}`}
+				{firing ? 'Publishing…' : namespace.trim() ? `Publish to ${namespace.trim()}` : 'Publish'}
 			</Button>
 		</div>
 	</Dialog.Content>

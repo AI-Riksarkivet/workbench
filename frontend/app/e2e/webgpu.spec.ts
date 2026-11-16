@@ -75,6 +75,61 @@ test('the atlas draws its points under the CSP, revalidates them by ETag, and a 
 	expect(await violations()).toEqual([]);
 });
 
+/** How many coloured pixels a page screenshot holds inside `clip`: the points are coloured, the background grey. */
+async function colouredIn(
+	page: Page,
+	clip: { x: number; y: number; width: number; height: number },
+): Promise<number> {
+	const png = await page.screenshot({ clip });
+	return page.evaluate(
+		async (bytes) => {
+			const bitmap = await createImageBitmap(
+				new Blob([new Uint8Array(bytes)], { type: 'image/png' }),
+			);
+			const scratch = new OffscreenCanvas(bitmap.width, bitmap.height);
+			const context = scratch.getContext('2d');
+			if (!context) return -1;
+			context.drawImage(bitmap, 0, 0);
+			const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+			let coloured = 0;
+			for (let i = 0; i < data.length; i += 4) {
+				const rgb = [data[i] ?? 0, data[i + 1] ?? 0, data[i + 2] ?? 0];
+				if (Math.max(...rgb) - Math.min(...rgb) > 60) coloured += 1;
+			}
+			return coloured;
+		},
+		[...png],
+	);
+}
+
+test('the atlas fits its points in the area its toolbar and status bar leave free', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Grace'));
+	await page.goto('/datasets/acme%24letters/atlas');
+	await expect(page.getByText('60 pts')).toBeVisible();
+	const canvas = page.locator('canvas').first();
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+
+	const map = (await canvas.boundingBox())!;
+	const toolbar = page.getByText('60 pts').locator('..');
+	const status = page.getByText('drag to lasso', { exact: false }).locator('..');
+	const top = (await toolbar.boundingBox())!;
+	const bottom = (await status.boundingBox())!;
+	// The overlays hidden, the areas they covered show the map alone: no point was drawn there.
+	await toolbar.evaluate((el) => (el.style.visibility = 'hidden'));
+	await status.evaluate((el) => (el.style.visibility = 'hidden'));
+	const above = { x: top.x, y: map.y, width: top.width, height: top.y + top.height - map.y };
+	const below = {
+		x: bottom.x,
+		y: bottom.y,
+		width: bottom.width,
+		height: map.y + map.height - bottom.y,
+	};
+	expect([await colouredIn(page, above), await colouredIn(page, below)]).toEqual([0, 0]);
+});
+
 test('in the dock, a map selection becomes the results, and a search afterwards replaces it', async ({
 	page,
 	context,

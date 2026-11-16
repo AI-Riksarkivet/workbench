@@ -48,3 +48,8 @@ export function makeHighlighter(terms: string[]): (text: string) => string {
 			'<mark class="bg-highlight/30 text-foreground rounded-sm">$1</mark>',
 		);
 }
+
+/** What one item of a dataset is called, from its media kind: a recording, a video, else a document. */
+export function mediaNoun(kind: 'video' | 'audio' | 'image' | 'none'): string {
+	return kind === 'audio' ? 'recording' : kind === 'video' ? 'video' : 'document';
+}

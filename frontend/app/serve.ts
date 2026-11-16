@@ -17,6 +17,9 @@ import { join, normalize } from 'node:path';
 
 const ROOT = join(import.meta.dir, 'build');
 const PORT = Number(process.env.PORT ?? 3000);
+// Every interface by default, as a pod's container must listen; a stand-in on a person's machine names the loopback
+// (`edge.ts`, which passes its own `HOST`).
+const HOST = process.env.HOST ?? '0.0.0.0';
 const CONFIG_FILE = process.env.WORKBENCH_APP_CONFIG_FILE ?? '';
 
 const META_CSP = /<meta http-equiv="content-security-policy" content="([^"]*)">/;
@@ -60,7 +63,7 @@ function page(body: string, contentType: string, cache: string): Response {
 }
 
 Bun.serve({
-	hostname: '0.0.0.0',
+	hostname: HOST,
 	port: PORT,
 	async fetch(request) {
 		const { pathname } = new URL(request.url);
@@ -105,4 +108,4 @@ Bun.serve({
 	},
 });
 
-console.log(`app serving ${ROOT} on :${PORT}`);
+console.log(`app serving ${ROOT} on ${HOST}:${PORT}`);

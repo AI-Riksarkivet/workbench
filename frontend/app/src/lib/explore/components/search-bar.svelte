@@ -121,11 +121,23 @@
 				opts.push({ value: s.key, label: humanize(s.key) });
 			}
 		}
+		// A diarized dataset whose voice tables are not built says so where a person looks for voice search, rather than
+		// leaving the mode silently absent.
+		const voiceAbsent =
+			view.hasCapability('diarization') && voiceSearch.status !== null && !voiceSearch.built;
+		if (voiceAbsent)
+			opts.push({
+				value: 'voice',
+				label: 'Voice — needs voice tables this dataset has not built',
+				disabled: true,
+			});
 		// Every non-keyword, non-scene mode needs a query encoder; a declared embedding space does too.
 		return opts.map((o) =>
-			blocked && (encoderModes.has(o.value) || !['keyword', 'scene'].includes(o.value))
-				? { ...o, label: `${o.label} — encoder offline`, disabled: true }
-				: o,
+			o.value === 'voice'
+				? o
+				: blocked && (encoderModes.has(o.value) || !['keyword', 'scene'].includes(o.value))
+					? { ...o, label: `${o.label} — encoder offline`, disabled: true }
+					: o,
 		);
 	});
 
@@ -285,7 +297,7 @@
 		if (imageFile) {
 			if (kind === 'meaning' || kind === 'both')
 				return 'Image + your text → fused over transcript meaning AND visually similar frames.';
-			return 'Image only → finds visually similar video frames. (Switch to Vector or Hybrid to also use your text.)';
+			return 'Image only → finds visually similar frames. (Switch to Vector or Hybrid to also use your text.)';
 		}
 		if (kind === 'scene') return examples.scene.explain;
 		if (kind === 'meaning') return examples.meaning.explain;

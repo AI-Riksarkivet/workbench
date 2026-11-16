@@ -1,7 +1,6 @@
 <script lang="ts">
-	import SignedImage from '#lib/explore/components/signed-image.svelte';
+	import RowPreview from '#lib/explore/components/row-preview.svelte';
 	import type { Document } from '@workbench/explorer-api';
-	import { thumbnailUrl } from '#lib/explore/media.ts';
 	import { activeView } from '@workbench/explorer-api/descriptor';
 	import { fmtTime, cn } from '#lib/explore/utils.ts';
 
@@ -41,8 +40,8 @@
 	)}
 >
 	<div class="bg-muted relative aspect-video w-full overflow-hidden">
-		<SignedImage
-			src={thumbnailUrl(doc)}
+		<RowPreview
+			row={doc}
 			class="h-full w-full object-cover transition-transform group-hover:scale-105"
 		/>
 		{#if duration != null}

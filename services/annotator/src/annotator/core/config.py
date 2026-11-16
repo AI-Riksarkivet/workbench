@@ -60,6 +60,10 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     #: its own rows and no other project's write can reach them (`annotator.annotations.store`).
     annotations_namespace: str = Field(default="workbench$annotations", min_length=3, alias="ANNOTATOR_ANNOTATIONS_NAMESPACE")
 
+    #: The namespace of a project's warehouse a publish lands in when it names none: `<warehouse>$<this>`. One segment;
+    #: the lakehouse gives the name no meaning, so a project's admin creates it, under the run rule if they choose.
+    publish_namespace: str = Field(default="published", pattern=r"^[A-Za-z0-9_-]{1,64}$", alias="ANNOTATOR_PUBLISH_NAMESPACE")
+
     #: Where a local-mode save logs its RunEvent; see `LineageSink`.
     lineage_sink: LineageSink = Field(default=LineageSink.log, alias="ANNOTATOR_LINEAGE_SINK")
 

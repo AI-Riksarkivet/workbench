@@ -37,8 +37,8 @@ export const RayJobSchema = v.object({
 	// one document, so a single metadata-less job made `getRayJobs` throw
 	// `ValiError: Invalid key: Expected "metadata" but received undefined` and `/compute/jobs` answered
 	// 500 — no jobs listed, no partial view, and an error naming a field rather than the job that
-	// carried it. Only the medallion's own submit path sets metadata (`rask.originator`,
-	// `rask.project`), so ANY job submitted by a person at the CLI, by another tool, or by a workload
+	// carried it. Only some submitters set metadata (`rask.originator`, `rask.project`), so
+	// ANY job submitted by a person at the CLI, by another tool, or by a workload
 	// that opted out was enough to blank the operator's only view of the cluster.
 	//
 	// Defaulted to `{}` rather than left undefined so every consumer can read it unconditionally; the

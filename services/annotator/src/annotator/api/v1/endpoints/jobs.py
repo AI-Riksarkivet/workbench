@@ -2,7 +2,7 @@
 
 The interactive modes (manual, AI-assist) write locally then merge_insert one version.
 Bulk / auto-labeling instead runs a producer over a CHUNK-LEVEL selection (a lasso /
-scope / corpus formed in the read plane) as a SILVER DERIVER — async, corpus-scale,
+scope / corpus formed in the read plane) as a DERIVER — async, corpus-scale,
 replace-protects-humans. That deriver is the caller's own job; OUR job is the thin SEAM that
 submits it and reports status.
 

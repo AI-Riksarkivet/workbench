@@ -1,9 +1,10 @@
 """The workbench's live harness: a rask lakehouse reached through its public doors only.
 
 What the live suites need of a deployed lakehouse, written against rask's published contract (`docs/rask/`):
-- a person signed in at the deployment's Dex with the password grant;
+- a person signed in at the deployment's Dex with the password grant, and the workbench's own confidential client signed
+  in for itself with the client-credentials grant, as the annotator signs in to write and publish;
 - the principal the catalog derives for a bearer (`GET /management/v1/me`);
-- a scratch tenant (project, warehouse and a bronze namespace) made and removed through the catalog's doors;
+- a scratch tenant (project, warehouse and a media namespace) made and removed through the catalog's doors;
 - lineage's commit feed, followed forward by cursor (`docs/rask/COMMIT-EVENTS.md`).
 
 Every request closes its connection: through `kubectl port-forward` a server's close of an idle keep-alive connection
@@ -36,6 +37,12 @@ SETTLE_SECONDS = float(os.environ.get("LANCE_E2E_SETTLE_SECONDS", "120"))
 DEX_CLIENT = os.environ.get("LANCE_E2E_OIDC_CLIENT_ID", "")
 DEX_AUDIENCE = os.environ.get("LANCE_E2E_OIDC_AUDIENCE", "")
 DEX_SCOPE = f"openid email federated:id audience:server:client_id:{DEX_AUDIENCE}"
+#: The workbench's confidential client, as the annotator is configured with it (`WORKBENCH_OIDC_CLIENT_ID`,
+#: `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE`): the identity every annotation write and publish
+#: is made as.
+WORKBENCH_CLIENT = os.environ.get("LANCE_E2E_WORKBENCH_CLIENT_ID", "")
+WORKBENCH_CLIENT_SECRET_FILE = os.environ.get("LANCE_E2E_WORKBENCH_CLIENT_SECRET_FILE", "")
+LAKEHOUSE_AUDIENCE = os.environ.get("LANCE_E2E_LAKEHOUSE_AUDIENCE", "")
 
 CLOSE_EACH_REQUEST = "close"
 
@@ -75,6 +82,16 @@ class Identity:
         answer.raise_for_status()
         return cls(str(answer.json()["id_token"]))
 
+    @classmethod
+    def workbench(cls) -> Identity:
+        """The workbench's confidential client signed in for itself, with the grant and audience the annotator asks for
+        (`service_kit.governed.token_exchange.LakehouseTokens.for_service`)."""
+        with open(WORKBENCH_CLIENT_SECRET_FILE, encoding="utf-8") as secret:
+            credentials = (WORKBENCH_CLIENT, secret.read().strip())
+        answer = requests.post(f"{DEX}/token", data={"grant_type": "client_credentials", "audience": LAKEHOUSE_AUDIENCE}, auth=credentials, timeout=20)
+        answer.raise_for_status()
+        return cls(str(answer.json()["access_token"]))
+
     def namespace(self) -> lance_namespace.LanceNamespace:
         """The stock client an outside pipeline gets."""
         return lance_namespace.connect("rest", {"uri": CATALOG, "headers.Authorization": f"Bearer {self.bearer}", "headers.Connection": CLOSE_EACH_REQUEST})
@@ -87,14 +104,14 @@ def ok(answer: requests.Response) -> dict[str, Any]:
 
 
 class Tenant:
-    """A scratch tenant one run drives (project, warehouse and its bronze namespace), and what it must take down."""
+    """A scratch tenant one run drives (project, warehouse and its media namespace), and what it must take down."""
 
     def __init__(self, purpose: str, grants: Sequence[str]) -> None:
         self.admin = Identity.person(ADMIN_USER)
         self.job = Identity.person(JOB_USER)
         self.project = f"{purpose}-{uuid.uuid4().hex[:8]}"
         #: A namespace's name begins with its warehouse's id; the warehouse's id is the project's.
-        self.bronze = f"{self.project}$bronze"
+        self.media = f"{self.project}$media"
         self.grants = tuple(grants)
         self.tables: list[str] = []
 
@@ -102,9 +119,9 @@ class Tenant:
         admin = self.admin
         ok(admin.http.post(f"{CATALOG}/management/v1/projects", json={"id": self.project}))
         ok(admin.http.post(f"{CATALOG}/management/v1/warehouses", json={"id": self.project, "project": self.project}))
-        ok(admin.http.post(f"{CATALOG}/v1/namespace/{self.bronze}/create", json={"properties": {"rask.tier": "bronze"}}))
+        ok(admin.http.post(f"{CATALOG}/v1/namespace/{self.media}/create", json={"properties": {}}))
         for relation in self.grants:
-            ok(admin.http.post(f"{CATALOG}/management/v1/namespace/{self.bronze}/access/grant", json={"user": self.job.principal, "relation": relation}))
+            ok(admin.http.post(f"{CATALOG}/management/v1/namespace/{self.media}/access/grant", json={"user": self.job.principal, "relation": relation}))
 
     def tear_down(self) -> list[str]:
         """Drop every table, then the warehouse with its bucket, then the project; what failed."""

@@ -85,7 +85,7 @@ def _full_project() -> dict[str, Any]:
         publish_error="the catalog said no",
         pending_publish_id="0123456789abcdef",
         pending_publish_at=NOW,
-        pending_target_namespace="silver",
+        pending_target_namespace="acme$published",
         pending_publish_by="gina",
         publish_progress="collecting",
     ).model_dump(mode="json")

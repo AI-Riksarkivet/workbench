@@ -162,6 +162,25 @@ test('a search answering several rows of one document lists each row', async ({
 	expect(errors).toEqual([]);
 });
 
+test('the sidebar starts as the collapsed rail, and opened it stays open across a reload', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await page.goto('/datasets');
+	const sidebar = page.locator('[data-slot="sidebar"][data-state]');
+	await expect(sidebar).toHaveAttribute('data-state', 'collapsed');
+	// Each rail icon keeps its name.
+	await expect(
+		page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Datasets' }),
+	).toBeVisible();
+
+	await page.getByRole('main').getByRole('button', { name: 'Toggle Sidebar' }).click();
+	await expect(sidebar).toHaveAttribute('data-state', 'expanded');
+	await page.reload();
+	await expect(sidebar).toHaveAttribute('data-state', 'expanded');
+});
+
 test('a dataset with no atlas says so, and its views say why they are closed', async ({
 	page,
 	context,
@@ -175,11 +194,57 @@ test('a dataset with no atlas says so, and its views say why they are closed', a
 	const graph = views.getByRole('button', { name: /^Graph/ });
 	await expect(graph).toHaveAccessibleName('Graph');
 	await expect(graph).toHaveAccessibleDescription('this dataset declares no knowledge graph');
+	// Focus alone says why, as a pointer resting on it does, in a tooltip on the tab: nothing below the row moves.
+	const below = page.getByText('This dataset has no embedding map.');
+	/** Where the text sits once the page's settle-in animation has ended: two reads apart that agree. */
+	const settled = async (): Promise<number> => {
+		let last = Number.NaN;
+		for (;;) {
+			const y = (await below.boundingBox())!.y;
+			if (y === last) return y;
+			last = y;
+			await page.waitForTimeout(150);
+		}
+	};
+	const before = await settled();
 	await graph.focus();
-	await page.keyboard.press('Enter');
-	await expect(page.getByRole('status').filter({ hasText: 'Graph is not available' })).toHaveText(
+	await expect(page.getByRole('tooltip')).toContainText(
 		'Graph is not available: this dataset declares no knowledge graph.',
 	);
+	await views.getByRole('button', { name: /^Tree/ }).hover();
+	await expect(page.getByRole('tooltip')).toContainText(
+		'Tree is not available: this dataset declares no topic hierarchy.',
+	);
+	expect(await settled()).toBe(before);
+});
+
+test('a viewer that cannot be reached is told apart from a dataset that does not exist, and is tried again', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Barbara'));
+	// The edge's answer for a service it cannot reach.
+	await page.route('**/api/viewer/api/datasets/*/descriptor', (route) =>
+		route.fulfill({
+			status: 502,
+			contentType: 'application/problem+json',
+			json: {
+				type: 'about:blank',
+				title: 'Bad Gateway',
+				status: 502,
+				detail: 'the viewer service could not be reached',
+			},
+		}),
+	);
+	await page.goto('/datasets/acme%24letters');
+	await expect(page.getByRole('alert')).toHaveText(
+		'The viewer could not be reached, so this dataset cannot be shown right now.',
+	);
+	await expect(page.getByText('that you can see')).toHaveCount(0);
+
+	await page.unroute('**/api/viewer/api/datasets/*/descriptor');
+	await page.getByRole('button', { name: 'Try again' }).click();
+	await expect(page.getByRole('navigation', { name: 'Dataset pages' })).toBeVisible();
 });
 
 test('a /config.json the app cannot use is a 503 that says why, and calls no service', async ({

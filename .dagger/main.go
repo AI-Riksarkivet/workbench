@@ -138,7 +138,7 @@ func (m *Workbench) FrontendCheck(
 		Stdout(ctx)
 }
 
-// AppEndToEnd runs the app's Playwright suite (frontend/app/e2e) on the BUILT app, behind `e2e/edge.ts` with its mock issuer
+// AppEndToEnd runs the app's Playwright suite (frontend/app/e2e) on the BUILT app, behind `edge.ts` with its mock issuer
 // and services, in Microsoft's Playwright image with the workspace's bun beside it.
 func (m *Workbench) AppEndToEnd(
 	ctx context.Context,

@@ -42,11 +42,15 @@ from pydantic import BaseModel, ConfigDict
 
 from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import AnnotationProject, Draft, ProjectState, Task, TaskState
-from annotator.projects.publish import PublishPlan, PublishRefusal, build_plan, source_pin, table_properties
+from annotator.projects.publish import PublishPlan, PublishRefusal, build_plan, publish_inputs, table_properties
 from service_kit.naming import CATALOG_DELIMITER
 
 
 logger = logging.getLogger(__name__)
+
+#: The most inputs one write's run may name: each is one authorization check on the catalog's commit path. Not in the
+#: published contract; read off rask `services/catalog/src/catalog/core/run_context.py` (`MAX_INPUTS`) at `d057ecfb4`.
+MAX_INPUTS = 64
 
 
 class Publisher(Protocol):
@@ -64,13 +68,16 @@ class Publisher(Protocol):
         *,
         properties: dict[str, str],
         run_id: str,
-        source: str | None = None,
-        source_version: int | None = None,
+        inputs: list[tuple[str, int]],
     ) -> int:
         """Create the table from the plan's rows; return its version. MUST treat an existing table
-        with this id as success — the saga relies on that for retry safety. ``run_id`` and the pin
-        (``source`` at ``source_version``, present only when the plan pins unambiguously) travel as the
-        catalog Context's run and input."""
+        with this id as success — the saga relies on that for retry safety. ``run_id`` and ``inputs`` (each captured
+        table at its version) travel as the catalog Context's run and inputs."""
+        ...
+
+    async def requires_run(self, namespace: str) -> bool:
+        """Whether the lakehouse requires a write under ``namespace`` to name its run and inputs: any namespace on its
+        path declares the run rule (`docs/rask/WRITE-GOVERNANCE.md`)."""
         ...
 
 
@@ -105,8 +112,8 @@ class PublishOutcome(BaseModel):
     already_published: bool = False
 
 
-# The catalog's identifier delimiter is `CATALOG_DELIMITER` (imported): estate ids are `bronze$events`,
-# `silver$features`. A `.` here is NOT a separator to the catalog — the id would parse as one root-level
+# The catalog's identifier delimiter is `CATALOG_DELIMITER` (imported): estate ids are `acme$media$events`,
+# `acme$published$features`. A `.` here is NOT a separator to the catalog — the id would parse as one root-level
 # segment, landing the table at the catalog ROOT while FGA authorized creation in `namespace:<target>`,
 # so the authorization object and the created object would diverge.
 def table_id_for(project: AnnotationProject, publish_id: str, namespace: str) -> str:
@@ -232,16 +239,28 @@ async def run_publish(
         plan = build_plan(project, pairs, publish_id=publish_id, published_at=published_at)
         table_id = table_id_for(project, publish_id, namespace)
 
+        # §7.2: every captured (table, version) is an input, and none is fabricated. Refused before anything is written
+        # when the catalog could not take them: more than one run may name, or, under the run rule, any item that
+        # captured none.
+        inputs = publish_inputs(plan)
+        if len(inputs.tables) > MAX_INPUTS:
+            raise PublishRefusal(
+                f"the project's items came from {len(inputs.tables)} table versions, and one publish names at most {MAX_INPUTS} inputs: "
+                "split the items across projects"
+            )
+        if (inputs.uncaptured or not inputs.tables) and await publisher.requires_run(namespace):
+            raise PublishRefusal(
+                f"{namespace} requires every write to name the tables it was made from, and {inputs.uncaptured} of this project's item "
+                "sources recorded no version of a catalog table: send those items again from their dataset, or publish into a namespace "
+                "that does not require a run"
+            )
+
         await _note(project_handle, f"creating table {table_id}")
-        pin = source_pin(plan)
         version = await publisher.create_table(
             table_id,
             plan,
             properties=table_properties(project, plan),
-            # The §7.2 pin — (dataset, version) when every item shares one captured source,
-            # else nothing: `source_pin` never fabricates, so neither does the wire.
-            source=pin[0] if pin else None,
-            source_version=pin[1] if pin else None,
+            inputs=inputs.tables,
             # The publish token names the run: minted once per publish, so a retried create names the same one.
             run_id=publish_id,
         )

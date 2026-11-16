@@ -63,7 +63,7 @@ secrets:
 {{- $o := .Values.auth.oidc -}}
 {{- $issuer := required "auth.oidc.issuer: the provider's issuer, which a token's iss must equal" $o.issuer -}}
 {{- $idp := required "auth.oidc.idpId: the idp id the provider's subjects are principals of" $o.idpId -}}
-{{- if or (eq $idp "kubernetes") (not (regexMatch "^[a-z0-9-]+$" $idp)) }}{{ fail (printf "auth.oidc.idpId=%s is not an idp id: lower-case letters, digits and '-', never kubernetes" $idp) }}{{ end -}}
+{{- if or (eq $idp "kubernetes") (hasSuffix "-client" $idp) (not (regexMatch "^[a-z0-9-]+$" $idp)) }}{{ fail (printf "auth.oidc.idpId=%s is not a person's idp id: lower-case letters, digits and '-', never kubernetes and never ending in -client, which name machines" $idp) }}{{ end -}}
 - { name: WORKBENCH_AUDIT_ENABLED, value: {{ .Values.auth.audit | quote }} }
 - { name: WORKBENCH_OIDC_ENABLED, value: "true" }
 - { name: WORKBENCH_OIDC_ISSUER, value: {{ $issuer | quote }} }

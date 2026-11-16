@@ -9,10 +9,5 @@
 export * from './edge';
 export * from './parse';
 export * from './me';
-// rask's own domain clients. ray backs the compute zone via the `ray` service (`/api/ray/*` +
-// `/api/serve/*`). (batches.ts died at P7a with the batches table — ingestion is ingest.ts → the
-// medallion producer; search.ts/volumes.ts died in the R6/R20 wave — lines FTS re-lands as a
-// catalog-governed table behind /api/explorer/search; the media plane reads datasets only through
-// lance-namespace, so it serves no raw object-store browser.)
+// The compute client: `ray` reads the Ray cluster's jobs, nodes and Serve applications through the `ray` service.
 export * from './ray';
-export * from './ingest';

@@ -7,7 +7,7 @@ against. Assembling the routers over an explicit `app.state` tests the request h
 what these contracts are — and leaves the wiring to `test_the_flows_row_*` in the gateway suite,
 where it is checked against the real app's openapi.
 
-`/api` is the mount prefix on purpose: it is what the chart and `scripts/dev-micro.sh` set
+`/api` is the mount prefix on purpose: it is what the chart and `scripts/local-stack.sh` set
 `WORKBENCH_API_PREFIX` to, so the paths driven here are the paths the gateway's `/api/flows` row forwards.
 """
 

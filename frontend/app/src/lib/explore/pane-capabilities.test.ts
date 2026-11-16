@@ -2,7 +2,7 @@
  * Which panes a corpus may show.
  *
  * The reported defect: viewing a still IMAGE showed a time scrubber, a Transcript tab and a Speakers
- * tab. The media ELEMENT was already chosen from the declared mime — an image corpus correctly got an
+ * tab. The media ELEMENT was already chosen from the declared kind — an image corpus correctly got an
  * `<img>` — but the chrome around it sat inside `{#if !isFullscreen}` and nothing else, so every
  * corpus got the whole audio/video apparatus whether or not a word of it applied.
  *

@@ -27,6 +27,7 @@
 	import { fetchDraft } from '#lib/api/projects.api.ts';
 	import { login } from '#lib/auth.svelte.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
+	import { viewTransitions } from '#lib/view-transition.svelte.ts';
 	import { AnnotatorController } from './controller.svelte.ts';
 	import AnnotationSidebar from './AnnotationSidebar.svelte';
 	import CanvasToolbar from './CanvasToolbar.svelte';
@@ -150,6 +151,10 @@
 	});
 
 	let status = $state<'loading' | 'loaded' | 'failed'>('loading');
+	// Ready for a person's input: the picture fitted, the annotations drawn and the controller attached (`loaded`), and
+	// no page transition covering the canvas, during which the browser sends every press to the document root
+	// (`#lib/view-transition.svelte.ts`). Until then the region says it is busy.
+	const ready = $derived(status === 'loaded' && !viewTransitions.running);
 	let failure = $state('');
 	let refusal = $state<string | null>(null);
 	const count = $derived(controller.rows.length);
@@ -356,6 +361,8 @@
 				aria-roledescription="drawing canvas"
 				tabindex="0"
 				data-testid="canvas-region"
+				aria-busy={!ready}
+				data-ready={ready ? 'true' : 'false'}
 				data-pressed={pressed ? 'true' : 'false'}
 				onfocus={onCanvasFocus}
 				onblur={onCanvasBlur}

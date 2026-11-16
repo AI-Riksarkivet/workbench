@@ -8,16 +8,17 @@
 		viewForHit,
 	} from '@workbench/explorer-api';
 	import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
-	import { frameLink, mediaLink, resolveMedia } from '#lib/explore/media.ts';
+	import { frameLink, mediaLink, resolveFrame, resolveMedia } from '#lib/explore/media.ts';
 	import { linkMayHaveExpired, resumeAfterSwap } from '#lib/explore/media-source.ts';
 	import { documentChunks, speakerTurns } from '#lib/api/explore.api.ts';
-	import { fmtTime, hitKey } from '#lib/explore/utils.ts';
+	import { fmtTime, hitKey, mediaNoun } from '#lib/explore/utils.ts';
 	import { ChevronRight, Maximize2, Minimize2 } from '@lucide/svelte';
 	import { Button } from '@workbench/ui';
 	import ChunkBodyWindow from '#lib/explore/components/chunk-body-window.svelte';
 	import { panesFor, shownTab } from '#lib/explore/pane-capabilities.ts';
 	import ChunkTimeline from '#lib/explore/components/chunk-timeline.svelte';
 	import DiarizationTimeline from '#lib/explore/components/diarization-timeline.svelte';
+	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { on } from 'svelte/events';
 
 	type Props = {
@@ -82,8 +83,53 @@
 	const view = $derived(hit ? viewForHit(hit) : activeView());
 
 	const mediaKind = $derived(view.mediaKind);
+	const noun = $derived(mediaNoun(mediaKind));
+	/** Why voice search is not offered on a diarized dataset, once the probe has answered; null while it is. */
+	const voiceAbsent = $derived(
+		voiceSearch.status !== null && !voiceSearch.built
+			? 'Voice search needs voice tables this dataset has not built.'
+			: null,
+	);
 
-	// WHICH PANES this corpus may show. The media element was already chosen from the declared mime,
+	// The link the element shows: the frame for a still, the document's media for anything that plays. When the
+	// viewer named none, the pane shows why and a way to ask again, and no element at all.
+	const shownLink = $derived(mediaKind === 'image' ? frame : media);
+	const linkFailure = $derived(shownLink?.url === null ? shownLink.detail : null);
+
+	/** Read again everything the pane shows for the hit: its media link, its chunks and its speaker turns. */
+	function retryAll(): void {
+		const h = hit;
+		if (!h) return;
+		void (mediaKind === 'image' ? resolveFrame(h, true) : resolveMedia(h, true));
+		void chunksRead?.refresh();
+		if (panes.speakers) void turnsRead?.refresh();
+	}
+
+	const reason = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+	// What the pane's synced views could not read, in the reader's words: the chunks feed the timeline and the
+	// transcript, the turns the Speakers tab. A read the corpus does not use is no failure of this item.
+	const viewsFailure = $derived.by((): { what: string; detail: string } | null => {
+		const chunksFailed = (panes.timeline || panes.transcript) && chunksRead?.error !== undefined;
+		const turnsFailed = panes.speakers && turnsRead?.error !== undefined;
+		if (chunksFailed && turnsFailed)
+			return {
+				what: "This item's transcript, timeline and speakers could not be loaded.",
+				detail: `${reason(chunksRead?.error)}; ${reason(turnsRead?.error)}`,
+			};
+		if (chunksFailed)
+			return {
+				what: "This item's transcript and timeline could not be loaded.",
+				detail: reason(chunksRead?.error),
+			};
+		if (turnsFailed)
+			return {
+				what: "This item's speakers could not be loaded.",
+				detail: reason(turnsRead?.error),
+			};
+		return null;
+	});
+
+	// WHICH PANES this corpus may show. The media element was already chosen from the declared kind,
 	// but the chrome around it was not gated at all — so an image corpus got a time scrubber and both
 	// audio tabs. Gate on what the dataset DECLARES.
 	const panes = $derived(panesFor(view));
@@ -373,19 +419,35 @@
 			{/if}
 
 			<!-- The element comes from the corpus's OWN declaration, not from an assumption. A page-
-           image corpus declares `document.mime: image/png` and no `time` binding; handing that
-           to a <video> is how "Video failed to load: MEDIA_ERR_SRC_NOT_SUPPORTED" happened on a
-           dataset that has no video at all. See DescriptorView.mediaKind. -->
-			{#if mediaKind === 'image'}
+           image corpus declares `document.kind: image` (or no kind and no `time` binding); handing
+           that to a <video> is how "Video failed to load: MEDIA_ERR_SRC_NOT_SUPPORTED" happened on a
+           dataset that has no video at all. See DatasetView.mediaKind. -->
+			{#if linkFailure !== null}
+				<div class="flex shrink-0 justify-center">
+					<LoadFailure
+						what="This item's media could not be loaded."
+						detail={linkFailure}
+						onretry={retryAll}
+					/>
+				</div>
+			{:else if mediaKind === 'image'}
 				<!-- The per-row FRAME, not the doc blob: on a paged corpus the row IS the page, so
-             /api/chunk-frame/<identity> is the thing the hit points at. -->
-				<img
-					src={frame?.url ?? undefined}
-					alt={view.title(hit)}
-					class={isFullscreen
-						? 'min-h-0 w-full flex-1 bg-black object-contain'
-						: 'max-h-[45vh] w-full shrink-0 bg-black object-contain'}
-				/>
+             its frame is the thing the hit points at. Nothing is drawn until its link is signed. -->
+				{#if frame?.url}
+					<img
+						src={frame.url}
+						alt={view.title(hit)}
+						class={isFullscreen
+							? 'min-h-0 w-full flex-1 bg-black object-contain'
+							: 'max-h-[45vh] w-full shrink-0 bg-black object-contain'}
+					/>
+				{:else}
+					<div
+						class="bg-muted aspect-[3/4] max-h-[45vh] w-full shrink-0 animate-pulse"
+						role="status"
+						aria-label="Loading the image"
+					></div>
+				{/if}
 			{:else if mediaKind === 'audio'}
 				<!-- Audio keeps the transport (the timeline below is meaningful) but not a 16:9 box. -->
 				<audio
@@ -415,6 +477,12 @@
 				>
 					<track kind="captions" />
 				</video>
+			{/if}
+
+			{#if viewsFailure !== null && linkFailure === null}
+				<div class="flex shrink-0 justify-center">
+					<LoadFailure what={viewsFailure.what} detail={viewsFailure.detail} onretry={retryAll} />
+				</div>
 			{/if}
 
 			<!-- The scrubber is meaningless without a time axis: a still image has nothing to scrub. -->
@@ -486,6 +554,11 @@
 					data-testid="viewer-sync-body"
 				>
 					{#if !isFullscreen && shown === 'speakers'}
+						{#if voiceAbsent}
+							<p class="text-muted-foreground px-3 pt-2 text-xs" data-testid="voice-absent">
+								{voiceAbsent}
+							</p>
+						{/if}
 						{#if diarTurns.length > 0}
 							<!-- Compact speaker lanes (Chunk⇄Video zoom) pinned on top; the karaoke
                  transcript fills the rest and is the only part that scrolls, so the
@@ -501,6 +574,7 @@
 										onSeek={seekTo}
 										voiceEnabled={voiceSearch.built}
 										onFindVoice={findVoice}
+										{noun}
 									/>
 								</div>
 								<div
@@ -518,7 +592,7 @@
 							</div>
 						{:else}
 							<div class="text-muted-foreground p-3 text-xs">
-								Diarization not built for this video.
+								No speaker turns for this {noun}.
 							</div>
 						{/if}
 					{:else}
@@ -534,13 +608,6 @@
 				</div>
 			{/if}
 		</div>
-
-		{#if (mediaKind === 'image' ? frame : media)?.url === null}
-			{@const missing = mediaKind === 'image' ? frame : media}
-			<p class="text-muted-foreground shrink-0 text-sm" role="status">
-				No media for this item: {missing && 'detail' in missing ? missing.detail : ''}.
-			</p>
-		{/if}
 
 		{#if mediaError}
 			<div class="text-destructive shrink-0 text-sm">

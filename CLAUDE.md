@@ -127,12 +127,14 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | Goal | Command |
 | --- | --- |
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
+| Run it locally with real data | `make local`: installs, seeds a demo page corpus and an audio dataset into a local directory catalog (`scripts/seed_demo_corpus.py`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); no Dapr sidecar runs, so the annotator's task plane answers 503. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
 | Tests (no live stack) | `make test` (= `uv run pytest -m "not e2e" -n 8`) |
 | One test | `uv run pytest services/<svc>/tests/<file>.py::<test>` |
 | Lint, format, type-check | `make check` |
 | The authorization model's tests | `make fga-test` (= `dagger call fga-test`); after editing `model.fga`, `make fga-model` |
 | The pinned OpenFGA server for the suite | `make openfga` (exported through Dagger to `.localbin/openfga`) |
 | Frontend gates | `make frontend-check` (check, lint, fmt:check, vitest, knip); the app's Playwright suite `make app-e2e`, or `dagger call app-end-to-end` |
+| The app with hot reload | `make app-dev` (vite on :5173, `/api` proxied to `WORKBENCH_EDGE_URL`, the local stack's edge on :8700 by default) |
 | Build an image | `make image NAME=<stem>` (= `dagger call image --name=<stem>`) |
 | The CI gates locally | `dagger call lint`, `dagger call test`, `dagger call frontend-check`, `dagger call app-end-to-end` |
 
@@ -153,7 +155,8 @@ Two language-pure planes, as in rask; never blur them.
   member, so its model pins never enter the services' resolution.
 - `frontend/`: the bun workspace root (`package.json`, `bun.lock`, `knip.json`, oxlint/oxfmt config, `patches/`).
   - `frontend/app`: THE app (#9): one browser-only SvelteKit 3 single-page app (adapter-static, `ssr = false`, no
-    server code), served by its own `serve.ts` with the strict CSP as a header. It signs in with PKCE on the
+    server code), served by its own `serve.ts` with the strict CSP as a header; `edge.ts` beside it stands in for the
+    Gateway, for the Playwright suite (its mock services) and the local stack (the real ones). It signs in with PKCE on the
     workbench's public client (oidc-client-ts), binds the tokens to the tab with DPoP (an in-memory, non-extractable
     P-256 key), and calls each service same-origin at the public base `/config.json` names (`services`), which is also
     what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`; its fetch seam is `#lib/api/client.ts`,

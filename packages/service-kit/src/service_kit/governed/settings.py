@@ -22,7 +22,7 @@ from pydantic import Field, model_validator
 
 from service_kit.governed.dpop import DEFAULT_WINDOW_SECONDS
 from service_kit.governed.fga import DEFAULT_STORE_NAME
-from service_kit.governed.principal import MACHINE_IDPS, require_idp_id
+from service_kit.governed.principal import is_machine_idp, require_idp_id
 
 
 class FgaSettings:
@@ -82,7 +82,7 @@ class OidcSettings:
             raise ValueError("WORKBENCH_OIDC_ISSUER, WORKBENCH_OIDC_AUDIENCE and WORKBENCH_OIDC_IDP_ID are required when OIDC is enabled")
         if not self.oidc_allow_insecure and not self.oidc_issuer.startswith("https://"):
             raise ValueError("WORKBENCH_OIDC_ISSUER must use HTTPS (set WORKBENCH_OIDC_ALLOW_INSECURE=true for a dev provider)")
-        if self.oidc_idp_id in MACHINE_IDPS:
+        if is_machine_idp(self.oidc_idp_id):
             raise ValueError(f"WORKBENCH_OIDC_IDP_ID {self.oidc_idp_id!r} is a machine identity's idp id")
         require_idp_id(self.oidc_idp_id)
         return self
