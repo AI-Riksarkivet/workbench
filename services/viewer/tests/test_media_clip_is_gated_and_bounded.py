@@ -26,6 +26,7 @@ from __future__ import annotations
 import pytest
 
 from viewer.services import clips
+from viewer.services.build_slots import BuildsBusy
 
 
 class TestTheCacheKeyDoesNotMissOnNoise:
@@ -51,10 +52,10 @@ class TestTheBuildIsBounded:
     def test_the_bound_is_enforced_by_the_builder(self) -> None:
         """Pinned on the builder rather than the route: `build_clip` is the shared seam, and a second
         caller added later must inherit the bound rather than re-implement it."""
-        saturated = [clips.acquire_build_slot() for _ in range(clips.MAX_CONCURRENT_BUILDS)]
+        saturated = [clips.build_slots.acquire() for _ in range(clips.MAX_CONCURRENT_BUILDS)]
         try:
-            with pytest.raises(clips.ClipBusyError):
-                clips.acquire_build_slot()
+            with pytest.raises(BuildsBusy):
+                clips.build_slots.acquire()
         finally:
             for slot in saturated:
                 slot.release()

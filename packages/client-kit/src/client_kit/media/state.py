@@ -59,6 +59,13 @@ class AppState(BaseModel):
     # The build of each payload in flight, so callers asking for the same cold payload at once await one build
     # (viewer.api.v1.endpoints.atlas); only the app's event loop touches it and `points_cache`.
     points_flights: dict[tuple[str, str, int], Any] = Field(default_factory=dict)
+    # The Atlas, Graph and Tree a person set up on a table nobody stamped (viewer.api.v1.endpoints.derived_views), keyed
+    # (dataset, table, version, read, the columns picked), each with its size; bounded and single-flight as the points.
+    derived_cache: dict[tuple[str, str, int, str, str], tuple[bytes, int]] = Field(default_factory=dict)
+    derived_flights: dict[tuple[str, str, int, str, str], Any] = Field(default_factory=dict)
+    # The slots those builds take (viewer.services.build_slots.BuildSlots), made on the first build from the viewer's
+    # settings; only the app's event loop touches it.
+    derived_slots: Any | None = None
     # The viewer's own opens of the tables its signed media URLs name (viewer.services.signed_media.ServiceReads), made on
     # first use under the lock.
     service_reads: Any | None = None

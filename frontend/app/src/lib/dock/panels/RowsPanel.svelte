@@ -3,24 +3,47 @@
 	 * A plain table's rows: the dataset's tables to choose from, its rows a page at a time in the
 	 * table's own order or sorted by a column Lance orders, a text search where a column carries a
 	 * full-text index, and the rows ranked by similarity to one where a vector column carries a vector
-	 * index (`#lib/plain/plain.svelte.ts`). Each cell is written by its column's kind; a row opens in
-	 * the Row panel. What the table cannot do stays on screen, disabled, with the reason.
+	 * index (`#lib/plain/plain.svelte.ts`), or the rows a Graph or Tree node stands for, read from the
+	 * node's own door (the rows the node's count counted, in the table's order, from the same read). Each
+	 * cell is written by its column's kind; a row opens in the Row panel. What the table cannot do stays on
+	 * screen, disabled, with the reason.
 	 */
 	import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Search, X } from '@lucide/svelte';
 	import { Button } from '@workbench/ui/button';
 	import { tableRows, type ColumnView } from '#lib/api/datasets.api.ts';
+	import { aloneKey, nodeRows, type Extent } from '#lib/api/derived.api.ts';
 	import { plainPanes } from '#lib/explore/pane-capabilities.ts';
 	import { cellText, numeric } from '#lib/plain/cells.ts';
+	import NoTable from '#lib/plain/NoTable.svelte';
 	import { plain } from '#lib/plain/plain.svelte.ts';
 
 	const facts = $derived(plain.facts);
 	const table = $derived(plain.table);
+	const node = $derived(plain.node);
+	const version = $derived(facts && table ? (facts.tables[table]?.version ?? null) : null);
 	const read = $derived(
-		facts && table
-			? tableRows({ dataset: facts.id, table, rows: $state.snapshot(plain.rows) })
-			: null,
+		facts && table && node && version !== null
+			? nodeRows({
+					dataset: facts.id,
+					table,
+					version,
+					node,
+					offset: plain.rows.offset,
+					limit: plain.rows.limit,
+				})
+			: facts && table
+				? tableRows({ dataset: facts.id, table, rows: $state.snapshot(plain.rows) })
+				: null,
 	);
 	const page = $derived(read?.current ?? null);
+	/** What a node's rows were decided over: a sample of a large table, or a read cut short. */
+	const nodeExtent = $derived<Extent | null>(
+		page && 'extent' in page ? (page.extent as Extent) : null,
+	);
+	/** "under" a node: its rows and every row below it; "at" a tree's "(itself)" leaf: its rows alone. */
+	const nodeWord = $derived(
+		node?.of === 'graph' ? 'naming' : node && aloneKey(node.key) ? 'at' : 'at or under',
+	);
 	const columns = $derived(page?.columns ?? []);
 	const panes = $derived(plainPanes(columns, facts?.read_only ?? null));
 	const tables = $derived(Object.keys(facts?.tables ?? {}).sort());
@@ -99,9 +122,25 @@
 				<X />
 				{plain.rows.q ? `“${plain.rows.q}”` : `Like row ${plain.rows.near}`}
 			</Button>
+		{:else if node}
+			<Button
+				variant="outline"
+				size="xs"
+				onclick={clearSearch}
+				title="The rows {nodeWord} {node.name}, as the {node.of} counted them"
+			>
+				<X />
+				{node.of === 'graph' ? 'Node' : nodeWord === 'at' ? 'At' : 'Under'} “{node.name}”
+			</Button>
 		{/if}
 	</div>
 
+	{#if plain.missing && table}
+		<p class="text-muted-foreground border-border border-b px-3 py-1.5 text-xs" role="status">
+			This dataset holds no table <span class="font-mono">{plain.missing}</span>: showing
+			<span class="font-mono">{table}</span>.
+		</p>
+	{/if}
 	{#if facts && Object.keys(facts.unreadable).length > 0}
 		<ul class="text-muted-foreground border-border border-b px-3 py-1.5 text-xs" role="status">
 			{#each Object.entries(facts.unreadable) as [name, reason] (name)}
@@ -115,6 +154,8 @@
 			<p class="text-destructive p-3 text-sm" role="alert">
 				The rows could not be read: {failure(read.error)}
 			</p>
+		{:else if !read}
+			<NoTable />
 		{:else if !page}
 			<p class="text-muted-foreground p-3 text-sm" role="status">Reading the rows…</p>
 		{:else}
@@ -143,7 +184,7 @@
 										: 'descending'
 									: undefined}
 							>
-								{#if column.sortable && !plain.rows.q && plain.rows.near === null}
+								{#if column.sortable && !plain.rows.q && plain.rows.near === null && !node}
 									<button
 										type="button"
 										class="hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 rounded outline-none focus-visible:ring-2"
@@ -161,9 +202,11 @@
 									</button>
 								{:else}
 									<span
-										title={column.sortable
-											? 'A search or ranking keeps its own order'
-											: unsortable(column)}>{column.name}</span
+										title={!column.sortable
+											? unsortable(column)
+											: node
+												? "A node's rows keep the table's order"
+												: 'A search or ranking keeps its own order'}>{column.name}</span
 									>
 								{/if}
 								<span class="text-muted-foreground/70 block font-mono text-[10px] font-normal"
@@ -220,7 +263,11 @@
 					{:else}
 						<tr>
 							<td class="text-muted-foreground px-3 py-3" colspan={columns.length + 1}>
-								{plain.rows.q ? 'No row matches this search.' : 'This table holds no rows.'}
+								{plain.rows.q
+									? 'No row matches this search.'
+									: node
+										? 'No row names this node.'
+										: 'This table holds no rows.'}
 							</td>
 						</tr>
 					{/each}
@@ -235,7 +282,15 @@
 		>
 			<span role="status" class="tabular-nums">
 				{first}–{last} of {page.total.toLocaleString()}
-				{plain.rows.q ? 'matches' : plain.rows.near !== null ? 'nearest rows' : 'rows'}
+				{plain.rows.q
+					? 'matches'
+					: plain.rows.near !== null
+						? 'nearest rows'
+						: node
+							? `rows ${nodeWord} ${node.name}`
+							: 'rows'}{nodeExtent?.sampled
+					? ` · counted in ${nodeExtent.read.toLocaleString()} of ${nodeExtent.total.toLocaleString()} rows${nodeExtent.cut ? ` (${nodeExtent.cut})` : ', sampled'}`
+					: ''}
 			</span>
 			<span class="flex items-center gap-1">
 				<Button

@@ -42,5 +42,16 @@ export function followLink(
 	if (link.row !== null) explore.openLinked(link.row, link.t);
 	else if (link.doc !== null)
 		explore.active = explore.playerRow(link.doc, link.t ?? 0, link.t ?? 0);
-	return link;
+	// A stamped dataset draws its Atlas, Graph and Tree from its descriptor: a set-up the link carries
+	// is for a table with none, so it is not used, and the page says so rather than dropping it unseen.
+	const carried = Object.keys(link.setups).length > 0 || link.node !== null || link.setupProblem;
+	return carried
+		? {
+				...link,
+				setups: {},
+				node: null,
+				setupProblem:
+					'set-ups of the Atlas, Graph and Tree apply to a table with no workbench descriptor, and this dataset has one, which draws them',
+			}
+		: link;
 }

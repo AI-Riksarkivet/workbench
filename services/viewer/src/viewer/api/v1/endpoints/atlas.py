@@ -35,7 +35,7 @@ from client_kit.lancekit.descriptor import AtlasSpace, Declared
 from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
 from client_kit.lancekit.predicate import and_, eq, isin, or_
 from client_kit.lancekit.registry import DatasetHandle, table_dataset
-from client_kit.media.cache_bounds import evict_to_bounds
+from client_kit.media.cache_bounds import keep_shared
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/atlas", tags=["atlas"])
 
-#: Max memoized /points payloads (the LOOKUP bound). The MEMORY bound is
-#: `settings.points_cache_bytes` — see `evict_to_bounds`.
+#: Max memoized /points payloads (the LOOKUP bound). The MEMORY bound is `settings.points_cache_bytes`, shared with the
+#: derived views' cache (`keep_shared`).
 _POINTS_CACHE_MAX = 12
 
 #: Rows per caption-attach scan when decorating a selection with frame captions.
@@ -182,8 +182,7 @@ async def _points_payload(state: AppState, declared: Declared, space: AtlasSpace
 async def _build_points(state: AppState, declared: Declared, space: AtlasSpace, ds: lance.LanceDataset, key: PointsKey) -> bytes:
     try:
         body = await run_in_threadpool(build_points, declared, space, ds)
-        evict_to_bounds(state.points_cache, max_entries=_POINTS_CACHE_MAX, max_bytes=state.settings.points_cache_bytes, incoming_bytes=len(body))
-        state.points_cache[key] = (body, len(body))
+        keep_shared(state.points_cache, key, body, others=[state.derived_cache], max_entries=_POINTS_CACHE_MAX, max_bytes=state.settings.points_cache_bytes)
         return body
     finally:
         state.points_flights.pop(key, None)

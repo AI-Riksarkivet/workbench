@@ -29,7 +29,11 @@ async function start(
 	await startWorkbench(
 		opening,
 		'lake~acme$letters',
-		{ snapshot: () => defaultLayout(), onLayout, started: (session) => held.push(session) },
+		{
+			snapshot: () => ({ layout: defaultLayout(), table: null, setups: {}, q: null, node: null }),
+			onLayout,
+			started: (session) => held.push(session),
+		},
 		left,
 	);
 	return held[0] ?? null;
@@ -65,7 +69,7 @@ describe('starting the workbench', () => {
 			Promise.resolve(store),
 			'lake~acme$letters',
 			{
-				snapshot: () => defaultLayout(),
+				snapshot: () => ({ layout: defaultLayout(), table: null, setups: {}, q: null, node: null }),
 				onLayout: () => {},
 				started: (session) => {
 					order.push('held');

@@ -38,7 +38,7 @@ export const load: LayoutLoad = async ({ params, url, parent }) => {
 	try {
 		facts = await datasetFacts(params.id);
 		if (!facts.stamped) {
-			if (explore.dataset === params.id) plain.open(facts);
+			if (explore.dataset === params.id) plain.open(facts, url.searchParams.get('table'));
 			return { id: params.id, failure: null, unreachable: false, view: null, facts };
 		}
 		view = await datasetView(params.id);

@@ -19,6 +19,7 @@
 // makes one door fail (`fail`), answer that nothing is built there yet (`unbuilt`) or answer 2.5 s late
 // (`slow`), for that person only;
 // `clear` puts it back.
+import { readFileSync } from 'node:fs';
 import {
 	Dictionary,
 	Float16,
@@ -27,6 +28,7 @@ import {
 	Int64,
 	Table,
 	Utf8,
+	type Vector,
 	tableToIPC,
 	vectorFromArray,
 } from 'apache-arrow';
@@ -230,12 +232,48 @@ const PLAIN_COLUMNS = [
 	column('tags', 'list<item: string>', 'json'),
 	column('embedding', 'fixed_size_list<item: float>[4]', 'vector', { similar: true, dim: 4 }),
 	column('image', 'extension<lance.blob.v2<BlobType>>', 'blob'),
+	column('site', 'string', 'text', { sortable: true }),
+	column('src', 'string', 'text', { sortable: true }),
+	column('dst', 'string', 'text', { sortable: true }),
+	column('place', 'string', 'text', { sortable: true }),
 ];
 const PLAIN_ROWS = [
-	{ n: 3, note: 'salt in the harbour', tags: '["coast"]' },
-	{ n: 1, note: 'iron to the works', tags: '["inland"]' },
-	{ n: 4, note: 'salt and grain', tags: '["coast","trade"]' },
-	{ n: 2, note: 'letters from the governor', tags: '[]' },
+	{
+		n: 3,
+		note: 'salt in the harbour',
+		tags: '["coast"]',
+		site: 'Visby',
+		src: 'Visby',
+		dst: 'Kalmar',
+		place: 'Sverige/Gotland/Visby',
+	},
+	{
+		n: 1,
+		note: 'iron to the works',
+		tags: '["inland"]',
+		site: 'Kalmar',
+		src: 'Kalmar',
+		dst: 'Visby',
+		place: 'Sverige/Småland/Kalmar',
+	},
+	{
+		n: 4,
+		note: 'salt and grain',
+		tags: '["coast","trade"]',
+		site: 'Visby',
+		src: 'Visby',
+		dst: 'Lübeck',
+		place: 'Sverige/Gotland/Visby',
+	},
+	{
+		n: 2,
+		note: 'letters from the governor',
+		tags: '[]',
+		site: 'Uppsala',
+		src: 'Uppsala',
+		dst: 'Visby',
+		place: 'Sverige/Uppland/Uppsala',
+	},
 ].map((row, rowid) => ({
 	rowid,
 	cells: {
@@ -274,6 +312,7 @@ const PLAIN_FACTS = {
 	problem: null,
 	unreadable: { drafts: NOT_WRITTEN },
 	read_only: READ_ONLY,
+	setup_limits: { vector_max_dim: 2048 },
 };
 
 /** One page of the plain table, as the viewer answers it: sorted, searched or ranked. */
@@ -305,6 +344,243 @@ function plainPage(params: URLSearchParams): unknown {
 		rows: rows.slice(offset, offset + limit),
 	};
 }
+
+// ── a plain table's set-up reads (`viewer.api.v1.endpoints.derived_views`) ─────────────────────
+
+const plainCells = PLAIN_ROWS.map((r) => r.cells as Record<string, string | number>);
+const extent = { total: PLAIN_ROWS.length, read: PLAIN_ROWS.length, sampled: false, cut: null };
+
+/** What the viewer's profile says of the plain table: each column's kind and what its four rows hold. */
+function plainProfile(): unknown {
+	const profiled = PLAIN_COLUMNS.map((c) => {
+		const values =
+			c.kind === 'text' || c.kind === 'integer' ? plainCells.map((r) => String(r[c.name])) : [];
+		const distinct = new Set(values);
+		const separated = values.filter((v) => v.includes('/')).length / (values.length || 1);
+		return {
+			name: c.name,
+			kind: c.kind,
+			dim: c.dim,
+			distinct: values.length ? distinct.size : null,
+			distinct_capped: false,
+			nulls: 0,
+			separator: separated > 0 ? '/' : null,
+			separated,
+			examples: [...distinct].sort().slice(0, 3),
+			refers_to: {},
+		};
+	});
+	return { table: PLAIN_TABLE, version: 3, extent, columns: profiled };
+}
+
+/** The atlas the plain table's vector draws: four points, coloured and labelled by the picked columns. */
+function plainAtlas(params: URLSearchParams): Uint8Array {
+	const color = params.get('color');
+	const label = params.get('label');
+	// oxlint-disable-next-line typescript/no-explicit-any -- a table of several column types, as `new Table` takes it
+	const columns: Record<string, Vector<any>> = {
+		x: vectorFromArray([-0.8, 0.6, -0.05, 0.9], new Float16()),
+		y: vectorFromArray([0.5, -0.6, 0.02, 0.2], new Float16()),
+		rowid: vectorFromArray(
+			PLAIN_ROWS.map((r) => BigInt(r.rowid)),
+			new Int64(),
+		),
+	};
+	if (color) {
+		columns.color = vectorFromArray(
+			plainCells.map((r) => String(r[color])),
+			new Dictionary(new Utf8(), new Int32()),
+		);
+	}
+	if (label) {
+		columns.label = vectorFromArray(
+			plainCells.map((r) => String(r[label])),
+			new Dictionary(new Utf8(), new Int32()),
+		);
+	}
+	const table = new Table(columns);
+	const meta = table.schema.metadata;
+	for (const [key, value] of Object.entries({
+		count: '4',
+		total: '4',
+		read: '4',
+		sampled: 'false',
+		method: params.get('vector') ? 'pca' : 'columns',
+		...(params.get('vector') ? { variance: '0.9100' } : {}),
+		...(color ? { color_kind: 'category' } : {}),
+	})) {
+		meta.set(key, value);
+	}
+	return tableToIPC(table, 'stream');
+}
+
+/** A graph node's typed key, as the viewer keys it: `i:` for an integer column, `s:` for text. */
+const graphKey = (column: string, value: string | number | undefined): string =>
+	`${PLAIN_COLUMNS.find((c) => c.name === column)?.kind === 'integer' ? 'i' : 's'}:${value}`;
+
+/** The rows of the plain table whose from or to names the graph's node `key`. */
+function rowsNaming(key: string, source: string, target: string): number[] {
+	return PLAIN_ROWS.flatMap((r, i) =>
+		graphKey(source, plainCells[i]?.[source]) === key ||
+		graphKey(target, plainCells[i]?.[target]) === key
+			? [r.rowid]
+			: [],
+	);
+}
+
+/** The graph the picked from and to columns link, each node with the rows that name it. */
+function plainGraph(params: URLSearchParams) {
+	const source = params.get('source') ?? '';
+	const target = params.get('target') ?? '';
+	const edges = plainCells.map((r) => ({
+		source: graphKey(source, r[source]),
+		target: graphKey(target, r[target]),
+		description: '',
+	}));
+	const ids = [...new Set(edges.flatMap((e) => [e.source, e.target]))].sort();
+	const sources = new Set(edges.map((e) => e.source));
+	return {
+		built: true,
+		nodes: ids.map((id) => {
+			const naming = rowsNaming(id, source, target);
+			return {
+				id,
+				name: id.slice(2),
+				type: '',
+				mentions: edges.filter((e) => e.source === id || e.target === id).length,
+				rows: naming.length,
+				first: naming[0] ?? 0,
+			};
+		}),
+		edges,
+		diagnostics: {
+			extent,
+			nodes: ids.length,
+			edges: edges.length,
+			null_rows: 0,
+			dropped_weights: 0,
+			self_loops: 0,
+			unmatched_targets: [...new Set(edges.map((e) => e.target))].filter((t) => !sources.has(t))
+				.length,
+			mixed_types: false,
+			clipped_keys: 0,
+			cut_nodes: 0,
+			cut_edges: 0,
+		},
+	};
+}
+
+/** The rows the graph door's node `key` stands for. */
+const plainGraphRows = (params: URLSearchParams): number[] =>
+	rowsNaming(params.get('key') ?? '', params.get('source') ?? '', params.get('target') ?? '');
+
+interface PlainNode {
+	name: string;
+	id?: string;
+	value?: number;
+	rows: number;
+	children?: PlainNode[];
+}
+
+/** A path's levels as the viewer reads them: split at the separator, empty levels dropped. */
+const levelsOf = (path: string, separator: string): string[] =>
+	path.split(separator).filter((level) => level !== '');
+
+/** The tree the picked path column nests, each node keyed by its levels and counting the rows below it. */
+function plainTree(params: URLSearchParams) {
+	const column = params.get('node') ?? '';
+	const separator = params.get('separator') ?? '/';
+	const root: PlainNode = { name: 'All rows', rows: 0, children: [] };
+	let nodes = 0;
+	for (const r of plainCells) {
+		let here = root;
+		const levels = levelsOf(String(r[column]), separator);
+		root.rows += 1;
+		levels.forEach((level, depth) => {
+			const id = JSON.stringify({ path: levels.slice(0, depth + 1) });
+			here.children ??= [];
+			let next = here.children.find((c) => c.id === id);
+			if (!next) {
+				next = { name: level, id, rows: 0 };
+				here.children.push(next);
+				nodes += 1;
+			}
+			next.rows += 1;
+			here = next;
+		});
+		here.value = (here.value ?? 0) + 1;
+	}
+	return {
+		built: true,
+		hierarchy: root,
+		noise_label: '',
+		diagnostics: {
+			extent,
+			nodes,
+			roots: 1,
+			orphans: 0,
+			cycles: 0,
+			null_rows: 0,
+			dropped_sizes: 0,
+			clipped: 0,
+			depth: 3,
+			cut_nodes: 0,
+		},
+	};
+}
+
+/** The rows of the plain table at or under the path tree's node `key`. */
+function plainTreeRows(params: URLSearchParams): number[] {
+	const column = params.get('node') ?? '';
+	const separator = params.get('separator') ?? '/';
+	const { path } = JSON.parse(params.get('key') ?? '{"path":[]}') as { path: string[] };
+	return PLAIN_ROWS.flatMap((r, i) => {
+		const levels = levelsOf(String(plainCells[i]?.[column]), separator);
+		return path.every((level, at) => levels[at] === level) ? [r.rowid] : [];
+	});
+}
+
+/** One page of the rows a node stands for, as the node-rows doors answer it. */
+function nodePage(rowids: number[], params: URLSearchParams): unknown {
+	const offset = Number(params.get('offset') ?? 0);
+	const limit = Number(params.get('limit') ?? 50);
+	const rows = PLAIN_ROWS.filter((r) => rowids.includes(r.rowid));
+	return {
+		table: PLAIN_TABLE,
+		qualified: `${PLAIN_ID}$${PLAIN_TABLE}`,
+		version: 3,
+		columns: PLAIN_COLUMNS,
+		total: rows.length,
+		offset,
+		limit,
+		rows: rows.slice(offset, offset + limit),
+		extent,
+	};
+}
+
+// ── the demo's plain tables, as the viewer itself answers them (`tests/derived_recording.py`) ────────────
+
+/** One answer the viewer gave: JSON, or an Arrow IPC stream in base64. */
+type Recorded = { json: unknown } | { arrow: string };
+
+/** An answer's key: its path and its query's parameters, decoded and sorted, as the recording keys it. */
+const seededKey = (path: string, params: URLSearchParams): string =>
+	`${decodeURIComponent(path)}\u0000${JSON.stringify([...params.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))}`;
+
+/** The recording, written by `scripts/record_derived_answers.py` and held to the viewer by its own suite. */
+const SEEDED = new Map(
+	Object.entries(
+		JSON.parse(readFileSync(new URL('./seeded-answers.json', import.meta.url), 'utf8')) as Record<
+			string,
+			Recorded
+		>,
+	).map(([key, answer]) => {
+		const [path = '', query = ''] = key.split('?');
+		return [seededKey(path, new URLSearchParams(query)), answer] as const;
+	}),
+);
+/** The recorded datasets: a read of theirs the recording lacks is refused, not answered by another mock. */
+const SEEDED_DATASETS = ['seeded~field$survey', 'loose~'];
 
 type DatasetId = keyof typeof DATASETS;
 const isDataset = (id: string | null): id is DatasetId => id !== null && id in DATASETS;
@@ -614,6 +890,24 @@ Bun.serve({
 				],
 			});
 		}
+		const seeded =
+			req.method === 'GET' ? SEEDED.get(seededKey(url.pathname, url.searchParams)) : undefined;
+		if (seeded) {
+			ok(200);
+			return 'arrow' in seeded
+				? arrow(Uint8Array.from(atob(seeded.arrow), (c) => c.charCodeAt(0)))
+				: json(seeded.json);
+		}
+		if (
+			req.method === 'GET' &&
+			SEEDED_DATASETS.some((id) =>
+				url.pathname.startsWith(`/api/datasets/${encodeURIComponent(id)}`),
+			)
+		) {
+			// A read of the demo's plain tables the recording does not hold: the spec asks what the viewer was never asked.
+			ok(404);
+			return json({ detail: `not recorded: ${url.pathname}${url.search}` }, 404);
+		}
 		const facts = /^\/api\/datasets\/([^/]+)$/.exec(url.pathname);
 		if (facts && req.method === 'GET') {
 			const id = decodeURIComponent(facts[1] ?? '');
@@ -636,6 +930,7 @@ Bun.serve({
 				problem: null,
 				unreadable: {},
 				read_only: null,
+				setup_limits: { vector_max_dim: 2048 },
 			});
 		}
 		const plainRows = /^\/api\/datasets\/([^/]+)\/tables\/([^/]+)\/rows(?:\/(\d+))?$/.exec(
@@ -646,6 +941,28 @@ Bun.serve({
 			if (plainRows[3] === undefined) return json(plainPage(url.searchParams));
 			const row = PLAIN_ROWS[Number(plainRows[3])];
 			return row ? json(row) : json({ detail: 'no such row' }, 404);
+		}
+		const derived =
+			/^\/api\/datasets\/([^/]+)\/tables\/([^/]+)\/(profile|atlas|graph|tree)(?:\/(check|rows))?$/.exec(
+				url.pathname,
+			);
+		if (derived && req.method === 'GET' && decodeURIComponent(derived[1] ?? '') === PLAIN_ID) {
+			ok(200);
+			const [, , , read, part] = derived;
+			const params = url.searchParams;
+			if (read === 'profile') return json(plainProfile());
+			if (read === 'graph' && part === 'rows')
+				return json(nodePage(plainGraphRows(params), params));
+			if (read === 'tree' && part === 'rows') return json(nodePage(plainTreeRows(params), params));
+			if (read === 'graph') {
+				const graph = plainGraph(params);
+				return json(part === 'check' ? graph.diagnostics : graph);
+			}
+			if (read === 'tree') {
+				const tree = plainTree(params);
+				return json(part === 'check' ? tree.diagnostics : tree);
+			}
+			return arrow(plainAtlas(params));
 		}
 		const descriptor = /^\/api\/datasets\/([^/]+)\/descriptor$/.exec(url.pathname);
 		if (descriptor && req.method === 'GET') {

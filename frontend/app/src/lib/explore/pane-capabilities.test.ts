@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	panelGates,
+	plainGates,
 	panesFor,
 	plainPanes,
 	shownTab,
@@ -140,7 +141,6 @@ describe('what a table with no descriptor offers', () => {
 		expect(panes).toEqual({
 			search: { why: 'no text column of this table carries a full-text index' },
 			similar: { why: 'this table has no vector column' },
-			atlas: 'this dataset declares no embedding projection to draw',
 			send: 'read-only source',
 		});
 	});
@@ -257,11 +257,46 @@ describe('the atlas follows the table in view', () => {
 });
 
 describe('a dataset shown as a plain table', () => {
-	it('feeds its rows and its row, and every view panel says the dataset carries no descriptor', () => {
-		const gates = panelGates(null, { plain: true });
+	const col = (name: string, arrow_type: string, vector_dim: number | null = null) => ({
+		name,
+		arrow_type,
+		vector_dim,
+	});
+
+	it('offers each view its columns could feed, from its Arrow types', () => {
+		const gates = panelGates(null, {
+			plain: true,
+			columns: [
+				col('id', 'int64'),
+				col('parent', 'int64'),
+				// Named by its Arrow type alone, as a source with no vector dimension in its facts names it.
+				col('embedding', 'fixed_size_list<item: float>[16]'),
+			],
+		});
+		expect(gates).toEqual({ results: null, player: null, atlas: null, graph: null, tree: null });
+		expect(plainGates([col('east', 'double'), col('north', 'float')]).atlas).toBeNull();
+		// A vector placed by its type alone: no two numeric columns stand in for it.
+		expect(
+			plainGates([col('name', 'string'), col('v', 'fixed_size_list<item: halffloat>[8]')]).atlas,
+		).toBeNull();
+		// A vector wider than the viewer projects is no placement: the viewer would refuse it.
+		expect(
+			plainGates([col('name', 'string'), col('v', 'fixed_size_list<item: float>[16]')], {
+				vector_max_dim: 8,
+			}).atlas,
+		).toMatch(/has neither/);
+	});
+
+	it('says why a view its columns could not feed is closed', () => {
+		const gates = panelGates(null, {
+			plain: true,
+			columns: [col('n', 'int64'), col('when', 'timestamp[us]')],
+		});
 		expect([gates.results, gates.player]).toEqual([null, null]);
-		expect(gates.atlas).toMatch(/no embedding projection/);
-		expect(gates.graph).toMatch(/no workbench descriptor/);
-		expect(gates.tree).toMatch(/no workbench descriptor/);
+		expect(gates.atlas).toBe(
+			'a point is placed by two numeric columns or one vector column, and this table has one numeric column',
+		);
+		expect(gates.graph).toMatch(/fewer than two/);
+		expect(gates.tree).toMatch(/has neither/);
 	});
 });

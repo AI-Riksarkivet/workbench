@@ -72,9 +72,9 @@ export function shownTab(
 /**
  * What a dataset with no workbench descriptor offers, read from one table's columns (the viewer's
  * `ColumnView`: its kind and the indices the table itself carries). Nothing is guessed: text search
- * needs a full-text index, similar rows a vector index, the atlas a declared projection (which a plain
- * table has none of), and annotation a lakehouse's dataset with a descriptor naming its rows' identity.
- * Each capability the table lacks carries the reason a disabled control shows.
+ * needs a full-text index, similar rows a vector index, and annotation a lakehouse's dataset with a
+ * descriptor naming its rows' identity. Each capability the table lacks carries the reason a disabled
+ * control shows. (Its Atlas, Graph and Tree are the person's to set up: `plainGates`.)
  */
 export interface PlainColumn {
 	name: string;
@@ -88,8 +88,6 @@ export interface PlainPanes {
 	search: { column: string } | { why: string };
 	/** The vector column similar rows are ranked by, or why there is none. */
 	similar: { column: string } | { why: string };
-	/** Why the atlas cannot be drawn. */
-	atlas: string;
 	/** Why the rows cannot be sent to a project. */
 	send: string;
 }
@@ -114,7 +112,6 @@ export function plainPanes(columns: readonly PlainColumn[], readOnly: string | n
 						? 'no vector column of this table carries a vector index'
 						: 'this table has no vector column',
 				},
-		atlas: 'this dataset declares no embedding projection to draw',
 		send:
 			readOnly ??
 			'this dataset declares no workbench descriptor, so its rows have no identity a task can name',
@@ -143,29 +140,104 @@ export interface PanelCapabilities {
 	atlasSpaces: readonly { table: string }[];
 }
 
-/** The reason every descriptor-only panel gives on a dataset shown as a plain table. */
-const NO_DESCRIPTOR =
-	'this dataset carries no workbench descriptor, so it is shown as a plain table';
+/** One column of a plain table as its schema names it (the viewer's `ColumnInfo`). */
+export interface SchemaColumn {
+	name: string;
+	arrow_type: string;
+	vector_dim?: number | null | undefined;
+	is_blob?: boolean | undefined;
+}
+
+/** The width of a fixed-size list of numbers as pyarrow names its type (`fixed_size_list<item: float>[16]`). */
+function vectorDim(arrowType: string): number {
+	const found = /^fixed_size_list<[^>]*\b(u?int\d+|halffloat|float|double)>\[(\d+)\]$/.exec(
+		arrowType,
+	);
+	return found ? Number(found[2]) : 0;
+}
+
+/** A column's kind from its Arrow type, as the viewer's `column_kind` reads it, for the kinds a set-up reads. */
+function schemaKind(column: SchemaColumn): string {
+	const t = column.arrow_type.toLowerCase();
+	if (column.is_blob) return 'blob';
+	if ((column.vector_dim ?? 0) > 0 || vectorDim(t) > 0) return 'vector';
+	if (/^(large_)?string$|^utf8$|^string_view$/.test(t)) return 'text';
+	if (t === 'bool') return 'boolean';
+	if (/^u?int(8|16|32|64)$/.test(t)) return 'integer';
+	if (/^(halffloat|float|double)$/.test(t)) return 'float';
+	if (t.startsWith('decimal')) return 'decimal';
+	return 'other';
+}
+
+/** What the viewer's set-up reads can name, as its dataset facts answer it (`setup_limits`). */
+export interface SetupLimits {
+	vector_max_dim: number;
+}
+
+/** The limits a caller with no dataset facts gates by: the viewer's own (`VECTOR_MAX_DIM`). */
+const DEFAULT_SETUP_LIMITS: SetupLimits = { vector_max_dim: 2048 };
+
+/**
+ * Which of a plain table's views its columns could feed, once a person sets them up, and why not: the Atlas
+ * places a point by two numeric columns or one vector column, the Graph links two columns of ids or names,
+ * and the Tree nests by a text path or an id and a parent. A view its columns could feed is offered as
+ * "Set up…"; one they could not is disabled with this reason.
+ */
+export function plainGates(
+	columns: readonly SchemaColumn[],
+	limits: SetupLimits = DEFAULT_SETUP_LIMITS,
+): Pick<PanelGates, 'atlas' | 'graph' | 'tree'> {
+	const kinds = columns.map((c) => ({
+		kind: schemaKind(c),
+		dim: c.vector_dim ?? vectorDim(c.arrow_type.toLowerCase()),
+	}));
+	const numbers = kinds.filter((k) => ['integer', 'float', 'decimal'].includes(k.kind)).length;
+	// A vector wider than the viewer projects is refused there, so it is not offered here.
+	const vectors = kinds.filter(
+		(k) => k.kind === 'vector' && k.dim >= 2 && k.dim <= limits.vector_max_dim,
+	).length;
+	const keys = kinds.filter((k) => k.kind === 'text' || k.kind === 'integer').length;
+	const texts = kinds.filter((k) => k.kind === 'text').length;
+	return {
+		atlas:
+			vectors > 0 || numbers >= 2
+				? null
+				: numbers === 1
+					? 'a point is placed by two numeric columns or one vector column, and this table has one numeric column'
+					: 'a point is placed by two numeric columns or one vector column, and this table has neither',
+		graph:
+			keys >= 2
+				? null
+				: 'a graph links two columns of ids or names, and this table has fewer than two',
+		tree:
+			texts >= 1 || keys >= 2
+				? null
+				: 'a tree nests rows by a text path or by an id and a parent, and this table has neither',
+	};
+}
 
 /**
  * `view` is the stamped dataset's view, or null while its descriptor is read; `plain` is a dataset shown
- * as a plain table (no descriptor), whose atlas reason is `plainPanes`'s. `rowTable` is the table in view:
- * an atlas space is bound to one table, so a space over `pages` has nothing to draw while the reader
- * searches `lines`; with no table chosen, any declared space feeds it.
+ * as a plain table (no descriptor), whose views are the person's to set up from `columns`, the table in
+ * view's (`plainGates`). `rowTable` is the table in view: an atlas space is bound to one table, so a space
+ * over `pages` has nothing to draw while the reader searches `lines`; with no table chosen, any declared
+ * space feeds it.
  */
 export function panelGates(
 	view: PanelCapabilities | null,
-	{ rowTable = null, plain = false }: { rowTable?: string | null; plain?: boolean } = {},
+	{
+		rowTable = null,
+		plain = false,
+		columns = [],
+		limits = DEFAULT_SETUP_LIMITS,
+	}: {
+		rowTable?: string | null;
+		plain?: boolean;
+		columns?: readonly SchemaColumn[];
+		limits?: SetupLimits;
+	} = {},
 ): PanelGates {
-	if (plain) {
-		return {
-			results: null,
-			player: null,
-			atlas: plainPanes([], null).atlas,
-			graph: NO_DESCRIPTOR,
-			tree: NO_DESCRIPTOR,
-		};
-	}
+	if (plain) return { results: null, player: null, ...plainGates(columns, limits) };
 	if (view === null) {
 		const reading = 'the dataset is still being read';
 		return { results: null, player: null, atlas: reading, graph: reading, tree: reading };

@@ -29,7 +29,25 @@ names a credential: properties and storage options are an allow-list (`client_ki
 schema as a plain table (`viewer.services.plain_rows`, the dock's Rows and Row panels, `#lib/plain`): paging, sorting where
 Lance orders a column, text search only where a full-text index is, similar rows only where a vector index is, a blob
 cell's image or audio previewed through a signed media URL, every read bounded (a page's depth, a sort's keys, a cell's
-text and list cut at the read, a plain binary cell never read); nothing is guessed and nothing is built. It reaches a
+text and list cut at the read, a plain binary cell never read); nothing is guessed and nothing is built. Its Atlas, Graph
+and Tree are the person's to set up (`viewer.services.derived_views`, `#lib/plain/SetupForm.svelte`): they pick the
+columns (two numbers or a vector for the atlas, which the viewer projects by PCA on numpy's `eigh`; an edge table's from
+and to, or an id and what it points to, for the graph; an id and a parent, or a path and its separator, for the tree),
+the form opens on what the table's profile suggests and fills a role in only where exactly one candidate fits
+(`#lib/plain/suggest.ts`), and nothing is drawn until they confirm; while they edit, the form asks only the
+`graph/check` and `tree/check` doors, which read the profile's sample, once the columns have stood still. Each derived
+read (`GET .../tables/{table}/profile`, `atlas`, `graph`, `tree`, their checks and node rows) is behind the same gate as
+the rows, names columns only after checking them against the schema (a duplicate pick is refused), reads an evenly
+spaced sample past its cap through Lance's `take` with every text cell cut in the projection, stops at its deadline and
+at 96 MB of values (`READ_BYTES`) and says so, leaves out and counts a non-finite weight, size or position, answers
+strict JSON, keys a graph node by its type (`i:1` and `s:1` are two nodes), splits a path to at most 16 levels, keeps
+the heaviest edges and largest branches, is kept per (dataset, table, version, columns) within ONE byte budget shared
+with the stamped atlas's points (`media.viewer.cacheBytes`), takes one of `media.viewer.derivedBuilds` build slots when
+cold or is refused with 503 and Retry-After (`viewer.services.build_slots`, the clip transcode's mechanism), stops when
+every caller has left, and writes nothing. A node picked in the graph or the tree lists in the Rows panel the rows its
+count counted, from `graph/rows` or `tree/rows` by the node's key (a tree node: the rows at or below it; its
+"(itself)" leaf: the rows at it alone). Set-ups apply only to a table with no descriptor: a stamped dataset's Atlas,
+Graph and Tree are its descriptor's, and a link carrying a set-up to one says it was not used. It reaches a
 lakehouse only through what rask publishes, the way any outside tool would:
 
 - data through stock `lance_namespace` and pylance, on the credentials the catalog vends;
@@ -164,7 +182,7 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | Goal | Command |
 | --- | --- |
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
-| Run it locally with real data | `make local`: installs, seeds three demo sources under `LOCAL_CATALOG` (`scripts/seed_demo_corpus.py`, declared by `scripts/local-sources.json`): a stamped page corpus (with an atlas, a topic tree and a small knowledge graph) and an audio dataset in a directory catalog standing in for a lakehouse (`lake`), an unstamped table two namespaces deep in a lance-namespace directory catalog (`archive`) and a bare `.lance` table with an image blob (`scans`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
+| Run it locally with real data | `make local`: installs, seeds three demo sources under `LOCAL_CATALOG` (`scripts/seed_demo_corpus.py`, declared by `scripts/local-sources.json`): a stamped page corpus (with an atlas, a topic tree and a small knowledge graph) and an audio dataset in a directory catalog standing in for a lakehouse (`lake`), an unstamped table two namespaces deep in a lance-namespace directory catalog (`archive`) and a bare `.lance` table with an image blob (`scans`), each with columns a person can set an atlas, a graph and a tree up on, builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
 | Stop the local stack | `make local-stop`: stops the process `make local` recorded (`$TMPDIR/workbench-local-stack.pid`) and waits until its ports are free; `make local` checks the ports before it installs or builds anything |
 | Deploy to the development cluster | `make deploy-dev` (images by commit, the OpenFGA fixture, the Dex client, the release, the lakehouse grants, a read-back), each step its own `make dev-*`; `make undeploy-dev` removes it all (docs/DEPLOY.md) |
 | The chart's renders | `make chart-check` (lint, the dev overlay, a platform's, a release with no lakehouse and one with sign-in off, and every misconfiguration the templates refuse, each rendered and failing with its own message: `scripts/chart-refusals.sh`) |
@@ -218,12 +236,18 @@ Two language-pure planes, as in rask; never blur them.
     page's only navigation: Results, Player, Atlas (`#lib/atlas`), Graph (`#lib/graph`) and Tree (`#lib/topics`) are its
     panels, each opened from the dock's "open a panel" menu, which lists a panel the dataset cannot feed disabled with its
     reason (`GatedAction`); the reasons are `panelGates` in `#lib/explore/pane-capabilities.ts`, and an open panel the
-    dataset cannot feed shows the same reason. A dataset's layout is kept per dataset (`#lib/dock/store.ts`); one never
-    arranged opens with the default that fits it (`defaultLayout`: only the panels it can feed, the views tabbed
-    together). The panels share one selection (`explore`, the atlas's `crossFilter`, `#lib/graph/graph-explorer.svelte.ts`):
+    dataset cannot feed shows the same reason. On a plain table the Atlas, Graph and Tree are `Plain*Panel.svelte`,
+    offered as "Set up…" where the table's columns could feed them (`plainGates`) and holding their set-up in
+    `#lib/plain/plain.svelte.ts`; a set-up naming a column the table no longer holds says so and offers to set up again. A
+    dataset's layout is kept per dataset (`#lib/dock/store.ts`); one never arranged opens with the default that fits it
+    (`defaultLayout`: only the panels it can feed, the views tabbed together). A dataset's named views (the Views rail,
+    `#lib/dock/views.svelte.ts`) are the arrangement, a plain table's set-ups and the search or node its rows listed,
+    several per dataset, one of which may be its default, which it opens with when no link says otherwise. The panels share one selection (`explore`, the atlas's `crossFilter`, `#lib/graph/graph-explorer.svelte.ts`):
     a topic chosen in the tree is the search's `topic=`, an entity picked in the graph searches for its name, and the
     Atlas lights up the results. The address is the view (`#lib/dock/link.ts`): the search, the topic, the row opened,
-    the graph's entity, the panels shown and the one maximized are written into it and restored from it. A maximized
+    the graph's entity, a plain table's set-ups and the node its rows are filtered to (validated, bounded, and left out
+    with a notice when they are not readable, `#lib/plain/setup.ts`), the panels shown and the one maximized are written
+    into it and restored from it. A maximized
     Atlas or Tree stands in for the page it replaced (the map beside its player over the selection's table; the treemap
     beside the topic's rows). The old `/datasets/[id]/atlas`, `graph` and `tree` links redirect to the dock with that
     panel in front. The atlas and the graph draw with WebGPU only (`#lib/gpu`), releasing their device when the panel

@@ -72,6 +72,8 @@ const DatasetFacts = v.object({
 	problem: v.nullable(v.string()),
 	unreadable: v.record(v.string(), v.string()),
 	read_only: v.nullable(v.string()),
+	/** What a set-up of a table's views can name (the widest vector the viewer projects). */
+	setup_limits: v.object({ vector_max_dim: v.number() }),
 });
 export type DatasetFacts = v.InferOutput<typeof DatasetFacts>;
 
@@ -112,7 +114,7 @@ const PlainRow = v.object({
 });
 export type PlainRow = v.InferOutput<typeof PlainRow>;
 
-const RowsPage = v.object({
+export const RowsPage = v.object({
 	table: v.string(),
 	qualified: v.string(),
 	version: v.number(),

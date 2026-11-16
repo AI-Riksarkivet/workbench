@@ -36,6 +36,10 @@ class ViewerSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     #: The mounted file holding the key media URLs are signed with (`viewer.services.signed_media`), read on each use so
     #: a rotated key signs and verifies from the next request. Unset, the signing door answers 503.
     media_url_key_file: Path | None = Field(default=None, alias="VIEWER_MEDIA_URL_KEY_FILE")
+    #: How many views set up on a table nobody stamped are built at once (`viewer.services.build_slots`): each is bounded
+    #: (`viewer.services.derived_views`; the heaviest measured at about 330 MB on a 3,000,000-row table), and a build
+    #: past this many is refused with 503 and Retry-After. The chart sets it from `media.viewer.derivedBuilds`.
+    derived_builds: int = Field(default=2, ge=1, le=8, alias="VIEWER_DERIVED_BUILDS")
     #: How long a signed media URL serves its object.
     media_url_ttl_seconds: int = Field(default=300, ge=10, le=3600, alias="VIEWER_MEDIA_URL_TTL_SECONDS")
 

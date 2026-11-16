@@ -36,10 +36,10 @@ from client_kit.lancekit.predicate import eq
 from client_kit.lancekit.registry import DatasetHandle, table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
-from service_kit.exceptions import NotFoundError, ServiceUnavailableError, ValidationError
+from service_kit.exceptions import NotFoundError, ValidationError
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep
-from viewer.services.clips import MAX_CLIP_S, ClipBusyError, build_clip
+from viewer.services.clips import MAX_CLIP_S, build_clip
 
 
 logger = logging.getLogger(__name__)
@@ -449,14 +449,9 @@ async def media_clip(
             for chunk in stream_blob_range(ds, binding.media_blob, rowid, start=0, end=total - 1):
                 out.write(chunk)
 
-    # OFF THE LOOP, and refusing rather than queueing: `build_clip` takes a bounded slot and raises `ClipBusyError`
-    # instead of waiting, so a burst cannot exhaust the threadpool while `/livez` stays green.
-    try:
-        path = await asyncio.to_thread(build_clip, write_source, f"{handle.id}--{doc_id}", lo, hi)
-    except ClipBusyError as exc:
-        # 503 + Retry-After: a fact the caller can act on. Queueing would have told them nothing and
-        # cost a thread to say it.
-        raise ServiceUnavailableError(str(exc), headers={"Retry-After": "5"}) from exc
+    # OFF THE LOOP, and refusing rather than queueing: `build_clip` takes a bounded slot and answers 503 with Retry-After
+    # (`viewer.services.build_slots.BuildsBusy`) instead of waiting, so a burst cannot exhaust the threadpool.
+    path = await asyncio.to_thread(build_clip, write_source, f"{handle.id}--{doc_id}", lo, hi)
     # THE STAT WE ALREADY TOOK, handed to starlette so it does not take a second one.
     #
     # `build_clip` returns a path it has just confirmed exists; `FileResponse` stats it again when the

@@ -6,10 +6,9 @@
  * browser: the page leaving before the store has opened (opening waits on `crypto.subtle`), and the
  * stored layout changing under the page (another tab, or a reset of the whole document).
  */
-import type { LayoutConfig } from 'horizon-layout';
 import { LayoutAutosave } from './autosave.ts';
 import type { LayoutRead } from './layout.ts';
-import { viewsOf, type WorkbenchStore } from './store.ts';
+import { viewsOf, type ViewSnapshot, type WorkbenchStore } from './store.ts';
 import { DockViews } from './views.svelte.ts';
 
 export interface WorkbenchSession {
@@ -23,8 +22,8 @@ export interface WorkbenchSession {
 }
 
 export interface SessionHooks {
-	/** The dock's live layout, for the views' modified marker and a new view's snapshot. */
-	snapshot: () => LayoutConfig | null;
+	/** What is on screen, for the views' modified marker and a new view. */
+	snapshot: () => ViewSnapshot | null;
 	/**
 	 * The stored layout as it is now, after the page last read it: `unreadable` when a save found it
 	 * so or another tab broke it, readable again when a reset or another tab replaced it.
@@ -55,8 +54,10 @@ export async function startWorkbench(
 		hooks.onLayout({ status: 'unreadable', detail }, false),
 	);
 	const restored = autosave.restore();
-	const views = new DockViews(viewsOf(store), hooks.snapshot);
-	void views.refresh();
+	const views = new DockViews(viewsOf(store, dataset), hooks.snapshot);
+	// Listed before the page starts, so it can open on the dataset's default view.
+	await views.refresh();
+	if (left()) return;
 
 	const stopWatching = store.onChange(() => {
 		const wasRefused = !autosave.saving;

@@ -4,7 +4,8 @@
 to what the viewer serves: seeded into a directory catalog under ``tmp_path`` and read back through the viewer app over
 HTTP, both datasets list, the page corpus signs and serves its frame, its cover and its thumbnail and answers its topic
 tree and its knowledge graph (an entity's clips and neighbours), and the recordings serve their WAV, their timed segments
-with word alignments, and their speaker turns.
+with word alignments, and their speaker turns. The demo's plain tables answer the set-ups the app's browser suite draws
+exactly as that suite's recording says (`tests.derived_recording`), every node named by rows it lists.
 """
 
 from __future__ import annotations
@@ -12,12 +13,14 @@ from __future__ import annotations
 import base64
 import secrets
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import lance_namespace
 import lancedb
 from fastapi.testclient import TestClient
 
 from scripts.seed_demo_corpus import seed
+from tests.derived_recording import record, recorded
 from tests.media_catalog import lake, lakehouse_dir
 from viewer.core.config import ViewerSettings, get_viewer_settings
 from viewer.main import create_viewer_app
@@ -72,3 +75,23 @@ def test_the_seeded_pages_and_recordings_open_as_the_player_reads_them(tmp_path:
         ("fe00cd746463ad2c", "Landskapshandlingar 1663"),
     ]
     assert sorted((n["name"], n["direction"]) for n in entity["neighbors"]) == [("Domboken", "out"), ("Landshövdingen", "in"), ("Protokoll", "out")]
+
+
+def test_the_plain_tables_answer_the_set_ups_the_browser_suite_draws_as_its_recording_says(tmp_path: Path) -> None:
+    answers = {key: answer["json"] for key, answer in record(tmp_path).items() if "json" in answer}
+    pages = {(key.split("?")[0], parse_qs(key.split("?")[1])["key"][0]): page for key, page in answers.items() if "/rows?" in key and "key=" in key}
+    # Each drawn node lists rows: its count, its first row and the rows its key lists are the same rows, a node only
+    # pointed at (a port no cargo leaves, a scan cited and not held) as much as any.
+    listed = {
+        node["id"]: (node["rows"], page["total"], node["first"] in [row["rowid"] for row in page["rows"]])
+        for key, graph in answers.items()
+        if key.split("?")[0].endswith("/graph")
+        for node in graph["nodes"]
+        for page in [pages[(f"{key.split('?')[0]}/rows", node["id"])]]
+    }
+
+    assert {node: (rows == total, first) for node, (rows, total, first) in listed.items()} == dict.fromkeys(listed, (True, True))
+    assert listed["s:Lübeck"] == (12, 12, True)
+    assert {key: {"json": body} for key, body in answers.items()} == {key: a for key, a in recorded().items() if "json" in a}, (
+        "the recording is not what the viewer answers: uv run python -m scripts.record_derived_answers"
+    )

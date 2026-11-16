@@ -24,7 +24,18 @@ from client_kit.media.source_gate import readable
 from client_kit.media.state import dataset_handle, ensure_registry
 from service_kit.exceptions import NotFoundError
 from viewer.api.security import AUTHENTICATED, READS_DATASET, CallerDep, CheckerDep, CurrentSubject
-from viewer.services.plain_rows import MAX_OFFSET, MAX_PAGE, Row, RowsPage, RowsQuery, SortOrder, at_version, read_page, read_row
+from viewer.services.derived_views import VECTOR_MAX_DIM
+from viewer.services.plain_rows import (
+    MAX_OFFSET,
+    MAX_PAGE,
+    Row,
+    RowsPage,
+    RowsQuery,
+    SortOrder,
+    at_version,
+    read_page,
+    read_row,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +85,13 @@ class DatasetsResponse(BaseModel):
     sources: list[SourceListing]
 
 
+class SetupLimits(BaseModel):
+    """What a person's set-up of a table's views can name, from the reads that draw them (`viewer.services.derived_views`):
+    the app offers no set-up these reads would refuse."""
+
+    vector_max_dim: int = VECTOR_MAX_DIM
+
+
 class DatasetFacts(BaseModel):
     """One dataset as its page reads it: its source, its tables in full, and what of the workbench applies to it."""
 
@@ -86,6 +104,7 @@ class DatasetFacts(BaseModel):
     problem: str | None = None
     unreadable: dict[str, str] = Field(default_factory=dict)
     read_only: str | None = None
+    setup_limits: SetupLimits = Field(default_factory=SetupLimits)
 
 
 def _capabilities(descriptor: DatasetDescriptor) -> list[str]:
@@ -163,7 +182,7 @@ async def dataset_descriptor(caller: CallerDep, dataset_id: str, state: StateDep
 TableParam = Annotated[str, Path(min_length=1, max_length=256)]
 
 
-def _table(handle: DatasetHandle, table: str, version: int | None) -> tuple[lance.LanceDataset, TableInfo]:
+def table_at(handle: DatasetHandle, table: str, version: int | None) -> tuple[lance.LanceDataset, TableInfo]:
     info = handle.descriptor.tables.get(table)
     if info is None:
         raise NotFoundError(f"table {table!r} missing from dataset {handle.id!r}")
@@ -187,12 +206,22 @@ async def table_rows(
     version: Annotated[int | None, Query(ge=1)] = None,
 ) -> RowsPage:
     """One page of a table's rows, from its schema alone, read as the caller: in table order or sorted, a full-text
-    search's hits where a full-text index is, or the rows most like one where a vector index is (422 otherwise)."""
-    query = RowsQuery(offset=offset, limit=limit, sort=sort, order=order, q=q, column=column, near=near, vector=vector, version=version)
+    search's hits where a full-text index is, or the rows most like one where a vector index is (400 otherwise)."""
+    query = RowsQuery(
+        offset=offset,
+        limit=limit,
+        sort=sort,
+        order=order,
+        q=q,
+        column=column,
+        near=near,
+        vector=vector,
+        version=version,
+    )
 
     def _read() -> RowsPage:
         handle = dataset_handle(state, dataset_id, caller)
-        ds, info = _table(handle, table, query.version)
+        ds, info = table_at(handle, table, query.version)
         return read_page(ds, info, handle.qualified_table(table), query)
 
     return await run_in_threadpool(_read)
@@ -210,7 +239,7 @@ async def table_row(
     """One row in full, at the version its page was read at, with the media type of each binary cell that names one."""
 
     def _read() -> Row:
-        ds, info = _table(dataset_handle(state, dataset_id, caller), table, version)
+        ds, info = table_at(dataset_handle(state, dataset_id, caller), table, version)
         return read_row(ds, info, rowid)
 
     return await run_in_threadpool(_read)

@@ -2,16 +2,18 @@
 	/**
 	 * One dataset: a dock of the workbench's panels over it (Results, Player, Atlas, Graph, Tree), the
 	 * page's one navigation. The arrangement is the dataset's: restored once, autosaved after every change,
-	 * and can be saved as a named view; where both are kept is `#lib/dock/store.ts`'s decision alone (this
-	 * browser, per person). A dataset never arranged opens with the default that fits it
-	 * (`defaultLayout`): only the panels it can feed (`panelGates`).
+	 * and can be saved as a named view with a plain table's set-ups and the rows it listed; where both are
+	 * kept is `#lib/dock/store.ts`'s decision alone (this browser, per person). A dataset opened with no
+	 * link that says otherwise opens with its default view, else its last arrangement, else the default
+	 * that fits it (`defaultLayout`): only the panels it can feed (`panelGates`).
 	 *
 	 * Below a tablet's width the dock shows the stacked arrangement instead (`defaultLayout(true)`), from
 	 * the moment the window crosses the breakpoint, whichever way: the person's own arrangement is kept,
 	 * saved and shown again once the window is wide, and the stacked one is never saved over it.
 	 *
 	 * THE ADDRESS IS THE VIEW (`#lib/dock/link.ts`): the search, the topic, the row opened, the graph's
-	 * entity, the panels shown and the one maximized are written into it as they change (replacing the
+	 * entity, a plain table's set-ups and the node its rows are filtered to, the panels shown and the one
+	 * maximized are written into it as they change (replacing the
 	 * history entry, so Back leaves the dataset), and a link or a reload opens on them: the panels it names
 	 * are brought in front over the restored layout.
 	 *
@@ -40,7 +42,9 @@
 	import { followLink } from '#lib/dock/follow-link.ts';
 	import { readDockLink, writeDockLink, type DockLink } from '#lib/dock/link.ts';
 	import { startWorkbench, type WorkbenchSession } from '#lib/dock/session.ts';
-	import { openWorkbenchStore } from '#lib/dock/store.ts';
+	import { openWorkbenchStore, type ViewSnapshot } from '#lib/dock/store.ts';
+	import type { ViewRead } from '#lib/dock/views.svelte.ts';
+	import { plain } from '#lib/plain/plain.svelte.ts';
 	import { explore } from '#lib/explore/explore.svelte.ts';
 	import { panelGates } from '#lib/explore/pane-capabilities.ts';
 	import { serviceHealth } from '#lib/explore/service-health.svelte.ts';
@@ -61,6 +65,8 @@
 		panelGates(view, {
 			rowTable: view?.searchTable(page.url.searchParams.get('table'))?.row_table ?? null,
 			plain: isPlain,
+			columns: isPlain && plain.table ? (plain.facts?.tables[plain.table]?.columns ?? []) : [],
+			...(plain.facts ? { limits: plain.facts.setup_limits } : {}),
 		}),
 	);
 	/** What the default layout is fitted to: the dataset's shape and the panels it can feed. */
@@ -97,6 +103,32 @@
 	let unreadable = $state<string | null>(null);
 	/** The layout as last restored or saved, so the restored value is not written back. */
 	let last: string | null = null;
+	/** Why the link this page opened on carried a set-up that was not used. */
+	// svelte-ignore state_referenced_locally
+	let linkProblem = $state<string | null>(data.link.setupProblem ?? null);
+
+	/** What a view holds of what is on screen now. */
+	function snapshot(): ViewSnapshot | null {
+		if (layout === null) return null;
+		return {
+			layout: $state.snapshot(layout),
+			table: isPlain ? plain.table : null,
+			setups: isPlain ? $state.snapshot(plain.setups) : {},
+			q: isPlain ? plain.rows.q : explore.spec.q || null,
+			node: isPlain && plain.node ? { of: plain.node.of, id: plain.node.key } : null,
+		};
+	}
+
+	/** Whether the link this page opened on says what to show, over the dataset's default view. */
+	const linked = (link: DockLink): boolean =>
+		link.panels.length > 0 ||
+		link.max !== null ||
+		Object.keys(link.setups).length > 0 ||
+		link.node !== null ||
+		link.q !== null ||
+		link.topic !== null ||
+		link.row !== null ||
+		link.entity !== null;
 
 	const store = $derived(session?.store ?? null);
 	const autosave = $derived(session?.autosave ?? null);
@@ -140,7 +172,7 @@
 			opening,
 			id,
 			{
-				snapshot: () => (layout ? $state.snapshot(layout) : null),
+				snapshot,
 				onLayout: (read, wasRefused) => {
 					unreadable = read.status === 'unreadable' ? read.detail : null;
 					if (wasRefused && read.status === 'ok') {
@@ -153,6 +185,8 @@
 					unreadable = read.status === 'unreadable' ? read.detail : null;
 					layout = withLink(read.status === 'ok' ? read.layout : firstLayout());
 					session = started;
+					const preferred = started.views.defaultId;
+					if (preferred !== null && !linked(opened)) applyView(preferred);
 				},
 			},
 			() => left,
@@ -178,17 +212,33 @@
 		autosave.schedule(snapshot);
 	});
 
-	/** Apply a saved view; one this app cannot show leaves the arrangement as it is, and says why. */
+	/** Apply a saved view; one this app cannot show leaves what is on screen as it is, and says why. */
 	function applyView(viewId: string): void {
-		const read = views?.select(viewId);
+		const read: ViewRead | undefined = session?.views.select(viewId);
 		if (read === undefined) return;
 		if (read.status === 'unreadable') {
-			views?.report(`This view could not be applied: ${read.detail}.`);
+			session?.views.report(`This view could not be applied: ${read.detail}.`);
 			return;
 		}
 		if (read.status !== 'ok') return;
-		layout = read.layout;
-		views?.activate(viewId);
+		const saved = read.view;
+		if (isPlain) {
+			if (saved.table !== null && saved.table !== plain.table && !plain.choose(saved.table)) {
+				// The view's set-ups and node belong to a table this dataset no longer holds: its layout is
+				// shown over the table in view, and none of them is applied.
+				session?.views.report(
+					`This view names the table ${saved.table}, which this dataset no longer holds: its set-ups were not applied. Pick a table in the Rows panel.`,
+				);
+			} else {
+				plain.restore(saved.setups, saved.node);
+				if (saved.q) plain.search(saved.q);
+				else if (saved.node === null && plain.rows.q) plain.reset();
+			}
+		} else if (saved.q && saved.q !== explore.spec.q) {
+			explore.apply({ ...explore.spec, q: saved.q });
+		}
+		layout = saved.layout;
+		session?.views.activate(viewId);
 	}
 
 	/** The first visit's arrangement: the wide one, which a narrow window shows stacked meanwhile. */
@@ -216,14 +266,21 @@
 		const shown = narrow.current ? narrowLayout : layout;
 		if (shown === null || navigating.type !== null) return;
 		if (explore.dataset !== id || (!isPlain && graphExplorer.dataset !== id)) return;
+		if (isPlain && plain.facts?.id !== id) return;
 		const active = explore.active;
 		/** A row a link opened that still waits for its search keeps its place in the address. */
 		const linked = active === null ? explore.linked : null;
 		const time = active && view?.hasTime ? view.time(active) : null;
 		const searched = !isPlain && !explore.voiceActive && explore.mapSelection === null;
 		// The address as it is now (a shallow replace is not a navigation), not as the page opened.
-		const params = writeDockLink(new URLSearchParams(location.search), {
-			q: searched && explore.spec.q ? explore.spec.q : null,
+		const here = new URLSearchParams(location.search);
+		if (isPlain && plain.table !== null && Object.keys(plain.facts?.tables ?? {}).length > 1) {
+			here.set('table', plain.table);
+		}
+		const params = writeDockLink(here, {
+			setups: isPlain ? plain.setups : {},
+			node: isPlain && plain.node ? { of: plain.node.of, id: plain.node.key } : null,
+			q: isPlain ? plain.rows.q : searched && explore.spec.q ? explore.spec.q : null,
 			mode: searched && explore.spec.q ? (explore.spec.mode ?? null) : null,
 			topic: searched ? (explore.spec.topic ?? null) : null,
 			row:
@@ -281,6 +338,11 @@
 					is shown and changes are not saved.
 				</span>
 				<Button variant="outline" size="xs" onclick={resetLayout}>Reset layout</Button>
+			</p>
+		{:else if linkProblem}
+			<p class="note problem" role="status">
+				<span>This link's set-up was not used: {linkProblem}.</span>
+				<Button variant="ghost" size="xs" onclick={() => (linkProblem = null)}>Dismiss</Button>
 			</p>
 		{:else if store && !store.persistent}
 			<p class="note" role="status">

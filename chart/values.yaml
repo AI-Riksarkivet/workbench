@@ -291,6 +291,15 @@ media:
     mediaUrlKey:
       name: ""
       key: media-url-key
+    # The memory the viewer holds beyond its own ~300 MB is two things, and both are bounded here. The answers it keeps
+    # (the stamped atlas's points and every derived view a set-up draws) share ONE byte budget, `cacheBytes`; an answer
+    # larger than what is left of it is served once and not kept. A cold derived view takes one of `derivedBuilds`
+    # slots or is refused with 503 and Retry-After; each build reads at most 96 MB of values (the read says where it
+    # stopped). Measured on 1,000,000- and 3,000,000-row tables with labels of 300-400 characters: one build peaks at
+    # about 400 MB over the baseline, two at about 800 MB, so 300 + 192 + 2 x 400 MB stays under the 1536Mi limit.
+    # Raising `derivedBuilds` needs the limit raised with it.
+    cacheBytes: 201326592
+    derivedBuilds: 2
     resources:
       requests: { cpu: 100m, memory: 512Mi }
       limits: { cpu: "1", memory: 1536Mi }

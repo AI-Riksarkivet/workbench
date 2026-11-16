@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LayoutConfig } from 'horizon-layout';
 import { defaultLayout } from './layout.ts';
-import { openWorkbenchStore, viewsOf } from './store.ts';
+import { openWorkbenchStore, viewsOf, type ViewSnapshot } from './store.ts';
 import { DockViews } from './views.svelte.ts';
 
 /** A `Storage` over a Map: the test environment has no DOM. */
@@ -21,11 +21,18 @@ function memoryStorage(initial: Record<string, string> = {}): Storage {
 
 const resultsOnly: LayoutConfig = { root: { tabs: ['results'], activeTabIndex: 0 } };
 
-/** The sidebar's state model over a store, with the dock's live layout in `live.layout`. */
-async function viewsOver(storage: Storage) {
+const D = 'archive~field$survey';
+const ATLAS = { place: 'vector', vector: 'embedding', color: 'site' } as const;
+
+/** The sidebar's state model over a store, with what is on screen in `live`. */
+async function viewsOver(storage: Storage, dataset = D) {
 	const store = await openWorkbenchStore(null, () => storage);
-	const live: { layout: LayoutConfig } = { layout: defaultLayout() };
-	const views = new DockViews(viewsOf(store), () => live.layout);
+	const live: { layout: LayoutConfig; view: () => ViewSnapshot; setups: ViewSnapshot['setups'] } = {
+		layout: defaultLayout(),
+		setups: {},
+		view: () => ({ layout: live.layout, table: null, setups: live.setups, q: null, node: null }),
+	};
+	const views = new DockViews(viewsOf(store, dataset), () => live.view());
 	await views.refresh();
 	return { views, live };
 }
@@ -65,7 +72,50 @@ describe('the named views', () => {
 		views.touch();
 		expect(await views.save()).toBe(true);
 		expect(views.dirty).toBe(false);
-		expect(views.select(views.activeId ?? '')).toEqual({ status: 'ok', layout: resultsOnly });
+		expect(views.select(views.activeId ?? '')).toMatchObject({
+			status: 'ok',
+			view: { layout: resultsOnly },
+		});
+	});
+
+	it('keeps a plain table’s set-ups with the view, marks a changed set-up modified, and one view of a dataset default', async () => {
+		const storage = memoryStorage();
+		const { views, live } = await viewsOver(storage);
+		live.setups = { atlas: ATLAS };
+		await views.saveAs('By site');
+		live.setups = {};
+		expect(views.dirty).toBe(true);
+		await views.saveAs('Plain');
+		const [plainId, siteId] = views.views.map((v) => v.id);
+		await views.toggleDefault(siteId ?? '');
+		await views.toggleDefault(plainId ?? '');
+
+		const reopened = (await viewsOver(storage)).views;
+		const other = (await viewsOver(storage, 'scans~')).views;
+		expect(reopened.select(siteId ?? '')).toMatchObject({
+			status: 'ok',
+			view: { setups: { atlas: ATLAS } },
+		});
+		expect([reopened.defaultId, other.views]).toEqual([plainId, []]);
+	});
+
+	it('refuses to apply a stored view whose set-up does not read, and says why', async () => {
+		const storage = memoryStorage({
+			'workbench-dock:local': JSON.stringify({
+				views: [
+					{
+						id: 'v',
+						name: 'Bad',
+						dataset: D,
+						layout: defaultLayout(),
+						setups: { atlas: { place: 'columns', x: '' } },
+						updated: '2026-11-16T00:00:00Z',
+					},
+				],
+			}),
+		});
+		const { views } = await viewsOver(storage);
+		expect(views.select('v')).toMatchObject({ status: 'unreadable' });
 	});
 
 	it('deleting the active view leaves the arrangement on screen as the draft', async () => {

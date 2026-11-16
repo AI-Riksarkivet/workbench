@@ -25,7 +25,11 @@
 	import { dockControl } from './dock-control.svelte.ts';
 	import AtlasPanel from './panels/AtlasPanel.svelte';
 	import GraphPanel from './panels/GraphPanel.svelte';
+	import PlainAtlasPanel from './panels/PlainAtlasPanel.svelte';
+	import PlainGraphPanel from './panels/PlainGraphPanel.svelte';
+	import PlainTreePanel from './panels/PlainTreePanel.svelte';
 	import PlayerPanel from './panels/PlayerPanel.svelte';
+	import { plain as plainTable } from '#lib/plain/plain.svelte.ts';
 	import ResultsPanel from './panels/ResultsPanel.svelte';
 	import RowPanel from './panels/RowPanel.svelte';
 	import RowsPanel from './panels/RowsPanel.svelte';
@@ -47,9 +51,10 @@
 
 	/**
 	 * `plain`: the dataset carries no workbench descriptor, so its results and player are the plain
-	 * table's rows and the row opened (`#lib/plain/plain.svelte.ts`). `gates`: which panels the dataset can
-	 * feed (`pane-capabilities`); one it cannot is listed in the menu disabled with its reason, and shows
-	 * that reason inside where a saved layout or a link opened it.
+	 * table's rows and the row opened (`#lib/plain/plain.svelte.ts`), and its Atlas, Graph and Tree are the
+	 * person's to set up from the table's columns: the menu offers one not yet set up as "Set up…".
+	 * `gates`: which panels the dataset can feed (`pane-capabilities`); one it cannot is listed in the menu
+	 * disabled with its reason, and shows that reason inside where a saved view or a link opened it.
 	 */
 	let {
 		layout = $bindable(),
@@ -80,6 +85,11 @@
 	}
 
 	const closed = $derived(closedPanels(layout));
+	/** A plain table's view that is not set up yet: its menu item reads "Set up…". */
+	const needsSetup = (id: PanelId): boolean =>
+		plain &&
+		(id === 'atlas' || id === 'graph' || id === 'tree') &&
+		plainTable.setups[id] === undefined;
 	/** Unique per dock: two docks (wide and narrow) never share a reason's id. */
 	const menuId = $props.id();
 	const maximized = $derived(layout.maximizedView);
@@ -94,6 +104,14 @@
 
 	function maximize(id: Id): void {
 		layout = maximizePanel(layout, id);
+	}
+
+	/** What the panel menu's chosen item does, done once the menu has closed (`settleChosen`). */
+	let chosen: (() => void) | null = null;
+	function settleChosen(): void {
+		const act = chosen;
+		chosen = null;
+		act?.();
 	}
 
 	/** Bring an open panel in front, from the menu. */
@@ -147,7 +165,9 @@
 {#snippet atlas()}
 	<div class="dock-panel" {@attach followTheme}>
 		{#if gates.atlas !== null}
-			<UnavailablePanel title={titleOf('atlas')} reason={gates.atlas} />
+			<UnavailablePanel title={titleOf('atlas')} reason={gates.atlas} {plain} />
+		{:else if plain}
+			<PlainAtlasPanel />
 		{:else}
 			<AtlasPanel />
 		{/if}
@@ -156,7 +176,9 @@
 {#snippet graph()}
 	<div class="dock-panel" {@attach followTheme}>
 		{#if gates.graph !== null}
-			<UnavailablePanel title={titleOf('graph')} reason={gates.graph} />
+			<UnavailablePanel title={titleOf('graph')} reason={gates.graph} {plain} />
+		{:else if plain}
+			<PlainGraphPanel />
 		{:else}
 			<GraphPanel />
 		{/if}
@@ -165,7 +187,9 @@
 {#snippet tree()}
 	<div class="dock-panel" {@attach followTheme}>
 		{#if gates.tree !== null}
-			<UnavailablePanel title={titleOf('tree')} reason={gates.tree} />
+			<UnavailablePanel title={titleOf('tree')} reason={gates.tree} {plain} />
+		{:else if plain}
+			<PlainTreePanel />
 		{:else}
 			<TreePanel />
 		{/if}
@@ -190,7 +214,9 @@
 {#snippet panelPicker(beside?: Id)}
 	<!-- Every panel is listed: an open one is brought in front, a closed one opens beside the panel whose
 	     control was used, and one the dataset cannot feed is listed disabled with its reason. -->
-	<DropdownMenu.Root>
+	<!-- The layout changes once the menu has finished closing: changed while it closes, the group holding the
+	     menu re-renders under it, and its dismissible layer reads its state after the menu was destroyed. -->
+	<DropdownMenu.Root onOpenChangeComplete={(isOpen) => isOpen || settleChosen()}>
 		<DropdownMenu.Trigger>
 			{#snippet child({ props })}
 				<Button
@@ -211,10 +237,13 @@
 				{@const open = !closed.includes(panel.id)}
 				{#if why === null}
 					<DropdownMenu.Item
-						onSelect={() => (open ? reveal(panel.id) : openPanelBeside(panel.id, beside))}
+						onSelect={() =>
+							(chosen = () => (open ? reveal(panel.id) : openPanelBeside(panel.id, beside)))}
 					>
 						<span class="flex-1">{titleOf(panel.id)}</span>
-						{#if open}
+						{#if needsSetup(panel.id)}
+							<span class="text-muted-foreground text-xs">Set up…</span>
+						{:else if open}
 							<span class="text-muted-foreground flex items-center gap-1 text-xs"
 								><Check class="size-3" />{shown.has(panel.id) ? 'shown' : 'open'}</span
 							>

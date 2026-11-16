@@ -263,6 +263,19 @@ def cell(kind: ColumnKind, value: object, *, chars: int) -> JsonValue:
     return rendered
 
 
+def quote_column(name: str) -> str:
+    """``name`` as pylance's SQL reads a column: in backticks (`lance_docs/lance/guide/read_and_write.md` § Filter
+    push-down). The one quoting every plain door's SQL goes through.
+
+    Raises:
+        ValidationError: The name holds a backtick or a period, which pylance's SQL cannot name (a period it reads as a
+            nested field, the same page's warning; a backtick ends the quote).
+    """
+    if "`" in name or "." in name:
+        raise ValidationError(f"column {name!r} cannot be named in a filter")
+    return f"`{name}`"
+
+
 def _projection(columns: list[ColumnView], *, chars: int) -> dict[str, str]:
     """What a read takes of each column, bounded at the read rather than after it: text to ``chars`` (one more, so a
     clipped cell says so), a list to :data:`LIST_ITEMS` items, a blob as its descriptor, every other column whole, and a
@@ -391,6 +404,16 @@ def read_page(ds: lance.LanceDataset, info: TableInfo, qualified: str, query: Ro
     return page
 
 
+def page_of_rowids(ds: lance.LanceDataset, info: TableInfo, qualified: str, rowids: list[int], offset: int, limit: int) -> RowsPage:
+    """One page of the rows ``rowids`` name, in that order: what a view's node lists, read through the plain rows' own
+    projection."""
+    columns = columns_of(ds.schema, info)
+    page = RowsPage(table=info.name, qualified=qualified, version=int(ds.version), columns=columns, total=len(rowids), offset=offset, limit=limit, rows=[])
+    found = _by_rowid(ds, _projection(columns, chars=PAGE_CHARS), rowids[offset : offset + limit])
+    page.rows = _rows(found, columns, chars=PAGE_CHARS)
+    return page
+
+
 def _ranked(
     ds: lance.LanceDataset, page: RowsPage, projection: dict[str, str], columns: list[ColumnView], ranked: pa.Table, score: str, query: RowsQuery
 ) -> RowsPage:
@@ -437,6 +460,7 @@ def read_row(ds: lance.LanceDataset, info: TableInfo, rowid: int) -> Row:
 __all__ = [
     "MAX_OFFSET",
     "MAX_PAGE",
+    "ROW_ID",
     "ColumnKind",
     "ColumnView",
     "Row",
@@ -445,6 +469,9 @@ __all__ = [
     "SortOrder",
     "at_version",
     "column_kind",
+    "columns_of",
+    "page_of_rowids",
+    "quote_column",
     "read_page",
     "read_row",
 ]

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LayoutAutosave } from './autosave.ts';
 import { defaultLayout } from './layout.ts';
-import { MAX_LAYOUTS, openWorkbenchStore, viewsOf } from './store.ts';
+import { MAX_LAYOUTS, openWorkbenchStore, viewsOf, type ViewSnapshot } from './store.ts';
 import type { LayoutConfig } from 'horizon-layout';
 
 /** A `Storage` over a Map: the test environment has no DOM, as `activity.test.ts` does it. */
@@ -30,6 +30,15 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+/** A view of `layout` alone: no set-up, no search. */
+const snap = (layout: LayoutConfig): ViewSnapshot => ({
+	layout,
+	table: null,
+	setups: {},
+	q: null,
+	node: null,
+});
+
 describe('the workbench store', () => {
 	it('keys a person by a hash of their id, and gives back each dataset’s layout and the views they stored', async () => {
 		const storage = memoryStorage();
@@ -38,16 +47,20 @@ describe('the workbench store', () => {
 
 		const layout: LayoutConfig = { root: { tabs: ['atlas', 'results'], activeTabIndex: 1 } };
 		store.saveLayout(D, layout);
-		await viewsOf(store).create('Both', layout);
+		await viewsOf(store, D).create('Both', snap(layout));
 
 		const key = storage.key(0) ?? '';
 		expect(key).toMatch(/^workbench-dock:[0-9a-f]{64}$/);
 		expect(key).not.toContain('alice');
 		const again = await openWorkbenchStore('user:alice', () => storage);
 		expect(again.loadLayout(D)).toEqual({ status: 'ok', layout });
-		// Another dataset opens with its own default: a layout is the dataset's, the views are the person's.
+		// Another dataset opens with its own default and lists its own views: both are the dataset's.
 		expect(again.loadLayout('scans~')).toEqual({ status: 'absent' });
-		expect(again.loadViews()).toMatchObject({ status: 'ok', views: [{ name: 'Both', layout }] });
+		expect(await viewsOf(again, D).list()).toMatchObject({
+			status: 'ok',
+			views: [{ name: 'Both', dataset: D, layout }],
+		});
+		expect(await viewsOf(again, 'scans~').list()).toEqual({ status: 'ok', views: [] });
 		expect((await openWorkbenchStore('user:bob', () => storage)).loadLayout(D).status).toBe(
 			'absent',
 		);
@@ -86,7 +99,7 @@ describe('the workbench store', () => {
 		const tabA = await openWorkbenchStore('user:alice', () => storage);
 		const tabB = await openWorkbenchStore('user:alice', () => storage);
 
-		expect(await viewsOf(tabB).create('Kept', defaultLayout())).not.toBeNull();
+		expect(await viewsOf(tabB, D).create('Kept', snap(defaultLayout()))).not.toBeNull();
 		tabA.saveLayout(D, { root: { tabs: ['results'], activeTabIndex: 0 } });
 
 		const reloaded = await openWorkbenchStore('user:alice', () => storage);
@@ -108,7 +121,7 @@ describe('the workbench store', () => {
 
 		storage.setItem('workbench-dock:local', '{not json');
 		expect(store.saveLayout(D, defaultLayout())).toBe(false);
-		expect(await viewsOf(store).create('X', defaultLayout())).toBeNull();
+		expect(await viewsOf(store, D).create('X', snap(defaultLayout()))).toBeNull();
 		expect(storage.getItem('workbench-dock:local')).toBe('{not json');
 	});
 
@@ -119,9 +132,9 @@ describe('the workbench store', () => {
 		});
 		const storage = memoryStorage({ 'workbench-dock:local': stored });
 		const store = await openWorkbenchStore(null, () => storage);
-		const views = viewsOf(store);
+		const views = viewsOf(store, D);
 		expect((await views.list()).status).toBe('unreadable');
-		expect(await views.create('X', defaultLayout())).toBeNull();
+		expect(await views.create('X', snap(defaultLayout()))).toBeNull();
 		expect(storage.getItem('workbench-dock:local')).toBe(stored);
 
 		expect(await views.reset()).toBe(true);

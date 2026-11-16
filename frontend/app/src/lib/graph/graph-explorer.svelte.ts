@@ -13,15 +13,6 @@
  * A clip opens in the Player panel. Reads go through `#lib/api/graph.api.ts`, as the person; only the latest
  * load writes the state, so an answer for an entity the reader has left is dropped.
  */
-import {
-	forceCollide,
-	forceLink,
-	forceManyBody,
-	forceSimulation,
-	forceX,
-	forceY,
-	type SimulationNodeDatum,
-} from 'd3-force';
 import type {
 	GraphCypherResponse,
 	GraphEntityResponse,
@@ -33,12 +24,9 @@ import { graphEntity, graphMatches, graphSubgraph, runCypher } from '#lib/api/gr
 import { dockControl } from '#lib/dock/dock-control.svelte.ts';
 import { explore } from '#lib/explore/explore.svelte.ts';
 import { failureText } from '#lib/failure.ts';
+import { fitOf, layoutGraph } from './force-layout.ts';
 
 export type GraphView = 'graph' | 'table' | 'json';
-type SimNode = SimulationNodeDatum & { id: string; idx: number };
-
-/** A node's size on the canvas, by how many clips mention it. */
-const sizeOf = (mentions: number): number => 8 + Math.min(20, Math.sqrt(Math.max(1, mentions)) * 4);
 
 class GraphExplorer {
 	/** The dataset this state is for. */
@@ -291,83 +279,20 @@ class GraphExplorer {
 
 	/** Fit the camera to the nodes again. */
 	recomputeFit(): void {
-		const xs = this.nodesX;
-		const ys = this.nodesY;
-		const n = xs.length;
-		if (n === 0) return;
-		let minX = Infinity;
-		let minY = Infinity;
-		let maxX = -Infinity;
-		let maxY = -Infinity;
-		for (let i = 0; i < n; i++) {
-			minX = Math.min(minX, xs[i]!);
-			minY = Math.min(minY, ys[i]!);
-			maxX = Math.max(maxX, xs[i]!);
-			maxY = Math.max(maxY, ys[i]!);
-		}
-		const padX = (maxX - minX) * 0.08 || 1;
-		const padY = (maxY - minY) * 0.08 || 1;
-		this.fitBounds = { minX: minX - padX, minY: minY - padY, maxX: maxX + padX, maxY: maxY + padY };
+		if (this.nodesX.length === 0) return;
+		this.fitBounds = fitOf(this.nodesX, this.nodesY);
 	}
 
-	/**
-	 * Lay `nodes` out. The force layout settles synchronously (milliseconds at these node counts), so the
-	 * nodes mount in their final places and the camera fits once, not three times while a live simulation
-	 * moves.
-	 */
+	/** Lay `nodes` out (`./force-layout.ts`) and fit the camera to them once. */
 	#layout(nodes: GraphNode[], edges: { source: string; target: string }[]): void {
-		const n = nodes.length;
-		const idx = new Map(nodes.map((nd, i) => [nd.id, i]));
-		const x = new Float32Array(n);
-		const y = new Float32Array(n);
-		const size = new Float32Array(n);
-		const R = 40 + n * 1.5;
-		for (let i = 0; i < n; i++) {
-			const a = (i / Math.max(1, n)) * Math.PI * 2;
-			x[i] = Math.cos(a) * R;
-			y[i] = Math.sin(a) * R;
-			size[i] = sizeOf(nodes[i]!.mentions);
-		}
-		const valid = edges.filter((e) => idx.has(e.source) && idx.has(e.target));
-		const ei = new Uint32Array(valid.length * 2);
-		valid.forEach((e, i) => {
-			ei[i * 2] = idx.get(e.source)!;
-			ei[i * 2 + 1] = idx.get(e.target)!;
-		});
-
-		const simNodes: SimNode[] = nodes.map((nd, i) => ({ id: nd.id, idx: i, x: x[i], y: y[i] }));
-		if (n > 0) {
-			const links = valid.map((e) => ({ source: e.source, target: e.target }));
-			const sim = forceSimulation<SimNode>(simNodes)
-				.stop()
-				.force('charge', forceManyBody<SimNode>().strength(-220))
-				.force(
-					'link',
-					forceLink<SimNode, { source: string; target: string }>(links)
-						.id((d) => d.id)
-						.distance(46)
-						.strength(0.35),
-				)
-				.force(
-					'collide',
-					forceCollide<SimNode>((d) => sizeOf(nodes[d.idx]?.mentions ?? 1) / 2 + 5),
-				)
-				.force('x', forceX<SimNode>(0).strength(0.04))
-				.force('y', forceY<SimNode>(0).strength(0.04));
-			for (let tick = 0; sim.alpha() > 0.025 && tick < 400; tick++) sim.tick();
-			sim.stop();
-			for (let i = 0; i < n; i++) {
-				x[i] = simNodes[i]!.x ?? 0;
-				y[i] = simNodes[i]!.y ?? 0;
-			}
-		}
+		const laid = layoutGraph(nodes, edges);
 		this.nodes = nodes;
-		this.idToIdx = idx;
-		this.nodesX = x;
-		this.nodesY = y;
-		this.nodeSize = size;
-		this.nodeState = new Uint8Array(n);
-		this.edgesIdx = ei;
+		this.idToIdx = laid.idToIdx;
+		this.nodesX = laid.x;
+		this.nodesY = laid.y;
+		this.nodeSize = laid.size;
+		this.nodeState = new Uint8Array(nodes.length);
+		this.edgesIdx = laid.edges;
 		this.recomputeFit();
 		this.layoutVersion++;
 	}

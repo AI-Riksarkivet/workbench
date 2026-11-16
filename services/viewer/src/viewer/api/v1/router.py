@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from viewer.api.v1.endpoints.atlas import router as atlas_router
 from viewer.api.v1.endpoints.chunks import router as chunks_router
 from viewer.api.v1.endpoints.datasets import router as datasets_router
+from viewer.api.v1.endpoints.derived_views import router as derived_views_router
 from viewer.api.v1.endpoints.diarization import router as diarization_router
 from viewer.api.v1.endpoints.graph import router as graph_router
 from viewer.api.v1.endpoints.media import router as media_router
@@ -22,6 +23,7 @@ from viewer.api.v1.endpoints.voice import router as voice_router
 router = APIRouter()
 for r in (
     datasets_router,
+    derived_views_router,
     media_router,
     signed_media_router,
     pages_router,

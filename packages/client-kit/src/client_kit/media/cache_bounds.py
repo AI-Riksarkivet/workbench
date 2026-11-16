@@ -23,6 +23,9 @@ the two must not diverge on the meaning of their own settings.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 
 def evict_to_bounds[K, V](
     cache: dict[K, tuple[V, int]],
@@ -56,3 +59,32 @@ def evict_to_bounds[K, V](
             break
         _, evicted_size = cache.pop(next(iter(cache)))
         total -= evicted_size
+
+
+def keep_shared[K](
+    cache: dict[K, tuple[bytes, int]],
+    key: K,
+    body: bytes,
+    *,
+    others: Iterable[dict[Any, tuple[bytes, int]]],
+    max_entries: int,
+    max_bytes: int,
+) -> bool:
+    """Keep ``body`` under ``key`` in ``cache``, within one byte budget ``cache`` shares with ``others``.
+
+    The room is ``max_bytes`` less what the other caches already hold; ``cache`` makes room by dropping its own least
+    recently used entries (`evict_to_bounds`). An answer larger than the room left is NOT kept: it is served once and
+    built again on the next ask, and no cache grows past the budget to hold it. ``max_bytes <= 0`` bounds the entry
+    count alone. Returns whether ``body`` was kept.
+    """
+    size = len(body)
+    if max_bytes <= 0:
+        evict_to_bounds(cache, max_entries=max_entries, max_bytes=0)
+        cache[key] = (body, size)
+        return True
+    room = max_bytes - sum(entry for other in others for _, entry in other.values())
+    if size > room:
+        return False
+    evict_to_bounds(cache, max_entries=max_entries, max_bytes=room, incoming_bytes=size)
+    cache[key] = (body, size)
+    return True

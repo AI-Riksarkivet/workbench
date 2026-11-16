@@ -1,14 +1,16 @@
 <script lang="ts">
 	/**
-	 * The saved layouts of the dock: select one, or save the current arrangement as a new one. (A
-	 * layout is an arrangement of panels; a saved SEARCH is the Results panel's own, `saved-views`.)
+	 * The dataset's saved views: select one, save what is on screen as a new one, or mark one as the view the
+	 * dataset opens with (the star). A view is the arrangement of panels, a plain table's set-ups of its
+	 * Atlas, Graph and Tree, and the rows it listed (`./store.ts`'s `ViewSnapshot`). (A saved SEARCH is the
+	 * Results panel's own, `saved-views`.)
 	 *
 	 * The modified marker beside the active view is the visible half of the decision `DockViews` makes:
 	 * loading a view does NOT redirect autosave at it. Autosave keeps writing the implicit draft, and
 	 * the view stays frozen until you press Save. Overwriting on every drag would mean you could never
 	 * open a saved arrangement to LOOK at it without destroying it.
 	 */
-	import { Check, ChevronRight, Plus, Save, Trash2 } from '@lucide/svelte';
+	import { Check, ChevronRight, Plus, Save, Star, Trash2 } from '@lucide/svelte';
 	import type { DockViews } from './views.svelte.ts';
 
 	interface Props {
@@ -37,17 +39,17 @@
 			type="button"
 			class="heading"
 			aria-expanded={open}
-			aria-controls="dock-layouts"
+			aria-controls="dock-views"
 			onclick={() => (open = !open)}
 		>
 			<ChevronRight size={12} class={open ? 'rotate-90' : ''} />
-			Layouts
+			Views
 		</button>
 		<button
 			type="button"
 			class="icon"
-			title="Save the current arrangement as a new layout"
-			aria-label="New layout"
+			title="Save what is on screen as a new view"
+			aria-label="New view"
 			onclick={() => {
 				creating = !creating;
 				open = true;
@@ -57,7 +59,7 @@
 		</button>
 	</header>
 
-	<div id="dock-layouts" class="body" hidden={!open}>
+	<div id="dock-views" class="body" hidden={!open}>
 		{#if creating}
 			<form
 				class="new"
@@ -71,8 +73,8 @@
 				<input
 					bind:value={draftName}
 					type="text"
-					placeholder="Name this layout…"
-					aria-label="Layout name"
+					placeholder="Name this view…"
+					aria-label="View name"
 					autofocus
 				/>
 			</form>
@@ -86,19 +88,19 @@
 			<!-- Never rendered as "no saved views": that reads as empty and invites the user to recreate
 		     work that is still there. -->
 			<p class="problem">
-				Your saved layouts could not be read ({views.detail}). They have not been changed.
+				Your saved views could not be read ({views.detail}). They have not been changed.
 			</p>
 			<button
 				type="button"
 				class="reset"
 				disabled={views.busy}
-				title="Discard the saved layouts that could not be read, so layouts can be saved again"
+				title="Discard the saved views that could not be read, so views can be saved again"
 				onclick={() => void views.reset()}
 			>
-				Reset layouts
+				Reset views
 			</button>
 		{:else if views.views.length === 0}
-			<p class="empty">No saved layouts yet. Arrange the dock, then press +.</p>
+			<p class="empty">No saved views of this dataset yet. Arrange the dock, then press +.</p>
 		{:else}
 			<ul>
 				{#each views.views as v (v.id)}
@@ -112,12 +114,25 @@
 									>●</span
 								>{/if}
 						</button>
+						<button
+							type="button"
+							class={['icon', { star: v.isDefault }]}
+							title={v.isDefault
+								? 'The dataset opens with this view; press to open it with none'
+								: 'Open the dataset with this view'}
+							aria-label="{v.name}: the default view"
+							aria-pressed={v.isDefault}
+							disabled={views.busy}
+							onclick={() => void views.toggleDefault(v.id)}
+						>
+							<Star size={13} fill={v.isDefault ? 'currentColor' : 'none'} />
+						</button>
 						{#if isActive}
 							<button
 								type="button"
 								class="icon"
-								title="Save the current arrangement into this layout"
-								aria-label="Save layout"
+								title="Save what is on screen into this view"
+								aria-label="Save view"
 								disabled={!views.dirty || views.busy}
 								onclick={() => void views.save()}
 							>
@@ -127,8 +142,8 @@
 						<button
 							type="button"
 							class="icon"
-							title="Delete this layout"
-							aria-label="Delete layout"
+							title="Delete this view"
+							aria-label="Delete view"
 							disabled={views.busy}
 							onclick={() => void views.remove(v.id)}
 						>
@@ -227,6 +242,10 @@
 	}
 	.row.on {
 		color: var(--primary);
+	}
+	.star {
+		color: var(--primary);
+		opacity: 1;
 	}
 	.row:focus-visible,
 	.icon:focus-visible,

@@ -9,9 +9,10 @@ declares three (`scripts/local-sources.json`), one of each kind, and this writes
   reads it;
 - ``<root>/archive``: a lance-namespace directory catalog holding one UNSTAMPED table two namespaces deep
   (``field$survey`` → ``observations``: text with a full-text index, numbers, a timestamp, a list, a vector with a vector
-  index), which the workbench shows from its schema alone;
-- ``<root>/loose/scans.lance``: a bare Lance table read by path (text, numbers, a timestamp, a vector and an image blob),
-  no index and no descriptor.
+  index, a site and a kind to colour by, the ports a cargo went from and to, the observation each follows, and the place
+  as a path), which the workbench shows from its schema alone and a person can set an atlas, a graph and a tree up on;
+- ``<root>/loose/scans.lance``: a bare Lance table read by path (text, numbers, a timestamp, a vector, an image blob, the
+  collection each scan is filed under as a path and the scan it cites), no index and no descriptor.
 
 The two stamped datasets, in one warehouse:
 
@@ -602,18 +603,44 @@ def _vectors(texts: Sequence[str], dim: int) -> pa.FixedSizeListArray:
     return pa.FixedSizeListArray.from_arrays(pa.array(values, pa.float32()), dim)
 
 
+#: The archive's sites, each with where it lies as a path and the port its cargo goes to next.
+SITES: dict[str, tuple[str, str]] = {
+    "Uppsala": ("Sverige/Svealand/Uppland/Uppsala", "Visby"),
+    "Visby": ("Sverige/Götaland/Gotland/Visby", "Kalmar"),
+    "Kalmar": ("Sverige/Götaland/Småland/Kalmar", "Lübeck"),
+    "Luleå": ("Sverige/Norrland/Norrbotten/Luleå", "Uppsala"),
+}
+KINDS = ("salt i hamnen", "järn till bruket", "tull på spannmål", "fisk från kusten", "brev från landshövdingen")
+
+
+def _clustered(groups: Sequence[str], texts: Sequence[str], dim: int) -> pa.FixedSizeListArray:
+    """A deterministic embedding per row near its group's own point, so a projection of it shows the groups apart; a
+    fixture's stand-in for a model's vectors, not one."""
+    centre = {group: [(b - 128) / 32 for b in hashlib.sha256(group.encode()).digest()[:dim]] for group in set(groups)}
+    values: list[float] = []
+    for group, text in zip(groups, texts, strict=True):
+        digest = hashlib.sha256(text.encode()).digest()
+        values.extend(centre[group][i] + (digest[i] - 128) / 256 for i in range(dim))
+    return pa.FixedSizeListArray.from_arrays(pa.array(values, pa.float32()), dim)
+
+
 def seed_archive(root: str) -> list[str]:
     """An UNSTAMPED table in a lance-namespace directory catalog (`lance_docs/ns_catalog/catalog/dir/index.md` § V2), two
     namespace levels deep: field observations with text (a full-text index), numbers, a timestamp and a vector (a vector
-    index). No descriptor: the workbench shows it from its schema alone."""
+    index), and the columns a person sets an atlas, a graph and a tree up on: a site and a kind (a colour), the ports a
+    cargo went from and to (an edge, a sink port no row leaves from and a cargo kept at home), the observation each
+    follows at its site (a reference to another row), and the place as a path. No descriptor: the workbench shows it from
+    its schema alone."""
     client = lance_namespace.connect("dir", {"root": root})
     _namespace(client, ARCHIVE_NAMESPACE)
-    notes = [
-        f"{site}: {what}"
-        for site in ("Uppsala", "Visby", "Kalmar", "Luleå")
-        for what in ("salt i hamnen", "järn till bruket", "tull på spannmål", "fisk från kusten", "brev från landshövdingen")
-    ]
+    rows = [(year, site, what) for year in (1701, 1702, 1703) for site in SITES for what in KINDS]
+    notes = [f"{site} {year}: {what}" for year, site, what in rows]
     count = len(notes)
+    last_at: dict[str, int] = {}
+    follows: list[int | None] = []
+    for i, (_, site, _what) in enumerate(rows):
+        follows.append(last_at.get(site))
+        last_at[site] = i + 1
     table = pa.table(
         {
             "observation_id": pa.array(range(1, count + 1), pa.int64()),
@@ -621,7 +648,13 @@ def seed_archive(root: str) -> list[str]:
             "weight_kg": pa.array([round(12.5 + i * 3.25, 2) for i in range(count)], pa.float64()),
             "observed_at": pa.array([1_600_000_000_000_000 + i * 86_400_000_000 for i in range(count)], pa.timestamp("us", tz="UTC")),
             "tags": pa.array([["coast", "trade"] if i % 2 else ["inland"] for i in range(count)], pa.list_(pa.utf8())),
-            "embedding": _vectors(notes, 16),
+            "embedding": _clustered([site for _, site, _ in rows], notes, 16),
+            "site": pa.array([site for _, site, _ in rows], pa.utf8()),
+            "kind": pa.array([what.split(" ")[0] for _, _, what in rows], pa.utf8()),
+            "shipped_from": pa.array([site for _, site, _ in rows], pa.utf8()),
+            "shipped_to": pa.array([site if what.startswith("brev") else SITES[site][1] for _, site, what in rows], pa.utf8()),
+            "follows": pa.array(follows, pa.int64()),
+            "place": pa.array([SITES[site][0] for _, site, _ in rows], pa.utf8()),
         }
     )
     table_id = [*ARCHIVE_NAMESPACE, OBSERVATIONS]
@@ -631,9 +664,14 @@ def seed_archive(root: str) -> list[str]:
     return [CATALOG_DELIMITER.join(ARCHIVE_NAMESPACE)]
 
 
+#: The scan the last scan cites, which the archive does not hold.
+LOST_SCAN = "Bouppteckningar 1699"
+
+
 def seed_loose(root: str) -> str:
-    """A bare Lance table at ``<root>/scans.lance``, read by path: text, numbers, a timestamp, a vector and an image in a
-    blob column, with no index and no descriptor. Its path, the URI a `tables` source names."""
+    """A bare Lance table at ``<root>/scans.lance``, read by path: text, numbers, a timestamp, a vector, an image in a
+    blob column, the collection each scan is filed under as a path and the scan it cites (one of them a scan it does not
+    hold), with no index and no descriptor. Its path, the URI a `tables` source names."""
     titles = [document["title"] for document in DOCUMENTS]
     images = [page_image(title, 0) for title in titles]
     schema = pa.schema(
@@ -643,6 +681,8 @@ def seed_loose(root: str) -> str:
             pa.field("scanned_at", pa.timestamp("ms")),
             pa.field("embedding", pa.list_(pa.float32(), 8)),
             lance.blob_field("image"),
+            pa.field("collection", pa.utf8()),
+            pa.field("cites", pa.utf8()),
         ]
     )
     table = pa.table(
@@ -652,6 +692,10 @@ def seed_loose(root: str) -> str:
             "scanned_at": [1_700_000_000_000 + i * 3_600_000 for i in range(len(titles))],
             "embedding": _vectors(titles, 8),
             "image": lance.blob_array(images),
+            "collection": [f"Arkivet/Handlingar/{title.split()[-1][:2]}00-talet" for title in titles],
+            # Each scan cites the one before it, and the last a scan the archive does not hold: an orphan in a tree of
+            # citations, and a reference that matches no row in their graph.
+            "cites": [None, *titles[:-2], LOST_SCAN],
         },
         schema=schema,
     )

@@ -265,6 +265,19 @@ def test_a_token_is_exchanged_only_at_the_issuer_that_signed_it(
     assert [request.get("subject_token") for request in further.requests] == ([token] if exchanged else [])
 
 
+#: Each derived read of a set-up, with picks the gate test's one-row table answers.
+DERIVED_READS: list[tuple[str, dict[str, str]]] = [
+    ("profile", {}),
+    ("atlas", {"vector": "v"}),
+    ("graph", {"shape": "self", "source": "doc_id", "target": "parent"}),
+    ("graph/check", {"shape": "self", "source": "doc_id", "target": "parent"}),
+    ("graph/rows", {"shape": "self", "source": "doc_id", "target": "parent", "key": "s:a"}),
+    ("tree", {"shape": "path", "node": "doc_id"}),
+    ("tree/check", {"shape": "path", "node": "doc_id"}),
+    ("tree/rows", {"shape": "path", "node": "doc_id", "key": '{"path":["a"]}'}),
+]
+
+
 @pytest.mark.parametrize("kind", ["namespace", "lakehouse-read-as-the-workbench"])
 def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
     kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, openfga_store: OpenFgaStore
@@ -272,9 +285,17 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
     """A lance-namespace source knows nobody, and a lakehouse read as the workbench sees only the workbench: the
     workbench's own OpenFGA decides who reads either (`reader` on `source:<name>`, from git). A declared reader lists,
     opens and has a cell signed; a signed-in stranger sees the source omitted, is refused the dataset and the signing;
-    and a link signed for the reader stops serving once they are no longer a reader."""
+    and a link signed for the reader stops serving once they are no longer a reader. A set-up's derived reads (a column
+    profile, the atlas, the graph, the tree) stand behind the same gate."""
     dex = Provider("dex")
-    rows = pa.table({"doc_id": ["a"], "payload": [b"\x89PNG\r\n\x1a\n...."]})
+    rows = pa.table(
+        {
+            "doc_id": ["a"],
+            "parent": ["a"],
+            "payload": [b"\x89PNG\r\n\x1a\n...."],
+            "v": pa.FixedSizeListArray.from_arrays(pa.array([0.5, 1.5], pa.float32()), 2),
+        }
+    )
     table = write_table(tmp_path / "catalog", ["wh", "ns", "chunks"], rows)
     catalog = VendingCatalog(table.uri, _AdmitsTheLakehousesAudience())
     readers = {"people": [f"{IDP_ID}~reader"]}
@@ -309,6 +330,13 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
         with _viewer(settings, monkeypatch) as client:
             listed = {sub: [s["name"] for s in client.get("/api/datasets", headers=bearer(sub)).json()["sources"]] for sub in ("reader", "stranger")}
             opened = {sub: client.get("/api/datasets/src~wh%24ns", headers=bearer(sub)).status_code for sub in ("reader", "stranger")}
+            derived = {
+                sub: [
+                    client.get(f"/api/datasets/src~wh%24ns/tables/chunks/{read}", params=picks, headers=bearer(sub)).status_code
+                    for read, picks in DERIVED_READS
+                ]
+                for sub in ("reader", "stranger")
+            }
             signing = {sub: client.post("/api/signed-media", json={"items": [item]}, headers=bearer(sub)) for sub in ("reader", "stranger")}
             link = str(signing["reader"].json()["urls"][0]["url"])
             served = client.get(link).status_code
@@ -319,4 +347,5 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
         dex.close()
 
     assert (listed, opened) == ({"reader": ["src"], "stranger": []}, {"reader": 200, "stranger": 403})
+    assert derived == {"reader": [200] * len(DERIVED_READS), "stranger": [403] * len(DERIVED_READS)}
     assert ({sub: answer.status_code for sub, answer in signing.items()}, served, served_after) == ({"reader": 200, "stranger": 403}, 200, 403)

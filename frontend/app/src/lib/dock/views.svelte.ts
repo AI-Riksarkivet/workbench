@@ -1,6 +1,8 @@
 /**
- * The saved-views state model — the list, WHICH ONE IS ACTIVE, and whether the live arrangement has
- * DIVERGED from it. All three readable by the UI without polling.
+ * The saved-views state model of one dataset — the list, WHICH ONE IS ACTIVE, which one is the DEFAULT,
+ * and whether what is on screen has DIVERGED from the active one. All readable by the UI without polling.
+ * A view is the arrangement, a plain table's set-ups of its Atlas, Graph and Tree, and the rows it listed
+ * (`ViewSnapshot`); applying one checks each part as it was read from storage (`select`).
  *
  * THE DECISION THE BACKLOG SKIPPED, made here and pinned by tests:
  *
@@ -22,9 +24,55 @@
  * plain JSON of bounded size, so the comparison is cheap and, unlike a flag, self-correcting: drag a
  * panel away and back, and the marker clears itself.
  */
-import type { LayoutConfig } from 'horizon-layout';
-import { readStoredLayout, type LayoutRead } from './layout.ts';
-import type { StoredView, ViewsStore } from './store.ts';
+import { parseSetups } from '#lib/plain/setup.ts';
+import { readStoredLayout } from './layout.ts';
+import type { StoredView, ViewSnapshot, ViewsStore } from './store.ts';
+
+/** Applying a view: `ok` with what it holds, `absent` for a view no longer stored, or `unreadable` with why. */
+export type ViewRead =
+	| { readonly status: 'ok'; readonly view: ViewSnapshot }
+	| { readonly status: 'absent' }
+	| { readonly status: 'unreadable'; readonly detail: string };
+
+const isNode = (value: unknown): value is ViewSnapshot['node'] =>
+	value === null ||
+	value === undefined ||
+	(typeof value === 'object' &&
+		typeof (value as Record<string, unknown>).id === 'string' &&
+		['graph', 'tree'].includes(String((value as Record<string, unknown>).of)));
+
+/** What a stored view holds, each part checked as a link's is; one part that does not read spoils it. */
+function readView(view: StoredView): ViewRead {
+	const layout = readStoredLayout(view.layout);
+	if (layout.status !== 'ok') {
+		return {
+			status: 'unreadable',
+			detail: layout.status === 'unreadable' ? layout.detail : 'it holds no layout',
+		};
+	}
+	const setups = parseSetups(view.setups ?? {});
+	if ('problem' in setups) {
+		return {
+			status: 'unreadable',
+			detail: `its set-up is not one this workbench can read (${setups.problem})`,
+		};
+	}
+	if (!isNode(view.node))
+		return {
+			status: 'unreadable',
+			detail: 'the node it listed is not one this workbench can read',
+		};
+	return {
+		status: 'ok',
+		view: {
+			layout: layout.layout,
+			setups: setups.setups,
+			table: typeof view.table === 'string' ? view.table : null,
+			q: typeof view.q === 'string' ? view.q : null,
+			node: view.node ?? null,
+		},
+	};
+}
 
 /** JSON with SORTED object keys, recursively — the divergence baseline's serializer. A layout built
  *  by the dock and the same layout read back from storage can list their keys in different orders,
@@ -48,14 +96,15 @@ export interface ViewSummary {
 	readonly id: string;
 	readonly name: string;
 	readonly updated: string;
+	readonly isDefault: boolean;
 }
 
 export type ViewsPhase = 'loading' | 'ready' | 'unreadable';
 
 export class DockViews {
 	#store: ViewsStore;
-	/** Reads the dock's CURRENT arrangement. */
-	#snapshot: () => LayoutConfig | null;
+	/** Reads what is on screen now. */
+	#snapshot: () => ViewSnapshot | null;
 
 	#views = $state<StoredView[]>([]);
 	#activeId = $state<string | null>(null);
@@ -69,14 +118,24 @@ export class DockViews {
 	/** The last refused write, or null — the sidebar renders it instead of failing silently. */
 	#lastError = $state<string | null>(null);
 
-	constructor(store: ViewsStore, snapshot: () => LayoutConfig | null) {
+	constructor(store: ViewsStore, snapshot: () => ViewSnapshot | null) {
 		this.#store = store;
 		this.#snapshot = snapshot;
 	}
 
 	/** Every saved view, newest first. Layout payloads stay inside — the sidebar renders summaries. */
 	get views(): ViewSummary[] {
-		return this.#views.map(({ id, name, updated }) => ({ id, name, updated }));
+		return this.#views.map(({ id, name, updated, isDefault }) => ({
+			id,
+			name,
+			updated,
+			isDefault: isDefault === true,
+		}));
+	}
+
+	/** The view the dataset opens with, or null. */
+	get defaultId(): string | null {
+		return this.#views.find((v) => v.isDefault === true)?.id ?? null;
 	}
 
 	get activeId(): string | null {
@@ -85,7 +144,9 @@ export class DockViews {
 
 	get active(): ViewSummary | null {
 		const v = this.#views.find((x) => x.id === this.#activeId);
-		return v === undefined ? null : { id: v.id, name: v.name, updated: v.updated };
+		return v === undefined
+			? null
+			: { id: v.id, name: v.name, updated: v.updated, isDefault: v.isDefault === true };
 	}
 
 	get phase(): ViewsPhase {
@@ -157,18 +218,19 @@ export class DockViews {
 	 * Read-only: the caller applies the layout first, then commits with `activate(id)`, so a click
 	 * that does not apply never leaves a checked, unapplied view.
 	 */
-	select(id: string): LayoutRead {
+	select(id: string): ViewRead {
 		const view = this.#views.find((v) => v.id === id);
 		if (view === undefined) return { status: 'absent' };
-		return readStoredLayout(view.layout);
+		return readView(view);
 	}
 
 	/** Commit a view as ACTIVE — call after its layout was actually applied to the dock. */
 	activate(id: string): void {
 		const view = this.#views.find((v) => v.id === id);
 		if (view === undefined) return;
+		const read = readView(view);
 		this.#activeId = id;
-		this.#baseline = stableStringify(view.layout);
+		this.#baseline = read.status === 'ok' ? stableStringify(read.view) : null;
 		this.#revision += 1;
 	}
 
@@ -205,14 +267,14 @@ export class DockViews {
 
 	/** Save the current arrangement as a NEW view, and make it active. */
 	async saveAs(name: string): Promise<boolean> {
-		const layout = this.#snapshot();
-		if (layout === null || name.trim() === '') return false;
+		const snapshot = this.#snapshot();
+		if (snapshot === null || name.trim() === '') return false;
 		return this.#write('Save view', async () => {
-			const created = await this.#store.create(name.trim(), layout);
+			const created = await this.#store.create(name.trim(), snapshot);
 			if (created === null) return false;
 			this.#views = [created, ...this.#views];
 			this.#activeId = created.id;
-			this.#baseline = stableStringify(layout);
+			this.#baseline = stableStringify(snapshot);
 			return true;
 		});
 	}
@@ -220,12 +282,22 @@ export class DockViews {
 	/** Overwrite the ACTIVE view with the current arrangement — the explicit Save `dirty` invites. */
 	async save(): Promise<boolean> {
 		const id = this.#activeId;
-		const layout = this.#snapshot();
-		if (id === null || layout === null) return false;
+		const snapshot = this.#snapshot();
+		if (id === null || snapshot === null) return false;
 		return this.#write('Save', async () => {
-			if (!(await this.#store.update(id, layout))) return false;
-			this.#views = this.#views.map((v) => (v.id === id ? { ...v, layout } : v));
-			this.#baseline = stableStringify(layout);
+			if (!(await this.#store.update(id, snapshot))) return false;
+			this.#views = this.#views.map((v) => (v.id === id ? { ...v, ...snapshot } : v));
+			this.#baseline = stableStringify(snapshot);
+			return true;
+		});
+	}
+
+	/** Make `id` the dataset's default view, or, when it already is, none. */
+	async toggleDefault(id: string): Promise<boolean> {
+		const next = this.defaultId === id ? null : id;
+		return this.#write('Default', async () => {
+			if (!(await this.#store.makeDefault(next))) return false;
+			this.#views = this.#views.map((v) => ({ ...v, isDefault: v.id === next }));
 			return true;
 		});
 	}

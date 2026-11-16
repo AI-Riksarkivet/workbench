@@ -18,12 +18,12 @@ import logging
 import os
 import subprocess
 import tempfile
-import threading
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
 from service_kit.exceptions import ServiceUnavailableError
+from viewer.services.build_slots import BuildSlots
 
 
 logger = logging.getLogger(__name__)
@@ -44,47 +44,9 @@ MAX_CONCURRENT_BUILDS = 2
 #: client's own float arithmetic produces.
 _CLIP_QUANTUM_MS = 250
 
-# BOUNDED, not merely serialized. This was one `threading.Lock` and every waiter blocked on it —
-# from a plain `def` route, so each waiter also held a FastAPI threadpool thread for as long as the
-# queue ahead of it took, with a 120 s ffmpeg timeout at the head. 41 concurrent requests exhausted
-# the pool while `/livez` stayed green, because liveness does not know the pool is gone.
-#
-# A semaphore with a non-blocking acquire turns that queue into a REFUSAL: the caller gets 503 and
-# their thread returns immediately. Serializing was never the point — publish is made race-free by
-# the tmp+rename below, not by the lock.
-_build_slots = threading.BoundedSemaphore(MAX_CONCURRENT_BUILDS)
-
-
-class ClipBusyError(RuntimeError):
-    """Every build slot is taken. The caller should retry, not wait — see `_build_slots`."""
-
-
-class BuildSlot:
-    """One acquired build slot, released explicitly or by leaving the `with` block."""
-
-    def __init__(self) -> None:
-        self._held = True
-
-    def release(self) -> None:
-        if self._held:
-            self._held = False
-            _build_slots.release()
-
-    def __enter__(self) -> BuildSlot:
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.release()
-
-
-def acquire_build_slot() -> BuildSlot:
-    """Take a build slot or refuse. NEVER blocks — blocking is the defect.
-
-    Raises `ClipBusyError` when the estate is already transcoding `MAX_CONCURRENT_BUILDS` clips.
-    """
-    if not _build_slots.acquire(blocking=False):
-        raise ClipBusyError(f"all {MAX_CONCURRENT_BUILDS} clip build slots are busy")
-    return BuildSlot()
+# BOUNDED, refusing rather than queueing (`viewer.services.build_slots`): publish is made race-free by the tmp+rename
+# below, not by the slots.
+build_slots = BuildSlots("clip", MAX_CONCURRENT_BUILDS)
 
 
 def clip_cache_path(cache_key: str, lo: float, hi: float) -> Path:
@@ -139,7 +101,7 @@ def build_clip(write_source: Callable[[Path], None], cache_key: str, lo: float, 
     out = clip_cache_path(cache_key, lo, hi)
     if out.exists():
         return _touch(out)
-    with acquire_build_slot():
+    with build_slots.acquire():
         if out.exists():  # built while we waited for a slot
             return _touch(out)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)

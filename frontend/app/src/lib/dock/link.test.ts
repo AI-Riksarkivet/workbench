@@ -11,6 +11,9 @@ const EMPTY: DockLink = {
 	entity: null,
 	panels: [],
 	max: null,
+	setups: {},
+	node: null,
+	setupProblem: null,
 };
 
 describe('a dataset page’s link', () => {
@@ -25,6 +28,13 @@ describe('a dataset page’s link', () => {
 			entity: 'a000000000000001',
 			panels: ['results', 'graph'],
 			max: 'graph',
+			setups: {
+				atlas: { place: 'columns', x: 'east, km', y: 'north', color: 'kind' },
+				graph: { shape: 'self', source: 'id', target: 'parent' },
+				tree: { shape: 'path', node: 'path', separator: ' > ' },
+			},
+			node: { of: 'tree', id: 'a > b' },
+			setupProblem: null,
 		};
 		const written = writeDockLink(new URLSearchParams('project=acme&q=old&table=chunks'), link);
 		expect([...written.keys()].slice(0, 2)).toEqual(['project', 'table']);
@@ -39,6 +49,29 @@ describe('a dataset page’s link', () => {
 		);
 		const moment = writeDockLink(new URLSearchParams(), { ...EMPTY, doc: 'letter-001', t: 12 });
 		expect(moment.toString()).toBe('doc=letter-001&t=12');
+	});
+
+	it('leaves out a set-up it cannot read, or one too long for a link, and says why', () => {
+		const unreadable = readDockLink(new URLSearchParams('ax=east&ac=kind&gs=sideways&gf=a&gt=b'));
+		expect(unreadable.setups).toEqual({});
+		expect(unreadable.setupProblem).toMatch(/atlas set-up is not one.*graph set-up is not one/);
+		const long = readDockLink(
+			new URLSearchParams({
+				av: 'v'.repeat(250),
+				al: 'l'.repeat(250),
+				ac: 'c'.repeat(250),
+				gf: 'f'.repeat(250),
+				gt: 't'.repeat(250),
+				gl: 'x'.repeat(250),
+				gg: 'g'.repeat(250),
+				tn: 'n'.repeat(250),
+				tz: 'z'.repeat(250),
+			}),
+		);
+		expect([long.setups, long.setupProblem]).toEqual([
+			{},
+			'its set-up is longer than 2048 characters, so it was not used',
+		]);
 	});
 
 	it('drops what it cannot use: an unknown panel, a malformed entity, a bad time', () => {

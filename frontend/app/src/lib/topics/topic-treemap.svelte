@@ -37,16 +37,21 @@
 		view = $bindable('drill'),
 		showNoise = $bindable(false),
 		drill = $bindable([]),
+		unit = 'chunks',
 	}: {
 		hierarchy: TopicNode;
 		noiseLabel: string;
 		/** Open a topic's results (the panel decides where: the Results panel, or beside the map). */
-		onShowResults: (name: string) => void;
+		/** Open a node's results: its name, and the node itself (a set-up tree's carries the `id` its rows are
+		 *  filtered by). */
+		onShowResults: (name: string, node: TopicNode) => void;
 		/** The layout shown, bindable so the panel's host keeps it across a remount. */
 		view?: 'drill' | 'nested' | 'flow';
 		showNoise?: boolean;
 		/** The NAMES of the branches descended into below the root. */
 		drill?: string[];
+		/** What a leaf's value counts, in the words the map shows (a set-up tree counts rows). */
+		unit?: string;
 	} = $props();
 
 	const fmt = (n: number) => n.toLocaleString();
@@ -145,12 +150,19 @@
 				.map((a) => a.data.name);
 			drill = [...drill, ...names];
 		} else {
-			showResults(node.data.name);
+			showResults(node.data);
 		}
 	}
 
-	function showResults(name: string) {
-		onShowResults(name);
+	function showResults(node: TopicNode) {
+		onShowResults(node.name, node);
+	}
+
+	/** The flow names a node only: the first node shown under that name. */
+	function showNamed(name: string) {
+		const find = (node: TopicNode): TopicNode | undefined =>
+			node.name === name ? node : node.children?.map(find).find((found) => found !== undefined);
+		showResults(find(displayData) ?? { name });
 	}
 
 	/** Zoom out to breadcrumb position `index` (0 = root). */
@@ -186,21 +198,22 @@
 			</Button>
 		{/each}
 		<span class="text-muted-foreground ml-1">
-			· {fmt(root.value ?? 0)} chunks
+			· {fmt(root.value ?? 0)}
+			{unit}
 			{#if hiddenCount > 0}· noise hidden: {fmt(hiddenCount)}{/if}
 		</span>
 
 		<div class="ml-auto flex items-center gap-2">
-			<!-- noise toggle -->
-			<Button
-				variant="outline"
-				size="xs"
-				aria-pressed={showNoise}
-				onclick={() => (showNoise = !showNoise)}
-				title={showNoise ? 'Hide the unclustered rows' : 'Show the unclustered rows'}
-			>
-				{#if showNoise}<EyeOff /> Hide noise{:else}<Eye /> Show noise{/if}
-			</Button>
+			<!-- noise toggle, where the hierarchy has a noise bucket to hide -->
+			{#if noiseLabel !== ''}<Button
+					variant="outline"
+					size="xs"
+					aria-pressed={showNoise}
+					onclick={() => (showNoise = !showNoise)}
+					title={showNoise ? 'Hide the unclustered rows' : 'Show the unclustered rows'}
+				>
+					{#if showNoise}<EyeOff /> Hide noise{:else}<Eye /> Show noise{/if}
+				</Button>{/if}
 
 			<!-- view switch (the estate segmented-control idiom) -->
 			<div class="border-border bg-background flex items-center gap-0.5 rounded-lg border p-0.5">
@@ -219,7 +232,7 @@
 			</div>
 
 			{#if path.length > 1 && isInteractive(current)}
-				<Button variant="secondary" size="xs" onclick={() => showResults(current.name)}>
+				<Button variant="secondary" size="xs" onclick={() => showResults(current)}>
 					Show results <ArrowRight />
 				</Button>
 			{/if}
@@ -229,7 +242,7 @@
 	<!-- Treemap / Sankey canvas -->
 	<div class="min-h-0 flex-1 p-2 {view === 'flow' ? 'px-6' : ''}">
 		{#if view === 'flow'}
-			<TopicSankey data={displayData} {noiseLabel} onSelect={showResults} />
+			<TopicSankey data={displayData} {noiseLabel} onSelect={showNamed} />
 		{:else}
 			<Chart data={root}>
 				<Svg>
@@ -275,7 +288,8 @@
 									onmouseleave={() => (hovered = null)}
 								>
 									<title
-										>{node.data.name} — {fmt(node.value ?? 0)} chunks{isBranch
+										>{node.data.name} — {fmt(node.value ?? 0)}
+										{unit}{isBranch
 											? ' (click to zoom in)'
 											: interactive
 												? ' (click to show results)'

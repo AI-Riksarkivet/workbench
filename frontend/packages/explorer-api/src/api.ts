@@ -678,6 +678,8 @@ export async function getAtlasChunks(
 // ── Topics (Tree page, capability-gated) ────────────────────────────────────
 export interface TopicNode {
 	name: string;
+	/** What a set-up tree's node filters its table's rows by (the row's id, or the path to it). */
+	id?: string | undefined;
 	value?: number | undefined;
 	children?: TopicNode[] | undefined;
 }
@@ -685,6 +687,7 @@ export interface TopicNode {
 const TopicNodeSchema: v.GenericSchema<TopicNode> = v.lazy(() =>
 	v.object({
 		name: v.string(),
+		id: v.optional(v.string()),
 		value: v.optional(v.number()),
 		children: v.optional(v.array(TopicNodeSchema)),
 	}),

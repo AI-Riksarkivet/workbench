@@ -102,6 +102,8 @@ spec:
             {{- include "workbench.sourcesEnv" $ | nindent 12 }}
             {{- if eq $service "viewer" }}
             - { name: VIEWER_MEDIA_URL_KEY_FILE, value: /var/run/secrets/viewer/media-url-key/media-url-key }
+            - { name: MEDIA_POINTS_CACHE_BYTES, value: {{ $s.cacheBytes | int64 | quote }} }
+            - { name: VIEWER_DERIVED_BUILDS, value: {{ $s.derivedBuilds | int | quote }} }
             {{- end }}
             {{- if $.Values.otel.enabled }}
             - { name: WORKBENCH_OTEL_ENABLED, value: "true" }

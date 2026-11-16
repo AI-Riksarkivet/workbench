@@ -5,11 +5,14 @@
  * the principal's id, so the key never carries the id itself; on a stack that signs nobody in, one
  * fixed key. The value is the last layout of each dataset the person arranged (by the dataset's id, the
  * {@link MAX_LAYOUTS} most recently arranged) and the named views, and nothing else: a layout names only
- * panel ids, a view adds the name the person gave it. No token and no lakehouse data are stored.
+ * panel ids; a view adds the name the person gave it, the dataset it is of, the set-ups of a plain
+ * table's Atlas, Graph and Tree (column names, `#lib/plain/setup.ts`), the table and the search or node it
+ * listed, and whether it is that dataset's default. No token and no table data are stored.
  *
- * A layout is kept per dataset because the panels a dataset can feed differ: one arranged around a
- * knowledge graph is not the arrangement a plain table opens with. A named view is the person's across
- * every dataset, and a panel it names that a dataset cannot feed opens with its reason.
+ * A layout and a view are kept per dataset because the panels a dataset can feed differ: one arranged
+ * around a knowledge graph is not the arrangement a plain table opens with, and a set-up names one table's
+ * columns. A dataset may have several views; the one marked default opens when the dataset is opened with
+ * no link that says otherwise.
  *
  * Sign-out does not clear it, unlike the activity log (`activity.forget()`): a layout is a preference
  * of the person who signs in on this browser again, while the activity log records what they did.
@@ -22,20 +25,42 @@
  * person resets it.
  */
 import type { LayoutConfig } from 'horizon-layout';
+import type { Setups } from '#lib/plain/setup.ts';
 import type { LayoutStore } from './autosave.ts';
 import { readStoredLayout, type LayoutRead } from './layout.ts';
+import type { LinkedNode } from './link.ts';
 
 const PREFIX = 'workbench-dock:';
 const ANONYMOUS = `${PREFIX}local`;
 /** The datasets whose layouts are kept; arranging one more forgets the least recently arranged. */
 export const MAX_LAYOUTS = 50;
 
+/** What a view holds of what is on screen: the arrangement, a plain table's set-ups and the rows listed. */
+export interface ViewSnapshot {
+	layout: LayoutConfig;
+	/** The table in view, for a dataset of several tables; null for a stamped dataset. */
+	table: string | null;
+	setups: Setups;
+	/** The search the rows were listed by, or the node they were filtered to. */
+	q: string | null;
+	node: LinkedNode | null;
+}
+
 /** One saved view. `id` is stable across renames; the sidebar addresses views by it. */
 export interface StoredView {
 	readonly id: string;
 	readonly name: string;
-	/** Read with `readStoredLayout` when applied: a view is a stored layout like any other. */
+	/** The dataset the view is of. */
+	readonly dataset: string;
+	/** Read with `readStoredLayout` when applied: a view's arrangement is a stored layout like any other. */
 	readonly layout: unknown;
+	/** Read with `parseSetups` when applied: what is stored is checked as a link's set-up is. */
+	readonly setups?: unknown;
+	readonly table?: string | null;
+	readonly q?: string | null;
+	readonly node?: unknown;
+	/** The view the dataset opens with. */
+	readonly isDefault?: boolean;
 	/** ISO-8601, the order the sidebar lists views in. */
 	readonly updated: string;
 }
@@ -81,7 +106,12 @@ function withLayout(
 function isView(value: unknown): value is StoredView {
 	if (typeof value !== 'object' || value === null) return false;
 	const v = value as Record<string, unknown>;
-	return typeof v.id === 'string' && typeof v.name === 'string' && typeof v.updated === 'string';
+	return (
+		typeof v.id === 'string' &&
+		typeof v.name === 'string' &&
+		typeof v.dataset === 'string' &&
+		typeof v.updated === 'string'
+	);
 }
 
 type Read = { readonly doc: Document } | { readonly broken: string };
@@ -257,14 +287,16 @@ export async function openWorkbenchStore(
 	}
 }
 
-/** The named views' operations, as the sidebar's state model calls them. */
+/** One dataset's named views' operations, as the sidebar's state model calls them. */
 export interface ViewsStore {
 	list(): Promise<ViewsRead>;
 	/** Create a view, newest first. Returns the stored record, or null when the write was refused. */
-	create(name: string, layout: LayoutConfig): Promise<StoredView | null>;
-	update(id: string, layout: LayoutConfig): Promise<boolean>;
+	create(name: string, snapshot: ViewSnapshot): Promise<StoredView | null>;
+	update(id: string, snapshot: ViewSnapshot): Promise<boolean>;
 	rename(id: string, name: string): Promise<boolean>;
 	remove(id: string): Promise<boolean>;
+	/** Make `id` the dataset's default view (its others are not), or none with null. */
+	makeDefault(id: string | null): Promise<boolean>;
 	/** The person's explicit reset of views that could not be read: none are kept. */
 	reset(): Promise<boolean>;
 }
@@ -274,27 +306,46 @@ const newId = (): string =>
 		? crypto.randomUUID()
 		: `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-/** The views of `store`, each change a read-modify-write that refuses while the views are unreadable. */
+/** `dataset`'s views in `store`, each change a read-modify-write of every dataset's views that refuses while
+ *  the views are unreadable and leaves other datasets' views as they are. */
 export function viewsOf(
 	store: WorkbenchStore,
+	dataset: string,
 	now = (): string => new Date().toISOString(),
 ): ViewsStore {
 	const mutate = async (fn: (views: StoredView[]) => StoredView[]): Promise<boolean> => {
 		const read = store.loadViews();
 		if (read.status === 'unreadable') return false;
-		return store.saveViews(fn(read.views));
+		const others = read.views.filter((v) => v.dataset !== dataset);
+		const mine = read.views.filter((v) => v.dataset === dataset);
+		return store.saveViews([...fn(mine), ...others]);
 	};
+	const stored = (snapshot: ViewSnapshot) => ({
+		layout: snapshot.layout,
+		setups: snapshot.setups,
+		table: snapshot.table,
+		q: snapshot.q,
+		node: snapshot.node,
+	});
 	return {
-		list: async () => store.loadViews(),
-		async create(name, layout) {
-			const view: StoredView = { id: newId(), name, layout, updated: now() };
+		async list() {
+			const read = store.loadViews();
+			return read.status === 'ok'
+				? { status: 'ok', views: read.views.filter((v) => v.dataset === dataset) }
+				: read;
+		},
+		async create(name, snapshot) {
+			const view: StoredView = { id: newId(), name, dataset, ...stored(snapshot), updated: now() };
 			return (await mutate((views) => [view, ...views])) ? view : null;
 		},
-		update: (id, layout) =>
-			mutate((views) => views.map((v) => (v.id === id ? { ...v, layout, updated: now() } : v))),
+		update: (id, snapshot) =>
+			mutate((views) =>
+				views.map((v) => (v.id === id ? { ...v, ...stored(snapshot), updated: now() } : v)),
+			),
 		rename: (id, name) =>
 			mutate((views) => views.map((v) => (v.id === id ? { ...v, name, updated: now() } : v))),
 		remove: (id) => mutate((views) => views.filter((v) => v.id !== id)),
+		makeDefault: (id) => mutate((views) => views.map((v) => ({ ...v, isDefault: v.id === id }))),
 		reset: async () => store.resetViews(),
 	};
 }
