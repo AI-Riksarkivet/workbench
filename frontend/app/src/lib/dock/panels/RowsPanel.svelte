@@ -79,6 +79,7 @@
 				<Search class="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
 				<input
 					type="search"
+					data-dataset-search
 					bind:value={draft}
 					disabled={!('column' in panes.search)}
 					aria-describedby={'why' in panes.search ? 'no-search' : undefined}

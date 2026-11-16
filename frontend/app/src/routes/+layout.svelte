@@ -63,6 +63,9 @@
 
 	onNavigate((navigation) => {
 		if (!document.startViewTransition) return;
+		// A change of the address alone (a page writing its view into it, `#lib/dock/link.ts`) stays on the
+		// page it is on: it gets no page transition.
+		if (navigation.from?.url.pathname === navigation.to?.url.pathname) return;
 		return new Promise((done) => {
 			track(
 				document.startViewTransition(async () => {

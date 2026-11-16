@@ -58,6 +58,15 @@ export const ATLAS_PALETTE = {
 /** The opacity, out of 255, the scatter draws noise points at: opaque, so their grey keeps its 3:1. */
 export const NOISE_ALPHA = 255;
 
+/**
+ * The opacity, out of 255, the scatter draws a dimmed point at (one outside the search's hits, or outside the map's
+ * selection) unless the reader moves the slider. Dimmed points are context, so they are drawn lighter than the rest,
+ * but they stay points a reader can make out and click: at 112 the faintest hue lands at 1.5:1 on the dark
+ * background and 1.26:1 on the light one (whose opaque hues reach 1.73:1 at the least), measured 2026-11-16 by the
+ * sRGB relative-luminance formula. At the 8 it replaced they landed at 1.02:1, invisible.
+ */
+export const DIM_ALPHA = 112;
+
 const paletteOf = (dark: boolean) => (dark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light);
 
 export function hueRgb(i: number, n: number, dark: boolean): Rgb {

@@ -138,6 +138,7 @@ chart-check:
 	helm template workbench chart -n workbench $(CHART_APIS) --set auth.enabled=false --set route.enabled=false \
 		--set 'sources[0].name=scans' --set 'sources[0].kind=tables' --set 'sources[0].claim=scans' --set 'sources[0].path=scans.lance' \
 		--set media.viewer.mediaUrlKey.name=wb-media >/dev/null
+	bash scripts/chart-refusals.sh
 	helm lint deploy/fixtures/openfga/chart
 	helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) >/dev/null
 

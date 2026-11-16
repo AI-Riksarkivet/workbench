@@ -10,6 +10,8 @@
 	import { page } from '$app/state';
 	import RowPreview from '#lib/explore/components/row-preview.svelte';
 	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
+	import { GatedAction } from '@workbench/ui/gated-action';
+	import { sendGate } from '#lib/explore/pane-capabilities.ts';
 	import { selectionKeys } from '#lib/projects/send.ts';
 	import { projectOf } from '#lib/project.ts';
 	import {
@@ -60,6 +62,8 @@
 
 	// Send to project: the rows the search answered, or the atlas selection shown as rows (all of it, listed or not).
 	let sendOpen = $state(false);
+	/** Why this dataset's rows cannot be sent to a project (`sendGate`), shown on the disabled control. */
+	const sendBlocked = $derived(sendGate(page.data.facts ?? null));
 	const sendKeys = $derived(selectionKeys(hits, (h) => ds.keyPath(h)));
 	const sendTotal = $derived(explore.mapSelection?.points ?? hits.length);
 	const orgs = $derived((page.data.me?.orgs ?? []).map((o: { org: string }) => o.org));
@@ -317,15 +321,21 @@
 
 		<div class="ml-auto flex items-center gap-2">
 			{#if !explore.browsing && hits.length > 0}
-				<Button
-					variant="outline"
-					size="xs"
-					data-testid="send-to-project-open"
-					aria-label="Send to a project"
-					onclick={() => (sendOpen = true)}
+				<GatedAction
+					allowed={sendBlocked === null}
+					action="Send to a project"
+					reason={sendBlocked ?? ''}
 				>
-					<Inbox /><span class="hidden @2xl:inline">Send to a project</span>
-				</Button>
+					<Button
+						variant="outline"
+						size="xs"
+						data-testid="send-to-project-open"
+						aria-label="Send to a project"
+						onclick={() => (sendOpen = true)}
+					>
+						<Inbox /><span class="hidden @2xl:inline">Send to a project</span>
+					</Button>
+				</GatedAction>
 			{/if}
 			{#if explore.layout === 'table' && explore.browsing}
 				<ColumnsMenu columns={DOC_COLUMNS} shown={docTableCols} ontoggle={toggleDocCol} />

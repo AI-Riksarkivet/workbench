@@ -98,8 +98,8 @@ confirmed and the next step: **read #9's latest comment before starting.** The o
 it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
 keeps its state in its own Postgres (R2). R3 made sign-in work with whatever OIDC provider the cluster runs (token
 exchange and DPoP only where the provider's discovery offers them) and built the first cluster run (`make deploy-dev`,
-docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.sources`, above); then R5 (graph and tree as
-dock panels), D3b-2, D3c and D4. Nothing
+docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.sources`, above); R5 made a dataset one dock whose panels are
+every view (graph and tree beside the atlas, one navigation, the view in the address); then D3b-2, D3c and D4. Nothing
 has run on a cluster yet. Two live copies of one session must never drive the same worktree: before resuming an agent
 after a restart, check `~/.claude/sessions/*.json` for a second process with the same session id.
 Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
@@ -164,10 +164,10 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | Goal | Command |
 | --- | --- |
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
-| Run it locally with real data | `make local`: installs, seeds three demo sources under `LOCAL_CATALOG` (`scripts/seed_demo_corpus.py`, declared by `scripts/local-sources.json`): a stamped page corpus and an audio dataset in a directory catalog standing in for a lakehouse (`lake`), an unstamped table two namespaces deep in a lance-namespace directory catalog (`archive`) and a bare `.lance` table with an image blob (`scans`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
+| Run it locally with real data | `make local`: installs, seeds three demo sources under `LOCAL_CATALOG` (`scripts/seed_demo_corpus.py`, declared by `scripts/local-sources.json`): a stamped page corpus (with an atlas, a topic tree and a small knowledge graph) and an audio dataset in a directory catalog standing in for a lakehouse (`lake`), an unstamped table two namespaces deep in a lance-namespace directory catalog (`archive`) and a bare `.lance` table with an image blob (`scans`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
 | Stop the local stack | `make local-stop`: stops the process `make local` recorded (`$TMPDIR/workbench-local-stack.pid`) and waits until its ports are free; `make local` checks the ports before it installs or builds anything |
 | Deploy to the development cluster | `make deploy-dev` (images by commit, the OpenFGA fixture, the Dex client, the release, the lakehouse grants, a read-back), each step its own `make dev-*`; `make undeploy-dev` removes it all (docs/DEPLOY.md) |
-| The chart's renders | `make chart-check` (lint, and the dev overlay, a platform's, a release with no lakehouse and one with sign-in off) |
+| The chart's renders | `make chart-check` (lint, the dev overlay, a platform's, a release with no lakehouse and one with sign-in off, and every misconfiguration the templates refuse, each rendered and failing with its own message: `scripts/chart-refusals.sh`) |
 | Tests (no live stack) | `make test` (= `uv run pytest -m "not e2e" -n 8`) |
 | One test | `uv run pytest services/<svc>/tests/<file>.py::<test>` |
 | Lint, format, type-check | `make check` |
@@ -214,10 +214,20 @@ Two language-pure planes, as in rask; never blur them.
     what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`; its fetch seam is `#lib/api/client.ts`,
     which `@workbench/explorer-api` also calls through (`#lib/api/explorer.ts` installs it); every media element's
     link comes from one batched loader (`#lib/api/media-links.svelte.ts`); its explorer is `#lib/explore`; its viewers, shared by the explorer's player and the labeling canvas and importing neither, are `#lib/media` (the WebGPU image stage with fit, zoom and pan, whose pixi entry carries `pixi.js/unsafe-eval` for the CSP; a recording's transport, whose scrubber takes an overlay on its time axis; the synced transcript); its dock is
-    `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). A dataset's pages are its dock
-    (`/datasets/[id]`) and its views (`#lib/dataset-nav.ts`): the atlas (`#lib/atlas`, also the dock's Atlas panel), the
-    knowledge graph (`#lib/graph`) and the topic tree (`#lib/topics`). The atlas and the graph draw with WebGPU only
-    (`#lib/gpu`); a browser without it gets their plain refusal and fetches no points. The annotator's project plane
+    `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). A dataset is ONE dock (`/datasets/[id]`), the
+    page's only navigation: Results, Player, Atlas (`#lib/atlas`), Graph (`#lib/graph`) and Tree (`#lib/topics`) are its
+    panels, each opened from the dock's "open a panel" menu, which lists a panel the dataset cannot feed disabled with its
+    reason (`GatedAction`); the reasons are `panelGates` in `#lib/explore/pane-capabilities.ts`, and an open panel the
+    dataset cannot feed shows the same reason. A dataset's layout is kept per dataset (`#lib/dock/store.ts`); one never
+    arranged opens with the default that fits it (`defaultLayout`: only the panels it can feed, the views tabbed
+    together). The panels share one selection (`explore`, the atlas's `crossFilter`, `#lib/graph/graph-explorer.svelte.ts`):
+    a topic chosen in the tree is the search's `topic=`, an entity picked in the graph searches for its name, and the
+    Atlas lights up the results. The address is the view (`#lib/dock/link.ts`): the search, the topic, the row opened,
+    the graph's entity, the panels shown and the one maximized are written into it and restored from it. A maximized
+    Atlas or Tree stands in for the page it replaced (the map beside its player over the selection's table; the treemap
+    beside the topic's rows). The old `/datasets/[id]/atlas`, `graph` and `tree` links redirect to the dock with that
+    panel in front. The atlas and the graph draw with WebGPU only (`#lib/gpu`), releasing their device when the panel
+    unmounts; a browser without it gets their plain refusal and fetches no points. The annotator's project plane
     is `/projects` and `/projects/[project]` (`#lib/projects`, its calls `#lib/api/projects.api.ts`): a project's
     read answers the reader's `permissions`, and a page offers only what its door would let through; a dataset's
     search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`). Image

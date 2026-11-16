@@ -178,43 +178,6 @@ test('the sidebar starts as the collapsed rail, and opened it stays open across 
 	await expect(sidebar).toHaveAttribute('data-state', 'expanded');
 });
 
-test('a dataset with no atlas says so, and its views say why they are closed', async ({
-	page,
-	context,
-}) => {
-	await signIn(context, person('Barbara'));
-	await page.goto('/datasets/lake~acme%24notes');
-	await expect(page.getByText('This dataset has no embedding map.')).toBeVisible();
-
-	const views = page.getByRole('navigation', { name: 'Dataset pages' });
-	await expect(views.getByRole('link')).toHaveCount(1);
-	const graph = views.getByRole('button', { name: /^Graph/ });
-	await expect(graph).toHaveAccessibleName('Graph');
-	await expect(graph).toHaveAccessibleDescription('this dataset declares no knowledge graph');
-	// Focus alone says why, as a pointer resting on it does, in a tooltip on the tab: nothing below the row moves.
-	const below = page.getByText('This dataset has no embedding map.');
-	/** Where the text sits once the page's settle-in animation has ended: two reads apart that agree. */
-	const settled = async (): Promise<number> => {
-		let last = Number.NaN;
-		for (;;) {
-			const y = (await below.boundingBox())!.y;
-			if (y === last) return y;
-			last = y;
-			await page.waitForTimeout(150);
-		}
-	};
-	const before = await settled();
-	await graph.focus();
-	await expect(page.getByRole('tooltip')).toContainText(
-		'Graph is not available: this dataset declares no knowledge graph.',
-	);
-	await views.getByRole('button', { name: /^Tree/ }).hover();
-	await expect(page.getByRole('tooltip')).toContainText(
-		'Tree is not available: this dataset declares no topic hierarchy.',
-	);
-	expect(await settled()).toBe(before);
-});
-
 test('a viewer that cannot be reached is told apart from a dataset that does not exist, and is tried again', async ({
 	page,
 	context,
@@ -241,7 +204,7 @@ test('a viewer that cannot be reached is told apart from a dataset that does not
 
 	await page.unroute('**/api/viewer/api/datasets/*/descriptor');
 	await page.getByRole('button', { name: 'Try again' }).click();
-	await expect(page.getByRole('navigation', { name: 'Dataset pages' })).toBeVisible();
+	await expect(page.getByRole('region', { name: 'Player' })).toBeVisible();
 });
 
 test('a /config.json the app cannot use is a 503 that says why, and calls no service', async ({

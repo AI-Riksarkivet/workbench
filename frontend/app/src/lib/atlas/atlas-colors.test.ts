@@ -3,7 +3,14 @@
  * what is behind it, the dark `--background` (oklch(0.13 0.006 270), sRGB 6 7 10).
  */
 import { describe, expect, it } from 'vitest';
-import { ATLAS_PALETTE, NOISE_ALPHA, hexToRgb, hueRgb, type Rgb } from './atlas-colors.ts';
+import {
+	ATLAS_PALETTE,
+	DIM_ALPHA,
+	NOISE_ALPHA,
+	hexToRgb,
+	hueRgb,
+	type Rgb,
+} from './atlas-colors.ts';
 
 const DARK_BACKGROUND: Rgb = { r: 6, g: 7, b: 10 };
 
@@ -36,5 +43,29 @@ describe('the dark atlas palette', () => {
 		const lowest = Math.min(...[...hues, ...greys].map((rgb) => contrast(rgb, DARK_BACKGROUND)));
 
 		expect(lowest).toBeGreaterThanOrEqual(3);
+	});
+});
+
+describe('a dimmed point', () => {
+	const LIGHT_BACKGROUND: Rgb = { r: 250, g: 249, b: 246 };
+	const landed = (rgb: Rgb, background: Rgb, alpha: number): Rgb => ({
+		r: alpha * rgb.r + (1 - alpha) * background.r,
+		g: alpha * rgb.g + (1 - alpha) * background.g,
+		b: alpha * rgb.b + (1 - alpha) * background.b,
+	});
+
+	it('stays visible in both themes, and fainter than the points in view', () => {
+		for (const [background, dark, floor] of [
+			[DARK_BACKGROUND, true, 1.45],
+			[LIGHT_BACKGROUND, false, 1.2],
+		] as const) {
+			const hues = Array.from({ length: 360 }, (_, degree) => hueRgb(degree, 360, dark));
+			const faintest = Math.min(
+				...hues.map((rgb) => contrast(landed(rgb, background, DIM_ALPHA / 255), background)),
+			);
+			const opaque = Math.min(...hues.map((rgb) => contrast(rgb, background)));
+			expect(faintest).toBeGreaterThanOrEqual(floor);
+			expect(faintest).toBeLessThan(opaque);
+		}
 	});
 });

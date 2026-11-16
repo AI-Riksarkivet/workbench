@@ -96,6 +96,28 @@ class Explore {
 	 *  listed are its first {@link MAP_ROWS_MAX}, the most the viewer answers for one selection. */
 	mapSelection = $state<{ points: number } | null>(null);
 	#mapRowids: number[] = [];
+	/** The row a link opened, opened again once the search the link names has answered (`seq`, the search
+	 *  it waits for): the search's own hit for it where it is among them (with its text and score), else
+	 *  `fallback`, built from its key. Any later search, browse or voice search supersedes it. */
+	#linked = $state.raw<{
+		key: string;
+		fallback: Hit;
+		keys: readonly string[];
+		t: number | null;
+		seq: number;
+	} | null>(null);
+
+	/** The row a link named that still waits for its search: the address keeps it until it opens. */
+	get linked(): { keys: readonly string[]; t: number | null } | null {
+		return this.#linked;
+	}
+
+	/** The next operation's sequence number; a linked row waiting for an earlier one is dropped. */
+	#next(): number {
+		const seq = ++this.#seq;
+		if (this.#linked !== null && this.#linked.seq !== seq) this.#linked = null;
+		return seq;
+	}
 
 	/** Browsing documents: nothing is searched. */
 	get browsing(): boolean {
@@ -116,7 +138,7 @@ class Explore {
 	/** Another dataset starts with nothing searched, nothing open and the first browse page. */
 	open(dataset: string): void {
 		if (this.dataset === dataset) return;
-		this.#seq++;
+		this.#next();
 		this.dataset = dataset;
 		this.spec = { q: '', n: 100, mode: 'fts' };
 		this.hits = [];
@@ -127,9 +149,38 @@ class Explore {
 		this.allLoaded = false;
 		this.docsPage = 1;
 		this.mapSelection = null;
+		this.#linked = null;
 		this.#leaveVoice();
 		this.#beforeVoice = null;
 		voiceSearch.reset();
+	}
+
+	/**
+	 * Open the row a link names by its key values (`keys`, in the descriptor's key-field order) and, for a
+	 * recording, the moment `t` it was opened at. While the link's search is still answering, the row waits
+	 * for it, so the player shows the hit the sender saw; otherwise it opens now, built from its key.
+	 */
+	openLinked(keys: readonly string[], t: number | null): void {
+		const view = activeView();
+		if (keys.length !== view.keyFields.length) return;
+		const extra: Hit = { _score: 0, alignments: [] };
+		view.keyFields.forEach((field, i) => (extra[field] = keys[i]));
+		const doc = String(extra[view.docKeyField] ?? '');
+		const fallback = this.playerRow(doc, t ?? 0, t ?? 0, extra);
+		if (this.loadingHits) {
+			this.#linked = { key: view.rowKey(fallback), fallback, keys, t, seq: this.#seq };
+		} else {
+			this.active = fallback;
+		}
+	}
+
+	/** The row a link named, once the search it waited for answered `hits`; null when none waits. */
+	#takeLinked(hits: readonly Hit[]): Hit | null {
+		const linked = this.#linked;
+		if (linked === null) return null;
+		this.#linked = null;
+		const view = activeView();
+		return hits.find((hit) => view.rowKey(hit) === linked.key) ?? linked.fallback;
 	}
 
 	/** The browse page's documents, read for the current dataset. */
@@ -166,7 +217,7 @@ class Explore {
 	}
 
 	async runSearch(next: SearchSpec): Promise<void> {
-		const seq = ++this.#seq;
+		const seq = this.#next();
 		this.#beforeVoice = null;
 		this.#leaveVoice();
 		this.mapSelection = null;
@@ -184,11 +235,12 @@ class Explore {
 			const result = await this.#search(this.spec);
 			if (seq !== this.#seq) return;
 			this.hits = result;
-			this.active = null;
+			this.active = this.#takeLinked(result);
 			if (result.length < requested) this.allLoaded = true;
 		} catch (e) {
 			if (seq !== this.#seq) return;
 			this.hits = [];
+			this.active = this.#takeLinked([]);
 			this.error = failureOf(e);
 		} finally {
 			if (seq === this.#seq) this.loadingHits = false;
@@ -199,7 +251,7 @@ class Explore {
 	async loadMore(): Promise<void> {
 		if (this.loadingMore || this.allLoaded) return;
 		this.loadingMore = true;
-		const seq = ++this.#seq;
+		const seq = this.#next();
 		try {
 			if (this.voiceActive && (this.#voiceAnchor || this.#voiceUpload)) {
 				const nextN = this.#voiceN + PAGE_STEP;
@@ -232,7 +284,7 @@ class Explore {
 	/** Show the rows of an atlas selection as the results, by the points' stable row ids (`points` is the
 	 *  selection's whole size, of which the viewer answers the first {@link MAP_ROWS_MAX}). */
 	async showMapSelection(rowids: number[], points: number): Promise<void> {
-		const seq = ++this.#seq;
+		const seq = this.#next();
 		this.#beforeVoice = null;
 		this.#leaveVoice();
 		this.mapSelection = { points };
@@ -281,7 +333,7 @@ class Explore {
 	 *  tried once when a moment falls where no turn covers it (chunk spans and diarized turns disagree
 	 *  at their edges). */
 	async runVoice(anchor: VoiceAnchor, label?: string, fallback?: VoiceAnchor): Promise<void> {
-		const seq = ++this.#seq;
+		const seq = this.#next();
 		this.#enterVoice(label);
 		this.#voiceAnchor = anchor;
 		this.#voiceUpload = null;
@@ -309,7 +361,7 @@ class Explore {
 
 	/** A voice search by an uploaded clip's own voiceprint. */
 	async runVoiceUpload(file: File, label: string): Promise<void> {
-		const seq = ++this.#seq;
+		const seq = this.#next();
 		this.#enterVoice(label);
 		this.#voiceAnchor = null;
 		this.#voiceUpload = file;
@@ -331,7 +383,7 @@ class Explore {
 
 	/** Leave voice mode for the text results it replaced. */
 	dismissVoice(): void {
-		this.#seq++;
+		this.#next();
 		this.loadingHits = false;
 		this.error = null;
 		this.#leaveVoice();

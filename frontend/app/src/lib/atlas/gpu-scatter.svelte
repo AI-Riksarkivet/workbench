@@ -1,4 +1,5 @@
 <script lang="ts">
+	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { acquireGpuCanvas } from '#lib/gpu/webgpu.ts';
 	/**
 	 * gpu-scatter — a self-contained WebGPU point-scatter renderer for the atlas.
@@ -78,6 +79,8 @@
 	let gpuCanvas = $state<HTMLCanvasElement | null>(null);
 	let overlayCanvas = $state<HTMLCanvasElement | null>(null);
 	let gpuError = $state<string | null>(null);
+	/** Why the GPU device was lost while drawing; the canvas is set up again on Try again. */
+	let lostDetail = $state<string | null>(null);
 
 	// ── camera (data coords at canvas centre + device-px per data unit) ───────
 	let center = $state.raw<[number, number]>([0, 0]);
@@ -465,6 +468,12 @@ fn fs(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 				return;
 			}
 			device = h.device;
+			// A device lost while drawing (a driver reset, the browser reclaiming the GPU) is said, with a way
+			// to draw again; one this component destroyed on unmount is not.
+			void h.device.lost.then((info) => {
+				if (cancelled || info.reason === 'destroyed') return;
+				lostDetail = info.message || 'the browser gave no reason';
+			});
 			ctx = h.ctx;
 			pipeline = h.pipeline;
 			uniformBuffer = h.uniformBuffer;
@@ -745,6 +754,15 @@ fn fs(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 {#if gpuError}
 	<div class="text-destructive grid h-full place-items-center p-6 text-center text-sm">
 		{gpuError} — the embedding map needs WebGPU.
+	</div>
+{:else if lostDetail}
+	<div class="grid h-full place-items-center p-6">
+		<LoadFailure
+			what="WebGPU stopped drawing the embedding map: the GPU device was lost."
+			detail={lostDetail}
+			hint="Try again to set the GPU up afresh. If it keeps failing, reload the page."
+			onretry={() => (lostDetail = null)}
+		/>
 	</div>
 {:else}
 	<canvas

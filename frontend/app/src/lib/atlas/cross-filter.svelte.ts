@@ -164,9 +164,16 @@ class CrossFilter {
 		this.hiddenByMode = nextMap;
 	}
 
-	/** Reset everything tied to the loaded universe (called on a space swap). */
-	resetForSpace(keyToIndex: Map<string, number>): void {
+	/** Which dataset's space the selection indexes, so the same points loaded again keep it. */
+	#universe: string | null = null;
+
+	/** Reset everything tied to the loaded universe (`universe`, the dataset and space the points are of)
+	 *  when it changes. The same points loaded again (a panel remounted by the dock when it is moved,
+	 *  maximized or popped out) keep the selection, the filter and what is hidden. */
+	resetForSpace(keyToIndex: Map<string, number>, universe: string): void {
 		this.keyToIndex = keyToIndex;
+		if (this.#universe === universe) return;
+		this.#universe = universe;
 		this.selectedIds = new Set();
 		this.filteredIds = null;
 		this.hiddenByMode = new Map();

@@ -71,13 +71,17 @@ test('what a plain table cannot do is disabled with its reason', async ({ page, 
 	await signIn(context, person('Barbara'));
 	await page.goto('/datasets/archive~field%24survey');
 
-	const views = page.getByRole('navigation', { name: 'Dataset pages' });
-	await expect(views.getByRole('button', { name: /^Atlas/ })).toHaveAccessibleDescription(
-		'this dataset carries no workbench descriptor, so it is shown as a plain table',
-	);
-	await expect(page.getByRole('region', { name: 'No atlas' })).toContainText(
+	// The dock opens the rows and the row alone, and lists every view with why it cannot be drawn.
+	await expect(page.getByRole('tab')).toHaveCount(2);
+	await page.getByRole('button', { name: 'Open a panel' }).first().click();
+	await expect(page.getByRole('menuitem', { name: /^Atlas/ })).toHaveAccessibleDescription(
 		'this dataset declares no embedding projection to draw',
 	);
+	await expect(page.getByRole('menuitem', { name: /^Graph/ })).toHaveAccessibleDescription(
+		'this dataset carries no workbench descriptor, so it is shown as a plain table',
+	);
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('menu')).toHaveCount(0);
 	await page.getByRole('table').getByRole('row').nth(1).click();
 	const send = page.getByRole('button', { name: 'Send to a project' });
 	await expect(send).toHaveAccessibleDescription(

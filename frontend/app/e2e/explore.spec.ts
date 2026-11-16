@@ -221,7 +221,7 @@ test('a voice search finds the speaker elsewhere, and clearing it returns to the
 	);
 });
 
-test('a saved search is kept for the person and applied again after a reload', async ({
+test('a saved search is kept for the person and applied again on another visit', async ({
 	page,
 	context,
 }) => {
@@ -235,7 +235,8 @@ test('a saved search is kept for the person and applied again after a reload', a
 	await page.getByRole('button', { name: 'Save search' }).click();
 	await page.keyboard.press('Escape');
 
-	await page.reload();
+	// A visit with nothing searched (the dataset's own address, not this search's link).
+	await page.goto('/datasets/lake~acme%24letters');
 	await expect(page.getByText('Browsing 3 documents')).toBeVisible();
 	// The trigger counts the searches kept for this dataset.
 	await page.getByRole('button', { name: /^Saved searches\s*1$/ }).click();
@@ -263,6 +264,14 @@ test('a topic link opens the page filtered to it, and the keyboard reaches the s
 	await expect(player.getByText('Click a hit to play.')).toBeVisible();
 	await page.keyboard.press('/');
 	await expect(page.getByRole('searchbox')).toBeFocused();
+
+	// `/` is the dataset's search, not the first search box on the page: with the graph in front and the
+	// results closed, it brings the results back and focuses their search.
+	await page.getByRole('tab', { name: /^Graph/ }).click();
+	await page.getByRole('button', { name: 'Close Results' }).click();
+	await page.getByRole('combobox', { name: 'Search entities' }).blur();
+	await page.keyboard.press('/');
+	await expect(page.getByRole('searchbox', { name: /this dataset/ })).toBeFocused();
 });
 
 test('a failed search, a failed browse, a dataset with nothing and a missing dataset each say so', async ({

@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Topic treemap (Tree page) with three views + a noise toggle.
+	 * Topic treemap (the Tree panel) with three views + a noise toggle.
 	 *
 	 * The LayerChart <Treemap> computes the rectangular layout from the topic
 	 * hierarchy (`getTopics().hierarchy`); we draw the cells as SVG:
@@ -13,7 +13,7 @@
 	 *     = chunk count, every level as a column.
 	 *
 	 * Clicking a leaf (or "Show results") opens the topic's results via
-	 * `onShowResults` — the Tree page shows them in a side panel. The
+	 * `onShowResults` (the Tree panel lists them in the Results panel). The
 	 * noise bucket (unclustered chunks) is hidden by default — toggle "Show
 	 * noise" to bring it back (shown muted). Topic names are the data's own;
 	 * the chrome is English.
@@ -34,31 +34,36 @@
 		hierarchy,
 		noiseLabel,
 		onShowResults,
+		view = $bindable('drill'),
+		showNoise = $bindable(false),
+		drill = $bindable([]),
 	}: {
 		hierarchy: TopicNode;
 		noiseLabel: string;
-		/** Open a topic's results (the page decides where — side panel). */
+		/** Open a topic's results (the panel decides where: the Results panel, or beside the map). */
 		onShowResults: (name: string) => void;
+		/** The layout shown, bindable so the panel's host keeps it across a remount. */
+		view?: 'drill' | 'nested' | 'flow';
+		showNoise?: boolean;
+		/** The NAMES of the branches descended into below the root. */
+		drill?: string[];
 	} = $props();
 
 	const fmt = (n: number) => n.toLocaleString();
 	const sumLeaves = (d: TopicNode) => (d.children?.length ? 0 : (d.value ?? 0));
 
-	let view = $state<'drill' | 'nested' | 'flow'>('drill');
 	// The layout tabs, rendered as one segmented control in the header.
 	const VIEW_TABS = [
 		{ value: 'drill', label: 'Flat', title: 'One level at a time — click to zoom in' },
 		{ value: 'nested', label: 'Nested', title: 'All levels nested at once' },
 		{ value: 'flow', label: 'Flow', title: 'Sankey flow — ribbon width = chunk count' },
 	] as const;
-	let showNoise = $state(false);
 	let hovered = $state<string | null>(null);
 
 	// Drill stack: NAMES of the branches descended into below the root, resolved
 	// against the `hierarchy` prop each time — never against the pruned display
 	// copy, so the noise toggle (and its hidden-count hint) keeps working after a
 	// drill. `current` is the deepest node shown.
-	let drill = $state<string[]>([]);
 	const path = $derived.by((): TopicNode[] => {
 		const nodes: TopicNode[] = [hierarchy];
 		for (const name of drill) {

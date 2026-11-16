@@ -11,9 +11,18 @@
  * another to the endpoint behind it.
  */
 
+import { DatasetDescriptorSchema, DatasetView } from '@workbench/explorer-api/descriptor';
+import * as v from 'valibot';
 import { describe, expect, it } from 'vitest';
 
-import { panesFor, plainPanes, shownTab, type ViewerCapabilities } from './pane-capabilities.ts';
+import {
+	panelGates,
+	panesFor,
+	plainPanes,
+	shownTab,
+	type PanelGates,
+	type ViewerCapabilities,
+} from './pane-capabilities.ts';
 
 const view = (isPlayable: boolean, capabilities: string[] = []): ViewerCapabilities => ({
 	isPlayable,
@@ -134,5 +143,125 @@ describe('what a table with no descriptor offers', () => {
 			atlas: 'this dataset declares no embedding projection to draw',
 			send: 'read-only source',
 		});
+	});
+});
+
+// ── the dock's panels, gated on what the dataset declares, asserted against real descriptors parsed by the
+// real schema ──
+
+/** The minimum a descriptor must carry; everything conditional is added per test. */
+function descriptor(extra: Record<string, unknown> = {}): unknown {
+	return {
+		id: 'corpus',
+		tables: {
+			items: {
+				name: 'items',
+				row_count: 1,
+				version: 1,
+				columns: [{ name: 'item_id', arrow_type: 'string', nullable: false }],
+				indexes: [],
+			},
+		},
+		declared: {
+			identity: { key_fields: ['item_id'], doc_key: 'item_id', doc_key_pattern: '.*' },
+			document: { table: 'items', media_blob: 'blob', mime: 'mime' },
+			time: null,
+			display: { title: ['label'], body: 'caption', caption: null, metadata: [] },
+			search: {
+				row_table: 'items',
+				fts: { table: 'items', column: 'caption', language: 'English' },
+				vectors: {},
+				filterable: [],
+				rerank: false,
+			},
+			atlas: [],
+			capabilities: {},
+			...extra,
+		},
+	};
+}
+
+const stamped = (extra: Record<string, unknown> = {}): DatasetView =>
+	new DatasetView(v.parse(DatasetDescriptorSchema, descriptor(extra)));
+
+const ATLAS_SPACE = {
+	name: 'text',
+	x: 'atlas_x',
+	y: 'atlas_y',
+	cluster: 'atlas_cluster',
+	source_column: 'semantic_vec',
+	table: 'items',
+	channels: [],
+};
+
+type ViewPanel = 'atlas' | 'graph' | 'tree';
+const VIEW_PANELS: readonly ViewPanel[] = ['atlas', 'graph', 'tree'];
+
+const openable = (gates: PanelGates): ViewPanel[] => VIEW_PANELS.filter((p) => gates[p] === null);
+
+const why = (gates: PanelGates, panel: ViewPanel): string | null => gates[panel];
+
+describe('the view panels follow what the dataset declares', () => {
+	it('feeds the results and the player always, and no view panel on a dataset that declares nothing', () => {
+		const gates = panelGates(stamped());
+		expect([gates.results, gates.player]).toEqual([null, null]);
+		expect(openable(gates)).toEqual([]);
+	});
+
+	it('opens each view by its own declaration, and a capability for something else opens none', () => {
+		expect(openable(panelGates(stamped({ atlas: [ATLAS_SPACE] })))).toEqual(['atlas']);
+		expect(openable(panelGates(stamped({ capabilities: { graph: 'kg' } })))).toEqual(['graph']);
+		expect(openable(panelGates(stamped({ capabilities: { topics: 'topics.tree' } })))).toEqual([
+			'tree',
+		]);
+		expect(openable(panelGates(stamped({ capabilities: { frames: 'chunks.image' } })))).toEqual([]);
+	});
+
+	it('a closed view says why, about the dataset; an open one carries no reason', () => {
+		const closed = panelGates(stamped());
+		expect(why(closed, 'graph')).toMatch(/dataset declares no knowledge graph/);
+		expect(why(closed, 'tree')).toMatch(/topic/);
+		expect(why(closed, 'atlas')).toMatch(/atlas/);
+		expect(why(panelGates(stamped({ capabilities: { graph: 'kg' } })), 'graph')).toBeNull();
+	});
+
+	it('while the descriptor is read, every view is closed as loading', () => {
+		const entries = panelGates(null);
+		expect(openable(entries)).toEqual([]);
+		expect(why(entries, 'graph')).toMatch(/still being read/);
+	});
+});
+
+describe('the atlas follows the table in view', () => {
+	const spaceOn = (table: string) => ({ ...ATLAS_SPACE, table });
+
+	it('opens when a space is bound to that table, or to any table when none is chosen', () => {
+		expect(
+			openable(panelGates(stamped({ atlas: [spaceOn('pages')] }), { rowTable: 'pages' })),
+		).toContain('atlas');
+		expect(
+			openable(panelGates(stamped({ atlas: [spaceOn('pages')] }), { rowTable: null })),
+		).toContain('atlas');
+	});
+
+	it('closes, naming the table, when every space belongs to another table', () => {
+		const entries = panelGates(stamped({ atlas: [spaceOn('pages')] }), { rowTable: 'lines' });
+		expect(openable(entries)).not.toContain('atlas');
+		expect(why(entries, 'atlas')).toMatch(/table/);
+	});
+
+	it('leaves the graph and the tree to the dataset: capabilities are declared once per dataset', () => {
+		const declared = stamped({ capabilities: { topics: 'topics.tree', graph: 'kg' } });
+		expect(openable(panelGates(declared, { rowTable: 'pages' }))).toEqual(['graph', 'tree']);
+	});
+});
+
+describe('a dataset shown as a plain table', () => {
+	it('feeds its rows and its row, and every view panel says the dataset carries no descriptor', () => {
+		const gates = panelGates(null, { plain: true });
+		expect([gates.results, gates.player]).toEqual([null, null]);
+		expect(gates.atlas).toMatch(/no embedding projection/);
+		expect(gates.graph).toMatch(/no workbench descriptor/);
+		expect(gates.tree).toMatch(/no workbench descriptor/);
 	});
 });

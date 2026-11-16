@@ -120,3 +120,83 @@ export function plainPanes(columns: readonly PlainColumn[], readOnly: string | n
 			'this dataset declares no workbench descriptor, so its rows have no identity a task can name',
 	};
 }
+
+/**
+ * The dock panels a dataset can feed, and why each other one cannot: the one place a panel's gate is
+ * decided, read by the dock's "open a panel" menu (an unavailable panel is listed disabled with this
+ * reason, never hidden), by a panel already open on a dataset that cannot feed it (it shows the same
+ * reason inside), and by the default layout (which opens only the panels the dataset can feed).
+ *
+ * The reasons are phrased about the dataset ("declares no knowledge graph") rather than the product: an
+ * absent entry reads as a feature the workbench lacks, a disabled one says what to declare. The gates read
+ * the names the viewer itself reads: `graph` is the capability its graph door looks up, `topics` the one its
+ * topics door looks up, and the atlas gates on the declared spaces its atlas door draws.
+ */
+export type DockPanel = 'results' | 'player' | 'atlas' | 'graph' | 'tree';
+
+/** A panel's gate: null when the dataset can feed it, else why not. */
+export type PanelGates = Readonly<Record<DockPanel, string | null>>;
+
+/** The subset of `DatasetView` the panel gates read, declared structurally so the module imports no client. */
+export interface PanelCapabilities {
+	hasCapability(name: string): boolean;
+	atlasSpaces: readonly { table: string }[];
+}
+
+/** The reason every descriptor-only panel gives on a dataset shown as a plain table. */
+const NO_DESCRIPTOR =
+	'this dataset carries no workbench descriptor, so it is shown as a plain table';
+
+/**
+ * `view` is the stamped dataset's view, or null while its descriptor is read; `plain` is a dataset shown
+ * as a plain table (no descriptor), whose atlas reason is `plainPanes`'s. `rowTable` is the table in view:
+ * an atlas space is bound to one table, so a space over `pages` has nothing to draw while the reader
+ * searches `lines`; with no table chosen, any declared space feeds it.
+ */
+export function panelGates(
+	view: PanelCapabilities | null,
+	{ rowTable = null, plain = false }: { rowTable?: string | null; plain?: boolean } = {},
+): PanelGates {
+	if (plain) {
+		return {
+			results: null,
+			player: null,
+			atlas: plainPanes([], null).atlas,
+			graph: NO_DESCRIPTOR,
+			tree: NO_DESCRIPTOR,
+		};
+	}
+	if (view === null) {
+		const reading = 'the dataset is still being read';
+		return { results: null, player: null, atlas: reading, graph: reading, tree: reading };
+	}
+	const atlas =
+		rowTable === null
+			? view.atlasSpaces.length > 0
+			: view.atlasSpaces.some((space) => space.table === rowTable);
+	return {
+		results: null,
+		player: null,
+		atlas: atlas
+			? null
+			: view.atlasSpaces.length === 0
+				? 'this dataset declares no atlas projection'
+				: 'this dataset declares no atlas projection for the table in view',
+		graph: view.hasCapability('graph') ? null : 'this dataset declares no knowledge graph',
+		// The schema, not whether the hierarchy has been computed: a declared tree that is not built yet
+		// opens, and its panel says none has been written.
+		tree: view.hasCapability('topics') ? null : 'this dataset declares no topic hierarchy',
+	};
+}
+
+/**
+ * Why a dataset's rows cannot be sent to a project, or null when they can: the one gate every "Send to a
+ * project" control reads, for a stamped dataset (its source's read-only reason, `facts.read_only`) and a
+ * plain one (which also lacks a descriptor naming its rows' identity, `plainPanes`).
+ */
+export function sendGate(
+	facts: { stamped: boolean; read_only: string | null } | null,
+): string | null {
+	if (facts === null) return null;
+	return facts.stamped ? facts.read_only : plainPanes([], facts.read_only).send;
+}

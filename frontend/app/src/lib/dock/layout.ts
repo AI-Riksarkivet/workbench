@@ -15,6 +15,7 @@ import {
 	type SplitConfig,
 	type TabGroupConfig,
 } from 'horizon-layout';
+import type { DockPanel, PanelGates } from '#lib/explore/pane-capabilities.ts';
 
 /** Every panel the workbench can show, in the order the panel picker lists them. */
 export const PANELS = [
@@ -25,12 +26,14 @@ export const PANELS = [
 		keywords: ['player', 'media', 'image', 'video', 'audio', 'transcript', 'speakers'],
 	},
 	{ id: 'atlas', title: 'Atlas', keywords: ['atlas', 'map', 'projection', 'embedding'] },
-] as const satisfies readonly { id: string; title: string; keywords: readonly string[] }[];
+	{ id: 'graph', title: 'Graph', keywords: ['graph', 'knowledge', 'entities', 'cypher'] },
+	{ id: 'tree', title: 'Tree', keywords: ['tree', 'topics', 'treemap', 'hierarchy'] },
+] as const satisfies readonly { id: DockPanel; title: string; keywords: readonly string[] }[];
 
 export type PanelId = (typeof PANELS)[number]['id'];
 
-/** The panels' names on a dataset shown as a plain table: the same three places in the dock, holding
- *  the table's rows, the row opened, and the atlas's reason. */
+/** The panels' names on a dataset shown as a plain table: the results and the player hold the table's
+ *  rows and the row opened. */
 export const PLAIN_TITLES: Readonly<Record<string, string>> = { results: 'Rows', player: 'Row' };
 
 const PANEL_IDS: ReadonlySet<string> = new Set(PANELS.map((p) => p.id));
@@ -39,20 +42,79 @@ export function isPanelId(id: string): id is PanelId {
 	return PANEL_IDS.has(id);
 }
 
-/** The arrangement a first visit opens with: Results on the left, the Player above Atlas on the right.
- *  On a narrow screen (`narrow`) the Results take most of the height, full width, and the Player and
- *  Atlas share the rest as tabs of one pane, the Player in front: a pick opens it there. */
-export function defaultLayout(narrow = false): LayoutConfig {
+/** The views beside the results and the player, in the order a default layout tabs them. */
+const VIEW_PANELS: readonly PanelId[] = ['atlas', 'graph', 'tree'];
+
+/**
+ * What a default layout is fitted to: the dataset's shape (`image` for still pages, `time` for audio and
+ * video, `plain` for a table with no descriptor) and which view panels it can feed (`gates`, from
+ * `pane-capabilities`).
+ */
+export interface LayoutFit {
+	kind: 'image' | 'time' | 'plain';
+	gates: PanelGates;
+}
+
+/** Every panel's gate open: the fit a layout is checked against when no dataset is in view. */
+const EVERY_VIEW: LayoutFit = {
+	kind: 'image',
+	gates: { results: null, player: null, atlas: null, graph: null, tree: null },
+};
+
+const tabGroup = (tabs: Id[]): TabGroupConfig => ({
+	tabs: tabs as TabGroupConfig['tabs'],
+	activeTabIndex: 0,
+});
+
+/**
+ * The arrangement a dataset opens with, before the person arranges it: only the panels the dataset can
+ * feed, the views it declares tabbed together (the atlas in front) so none hides behind a menu.
+ *
+ * - A page corpus (`image`) sets the player in a full-height middle column, since a portrait page fitted
+ *   into a short pane is drawn too small to read: the results on the left, the views on the right.
+ * - A recording (`time`) has a short player (the transport and the transcript), so the results take the
+ *   left half and the player sits above the views on the right.
+ * - A plain table opens its rows and the row opened, nothing else.
+ *
+ * On a narrow screen (`narrow`) the results take most of the height, full width, and every other panel
+ * shares the rest as tabs of one pane, the player in front: a pick opens it there. Split points stay inside
+ * horizon-layout's minimums (a tenth of the width, a fifth of the height), or it renders no dock.
+ */
+export function defaultLayout(narrow = false, fit: LayoutFit = EVERY_VIEW): LayoutConfig {
+	const views = VIEW_PANELS.filter((id) => fit.gates[id] === null);
+	if (fit.kind === 'plain') {
+		return {
+			root: {
+				direction: narrow ? 'vertical' : 'horizontal',
+				views: [tabGroup(['results']), tabGroup(['player'])],
+				splitPoints: [0.6],
+			},
+		};
+	}
 	if (narrow) {
 		return {
 			root: {
 				direction: 'vertical',
-				views: [
-					{ tabs: ['results'], activeTabIndex: 0 },
-					{ tabs: ['player', 'atlas'], activeTabIndex: 0 },
-				],
-				// The most horizon-layout allows: each pane keeps at least a fifth of the height.
-				splitPoints: [0.7],
+				views: [tabGroup(['results']), tabGroup(['player', ...views])],
+				splitPoints: [0.55],
+			},
+		};
+	}
+	if (views.length === 0) {
+		return {
+			root: {
+				direction: 'horizontal',
+				views: [tabGroup(['results']), tabGroup(['player'])],
+				splitPoints: [fit.kind === 'image' ? 0.42 : 0.5],
+			},
+		};
+	}
+	if (fit.kind === 'image') {
+		return {
+			root: {
+				direction: 'horizontal',
+				views: [tabGroup(['results']), tabGroup(['player']), tabGroup(views)],
+				splitPoints: [0.32, 0.7],
 			},
 		};
 	}
@@ -60,17 +122,14 @@ export function defaultLayout(narrow = false): LayoutConfig {
 		root: {
 			direction: 'horizontal',
 			views: [
-				{ tabs: ['results'], activeTabIndex: 0 },
+				tabGroup(['results']),
 				{
 					direction: 'vertical',
-					views: [
-						{ tabs: ['player'], activeTabIndex: 0 },
-						{ tabs: ['atlas'], activeTabIndex: 0 },
-					],
-					splitPoints: [0.5],
+					views: [tabGroup(['player']), tabGroup(views)],
+					splitPoints: [0.45],
 				},
 			],
-			splitPoints: [0.55],
+			splitPoints: [0.48],
 		},
 	};
 }
@@ -176,6 +235,49 @@ export function openPanel(config: LayoutConfig, id: Id, beside?: Id): LayoutConf
 				: group,
 		),
 	};
+}
+
+/** The panels a person sees now: the front tab of every group, every popped-out panel, or the maximized
+ *  one alone. */
+export function shownPanels(config: LayoutConfig): Id[] {
+	if (config.maximizedView) return [config.maximizedView];
+	const fronts = (node: NodeConfig | undefined): Id[] =>
+		node === undefined
+			? []
+			: isSplit(node)
+				? node.views.flatMap((v) => fronts(v))
+				: node.tabs[node.activeTabIndex] !== undefined
+					? [node.tabs[node.activeTabIndex]!]
+					: [];
+	return [...fronts(config.root), ...(config.popouts ?? [])];
+}
+
+/**
+ * Bring `id` in front of the person: a maximized other panel is restored, a tab behind another is
+ * brought to the front of its group, and a closed panel is opened. One already shown is left as it is.
+ */
+export function revealPanel(config: LayoutConfig, id: Id): LayoutConfig {
+	if (shownPanels(config).includes(id)) return config;
+	let next: LayoutConfig = config;
+	if (next.maximizedView !== undefined) {
+		next = { ...next };
+		delete next.maximizedView;
+		if (shownPanels(next).includes(id)) return next;
+	}
+	const { root } = next;
+	if (root === undefined || groupOf(root, id) === undefined) return openPanel(next, id);
+	return {
+		...next,
+		root: mapGroups(root, (g) =>
+			g.tabs.includes(id) ? { ...g, activeTabIndex: g.tabs.indexOf(id) } : g,
+		),
+	};
+}
+
+/** Maximize `id`, opening it first where it is closed. */
+export function maximizePanel(config: LayoutConfig, id: Id): LayoutConfig {
+	const opened = openPanels(config).has(id) ? config : openPanel(config, id);
+	return { ...opened, maximizedView: id };
 }
 
 /** Pop a docked panel out into a window of its own. */

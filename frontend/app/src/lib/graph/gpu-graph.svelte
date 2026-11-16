@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { acquireGpuCanvas } from '#lib/gpu/webgpu.ts';
 	/**
 	 * gpu-graph — a self-contained WebGPU node-link renderer for the KG explorer.
@@ -63,10 +65,15 @@
 
 	let gpuCanvas = $state<HTMLCanvasElement | null>(null);
 	let gpuError = $state<string | null>(null);
+	/** Why the GPU device was lost while drawing; the canvas is set up again on Try again. */
+	let lostDetail = $state<string | null>(null);
 
 	// camera (data coords at canvas centre + device-px per data unit)
 	let center = $state.raw<[number, number]>([0, 0]);
 	let scale = $state(1);
+	/** Whether the camera is still at its fit: a resized canvas (a panel resized, an entity's detail opening
+	 *  beside it) is fitted again, until the reader pans or zooms. */
+	let fitted = true;
 	// a $state counter the marker derivation depends on so the ring tracks ticks
 	let posTick = $state(0);
 
@@ -371,6 +378,7 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 		const h = Math.max(1, height);
 		scale = 0.9 * Math.min((w * dpr) / spanX, (h * dpr) / spanY);
 		center = [(minX + maxX) / 2, (minY + maxY) / 2];
+		fitted = true;
 	}
 
 	let drawRaf = 0;
@@ -474,6 +482,12 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 				return;
 			}
 			device = h.device;
+			// A device lost while drawing (a driver reset, the browser reclaiming the GPU) is said, with a way
+			// to draw again; one this component destroyed on unmount is not.
+			void h.device.lost.then((info) => {
+				if (cancelled || info.reason === 'destroyed') return;
+				lostDetail = info.message || 'the browser gave no reason';
+			});
 			ctx = h.ctx;
 			nodePipeline = h.nodePipeline;
 			edgePipeline = h.edgePipeline;
@@ -568,6 +582,13 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 		requestDraw();
 	});
 
+	// The canvas resized while the camera was at its fit: fit it again.
+	$effect(() => {
+		void width;
+		void height;
+		if (ready && fitted) untrack(() => fit());
+	});
+
 	$effect(() => {
 		void center;
 		void scale;
@@ -612,6 +633,7 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 			if (Math.abs(cx - drag.startX) > CLICK_SLOP || Math.abs(cy - drag.startY) > CLICK_SLOP)
 				drag.moved = true;
 			center = [center[0] - (dxCss * dpr) / scale, center[1] - (dyCss * dpr) / scale];
+			fitted = false;
 			return;
 		}
 		pendingHover = { idx: nearestNode(cx, cy), cx: e.clientX, cy: e.clientY };
@@ -648,6 +670,7 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 		const resW = width * dpr;
 		const resH = height * dpr;
 		scale = next;
+		fitted = false;
 		center = [dx - (cx * dpr - resW * 0.5) / next, dy - (cy * dpr - resH * 0.5) / next];
 	}
 
@@ -657,7 +680,8 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 
 	const markerScreen = $derived.by((): { left: number; top: number } | null => {
 		void posTick;
-		if (markerIndex === null || markerIndex < 0 || markerIndex >= nodeCount) return null;
+		// The props' own length, not the uploaded count: a remounted graph rings its node before its first upload.
+		if (markerIndex === null || markerIndex < 0 || markerIndex >= nodesX.length) return null;
 		const left = ((nodesX[markerIndex]! - center[0]) * scale) / dpr + width / 2;
 		const top = ((nodesY[markerIndex]! - center[1]) * scale) / dpr + height / 2;
 		if (left < -8 || left > width + 8 || top < -8 || top > height + 8) return null;
@@ -668,6 +692,15 @@ fn fsNode(@location(0) rgb : vec3f, @location(1) quad : vec2f,
 {#if gpuError}
 	<div class="text-destructive grid h-full place-items-center p-6 text-center text-sm">
 		{gpuError} — the graph view needs WebGPU.
+	</div>
+{:else if lostDetail}
+	<div class="grid h-full place-items-center p-6">
+		<LoadFailure
+			what="WebGPU stopped drawing the graph: the GPU device was lost."
+			detail={lostDetail}
+			hint="Try again to set the GPU up afresh. If it keeps failing, reload the page."
+			onretry={() => (lostDetail = null)}
+		/>
 	</div>
 {:else}
 	<canvas

@@ -3,8 +3,13 @@
  *
  * In this browser's `localStorage`, one key per signed-in person: `workbench-dock:` and the SHA-256 of
  * the principal's id, so the key never carries the id itself; on a stack that signs nobody in, one
- * fixed key. The value is the last layout and the named views, and nothing else: a layout names only
+ * fixed key. The value is the last layout of each dataset the person arranged (by the dataset's id, the
+ * {@link MAX_LAYOUTS} most recently arranged) and the named views, and nothing else: a layout names only
  * panel ids, a view adds the name the person gave it. No token and no lakehouse data are stored.
+ *
+ * A layout is kept per dataset because the panels a dataset can feed differ: one arranged around a
+ * knowledge graph is not the arrangement a plain table opens with. A named view is the person's across
+ * every dataset, and a panel it names that a dataset cannot feed opens with its reason.
  *
  * Sign-out does not clear it, unlike the activity log (`activity.forget()`): a layout is a preference
  * of the person who signs in on this browser again, while the activity log records what they did.
@@ -17,10 +22,13 @@
  * person resets it.
  */
 import type { LayoutConfig } from 'horizon-layout';
+import type { LayoutStore } from './autosave.ts';
 import { readStoredLayout, type LayoutRead } from './layout.ts';
 
 const PREFIX = 'workbench-dock:';
 const ANONYMOUS = `${PREFIX}local`;
+/** The datasets whose layouts are kept; arranging one more forgets the least recently arranged. */
+export const MAX_LAYOUTS = 50;
 
 /** One saved view. `id` is stable across renames; the sidebar addresses views by it. */
 export interface StoredView {
@@ -36,10 +44,38 @@ export type ViewsRead =
 	| { readonly status: 'ok'; readonly views: StoredView[] }
 	| { readonly status: 'unreadable'; readonly detail: string };
 
-/** The document under the key. `layout` is kept as stored, so writing views never rewrites it. */
+/** The document under the key. Each layout is kept as stored, so writing views never rewrites one. */
 interface Document {
-	layout?: unknown;
+	layouts?: unknown;
 	views?: unknown;
+}
+
+/** One dataset's stored layout. */
+interface StoredLayout {
+	dataset: string;
+	layout: unknown;
+}
+
+const isStoredLayout = (value: unknown): value is StoredLayout =>
+	typeof value === 'object' &&
+	value !== null &&
+	typeof (value as Record<string, unknown>).dataset === 'string' &&
+	'layout' in value;
+
+/** The stored layouts, least recently arranged first: a list, so the order is the list's and no dataset id
+ *  is ever read as an object's key. Anything else stored there is none. */
+function layoutsOf(doc: Document): StoredLayout[] {
+	return Array.isArray(doc.layouts) ? doc.layouts.filter(isStoredLayout) : [];
+}
+
+/** `layouts` with `dataset`'s set to `layout`, moved to the most recent, the oldest beyond the bound dropped. */
+function withLayout(
+	layouts: StoredLayout[],
+	dataset: string,
+	layout: LayoutConfig,
+): StoredLayout[] {
+	const rest = layouts.filter((entry) => entry.dataset !== dataset);
+	return [...rest.slice(-(MAX_LAYOUTS - 1)), { dataset, layout }];
 }
 
 function isView(value: unknown): value is StoredView {
@@ -99,11 +135,12 @@ export class WorkbenchStore {
 		}
 	}
 
-	loadLayout(): LayoutRead {
+	loadLayout(dataset: string): LayoutRead {
 		const read = this.#read();
 		if ('broken' in read) return { status: 'unreadable', detail: read.broken };
-		if (read.doc.layout === undefined) return { status: 'absent' };
-		return readStoredLayout(read.doc.layout);
+		const stored = layoutsOf(read.doc).find((entry) => entry.dataset === dataset);
+		if (stored === undefined) return { status: 'absent' };
+		return readStoredLayout(stored.layout);
 	}
 
 	loadViews(): ViewsRead {
@@ -116,10 +153,13 @@ export class WorkbenchStore {
 		return { status: 'ok', views };
 	}
 
-	/** Store the live layout; the stored views are kept as they are. Refused over a document that is
-	 *  not JSON. */
-	saveLayout(layout: LayoutConfig): boolean {
-		return this.#update((doc) => ({ ...doc, layout }));
+	/** Store `dataset`'s live layout; the other layouts and the views are kept as they are. Refused over
+	 *  a document that is not JSON. */
+	saveLayout(dataset: string, layout: LayoutConfig): boolean {
+		return this.#update((doc) => ({
+			...doc,
+			layouts: withLayout(layoutsOf(doc), dataset, layout),
+		}));
 	}
 
 	/** Store the named views; the stored layout is kept as it is. */
@@ -128,11 +168,23 @@ export class WorkbenchStore {
 	}
 
 	/**
-	 * The person's explicit reset of the layout: the stored layout becomes `layout`. A document that is
-	 * not JSON is replaced whole, its views with it, since nothing in it could be shown.
+	 * The person's explicit reset of `dataset`'s layout: its stored layout becomes `layout`. A document
+	 * that is not JSON is replaced whole, its views with it, since nothing in it could be shown.
 	 */
-	reset(layout: LayoutConfig): boolean {
-		return this.#update((doc) => ({ ...doc, layout }), true);
+	reset(dataset: string, layout: LayoutConfig): boolean {
+		return this.#update(
+			(doc) => ({ ...doc, layouts: withLayout(layoutsOf(doc), dataset, layout) }),
+			true,
+		);
+	}
+
+	/** One dataset's layout, as the autosave reads and writes it. */
+	layoutOf(dataset: string): LayoutStore {
+		return {
+			loadLayout: () => this.loadLayout(dataset),
+			saveLayout: (layout) => this.saveLayout(dataset, layout),
+			reset: (layout) => this.reset(dataset, layout),
+		};
 	}
 
 	/** The person's explicit reset of the named views: none are kept, and the layout stays. */

@@ -415,6 +415,7 @@
 				<Input
 					bind:value={q}
 					type="search"
+					data-dataset-search
 					class="h-8 rounded-lg sm:w-52"
 					placeholder="Keyword — exact words"
 					aria-label="Keyword (FTS)"
@@ -436,6 +437,7 @@
 				<Input
 					bind:value={q}
 					type="search"
+					data-dataset-search
 					class="h-8 flex-1 rounded-lg"
 					placeholder={singlePlaceholder}
 				/>

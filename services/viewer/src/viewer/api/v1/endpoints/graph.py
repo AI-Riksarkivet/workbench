@@ -109,13 +109,6 @@ _OVERVIEW_TYPE_RANK: dict[str, int] = {
 #: read statement). Matched case-insensitively at end-of-query.
 _TRAILING_LIMIT = re.compile(r"(?is)\blimit\s+(\d+)\s*$")
 
-# EntityClip's one non-structural field is the corpus display column the clip
-# query surfaces. Its name is read from the response model at import time so
-# it lives only in service_kit.schemas (this module stays corpus-literal-free);
-# the matching kg-chunks column comes from the descriptor's ``graph_presets``.
-_CLIP_STRUCTURAL_FIELDS = frozenset({"chunk_id", "doc_id", "start", "end", "text"})
-_CLIP_TITLE_FIELD = next(f for f in EntityClip.model_fields if f not in _CLIP_STRUCTURAL_FIELDS)
-
 
 class GraphPresets(BaseModel):
     """Optional ``graph_presets`` extra field on the declared descriptor.
@@ -471,7 +464,7 @@ def _clip(row: dict[str, Any], title_column: str | None) -> EntityClip:
         {
             "chunk_id": str(row["c.chunk_id"]),
             "doc_id": str(row["c.doc_id"]),
-            _CLIP_TITLE_FIELD: str(title or row["c.doc_id"]),
+            "title": str(title or row["c.doc_id"]),
             "start": float(row["c.start_s"]),
             "end": float(row["c.end_s"]),
             "text": str(row.get("c.text") or ""),

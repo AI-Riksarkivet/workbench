@@ -1,40 +1,97 @@
 <script lang="ts">
 	/**
-	 * One dataset: a dock of the workbench's panels over it (Results, Player, Atlas). The arrangement is
-	 * restored once, autosaved after every change, and can be saved as a named view; where both are kept
-	 * is `#lib/dock/store.ts`'s decision alone (this browser, per person).
+	 * One dataset: a dock of the workbench's panels over it (Results, Player, Atlas, Graph, Tree), the
+	 * page's one navigation. The arrangement is the dataset's: restored once, autosaved after every change,
+	 * and can be saved as a named view; where both are kept is `#lib/dock/store.ts`'s decision alone (this
+	 * browser, per person). A dataset never arranged opens with the default that fits it
+	 * (`defaultLayout`): only the panels it can feed (`panelGates`).
 	 *
 	 * Below a tablet's width the dock shows the stacked arrangement instead (`defaultLayout(true)`), from
 	 * the moment the window crosses the breakpoint, whichever way: the person's own arrangement is kept,
 	 * saved and shown again once the window is wide, and the stacked one is never saved over it.
 	 *
+	 * THE ADDRESS IS THE VIEW (`#lib/dock/link.ts`): the search, the topic, the row opened, the graph's
+	 * entity, the panels shown and the one maximized are written into it as they change (replacing the
+	 * history entry, so Back leaves the dataset), and a link or a reload opens on them: the panels it names
+	 * are brought in front over the restored layout.
+	 *
 	 * The page also hosts what every panel shares and none owns: the health poll the search modes read,
 	 * and the keyboard's `/` and Escape.
 	 */
-	import { onMount } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import type { LayoutConfig } from 'horizon-layout';
+	import { navigating, page } from '$app/state';
+	import { resolve } from '$app/paths';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { Button } from '@workbench/ui/button';
 	import { auth } from '#lib/auth.svelte.ts';
 	import Dock from '#lib/dock/Dock.svelte';
+	import { dockControl } from '#lib/dock/dock-control.svelte.ts';
 	import ViewSidebar from '#lib/dock/ViewSidebar.svelte';
-	import { defaultLayout } from '#lib/dock/layout.ts';
+	import {
+		defaultLayout,
+		isPanelId,
+		maximizePanel,
+		revealPanel,
+		shownPanels,
+		type LayoutFit,
+	} from '#lib/dock/layout.ts';
+	import { followLink } from '#lib/dock/follow-link.ts';
+	import { readDockLink, writeDockLink, type DockLink } from '#lib/dock/link.ts';
 	import { startWorkbench, type WorkbenchSession } from '#lib/dock/session.ts';
 	import { openWorkbenchStore } from '#lib/dock/store.ts';
 	import { explore } from '#lib/explore/explore.svelte.ts';
+	import { panelGates } from '#lib/explore/pane-capabilities.ts';
 	import { serviceHealth } from '#lib/explore/service-health.svelte.ts';
+	import { graphExplorer } from '#lib/graph/graph-explorer.svelte.ts';
 	import { titleOf } from '#lib/nav.ts';
 
 	let { data } = $props();
-	const id = $derived(data.id);
+	// The layout mounts this page afresh for each dataset: the id, the dataset's shape and its gates are
+	// read once.
+	// svelte-ignore state_referenced_locally
+	const id = data.id;
 	/** A dataset with no workbench descriptor: the dock holds its plain table (`#lib/plain`). */
-	const isPlain = $derived(data.facts !== null && !data.facts.stamped);
+	// svelte-ignore state_referenced_locally
+	const isPlain = data.facts !== null && !data.facts.stamped;
+	// svelte-ignore state_referenced_locally
+	const view = data.view;
+	const gates = $derived(
+		panelGates(view, {
+			rowTable: view?.searchTable(page.url.searchParams.get('table'))?.row_table ?? null,
+			plain: isPlain,
+		}),
+	);
+	/** What the default layout is fitted to: the dataset's shape and the panels it can feed. */
+	const fit = (): LayoutFit => ({
+		kind: isPlain ? 'plain' : view?.isPlayable && view.hasTime ? 'time' : 'image',
+		gates,
+	});
+	/**
+	 * The link this page opened on. Back or Forward to an entry whose address this page wrote (a shallow entry)
+	 * loads the page at the address it first opened at (`page.url`, which the load followed); the entry's own
+	 * address is `page.shallow.url`, and that is the view to show: it is followed here, over the load's.
+	 */
+	const opened = untrack((): DockLink => {
+		const entry = page.shallow?.url;
+		return entry && view && entry.search !== page.url.search
+			? followLink(view, entry.searchParams)
+			: data.link;
+	});
+
+	/** `base` with the panels a link named brought in front, and the one it maximized maximized. */
+	function withLink(base: LayoutConfig, link: DockLink = opened): LayoutConfig {
+		let next = base;
+		for (const panel of link.panels) next = revealPanel(next, panel);
+		return link.max === null ? next : maximizePanel(next, link.max);
+	}
 
 	let layout = $state<LayoutConfig | null>(null);
 	/** Whether the window is below a tablet's width, followed as it is resized. */
 	const narrow = new MediaQuery('width < 768px');
 	/** What the dock shows while narrow: the stacked arrangement, its edits kept for the page's life only. */
-	let narrowLayout = $state<LayoutConfig>(defaultLayout(true));
+	let narrowLayout = $state<LayoutConfig>(withLink(defaultLayout(true, fit())));
 	let session = $state.raw<WorkbenchSession | null>(null);
 	/** Why the stored layout could not be read; while set, nothing is saved over it. */
 	let unreadable = $state<string | null>(null);
@@ -53,14 +110,25 @@
 			(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 		if (typing) return;
 		if (event.key === '/') {
-			const box = document.querySelector<HTMLInputElement>('input[type="search"]');
-			if (!box) return;
 			event.preventDefault();
-			box.focus();
-			box.select();
+			void focusDatasetSearch();
 		} else if (event.key === 'Escape' && explore.active) {
 			explore.active = null;
 		}
+	}
+
+	/** The dataset's own search box (`data-dataset-search`), never another panel's: the Results (or Rows)
+	 *  panel is brought in front first when it is closed or behind a tab. */
+	async function focusDatasetSearch(): Promise<void> {
+		const find = (): HTMLInputElement | null =>
+			document.querySelector<HTMLInputElement>('input[data-dataset-search]');
+		if (!find()) {
+			dockControl.reveal('results');
+			await tick();
+		}
+		const box = find();
+		box?.focus();
+		box?.select();
 	}
 
 	onMount(() => serviceHealth.subscribe());
@@ -70,6 +138,7 @@
 		const opening = openWorkbenchStore(auth.enabled ? (auth.session?.sub ?? null) : null);
 		void startWorkbench(
 			opening,
+			id,
 			{
 				snapshot: () => (layout ? $state.snapshot(layout) : null),
 				onLayout: (read, wasRefused) => {
@@ -82,7 +151,7 @@
 				started: (started) => {
 					const read = started.restored;
 					unreadable = read.status === 'unreadable' ? read.detail : null;
-					layout = read.status === 'ok' ? read.layout : firstLayout();
+					layout = withLink(read.status === 'ok' ? read.layout : firstLayout());
 					session = started;
 				},
 			},
@@ -123,7 +192,65 @@
 	}
 
 	/** The first visit's arrangement: the wide one, which a narrow window shows stacked meanwhile. */
-	const firstLayout = (): LayoutConfig => defaultLayout();
+	const firstLayout = (): LayoutConfig => defaultLayout(false, fit());
+
+	// A link to this same dataset (an in-app link, or Back and Forward to such a link's entry) does not remount
+	// the page: the panels it names are brought in front once it has landed. The page's own address writes are
+	// shallow `goto`s of what it already shows, and are not followed: one that lands after the layout has
+	// changed again would bring back what the person just put away.
+	afterNavigate((navigation) => {
+		const to = navigation.to?.url;
+		if (navigation.type !== 'link' && navigation.type !== 'popstate') return;
+		if (!to || navigation.from === null || to.pathname !== location.pathname) return;
+		const link = readDockLink(to.searchParams);
+		if (layout !== null) layout = withLink(layout, link);
+		narrowLayout = withLink(narrowLayout, link);
+	});
+
+	// The address follows the view: written once the layout is restored, so the link that opened the page
+	// is read before anything is written over it. An effect, since the address is outside Svelte's state.
+	// Written only while this page's dataset is the one the shared state holds and no navigation is under
+	// way: another dataset's load fills that state before this page unmounts, and writing then would put
+	// that dataset's view into this page's history entry.
+	$effect(() => {
+		const shown = narrow.current ? narrowLayout : layout;
+		if (shown === null || navigating.type !== null) return;
+		if (explore.dataset !== id || (!isPlain && graphExplorer.dataset !== id)) return;
+		const active = explore.active;
+		/** A row a link opened that still waits for its search keeps its place in the address. */
+		const linked = active === null ? explore.linked : null;
+		const time = active && view?.hasTime ? view.time(active) : null;
+		const searched = !isPlain && !explore.voiceActive && explore.mapSelection === null;
+		// The address as it is now (a shallow replace is not a navigation), not as the page opened.
+		const params = writeDockLink(new URLSearchParams(location.search), {
+			q: searched && explore.spec.q ? explore.spec.q : null,
+			mode: searched && explore.spec.q ? (explore.spec.mode ?? null) : null,
+			topic: searched ? (explore.spec.topic ?? null) : null,
+			row:
+				active && view
+					? view.keyFields.map((k) => String(active[k] ?? ''))
+					: linked
+						? [...linked.keys]
+						: null,
+			doc: null,
+			t: time ? time.start : (linked?.t ?? null),
+			entity: isPlain ? null : graphExplorer.selectedId,
+			panels: shownPanels(shown).filter(isPanelId),
+			max:
+				shown.maximizedView !== undefined && isPanelId(shown.maximizedView)
+					? shown.maximizedView
+					: null,
+		});
+		const query = params.toString();
+		if (query === new URLSearchParams(location.search).toString()) return;
+		// The route id is resolved; the query the rule cannot see follows it. A shallow replace: no load runs,
+		// and Back still leaves the dataset.
+		const href = `${resolve('/datasets/[id]', { id: encodeURIComponent(id) })}?${query}${location.hash}`;
+		// oxlint-disable-next-line svelte/no-navigation-without-resolve
+		goto(href, { state: page.state, shallow: true, replace: true }).catch(() => {
+			// Refused only when another navigation overtook it, whose page writes its own address.
+		});
+	});
 
 	/** The person's explicit choice to replace a stored layout that could not be read. */
 	function resetLayout(): void {
@@ -161,14 +288,11 @@
 			</p>
 		{/if}
 		{#if layout}
-			<!-- Each dataset mounts its panels afresh: they read the dataset's view when they mount. -->
-			{#key id}
-				{#if narrow.current}
-					<Dock bind:layout={narrowLayout} plain={isPlain} />
-				{:else}
-					<Dock bind:layout plain={isPlain} />
-				{/if}
-			{/key}
+			{#if narrow.current}
+				<Dock bind:layout={narrowLayout} plain={isPlain} {gates} />
+			{:else}
+				<Dock bind:layout plain={isPlain} {gates} />
+			{/if}
 		{/if}
 	</div>
 </div>

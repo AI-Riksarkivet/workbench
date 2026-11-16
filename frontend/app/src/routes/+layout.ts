@@ -29,7 +29,9 @@ export const load: LayoutLoad = async ({ fetch, url, untrack }) => {
 	const path = untrack(() => url.pathname + url.search);
 	if (path.startsWith('/auth/')) return { authEnabled: auth.enabled, me: null, meError: null };
 	if (auth.enabled && !auth.session) {
-		await login(path);
+		// A load never sees the fragment; the address the browser opened does, and the sign-in round trip
+		// returns to all of it.
+		await login(`${path}${location.hash}`);
 		// A provider that will not sign anyone in to this app's client is said here, not on its own error page.
 		if (auth.configError) error(503, `Sign-in is not configured: ${auth.configError}`);
 		// The browser is leaving for the issuer; render nothing meanwhile.

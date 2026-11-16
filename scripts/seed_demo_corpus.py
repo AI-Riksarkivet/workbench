@@ -16,7 +16,8 @@ declares three (`scripts/local-sources.json`), one of each kind, and this writes
 The two stamped datasets, in one warehouse:
 
 - ``<warehouse>$corpus``: page images. Three volumes of a few pages each, every page a drawn PNG with distinct prose and
-  an FTS index, a thumbnail per volume, and an atlas projection.
+  an FTS index, a thumbnail per volume, an atlas projection, a two-layer topic tree over the pages, and a small knowledge
+  graph of the people, places and works the pages name.
 - ``<warehouse>$recordings``: audio. Three short WAV recordings synthesized here, each a few seconds of two alternating
   voices, cut into timed segments with an FTS index, word alignments (the transcript window) and speaker turns (the
   speakers timeline).
@@ -87,6 +88,7 @@ DOCUMENTS: list[dict] = [
             "Domboken upptager tvist om ägogränser mellan två hemman i socknen.",
             "Avskrift av brev från landshövdingen angående vägarnas underhåll.",
         ],
+        "topics": [("Förvaltning", "Skatt"), ("Förvaltning", "Skatt"), ("Rättskipning", "Ägotvister"), ("Förvaltning", "Vägar")],
     },
     {
         "doc_id": "a7419c0b2d5e8f31",
@@ -96,6 +98,7 @@ DOCUMENTS: list[dict] = [
             "Skeppslistan upptager fjorton fartyg, därav tre från främmande land.",
             "Anteckning om last av salt och järn, samt om besättningens rullor.",
         ],
+        "topics": [("Sjöfart", "Tull"), ("Sjöfart", "Fartyg"), ("Sjöfart", "Last")],
     },
     {
         "doc_id": "b2c8e5417d90a6f4",
@@ -105,7 +108,40 @@ DOCUMENTS: list[dict] = [
             "Protokoll från tinget: nämnden avkunnade dom i tvist om fiskevatten.",
             "Register över parter och vittnen, med hänvisning till Riksarkivet.",
         ],
+        "topics": [("Rättskipning", "Arv och skuld"), ("Rättskipning", "Fiske"), ("Rättskipning", "Register")],
     },
+]
+
+#: Each page's topic, broadest layer first (``topic_l0``, ``topic_l1``: the layer columns the search's topic filter and the
+#: viewer's topic tree read, `client_kit.lancekit.topics_meta`). Every name is unique across the layers, since a topic
+#: filters the rows whose ANY layer names it.
+TOPIC_ROOT = "Ämnen"
+
+#: The page corpus's knowledge graph: each entity's name, type and the pages that mention it (by ``(document index, page)``),
+#: every name a word of those pages' prose, so a search for the name finds them; and the relationships between them. An
+#: entity's id is ``sha1(name)[:16]``, the id the viewer's graph doors take.
+ENTITIES: list[tuple[str, str, list[tuple[int, int]]]] = [
+    ("Riksarkivet", "ORG", [(0, 0), (2, 2)]),
+    ("Landshövdingen", "PERSON", [(0, 3)]),
+    ("Domboken", "WORK", [(0, 2), (2, 0)]),
+    ("Socknen", "GEO", [(0, 2)]),
+    ("Protokoll", "CONCEPT", [(0, 0), (1, 0), (2, 1)]),
+    ("Hamnen", "GEO", [(1, 0)]),
+    ("Sjöfart", "CONCEPT", [(1, 0)]),
+    ("Skeppslistan", "WORK", [(1, 1)]),
+    ("Tinget", "EVENT", [(2, 1)]),
+    ("Nämnden", "ORG", [(2, 1)]),
+]
+RELATIONSHIPS: list[tuple[str, str, str]] = [
+    ("Riksarkivet", "Domboken", "keeps"),
+    ("Riksarkivet", "Protokoll", "keeps"),
+    ("Landshövdingen", "Riksarkivet", "writes to"),
+    ("Domboken", "Socknen", "records a dispute in"),
+    ("Domboken", "Tinget", "records"),
+    ("Nämnden", "Tinget", "sits at"),
+    ("Protokoll", "Sjöfart", "records"),
+    ("Skeppslistan", "Hamnen", "lists the ships in"),
+    ("Sjöfart", "Hamnen", "passes through"),
 ]
 
 #: The audio fixture: three recordings, each a few segments of two speakers taking turns. Each segment is one turn, so
@@ -281,6 +317,8 @@ def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespa
                     "atlas_x": x,
                     "atlas_y": y,
                     "atlas_cluster": doc_index,
+                    "topic_l0": document["topics"][page_no][0],
+                    "topic_l1": document["topics"][page_no][1],
                 }
             )
     # speech_id/chunk_id are INTEGERS: the viewer builds its frame filter with unquoted numeric literals. The page image
@@ -303,6 +341,9 @@ def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespa
             pa.field("atlas_x", pa.float32()),
             pa.field("atlas_y", pa.float32()),
             pa.field("atlas_cluster", pa.int32()),
+            # The topic layers, broadest first: the search's `topic=` filter matches any of them.
+            pa.field("topic_l0", pa.utf8()),
+            pa.field("topic_l1", pa.utf8()),
         ]
     )
     columns = {name: [row[name] for row in rows] for name in chunks.names}
@@ -347,7 +388,8 @@ def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespa
                 "caption": "caption",
                 "metadata": [{"field": "title", "label": "Title"}, {"field": "n_chunks", "label": "Pages"}],
             },
-            "search": {"row_table": "chunks", "fts": {"table": "chunks", "column": "text"}, "filterable": ["doc_id"]},
+            # `topic` is the one filter that matches the topic layers rather than a column of its name.
+            "search": {"row_table": "chunks", "fts": {"table": "chunks", "column": "text"}, "filterable": ["doc_id", "topic"]},
             # The channel colours points by volume, which makes a lasso selection legible as a selection.
             "atlas": [
                 {
@@ -357,14 +399,96 @@ def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespa
                     "y": "atlas_y",
                     "cluster": "atlas_cluster",
                     "source_column": "text",
-                    "channels": [{"name": "volume", "column": "title"}],
+                    "channels": [{"name": "volume", "column": "title"}, {"name": "topic", "column": "topic_l0"}],
                 }
             ],
-            # Declared, not probed: the frames capability is what gives the annotator and the player each page's image.
-            "capabilities": {"frames": "chunks.image"},
+            # Declared, not probed: the frames capability is what gives the annotator and the player each page's image;
+            # `topics` names the topic tree's table and column, `graph` the knowledge graph's entities table, beside
+            # which its chunks, mentions and relationships tables are found by name.
+            "capabilities": {"frames": "chunks.image", "topics": "topics.hierarchy", "graph": "kg_entities"},
+            # The column of the graph's chunks a clip is titled by.
+            "graph_presets": {"clip_title_column": "title"},
         }
     )
+    _seed_topics(client, namespace)
+    _seed_graph(client, namespace)
     _index_and_stamp(client, connection, namespace, "chunks", declared)
+
+
+def _seed_topics(client: LanceNamespace, namespace: list[str]) -> None:
+    """The page corpus's topic tree: the one row the viewer's topics door reads (`layers`, `n_chunks`, and the hierarchy
+    as JSON), each leaf valued by its pages, so the treemap's areas sum to the corpus."""
+    counts: dict[str, dict[str, int]] = {}
+    for document in DOCUMENTS:
+        for broad, fine in document["topics"]:
+            counts.setdefault(broad, {}).setdefault(fine, 0)
+            counts[broad][fine] += 1
+    hierarchy = {
+        "name": TOPIC_ROOT,
+        "children": [{"name": broad, "children": [{"name": fine, "value": n} for fine, n in fines.items()]} for broad, fines in counts.items()],
+    }
+    pages = sum(len(document["pages"]) for document in DOCUMENTS)
+    schema = pa.schema([pa.field("layers", pa.int32()), pa.field("n_chunks", pa.int64()), pa.field("hierarchy", pa.utf8())])
+    row = {"layers": 2, "n_chunks": pages, "hierarchy": json.dumps(hierarchy, ensure_ascii=False)}
+    _fresh_table(client, [*namespace, "topics"], pa.Table.from_pylist([row], schema=schema))
+
+
+def _entity_id(name: str) -> str:
+    return hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:16]
+
+
+def chunk_id(doc_index: int, page_no: int) -> str:
+    """A page's id in the knowledge graph's chunks: its document and its page."""
+    return f"{DOCUMENTS[doc_index]['doc_id']}:{page_no}"
+
+
+def _seed_graph(client: LanceNamespace, namespace: list[str]) -> None:
+    """The page corpus's knowledge graph, as the viewer's graph doors read it: ``kg_entities``, ``kg_chunks`` (one per page,
+    a page having no time span), ``kg_mentions`` (entity → chunk) and ``kg_relationships`` (entity → entity)."""
+    chunks = [
+        {"chunk_id": chunk_id(d, p), "doc_id": document["doc_id"], "start_s": 0.0, "end_s": 0.0, "text": prose, "title": document["title"]}
+        for d, document in enumerate(DOCUMENTS)
+        for p, prose in enumerate(document["pages"])
+    ]
+    entities = [{"entity_id": _entity_id(name), "name": name, "entity_type": kind, "mention_count": len(pages)} for name, kind, pages in ENTITIES]
+    mentions = [{"source_entity_id": _entity_id(name), "target_chunk_id": chunk_id(d, p)} for name, _, pages in ENTITIES for d, p in pages]
+    relationships = [
+        {"source_entity_id": _entity_id(source), "target_entity_id": _entity_id(target), "description": description}
+        for source, target, description in RELATIONSHIPS
+    ]
+    tables = {
+        "kg_entities": (
+            entities,
+            pa.schema(
+                [
+                    pa.field("entity_id", pa.utf8()),
+                    pa.field("name", pa.utf8()),
+                    pa.field("entity_type", pa.utf8()),
+                    pa.field("mention_count", pa.int64()),
+                ]
+            ),
+        ),
+        "kg_chunks": (
+            chunks,
+            pa.schema(
+                [
+                    pa.field("chunk_id", pa.utf8()),
+                    pa.field("doc_id", pa.utf8()),
+                    pa.field("start_s", pa.float64()),
+                    pa.field("end_s", pa.float64()),
+                    pa.field("text", pa.utf8()),
+                    pa.field("title", pa.utf8()),
+                ]
+            ),
+        ),
+        "kg_mentions": (mentions, pa.schema([pa.field("source_entity_id", pa.utf8()), pa.field("target_chunk_id", pa.utf8())])),
+        "kg_relationships": (
+            relationships,
+            pa.schema([pa.field("source_entity_id", pa.utf8()), pa.field("target_entity_id", pa.utf8()), pa.field("description", pa.utf8())]),
+        ),
+    }
+    for name, (rows, schema) in tables.items():
+        _fresh_table(client, [*namespace, name], pa.Table.from_pylist(rows, schema=schema))
 
 
 def seed_recordings(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:

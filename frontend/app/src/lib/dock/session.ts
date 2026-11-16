@@ -1,5 +1,5 @@
 /**
- * The workbench page's setup: open the person's store, restore the layout, list the named views, and
+ * The workbench page's setup: open the person's store, restore the dataset's layout, list the named views, and
  * keep both in step with what is stored while the page lives.
  *
  * A module rather than the page's `onMount`, so the two ways it can go wrong are testable without a
@@ -39,9 +39,11 @@ export interface SessionHooks {
 	started: (session: WorkbenchSession) => void;
 }
 
-/** Start the workbench over the store `opening` resolves to; nothing starts when the page `left` meanwhile. */
+/** Start the workbench for `dataset` over the store `opening` resolves to; nothing starts when the page `left`
+ *  meanwhile. */
 export async function startWorkbench(
 	opening: Promise<WorkbenchStore>,
+	dataset: string,
 	hooks: SessionHooks,
 	left: () => boolean,
 ): Promise<void> {
@@ -49,7 +51,7 @@ export async function startWorkbench(
 	// Nothing to start for a page that is gone: a listener added now would outlive it.
 	if (left()) return;
 
-	const autosave = new LayoutAutosave(store, undefined, (detail) =>
+	const autosave = new LayoutAutosave(store.layoutOf(dataset), undefined, (detail) =>
 		hooks.onLayout({ status: 'unreadable', detail }, false),
 	);
 	const restored = autosave.restore();

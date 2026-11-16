@@ -55,7 +55,8 @@ class EntityClip(BaseModel):
 
     chunk_id: str
     doc_id: str
-    namn: str
+    #: What the clip is titled by: the graph chunks' column `graph_presets.clip_title_column` names, else the doc id.
+    title: str
     start: float
     end: float
     text: str

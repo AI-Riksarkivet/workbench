@@ -170,7 +170,7 @@ for (const shape of ['keycloak', 'dex'] as const) {
 			await expect(page.getByRole('link', { name: /acme\$letters/ })).toBeVisible();
 			await expect.poll(() => grantsOf(page, who), { timeout: 15_000 }).toContain('refresh_token');
 			await page.getByRole('link', { name: /acme\$letters/ }).click();
-			await expect(page.getByRole('navigation', { name: 'Dataset pages' })).toBeVisible();
+			await expect(page.getByRole('region', { name: 'Player' })).toBeVisible();
 			expect(
 				(await grantsOf(page, who)).filter((grant) => grant === 'authorization_code'),
 			).toHaveLength(1);

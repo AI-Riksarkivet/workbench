@@ -40,7 +40,7 @@ test('the atlas draws its points under the CSP, revalidates them by ETag, and a 
 	const who = person('Grace');
 	await signIn(context, who);
 	const violations = await watchCsp(page);
-	await page.goto('/datasets/lake~acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters?max=atlas');
 
 	await expect(page.getByText('60 pts')).toBeVisible();
 	const canvas = page.locator('canvas').first();
@@ -107,7 +107,7 @@ test('the atlas fits its points in the area its toolbar and status bar leave fre
 	context,
 }) => {
 	await signIn(context, person('Grace'));
-	await page.goto('/datasets/lake~acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters?max=atlas');
 	await expect(page.getByText('60 pts')).toBeVisible();
 	const canvas = page.locator('canvas').first();
 	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
@@ -169,13 +169,129 @@ test('the graph draws its entities under the CSP, and a node’s panel re-centre
 	const canvas = page.locator('canvas').first();
 	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
 
-	await page.getByRole('searchbox', { name: 'Search entities' }).fill('fleet');
-	await page.getByRole('button', { name: /The fleet/ }).click();
+	await page.getByRole('combobox', { name: 'Search entities' }).fill('fleet');
+	await page.getByRole('option', { name: /The fleet/ }).click();
 	const panel = page.getByRole('complementary', { name: 'The fleet' });
 	await panel.getByRole('button', { name: 'to The harbour', exact: true }).click();
 	await expect(page.getByRole('complementary', { name: 'The harbour', exact: true })).toBeVisible();
 	await expect(page.getByRole('navigation', { name: 'Graph trail' })).toContainText('The harbour');
+	// At the panel's default width the entity's detail sits below the graph, once the canvas has taken the
+	// height the detail leaves it, and the graph stays drawn above it: its nodes are coloured pixels anywhere on
+	// the canvas above the legend (the canvas is short, so its middle alone may fall between nodes).
+	const detail = page.getByRole('complementary', { name: 'The harbour', exact: true });
+	await expect
+		.poll(async () => {
+			const [g, d] = [await canvas.boundingBox(), await detail.boundingBox()];
+			return g !== null && d !== null && g.y + g.height <= d.y + 1;
+		})
+		.toBe(true);
+	const graph = (await canvas.boundingBox())!;
+	const nodes = {
+		x: graph.x,
+		y: graph.y,
+		width: graph.width,
+		height: Math.max(1, graph.height - 64),
+	};
+	await expect.poll(() => colouredIn(page, nodes)).toBeGreaterThan(100);
 	expect(await violations()).toEqual([]);
+});
+
+test('a maximized graph stays maximized when an entity is picked, beside its detail and the rows naming it', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Barbara'));
+	// Wide enough for the graph, its detail and the rows side by side, as a maximized page on a desktop.
+	await page.setViewportSize({ width: 1600, height: 900 });
+	await page.goto('/datasets/lake~acme%24letters?max=graph');
+	const canvas = page.locator('canvas').first();
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+
+	await page.getByRole('combobox', { name: 'Search entities' }).fill('harbour master');
+	await page.getByRole('option', { name: /The harbour master/ }).click();
+	await expect(page.getByRole('complementary', { name: 'The harbour master' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Restore' })).toBeVisible();
+	const rows = page.getByRole('region', { name: 'The harbour master' });
+	await expect(
+		rows.getByRole('list', { name: 'Search results' }).getByRole('listitem'),
+	).toHaveCount(1);
+	// Wide, the detail is beside the graph, which is still drawn.
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+	const graph = (await canvas.boundingBox())!;
+	const detail = (await page
+		.getByRole('complementary', { name: 'The harbour master' })
+		.boundingBox())!;
+	expect(graph.x + graph.width).toBeLessThanOrEqual(detail.x + 1);
+	await expect(page).toHaveURL(/max=graph/);
+});
+
+test('a dataset in a read-only source offers no send: each send control says why', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	const why = "source 'scans' is read-only: only a rask lakehouse's datasets are annotated";
+	await page.route('**/api/viewer/api/datasets/lake~acme%24letters', async (route) => {
+		const answer = await route.fetch();
+		await route.fulfill({
+			response: answer,
+			json: { ...(await answer.json()), source: 'scans', kind: 'tables', read_only: why },
+		});
+	});
+	await page.goto('/datasets/lake~acme%24letters');
+	await page.getByRole('searchbox', { name: /this dataset/ }).fill('harbour');
+	await page.getByRole('button', { name: 'Search', exact: true }).click();
+	const send = page.getByRole('button', { name: 'Send to a project' });
+	await expect(send).toHaveAccessibleDescription(why);
+	await send.click({ force: true });
+	await expect(page.getByTestId('send-to-project')).toHaveCount(0);
+
+	await page.getByRole('button', { name: 'Maximize Atlas' }).click();
+	await expect(page.getByText('60 pts')).toBeVisible();
+	await page.getByRole('button', { name: /^Select cluster #0, / }).click();
+	await expect(page.getByRole('button', { name: 'Send to a project' })).toHaveAccessibleDescription(
+		why,
+	);
+});
+
+test('a GPU device lost while drawing says so, and Try again draws again', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Grace'));
+	// The browser loses a device on its own (a driver reset); the test stands in for it with the device's own
+	// `lost` promise.
+	await page.addInitScript(() => {
+		const gpu = navigator.gpu;
+		if (!gpu) return;
+		const requestAdapter = gpu.requestAdapter.bind(gpu);
+		gpu.requestAdapter = async (options) => {
+			const adapter = await requestAdapter(options);
+			if (!adapter) return adapter;
+			const requestDevice = adapter.requestDevice.bind(adapter);
+			adapter.requestDevice = async (descriptor) => {
+				const device = await requestDevice(descriptor);
+				let lose: (info: GPUDeviceLostInfo) => void = () => {};
+				const lost = new Promise<GPUDeviceLostInfo>((done) => (lose = done));
+				Object.defineProperty(device, 'lost', { value: lost });
+				(window as unknown as { __lose: () => void }).__lose = () =>
+					lose({ reason: 'unknown', message: 'the driver was reset' } as GPUDeviceLostInfo);
+				return device;
+			};
+			return adapter;
+		};
+	});
+	await page.goto('/datasets/lake~acme%24letters?panel=graph');
+	const canvas = page.locator('canvas').first();
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+
+	await page.evaluate(() => (window as unknown as { __lose: () => void }).__lose());
+	await expect(page.getByRole('alert')).toHaveText(
+		'WebGPU stopped drawing the graph: the GPU device was lost.',
+	);
+	await expect(page.getByText('Details: the driver was reset')).toBeVisible();
+	await page.getByRole('button', { name: 'Try again' }).click();
+	await expect.poll(() => drawnPixels(page, page.locator('canvas').first())).toBeGreaterThan(100);
 });
 
 test('another dataset’s atlas draws that dataset’s points, read for it', async ({
@@ -184,11 +300,11 @@ test('another dataset’s atlas draws that dataset’s points, read for it', asy
 }) => {
 	const who = person('Margaret');
 	await signIn(context, who);
-	await page.goto('/datasets/lake~acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters?panel=atlas');
 	await expect(page.getByText('60 pts')).toBeVisible();
 
 	// Straight from one dataset's atlas to another's, client-side, inside the dataset layout.
-	await gotoInPage(page, '/datasets/lake~acme%24maps/atlas');
+	await gotoInPage(page, '/datasets/lake~acme%24maps?panel=atlas');
 	await expect(page.getByText('24 pts')).toBeVisible();
 	const points = (await callsOf(page, who)).filter((c) => c.path === '/api/atlas/points');
 	expect(points.at(-1)?.query).toContain('dataset=lake%7Eacme%24maps');
@@ -199,7 +315,7 @@ test('a cluster hidden on the map keeps its legend row legible (WCAG 2.2 1.4.3)'
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/lake~acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters?max=atlas');
 	const hide = page.getByRole('button', { name: 'Hide cluster #0 on the map' });
 	await hide.click();
 	await expect(hide).toHaveAttribute('aria-pressed', 'true');
@@ -277,7 +393,7 @@ async function gotoInPage(page: Page, path: string): Promise<void> {
 		document.body.append(link);
 		link.click();
 	}, path);
-	await page.waitForURL(`**${path}`);
+	await page.waitForURL((url) => `${url.pathname}${url.search}`.startsWith(path.split('?')[0]!));
 	expect(
 		await page.evaluate(() => (window as unknown as { __sameDocument?: boolean }).__sameDocument),
 	).toBe(true);
@@ -289,7 +405,7 @@ test('an atlas selection is sent to a project whole, each item from the dataset 
 }) => {
 	const who = person('Annotator');
 	await signIn(context, who);
-	await page.goto('/datasets/lake~acme%24letters/atlas?project=letters');
+	await page.goto('/datasets/lake~acme%24letters?project=letters&max=atlas');
 	await expect(page.getByText('60 pts')).toBeVisible();
 	await page.getByRole('button', { name: 'Select cluster #0, 20 points' }).click();
 	await expect(page.getByRole('status').filter({ hasText: '20 rows' })).toBeVisible();
@@ -314,4 +430,82 @@ test('an atlas selection is sent to a project whole, each item from the dataset 
 	).toBe(true);
 	await expect(dialog.getByTestId('send-done')).toContainText(`Sent ${items.length} items`);
 	expect((await callsOf(page, who)).filter((call) => call.refused !== undefined)).toEqual([]);
+});
+
+test('a panel opened and closed again and again draws each time and releases its GPU device', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Grace'));
+	// Count the devices the page creates and the ones it destroys: the browser caps the WebGPU contexts a page
+	// may hold, so a panel that kept its device would stop drawing after a few openings.
+	await page.addInitScript(() => {
+		const gpu = navigator.gpu;
+		if (!gpu) return;
+		const count = { created: 0, destroyed: 0 };
+		(window as unknown as { __devices: typeof count }).__devices = count;
+		const requestAdapter = gpu.requestAdapter.bind(gpu);
+		gpu.requestAdapter = async (options) => {
+			const adapter = await requestAdapter(options);
+			if (!adapter) return adapter;
+			const requestDevice = adapter.requestDevice.bind(adapter);
+			adapter.requestDevice = async (descriptor) => {
+				const device = await requestDevice(descriptor);
+				count.created += 1;
+				const destroy = device.destroy.bind(device);
+				device.destroy = () => {
+					count.destroyed += 1;
+					destroy();
+				};
+				return device;
+			};
+			return adapter;
+		};
+	});
+	const live = () =>
+		page.evaluate(() => {
+			const count = (window as unknown as { __devices: { created: number; destroyed: number } })
+				.__devices;
+			return count.created - count.destroyed;
+		});
+	const tab = (name: string) => page.getByRole('tab', { name: new RegExp(`^${name}`) });
+
+	await page.goto('/datasets/lake~acme%24letters?panel=graph');
+	const canvas = page.locator('canvas').first();
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+	const drawing = await live();
+	expect(drawing).toBeGreaterThan(0);
+
+	for (let i = 0; i < 4; i++) {
+		await tab('Atlas').click();
+		await expect(page.getByText('60 pts')).toBeVisible();
+		await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+		await tab('Graph').click();
+		await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+		await expect.poll(live).toBe(drawing);
+	}
+	// Maximized and restored, it draws again on the one device it holds.
+	await page.getByRole('button', { name: 'Maximize Graph' }).click();
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+	await page.getByRole('button', { name: 'Restore' }).click();
+	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
+	await expect.poll(live).toBe(drawing);
+
+	// Popped out into a window of its own it draws there, and closing the window brings it back to the dock,
+	// still on one device.
+	const popup = page.waitForEvent('popup');
+	await page.getByRole('button', { name: 'Pop out Graph' }).click();
+	const window = await popup;
+	await expect
+		.poll(() => drawnPixels(window, window.locator('canvas').first()))
+		.toBeGreaterThan(100);
+	await expect.poll(live).toBe(drawing);
+	await window.close();
+	await expect(tab('Graph')).toBeVisible();
+	await expect.poll(live).toBe(drawing);
+
+	await page.getByRole('button', { name: 'Close Graph' }).click();
+	await page.getByRole('button', { name: 'Close Atlas' }).click();
+	await expect(page.getByRole('tab', { name: /^(Graph|Atlas)/ })).toHaveCount(0);
+	await expect.poll(live).toBe(drawing - 1);
 });

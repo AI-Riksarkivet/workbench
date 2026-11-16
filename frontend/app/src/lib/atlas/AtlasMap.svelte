@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * AtlasMap — the dataset's embedding map: the dock's Atlas panel and the `/datasets/[id]/atlas` page.
+	 * AtlasMap — the dataset's embedding map, drawn by the dock's Atlas panel.
 	 *
 	 * Renders a custom WebGPU point scatter (<GpuScatter>) over Float32Array x/y
 	 * for the CURRENT projection space. The renderer draws instanced quads shaded
@@ -31,6 +31,7 @@
 	import {
 		ATLAS_PALETTE,
 		NOISE_ALPHA,
+		DIM_ALPHA,
 		hexToRgb,
 		hueRgb,
 		buildHuePalette,
@@ -95,11 +96,12 @@
 	let statusH = $state(0);
 	const OVERLAY_EDGE = 12;
 	const OVERLAY_CLEAR = 8;
+	// The sides keep the same margin an overlay's edge does, so no point is fitted against the panel's border.
 	const fitInsets = $derived({
 		top: toolbarH > 0 ? toolbarH + OVERLAY_EDGE + OVERLAY_CLEAR : 0,
-		right: 0,
+		right: OVERLAY_EDGE + OVERLAY_CLEAR,
 		bottom: statusH > 0 ? statusH + OVERLAY_EDGE + OVERLAY_CLEAR : 0,
-		left: 0,
+		left: OVERLAY_EDGE + OVERLAY_CLEAR,
 	});
 	let fitBounds = $state.raw<{ minX: number; minY: number; maxX: number; maxY: number }>({
 		minX: 0,
@@ -110,7 +112,7 @@
 	let grid = $state.raw<SpatialGrid | null>(null); // uniform bucket index for hover
 
 	let pointSize = $state(0); // 0 = auto
-	let filterAlpha = $state(8); // 0..120 — opacity of EXCLUDED points (search-filtered OR lasso-not-selected)
+	let filterAlpha = $state(DIM_ALPHA); // 0..160 — opacity of EXCLUDED points (search-filtered OR lasso-not-selected)
 	// Derived straight from the store — the selection is also cleared OUTSIDE this
 	// component (routes/+page, the workflow Atlas modal), so a manual copy desyncs.
 	const selectionCount = $derived(crossFilter.selectedIds.size);
@@ -179,8 +181,10 @@
 			// Compute the data extent from the SAME decoded f32 so GpuScatter's fit
 			// lines up with the f16 GPU positions (both derive from these bits).
 			fitBounds = boundsOf(xs, ys);
-			crossFilter.resetForSpace(buildKeyIndex(p));
-			onSelectionHits?.([], 0);
+			crossFilter.resetForSpace(buildKeyIndex(p), `${view.id}\u0000${space}`);
+			// A selection the same points kept is listed again; a new universe starts with none.
+			if (crossFilter.hasSelection) void loadTableForIndices([...crossFilter.selectedIds]);
+			else onSelectionHits?.([], 0);
 		} catch (e) {
 			pts = null;
 			x = null;
@@ -842,7 +846,7 @@
 								<input
 									type="range"
 									min="0"
-									max="120"
+									max="160"
 									step="1"
 									bind:value={filterAlpha}
 									class="accent-primary w-full"

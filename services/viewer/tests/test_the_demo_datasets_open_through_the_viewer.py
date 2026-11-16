@@ -2,8 +2,9 @@
 
 `scripts/seed_demo_corpus.py` is what a person runs before they open the app (`make local`), so what it writes is held
 to what the viewer serves: seeded into a directory catalog under ``tmp_path`` and read back through the viewer app over
-HTTP, both datasets list, the page corpus signs and serves its frame, its cover and its thumbnail, and the recordings
-serve their WAV, their timed segments with word alignments, and their speaker turns.
+HTTP, both datasets list, the page corpus signs and serves its frame, its cover and its thumbnail and answers its topic
+tree and its knowledge graph (an entity's clips and neighbours), and the recordings serve their WAV, their timed segments
+with word alignments, and their speaker turns.
 """
 
 from __future__ import annotations
@@ -50,6 +51,10 @@ def test_the_seeded_pages_and_recordings_open_as_the_player_reads_them(tmp_path:
         audio = _signed(client, recordings, {"role": "media", "doc_id": "c41f0e2a9b7d3e15"})
         chunks = client.get("/api/doc-chunks/c41f0e2a9b7d3e15", params={"dataset": recordings}).json()["chunks"]
         turns = client.get("/api/diarization/c41f0e2a9b7d3e15", params={"dataset": recordings}).json()
+        topics = client.get("/api/topics", params={"dataset": pages}).json()
+        graph = client.get("/api/graph/status", params={"dataset": pages}).json()
+        [archive] = client.get("/api/graph/search", params={"dataset": pages, "q": "riksarkiv"}).json()["matches"]
+        entity = client.get(f"/api/graph/entity/{archive['entity_id']}", params={"dataset": pages}).json()
 
     assert listed == ["lake~demo$corpus", "lake~demo$recordings"]
     kinds = {d: (r.status_code, r.json().get("declared", {}).get("document", {}).get("kind")) for d, r in described.items()}
@@ -59,3 +64,11 @@ def test_the_seeded_pages_and_recordings_open_as_the_player_reads_them(tmp_path:
     assert (audio[0], audio[1], audio[2][:4], audio[2][8:12]) == (200, "audio/wav", b"RIFF", b"WAVE")
     assert [(c["chunk_id"], c["start"], c["end"], len(c["alignments"])) for c in chunks] == [(0, 0.0, 2.0, 1), (1, 2.0, 4.0, 1), (2, 4.0, 6.0, 1)]
     assert (turns["built"], turns["speakers"]) == (True, ["Speaker A", "Speaker B"])
+    assert (topics["built"], topics["layers"], topics["n_chunks"]) == (True, 2, 10)
+    assert [t["name"] for t in topics["hierarchy"]["children"]] == ["Förvaltning", "Rättskipning", "Sjöfart"]
+    assert (graph["built"], graph["entities"], graph["relations"], graph["videos"]) == (True, 10, 9, 3)
+    assert [(c["doc_id"], c["title"]) for c in entity["clips"]] == [
+        ("b2c8e5417d90a6f4", "Domboksregister 1688"),
+        ("fe00cd746463ad2c", "Landskapshandlingar 1663"),
+    ]
+    assert sorted((n["name"], n["direction"]) for n in entity["neighbors"]) == [("Domboken", "out"), ("Landshövdingen", "in"), ("Protokoll", "out")]

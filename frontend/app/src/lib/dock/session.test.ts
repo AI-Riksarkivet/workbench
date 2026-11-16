@@ -28,6 +28,7 @@ async function start(
 	const held: WorkbenchSession[] = [];
 	await startWorkbench(
 		opening,
+		'lake~acme$letters',
 		{ snapshot: () => defaultLayout(), onLayout, started: (session) => held.push(session) },
 		left,
 	);
@@ -62,6 +63,7 @@ describe('starting the workbench', () => {
 
 		await startWorkbench(
 			Promise.resolve(store),
+			'lake~acme$letters',
 			{
 				snapshot: () => defaultLayout(),
 				onLayout: () => {},
