@@ -1,11 +1,80 @@
-# The local estate's settings, the ones deploy/values-local.yaml gives rask: API docs on (rask's `docs.enabled`).
+# The development estate's settings: the workbench beside the dev estate's rask release (k3s, Traefik's Gateway, the dev
+# Dex), in a namespace of its own (`workbench`), reached at http://workbench.localhost:8080 through the same port-forward
+# to the Gateway that reaches rask's console at http://localhost:8080. NOT FOR PRODUCTION.
+#
+# The dev Dex binds no token and exchanges none of its own (its discovery read 2026-11-16 advertises no
+# `dpop_signing_alg_values_supported`; its token-exchange grant takes only an upstream connector's token), so the app
+# asks for the lakehouse's audience beside its own (Dex's cross-client scope, which rask's audience client issues to
+# every client in the fixture's `clients`, `dex-client.yaml`), the token is a bearer, and the services pass it on.
 docs: true
-# The Gateway deploy/values-local.yaml attaches rask's routes to: Traefik's on k3s.
+# The Gateway rask's routes attach to (rask's deploy/values-local.yaml), under a hostname of the workbench's own: rask's
+# console holds `/` with no hostname, and a route naming a hostname wins over it (Gateway API's precedence).
 route:
   parentRefs: [{name: traefik-gateway, namespace: kube-system, sectionName: web}]
+  hostnames: [workbench.localhost]
 # The Gateway's data plane runs in the k3s pod CIDR, as rask's `forwardedAllowIps` in deploy/values-local.yaml.
 forwardedAllowIps: 10.42.0.0/16
-# The ray-cluster fixture's head and Serve ingress (`rask-ray-head-svc`), for assist producer discovery.
-serve:
-  discoveryUrl: http://rask-ray-head-svc:8265
-  proxyUrl: http://rask-ray-head-svc:8265
+# rask's names, reached across namespaces by their Service's namespace-qualified name.
+rask:
+  release: rask
+catalog:
+  url: http://rask-catalog.default.svc:2333
+otel:
+  endpoint: http://rask-otel-collector.default.svc:4318
+  environment: dev
+image:
+  repository: localhost:5000/workbench-annotator
+media:
+  image:
+    repository: localhost:5000/workbench-media
+  viewer:
+    mediaUrlKey:
+      name: workbench-media-url-key
+auth:
+  oidc:
+    # The dev Dex's issuer as the browser reaches it, and where the pods fetch its discovery and keys in-cluster.
+    issuer: http://localhost:8080/dex
+    discoveryUrl: http://rask-dex.default.svc:5556/dex
+    # Under Dex, the app's own client id: Dex adds the requesting client to every cross-client token's `aud`.
+    audience: workbench-app
+    # As rask names the dev Dex's people (rask's `auth.oidc.idpId` and `connectors` with `dex.enabled`).
+    idpId: dex
+    connectors: { local: dex }
+    publicOrigin: http://workbench.localhost:8080
+    dpopRequired: false
+    client:
+      id: workbench-services
+      secret:
+        name: workbench-oidc-client
+  lakehouse:
+    audience: rask-lakehouse
+    audienceScope: audience:server:client_id:rask-lakehouse
+    delegation: forward
+  fga:
+    apiUrl: http://workbench-openfga:8080
+    credential:
+      name: workbench-openfga-key
+    # The dev Dex's alice (rask's estate admin, `scripts/dex_principal.py` in rask) administers `acme`.
+    orgs:
+      acme:
+        admins: [dex~08a8684b-db88-4b73-90a9-3cd1661f5466]
+        members: [dex~1b6e2f5a-7c4d-4e9b-9f1a-2d3c4b5a6e7f]
+dev:
+  secrets:
+    enabled: true
+    # The same development-only literal `dex-client.yaml` gives the dev Dex for `workbench-services`.
+    oidcClientSecret: workbench-services-dev-secret
+app:
+  image:
+    repository: localhost:5000/workbench-app
+  oidc:
+    scopes: [openid, profile, email, offline_access, federated:id, "audience:server:client_id:rask-lakehouse"]
+networkPolicy:
+  enabled: true
+  # The API server as a policy sees it, after the Service's translation: the node's address, port 6443 (the dev
+  # estate's `kubernetes` endpoints, read 2026-11-16).
+  apiServerEgress:
+    - to:
+        - ipBlock: { cidr: 10.16.51.55/32 }
+      ports:
+        - { protocol: TCP, port: 6443 }

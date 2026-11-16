@@ -103,8 +103,11 @@ otel:
   environment: rask
 
 # Sign-in and authorization, the workbench's own. Every request names a person the platform's OIDC provider vouched for,
-# in a DPoP-bound token addressed to the workbench's own audience; what they may do is the workbench's own OpenFGA store.
-# Off (a local stack only), the annotator answers anonymously and every check allows, and it says so at startup
+# in a token addressed to the workbench's own audience; what they may do is the workbench's own OpenFGA store. Any OIDC
+# provider: where it binds tokens with DPoP and exchanges its own tokens (RFC 8693, Keycloak), the person's token is
+# DPoP-bound and exchanged for the lakehouse's audience; where it does neither (Dex), the sign-in asks for the
+# lakehouse's audience too (`app.oidc.scopes`), the token is a bearer, and the services pass it on.
+# Off (a local stack only), every service answers anonymously and every check allows, and says so at startup
 # (WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED); a production install leaves it on.
 auth:
   enabled: true
@@ -115,26 +118,56 @@ auth:
     issuer: ""
     # Where discovery and the key set are fetched when that differs from the issuer (a provider behind a proxy).
     discoveryUrl: ""
-    # The workbench's own audience, which its public sign-in client requests. A token addressed to anything else,
-    # the lakehouse's among them, is refused.
+    # The workbench's own audience: a token addressed to anything else is refused. Keycloak: the audience its mapper
+    # adds; Dex: the app's public client id (`app.oidc.clientId`), the one audience no other client's token names.
     audience: workbench
-    # The idp id the provider's subjects are principals of (`<idp-id>~<sub>`). Required.
+    # The idp id the provider's people are principals of (`<idp-id>~<subject>`), the lakehouse's for the same issuer
+    # (rask's `auth.oidc.idpId`), so a grant in either names the same person. Required.
     idpId: ""
-    # The URL the browser addresses this service by, which each DPoP proof's `htu` names: the public origin and this
-    # release's route prefix (`route.prefix`), e.g. `https://workbench.example/api/annotator`. Required.
-    publicUrl: ""
+    # The claims a person's subject is read from, the first carried winning; empty is `sub` (rask's `subjectClaims`).
+    subjectClaims: []
+    # The idp id each Dex connector's people are principals of (rask's `auth.oidc.connectors`; the dev Dex's `local` is
+    # `dex`). Under it the app asks for `federated:id`, and `subjectClaims` is never read.
+    connectors: {}
+    # How the issuer marks a token its client was issued for itself, which names no person (rask's `clientMarker`).
+    clientMarker: {}
+    # Further issuers people sign in at, each `{issuer, idp_id, discovery_url, subject_claims, connectors,
+    # client_marker, allow_insecure, lakehouse}` (rask's `auth.oidc.providers`, plus the two the workbench needs):
+    # `allow_insecure` admits an http issuer, for a development provider only; `lakehouse` is how its people's reads
+    # reach the lakehouse, `{delegation: exchange, client_id, client_secret_file, audience_scope}` (a token is only ever
+    # exchanged at the issuer that signed it, by the client named for it there) or `{delegation: forward}`; without it,
+    # its people's lakehouse reads are refused.
+    providers: []
+    # The origin the browser addresses the workbench by (`https://workbench.example`): each service's public URL is it
+    # and the service's route prefix, which a DPoP proof's `htu` names. Required.
+    publicOrigin: ""
+    # Whether every token must come with a DPoP proof. Keep it on wherever the provider binds tokens (its discovery
+    # advertises `dpop_signing_alg_values_supported`); off only for one that binds none (Dex), and then a bearer is
+    # accepted only when it names no key.
+    dpopRequired: true
     # How far a DPoP proof's `iat` may lie from now, and how long its `jti` is remembered against a replay.
     dpopWindowSeconds: 60
     # The workbench's confidential client at the provider: it exchanges a person's token for one addressed to the
-    # lakehouse (RFC 8693) and takes its own for the writes it makes as itself. Its secret is mounted from a Secret.
+    # lakehouse (where `auth.lakehouse.delegation` is exchange) and takes its own for the writes it makes as itself.
+    # Its secret is mounted from a Secret.
     client:
       id: workbench-services
       secret:
         # The Secret holding the client's secret, which the platform's secret operator provides. Required.
         name: ""
         key: client-secret
-  # The lakehouse's audience: the audience of every token the annotator asks the provider for. Required.
-  lakehouseAudience: ""
+  # The lakehouse, as the services reach it.
+  lakehouse:
+    # The lakehouse's audience (rask's `auth.oidc.audience`): the audience of every token the services present to it.
+    # Required.
+    audience: ""
+    # The scope the workbench's own client asks for to be issued a token for that audience, where the provider reads
+    # the audience from a scope (Dex: `audience:server:client_id:<audience>`); empty asks with the `audience` parameter.
+    audienceScope: ""
+    # How a person's read reaches the lakehouse: `exchange` (RFC 8693 at the provider, which must exchange its own
+    # tokens: Keycloak) or `forward` (the person's token, which the sign-in asked for the lakehouse's audience too, is
+    # passed on unchanged: Dex). `forward` needs `auth.oidc.dpopRequired: false`.
+    delegation: exchange
   # The lakehouse namespace holding the workbench's annotation tables (`<warehouse>$<namespace>`), which the workbench's
   # own identity is granted to write in the lakehouse: one table per (project, dataset).
   annotationsNamespace: workbench$annotations
@@ -183,9 +216,9 @@ resources:
 
 # The workbench app: the one browser-only single-page app (`frontend/app`, the `frontend` image), a Deployment that
 # serves only static files, published at `/` on the same Gateway. It signs people in with PKCE on the workbench's own
-# public client at the platform's OIDC provider, binds their tokens to the tab with DPoP, and calls every service
-# same-origin. Its `/config.json` is a ConfigMap rendered from these values and `auth`: with `auth.enabled` off it says
-# `{"signIn": false}`.
+# public client at the platform's OIDC provider, binds their tokens to the tab with DPoP where the provider's discovery
+# offers it, and calls every service same-origin. Its `/config.json` is a ConfigMap rendered from these values and
+# `auth`: with `auth.enabled` off it says `{"signIn": false}`.
 app:
   enabled: true
   image:
@@ -194,16 +227,58 @@ app:
     pullPolicy: IfNotPresent
   replicas: 1
   port: 3000
-  # The workbench's own PUBLIC client at the provider (no secret): authorization code with PKCE, DPoP-bound tokens.
+  # The workbench's own PUBLIC client at the provider (no secret): authorization code with PKCE.
   oidc:
     clientId: workbench-app
-    # The workbench's audience reaches the token through the provider's client scopes (Keycloak's audience mapper).
+    # What the sign-in asks for. Keycloak: the workbench's audience reaches the token through its client scopes (an
+    # audience mapper). Dex: add `offline_access` (a refresh token to renew with), `federated:id` (under
+    # `auth.oidc.connectors`) and `audience:server:client_id:<lakehouse audience>` (the lakehouse's audience, which
+    # its audience client issues to a client it trusts).
     scopes: [openid, profile, email]
-  # The public bases of the services this chart does not deploy, as their own releases publish them. The annotator's
-  # is `route.prefix`.
-  services:
-    viewer: /api/viewer
-    search: /api/search
+    # Whether the app binds its tokens with DPoP: `required` (it signs in only at a provider whose discovery offers
+    # DPoP), `offered` (where offered, else a bearer) or `off`. Empty takes the services' rule: `required` under
+    # `auth.oidc.dpopRequired`, which refuses any other, and `offered` otherwise.
+    dpop: ""
   resources:
     requests: { cpu: 10m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
+
+# DEVELOPMENT ONLY: the Secrets the release mounts, made in the cluster rather than by hand, so an install from git is
+# complete (`templates/dev-secrets.yaml`). Off, the release names Secrets the platform provides (`auth.oidc.client.secret`,
+# `media.viewer.mediaUrlKey`, `auth.fga.credential`), and git holds none of their values.
+dev:
+  secrets:
+    enabled: false
+    # The workbench's confidential client's secret, as the development identity provider declares the same client: a
+    # development-only literal, as rask's Dex fixture declares its own machine clients'. Never set in production.
+    oidcClientSecret: ""
+
+# The viewer and search (`services/viewer`, `services/search`, the `media` image): each reads datasets through the
+# catalog's doors as the person, and the viewer signs media links with its key. Each is published at its own prefix on
+# the same Gateway, rewritten to the service's root.
+media:
+  image:
+    repository: media
+    tag: dev
+    pullPolicy: IfNotPresent
+  viewer:
+    enabled: true
+    replicas: 1
+    port: 8101
+    prefix: /api/viewer
+    # The Secret holding the viewer's media-URL signing key (base64 of at least 32 random bytes), mounted as a file.
+    # Required while the viewer is enabled.
+    mediaUrlKey:
+      name: ""
+      key: media-url-key
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { cpu: "1", memory: 1536Mi }
+  search:
+    enabled: true
+    replicas: 1
+    port: 8102
+    prefix: /api/search
+    resources:
+      requests: { cpu: 100m, memory: 1Gi }
+      limits: { cpu: "2", memory: 3Gi }

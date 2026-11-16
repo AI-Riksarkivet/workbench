@@ -29,10 +29,10 @@ import logging
 import pytest
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from service_kit.governed.settings import GovernedAuthSettings
+from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
-class _Governed(BaseSettings, GovernedAuthSettings):
+class _Governed(BaseSettings, GovernedAuthSettings, LakehouseTokenSettings):
     """A minimal concrete carrier for the mixin.
 
     `GovernedAuthSettings` is deliberately a plain mixin rather than a settings class of its own, so a
@@ -77,6 +77,26 @@ def test_the_check_is_skipped_when_oidc_is_off() -> None:
         pytest.param({"WORKBENCH_OIDC_IDP_ID": "Corp~1"}, "lower-case letters", id="an-idp-id-outside-the-grammar"),
         pytest.param({"WORKBENCH_OIDC_ENABLED": False}, "would serve every route to anyone", id="authentication-off-unacknowledged"),
         pytest.param({"WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": True}, "contradicts", id="authentication-on-and-acknowledged-off"),
+        pytest.param({"WORKBENCH_OIDC_PROVIDERS": [{"issuer": "https://issuer.test/", "idp_id": "corp"}]}, "named as an issuer twice", id="one-issuer-twice"),
+        pytest.param({"WORKBENCH_OIDC_PROVIDERS": [{"issuer": "https://other.test", "idp_id": "keycloak"}]}, "named by", id="two-issuers-one-idp-id"),
+        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "dex-client"}}, "a machine identity's idp id", id="a-connector-mapped-to-a-machine"),
+        pytest.param({"WORKBENCH_OIDC_CONNECTORS": {"local": "dex"}, "WORKBENCH_OIDC_SUBJECT_CLAIMS": ["oid"]}, "never read beside", id="two-naming-rules"),
+        pytest.param({"WORKBENCH_OIDC_CLIENT_MARKER": {"claim": "sub"}}, "every verified token carries", id="a-marker-every-token-carries"),
+        pytest.param({"WORKBENCH_LAKEHOUSE_DELEGATION": "forward"}, "never is", id="a-bound-token-passed-on"),
+        pytest.param(
+            {"WORKBENCH_LAKEHOUSE_DELEGATION": "forward", "WORKBENCH_DPOP_REQUIRED": False}, "needs WORKBENCH_LAKEHOUSE_AUDIENCE", id="passed-on-to-no-audience"
+        ),
+        pytest.param({"WORKBENCH_OIDC_CLIENT_ID": "workbench-services"}, "set together", id="a-client-with-no-secret"),
+        pytest.param(
+            {"WORKBENCH_OIDC_ALLOW_INSECURE": True, "WORKBENCH_OIDC_PROVIDERS": [{"issuer": "http://other.test", "idp_id": "other"}]},
+            "other.test must use HTTPS",
+            id="a-further-http-issuer-not-declared-insecure",
+        ),
+        pytest.param(
+            {"WORKBENCH_OIDC_PROVIDERS": [{"issuer": "https://other.test", "idp_id": "other", "lakehouse": {"delegation": "exchange"}}]},
+            "name its client_id",
+            id="a-further-issuers-exchange-with-no-client",
+        ),
     ],
 )
 def test_settings_no_bearer_could_pass_are_refused_at_construction(over: dict[str, object], refusal: str) -> None:

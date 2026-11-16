@@ -19,7 +19,7 @@ import threading
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, MutableMapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -132,7 +132,7 @@ class VendingCatalog:
     traceparent).
     """
 
-    def __init__(self, location: str, answers: dict[str, Any]) -> None:
+    def __init__(self, location: str, answers: MutableMapping[str, Any]) -> None:
         self.location = location
         self.answers = answers
         self.calls: list[tuple[str, str | None, str | None]] = []

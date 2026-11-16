@@ -3,7 +3,7 @@
 Against the loopback provider (`tests.identity.Provider`) over a real socket: the service authenticates as its own
 confidential client with the secret its mounted file holds, the request carries the RFC 8693 parameters, the answer is
 cached for the person until shortly before it expires, a refusal is the person's to fix (401), and the workbench's own
-token for its writes is a client-credentials grant.
+token for its writes is a client-credentials grant, asking for the audience's scope at a provider that reads one (Dex).
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import jwt
 import pytest
 
 from service_kit.exceptions import ServiceUnavailableError, UnauthorizedError
-from service_kit.governed.token_exchange import EXPIRY_MARGIN_SECONDS, LakehouseTokens
-from tests.identity import CLIENT_ID, CLIENT_SECRET, LAKEHOUSE_AUDIENCE, BrowserKey, Provider
+from service_kit.governed.token_exchange import EXPIRY_MARGIN_SECONDS, LakehouseTokens, PersonTokens
+from tests.identity import CLIENT_ID, CLIENT_SECRET, LAKEHOUSE_AUDIENCE, LAKEHOUSE_AUDIENCE_SCOPE, BrowserKey, Provider, remember_verified
 
 
 class _Clock:
@@ -32,11 +32,25 @@ def _tokens(provider: Provider, tmp_path: Path, clock: _Clock) -> LakehouseToken
     return LakehouseTokens(issuer=provider.issuer, audience=LAKEHOUSE_AUDIENCE, client_id=CLIENT_ID, client_secret_file=str(secret), clock=clock)
 
 
+def test_a_persons_token_is_held_no_longer_than_its_own_expiry_whether_or_not_it_is_read_again() -> None:
+    clock = _Clock()
+    people = PersonTokens(clock=clock)
+    people.remember("keycloak~gina", issuer="https://id.example", token="gina-token", expires_at=1010.0)
+    people.remember("keycloak~kim", issuer="https://id.example", token="kim-token", expires_at=1010.0)
+    clock.now = 1011.0
+
+    with pytest.raises(UnauthorizedError):
+        people.latest("keycloak~gina", issuer="https://id.example")
+    people.remember("keycloak~olga", issuer="https://id.example", token="olga-token", expires_at=1100.0)
+
+    assert len(people) == 1
+
+
 def test_a_persons_token_is_exchanged_once_per_lifetime_as_rfc_8693_asks(oidc_provider: Provider, tmp_path: Path) -> None:
     clock = _Clock()
     tokens = _tokens(oidc_provider, tmp_path, clock)
     workbench_token = oidc_provider.mint("gina", jkt=BrowserKey().jkt)
-    tokens.remember("keycloak~gina", workbench_token)
+    remember_verified(tokens, "keycloak~gina", workbench_token)
 
     first = tokens.for_person("keycloak~gina")
     cached = tokens.for_person("keycloak~gina")
@@ -64,7 +78,7 @@ def test_a_persons_token_is_exchanged_once_per_lifetime_as_rfc_8693_asks(oidc_pr
 
 def test_a_refused_exchange_is_the_persons_401_and_the_service_takes_its_own_token(oidc_provider: Provider, tmp_path: Path) -> None:
     tokens = _tokens(oidc_provider, tmp_path, _Clock())
-    tokens.remember("keycloak~gina", oidc_provider.mint("gina"))
+    remember_verified(tokens, "keycloak~gina", oidc_provider.mint("gina"))
     oidc_provider.refuse_exchange = True
 
     with pytest.raises(UnauthorizedError, match="refused to exchange"):
@@ -73,6 +87,22 @@ def test_a_refused_exchange_is_the_persons_401_and_the_service_takes_its_own_tok
 
     assert (own["sub"], own["aud"]) == (f"service-account-{CLIENT_ID}", LAKEHOUSE_AUDIENCE)
     assert [r["grant_type"] for r in oidc_provider.requests] == ["urn:ietf:params:oauth:grant-type:token-exchange", "client_credentials"]
+
+
+def test_where_the_provider_reads_the_audience_from_a_scope_the_services_own_token_asks_for_it(tmp_path: Path) -> None:
+    dex = Provider("dex")
+    secret = tmp_path / "client-secret"
+    secret.write_text(CLIENT_SECRET)
+    tokens = LakehouseTokens(
+        issuer=dex.issuer, audience=LAKEHOUSE_AUDIENCE, client_id=CLIENT_ID, client_secret_file=str(secret), audience_scope=LAKEHOUSE_AUDIENCE_SCOPE
+    )
+    try:
+        own = jwt.decode(tokens.for_service(), options={"verify_signature": False})
+    finally:
+        tokens.close()
+        dex.close()
+
+    assert (own["aud"], own["azp"]) == ([LAKEHOUSE_AUDIENCE, CLIENT_ID], CLIENT_ID)
 
 
 @pytest.mark.parametrize(
@@ -85,7 +115,7 @@ def test_a_refusal_of_the_services_own_client_or_configuration_is_its_outage_not
     secret_file = tmp_path / "client-secret"
     secret_file.write_text(secret)
     tokens = LakehouseTokens(issuer=oidc_provider.issuer, audience=audience, client_id=CLIENT_ID, client_secret_file=str(secret_file))
-    tokens.remember("keycloak~gina", oidc_provider.mint("gina"))
+    remember_verified(tokens, "keycloak~gina", oidc_provider.mint("gina"))
 
     with pytest.raises(ServiceUnavailableError, match="did not issue a token"):
         tokens.for_person("keycloak~gina")

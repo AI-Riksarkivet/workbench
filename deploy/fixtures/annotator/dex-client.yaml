@@ -1,0 +1,21 @@
+# The workbench's clients at rask's development Dex, supplied to that fixture's release from here (rask's
+# deploy/fixtures/dex `clients` and `allowedOrigins` seams; rask names no client): `-f` this file beside the issuer rask
+# passes it. NOT FOR PRODUCTION: a platform's IdP registers the same two clients by its own means.
+#
+# - `workbench-app`, the app's public client: PKCE (S256, which the fixture enforces), redirected to the app's callback
+#   on the origin the dev Gateway is reached at. The fixture's audience client trusts every entry here, so the app's
+#   token may name the lakehouse's audience (`audience:server:client_id:rask-lakehouse`) beside its own.
+# - `workbench-services`, the services' confidential client: its own client-credentials token for the lakehouse (the
+#   machine `dex-client~workbench-services` there). Its secret is a DEVELOPMENT-ONLY literal, as the fixture's own
+#   `machineClients` secrets are (rask's deploy/fixtures/dex/chart/values.yaml); the workbench's release renders the
+#   same literal into the Secret `workbench-oidc-client` from its dev overlay (`values.yaml`, `dev.secrets`).
+clients:
+  - id: workbench-app
+    public: true
+    redirectURIs: [http://workbench.localhost:8080/auth/callback]
+  - id: workbench-services
+    secret: workbench-services-dev-secret
+    redirectURIs: []
+# The app is served from its own origin, so its discovery read, key read, code exchange and refresh are cross-origin to
+# the issuer at http://localhost:8080/dex.
+allowedOrigins: [http://workbench.localhost:8080]

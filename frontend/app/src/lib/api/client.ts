@@ -5,10 +5,12 @@
 // (`/config.json`'s `services`). Each service verifies the caller on every request, so nothing in between
 // holds a credential.
 //
-// THE TOKEN IS BOUND TO THIS TAB'S KEY (DPoP, RFC 9449). Every request carries `Authorization: DPoP
-// <token>` and a `DPoP` proof signed for exactly that request: its method (`htm`) and its URL without
-// query or fragment (`htu`, § 4.2; the services compare it so, `service_kit.governed.dpop`). One proof
-// per request, never reused: each carries a fresh `jti`, which a service remembers against a replay.
+// WHERE THE PROVIDER BINDS THE TOKEN TO THIS TAB'S KEY (DPoP, RFC 9449), every request carries
+// `Authorization: DPoP <token>` and a `DPoP` proof signed for exactly that request: its method (`htm`) and
+// its URL without query or fragment (`htu`, § 4.2; the services compare it so,
+// `service_kit.governed.dpop`). One proof per request, never reused: each carries a fresh `jti`, which a
+// service remembers against a replay. Where it binds none (`auth.svelte.ts` reads which from its
+// discovery), the token goes as `Authorization: Bearer <token>`, alone.
 // oidc-client-ts signs `htu` exactly as it is given (3.5.0's `generateDPoPProof` puts the url argument in
 // the claim unchanged), so the query and fragment are stripped HERE, before the signer sees the URL.
 //
@@ -28,10 +30,10 @@ const UPLOAD_TIMEOUT_MS = 30_000;
  *  person only that it is NOT CONFIRMED when no answer came. */
 const WRITE_TIMEOUT_MS = 120_000;
 
-/** What a request is sent with: the token and the proof signed for it. */
+/** What a request is sent with: the token, and the proof signed for it when the token is bound to a key. */
 export interface Credentials {
 	token: string;
-	proof: string;
+	proof: string | null;
 }
 
 /** Signs one request: `htu` is already stripped of query and fragment. Null when nobody is signed in
@@ -40,7 +42,7 @@ export type Signer = (htu: string, method: string) => Promise<Credentials | null
 
 let signer: Signer = async () => null;
 
-/** Install the source of credentials (the app's in-memory OIDC session and its DPoP key). */
+/** Install the source of credentials (the app's in-memory OIDC session, and its DPoP key where it has one). */
 export function setSigner(next: Signer): void {
 	signer = next;
 }
@@ -65,16 +67,19 @@ export function htuOf(url: string, here: string | null = origin()): string | nul
 	return parsed.href;
 }
 
-/** `fetch` with this tab's DPoP credentials, signed for this one request, and only to this origin. */
+/** `fetch` with this tab's credentials, a DPoP proof signed for this one request where the token is bound, and only
+ *  to this origin. */
 export async function authorizedFetch(input: string, init: RequestInit = {}): Promise<Response> {
 	const headers = new Headers(init.headers);
 	const method = (init.method ?? 'GET').toUpperCase();
 	const htu = htuOf(input);
 	if (htu !== null && !headers.has('authorization')) {
 		const credentials = await signer(htu, method);
-		if (credentials) {
+		if (credentials?.proof) {
 			headers.set('authorization', `DPoP ${credentials.token}`);
 			headers.set('dpop', credentials.proof);
+		} else if (credentials) {
+			headers.set('authorization', `Bearer ${credentials.token}`);
 		}
 	}
 	return fetch(input, { ...init, method, headers });

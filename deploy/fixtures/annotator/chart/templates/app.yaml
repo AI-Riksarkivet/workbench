@@ -2,10 +2,11 @@
 {{- $r := .Values.rask.release -}}
 {{- $name := printf "%s-workbench-app" $r -}}
 {{- $selector := dict "app.kubernetes.io/name" "rask" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" "workbench-app" -}}
-{{- $services := dict "viewer" .Values.app.services.viewer "search" .Values.app.services.search "annotator" .Values.route.prefix -}}
+{{- $services := dict "viewer" .Values.media.viewer.prefix "search" .Values.media.search.prefix "annotator" .Values.route.prefix -}}
 {{- $config := dict "signIn" false "services" $services -}}
 {{- if .Values.auth.enabled }}
-{{- $config = dict "issuer" (required "auth.oidc.issuer: the provider's issuer the app signs in at" .Values.auth.oidc.issuer) "clientId" (required "app.oidc.clientId: the workbench's public client" .Values.app.oidc.clientId) "scopes" .Values.app.oidc.scopes "services" $services -}}
+{{- $config = dict "issuer" (required "auth.oidc.issuer: the provider's issuer the app signs in at" .Values.auth.oidc.issuer) "clientId" (required "app.oidc.clientId: the workbench's public client" .Values.app.oidc.clientId) "scopes" .Values.app.oidc.scopes "dpop" (include "workbench.appDpop" .) "services" $services -}}
+{{- if and .Values.auth.oidc.connectors (not (has "federated:id" .Values.app.oidc.scopes)) }}{{ fail "auth.oidc.connectors names people by Dex's federated_claims, which a token carries only when app.oidc.scopes asks for federated:id" }}{{ end }}
 {{- end }}
 # The app's runtime config, served at /config.json: the built image carries no environment.
 apiVersion: v1

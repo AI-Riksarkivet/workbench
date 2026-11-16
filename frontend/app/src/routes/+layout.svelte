@@ -5,7 +5,7 @@
 	import { ModeWatcher } from 'mode-watcher';
 	import type { Snippet } from 'svelte';
 	import { AppShell, type NavUser } from '#lib/shell/index.ts';
-	import { auth, expired, login } from '#lib/auth.svelte.ts';
+	import { auth, RENEW_MARGIN_SECONDS, renewOrSignIn } from '#lib/auth.svelte.ts';
 	import { activity } from '#lib/activity.svelte.ts';
 	import { track } from '#lib/view-transition.svelte.ts';
 	import { appSidebar, PAGE_NAMES } from '#lib/nav.ts';
@@ -41,14 +41,14 @@
 		return null;
 	});
 
-	// The session ends when its token does: there is no refresh token, so the browser goes back to the
-	// issuer and returns here.
+	// The session ends when its token does: it is renewed in place where the provider gave a refresh token,
+	// and otherwise the browser goes back to the issuer and returns here.
 	$effect(() => {
 		const session = auth.session;
 		if (!session || session.expiresAt === 0) return;
-		const wait = Math.max(session.expiresAt * 1000 - Date.now(), 0);
+		const wait = Math.max((session.expiresAt - RENEW_MARGIN_SECONDS) * 1000 - Date.now(), 0);
 		const timer = setTimeout(() => {
-			if (expired(session)) void login(page.url.pathname + page.url.search);
+			void renewOrSignIn(page.url.pathname + page.url.search);
 		}, wait);
 		return () => clearTimeout(timer);
 	});

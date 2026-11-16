@@ -19,31 +19,41 @@ tool would:
 - the lakehouse's events as `docs/rask/COMMIT-EVENTS.md` describes them.
 
 **Its authentication and authorization are its own and have nothing to do with rask's.**
-- **Sign-in** is any OIDC provider (Keycloak is the reference; Keycloak replaces Dex in development with rask's XC-214).
-  Neither rask nor the workbench hosts identity. The workbench has its own public PKCE client and its own audience
-  there. Its tokens are bound to the browser's key with DPoP (RFC 9449), and every service verifies the token and its
-  proof on every request (`service_kit.governed.deps`, `service_kit.governed.dpop`).
+- **Sign-in** is any OIDC provider the cluster runs (owner, 2026-11-16: Dex included). Neither rask nor the workbench
+  hosts identity. The workbench has its own public PKCE client and its own audience there. Token exchange and DPoP are
+  used only where the provider offers them: the app binds its tokens to the tab with DPoP (RFC 9449) when the
+  provider's discovery advertises `dpop_signing_alg_values_supported` (`frontend/app/src/lib/auth.svelte.ts`), and
+  every service verifies the token, and its proof unless the deployment says the provider binds none
+  (`WORKBENCH_DPOP_REQUIRED=false`; a token naming a key is never accepted without its proof), on every request
+  (`service_kit.governed.deps`, `service_kit.governed.dpop`). A person is named exactly as rask names them, from issuer
+  and subject (`<idp id>~<subject>`, Dex's connector map, several issuers, a client's token naming nobody:
+  `service_kit.governed.identity`), so a grant in the workbench's store and one in rask name the same person.
 - **Authorization** is the workbench's own OpenFGA model and store (`service_kit/governed/auth/model.fga`): an org's
   admins and members, a project's five roles (owner > manager > reviewer > annotator > viewer), and the tasks, corpora
   and flows that inherit from a project. It never asks rask's decision door or rask's OpenFGA store, and rask knows
   nothing of the workbench's users or roles. The model and the declared organisations are written by the model writer
   (`python -m service_kit.governed.auth.write_model`), a Job the deployment runs; a service finds the store by its name
   and the model its own image carries, and never writes either.
-- **Data** in a rask lakehouse is rask's to govern. A read is made as the person, on a token the service exchanges for
-  them at the provider (RFC 8693, `service_kit.governed.token_exchange`): the person's own token is never forwarded.
-  An annotation write is made as the workbench's own confidential client after the workbench's own role check on the
-  project the request names (`?project=`), into that project's own table in the workbench's annotations namespace
-  (`<project>__<dataset digest>`), and names the person in the commit; a corpus binding grants reading, never writing.
-  rask decides whether that caller may, and its refusal is final.
+- **Data** in a rask lakehouse is rask's to govern. A read is made as the person: where the provider exchanges its own
+  tokens (RFC 8693, Keycloak), on a token the service exchanges for them (`service_kit.governed.token_exchange`,
+  `WORKBENCH_LAKEHOUSE_DELEGATION=exchange`); where it does not (Dex), the app's sign-in asks for the lakehouse's
+  audience too, and the service passes the person's own token on unchanged, only when it names that audience and no key
+  (`forward`). Delegation is per issuer, and a token is never sent to an issuer other than its own. An annotation write is made as the workbench's own confidential client after the workbench's own role
+  check on the project the request names (`?project=`), into that project's own table in the workbench's annotations
+  namespace (`<project>__<dataset digest>`), and names the person in the commit; a corpus binding grants reading, never
+  writing. rask decides whether that caller may, and its refusal is final.
 
 The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); every credential is a mounted file:
 
 | Setting | What it names |
 | --- | --- |
-| `WORKBENCH_OIDC_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_IDP_ID`, `_DISCOVERY_URL` | sign-in, on by default; the provider, the workbench's own audience, and the idp id its subjects are principals of (`<idp-id>~<sub>`) |
+| `WORKBENCH_OIDC_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_IDP_ID`, `_DISCOVERY_URL` | sign-in, on by default; the provider, the workbench's own audience, and the idp id its people are principals of (`<idp-id>~<subject>`) |
+| `WORKBENCH_OIDC_SUBJECT_CLAIMS`, `_CONNECTORS`, `_CLIENT_MARKER`, `_PROVIDERS` | how people are named, as rask names them (rask's ADR 0208): the subject claims, a Dex connector map (`{"local": "dex"}`), the issuer's client marker, and further issuers |
+| `WORKBENCH_DPOP_REQUIRED` | whether every token must come with a DPoP proof: on by default; off only for a provider that binds no token, and then a bearer is accepted only when it names no key |
 | `WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED` | the only way to run with sign-in off, refused unless sign-in is off; a service with it logs a warning at start |
 | `WORKBENCH_PUBLIC_URL`, `WORKBENCH_PUBLIC_MOUNT`, `WORKBENCH_DPOP_WINDOW_SECONDS` | the URL a DPoP proof's `htu` names (and the path a gateway rewrites it to), and the proof's `iat` and replay window |
-| `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse |
+| `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE`, `_AUDIENCE_SCOPE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse (asking for the audience's scope where the provider reads one, Dex's `audience:server:client_id:<audience>`) |
+| `WORKBENCH_LAKEHOUSE_DELEGATION` | `exchange` (default) or `forward`: how the primary issuer's people's reads reach the lakehouse; `forward` needs `WORKBENCH_DPOP_REQUIRED=false`. A further issuer names its own in its `WORKBENCH_OIDC_PROVIDERS` entry (`lakehouse`, with its own client), or its people's reads are refused: a token is exchanged only at the issuer that signed it. Under `forward` a read presents the person's latest token, never one past its own `exp` (`token_exchange.PersonTokens`) |
 | `ANNOTATOR_ANNOTATIONS_NAMESPACE` | the lakehouse namespace that holds every project's annotation tables (`workbench$annotations`) |
 | `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
 | `ANNOTATOR_PUBLISH_LEASE_SECONDS`, `_REDRIVE_SECONDS`, `_CONCURRENCY` | a publish run's lease on its project (default 300 s), how often each replica sweeps for publishes no live run holds (30 s, jittered), and how many runs one replica drives at once (2, below the pool size) |
@@ -176,7 +186,7 @@ Two language-pure planes, as in rask; never blur them.
     server code), served by its own `serve.ts` with the strict CSP as a header; `edge.ts` beside it stands in for the
     Gateway, for the Playwright suite (its mock services) and the local stack (the real ones). It signs in with PKCE on the
     workbench's public client (oidc-client-ts), binds the tokens to the tab with DPoP (an in-memory, non-extractable
-    P-256 key), and calls each service same-origin at the public base `/config.json` names (`services`), which is also
+    P-256 key) where the provider's discovery offers it, renews a session with its refresh token, and calls each service same-origin at the public base `/config.json` names (`services`), which is also
     what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`; its fetch seam is `#lib/api/client.ts`,
     which `@workbench/explorer-api` also calls through (`#lib/api/explorer.ts` installs it); every media element's
     link comes from one batched loader (`#lib/api/media-links.svelte.ts`); its explorer is `#lib/explore`; its viewers, shared by the explorer's player and the labeling canvas and importing neither, are `#lib/media` (the WebGPU image stage with fit, zoom and pan, whose pixi entry carries `pixi.js/unsafe-eval` for the CSP; a recording's transport, whose scrubber takes an overlay on its time axis; the synced transcript); its dock is
@@ -197,7 +207,9 @@ Two language-pure planes, as in rask; never blur them.
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),
   built from the repository root against the root `uv.lock`.
 - `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`, `app-end-to-end`, `fga-test`).
-- `deploy/fixtures/annotator`: the annotator's development fixture.
+- `deploy/fixtures/annotator`: the workbench's release (the annotator, the viewer and search from the `media` image, and
+  the app), with the development estate's overlay (`values.yaml`) and the clients it supplies to rask's dev Dex
+  (`dex-client.yaml`).
 - `docs/rask/`: rask's published contract, vendored (`PROVENANCE.md` says from which sha and how to refresh it).
 - `scripts/`: dev and ops scripts.
 

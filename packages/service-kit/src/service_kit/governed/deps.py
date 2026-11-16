@@ -1,15 +1,18 @@
 """The sign-in and authorization dependencies every workbench service's routes annotate with.
 
-Who the request is: a token addressed to the workbench, presented with the DPoP scheme (``Authorization: DPoP <token>``)
-and a proof in the ``DPoP`` header that the presenter holds the key the token is bound to (RFC 9449 § 7). Every refusal
-is a 401 carrying a ``WWW-Authenticate: DPoP`` challenge (§ 7.1). A bearer presented under the ``Bearer`` scheme is
-refused: a DPoP-bound token must not be accepted without its proof.
+Who the request is: a token addressed to the workbench. Where the deployment's provider binds tokens to the browser's
+key (`WORKBENCH_DPOP_REQUIRED`, on by default), it is presented with the DPoP scheme (``Authorization: DPoP <token>``)
+and a proof in the ``DPoP`` header that the presenter holds the key the token is bound to (RFC 9449 § 7), and a bearer
+is refused. Where the provider binds none, a ``Bearer`` token is accepted when it carries no ``cnf`` claim: a token that
+names a key is accepted only with a proof that key signed, under the DPoP scheme, whatever the deployment says. Every
+refusal is a 401 carrying the challenges the deployment accepts (§ 7.1, RFC 6750 § 3).
 
 What they may do: the workbench's own OpenFGA store. With authorization off the checker allows everything; on but
 unwired it answers 503, never a permissive fallback.
 
-How they read the lakehouse: as themselves, on a token the service exchanges for them (`LakehouseCaller`). Their own
-token is never forwarded.
+How they read the lakehouse: as the person, on a token the service exchanges for them (`LakehouseDelegation.EXCHANGE`),
+or on the person's own token where the deployment passes it on (`LakehouseDelegation.FORWARD`): only a token that names
+the lakehouse's audience and is bound to no key, unchanged and never widened.
 """
 
 # NO `from __future__ import annotations`: the inner dependencies annotate a parameter with `settings_dep`, a local name
@@ -26,7 +29,8 @@ from service_kit.governed.dpop import ALGORITHMS, DpopVerifier, InvalidProofErro
 from service_kit.governed.fga import Authorizer, Grant
 from service_kit.governed.identity import Caller, PersonVerifier
 from service_kit.governed.oidc import ProviderUnavailableError
-from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
+from service_kit.governed.settings import LakehouseDelegation
+from service_kit.governed.token_exchange import Delegation, LakehouseCaller, LakehouseTokens, PersonTokens
 
 
 #: The subject when authentication is off. Named so a grep for who can act without a token finds one place.
@@ -35,15 +39,19 @@ ANONYMOUS_SUBJECT: Final = "anon"
 _ALGS: Final = " ".join(sorted(ALGORITHMS))
 
 
-def _challenge(error: str | None = None) -> dict[str, str]:
-    """The `WWW-Authenticate` a 401 carries: the DPoP scheme and the algorithms a proof may use (RFC 9449 § 7.1)."""
-    params = ([f'error="{error}"'] if error else []) + [f'algs="{_ALGS}"']
-    return {"WWW-Authenticate": f"DPoP {', '.join(params)}"}
+def _challenge(error: str | None, *, on: str, bearer: bool) -> dict[str, str]:
+    """The `WWW-Authenticate` a 401 carries: the DPoP scheme and the algorithms a proof may use (RFC 9449 § 7.1), and,
+    where a bearer is accepted too, the Bearer scheme first (RFC 6750 § 3); the error rides the scheme ``on`` names."""
+    dpop = ([f'error="{error}"'] if error and on == "dpop" else []) + [f'algs="{_ALGS}"']
+    challenges = [f"DPoP {', '.join(dpop)}"]
+    if bearer:
+        challenges.insert(0, f'Bearer error="{error}"' if error and on == "bearer" else "Bearer")
+    return {"WWW-Authenticate": ", ".join(challenges)}
 
 
-def _refuse(reason: str, detail: str, *, error: str | None) -> UnauthorizedError:
+def _refuse(reason: str, detail: str, *, error: str | None, on: str, bearer: bool) -> UnauthorizedError:
     audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason=reason)
-    return UnauthorizedError(detail, headers=_challenge(error))
+    return UnauthorizedError(detail, headers=_challenge(error, on=on, bearer=bearer))
 
 
 class FgaChecker(Protocol):
@@ -84,6 +92,31 @@ def _public_url(request: Request, settings: Any) -> str:
 
 #: The principal key the lakehouse sees this service read as, on its own client-credentials token.
 SERVICE_SUBJECT: Final = "workbench-service"
+
+
+def _passed_on(settings: Any, caller: Caller, people: PersonTokens) -> LakehouseCaller:
+    """The person's own token, passed on unchanged: only one that names the lakehouse's audience, so the lakehouse is
+    handed nothing wider than the person's sign-in already asked for, and only one bound to no key (RFC 9449 § 7.1).
+
+    The token the read presents is the person's LATEST such token, read at each catalog call (`PersonTokens`): a dataset
+    handle cached for the person presents their renewed token, and none past its own `exp`.
+
+    Raises:
+        ServiceUnavailableError: the deployment names no lakehouse audience, or the person's token does not name it (the
+            app's sign-in scopes do not ask for it), or it is bound: each is the deployment's to fix, not the person's.
+        UnauthorizedError: the token has expired, so there is nothing of the person's to present.
+    """
+    audience: str | None = getattr(settings, "lakehouse_audience", None)
+    if not audience:
+        raise ServiceUnavailableError("WORKBENCH_LAKEHOUSE_DELEGATION=forward names no WORKBENCH_LAKEHOUSE_AUDIENCE to check the person's token against")
+    if caller.bound:
+        raise ServiceUnavailableError("the person's token is bound to their browser's key, so it is never passed on: exchange it instead")
+    if not caller.addressed_to(audience):
+        raise ServiceUnavailableError(f"the person's token does not name the lakehouse's audience {audience!r}: the app's sign-in scopes must ask for it")
+    subject, issuer = caller.subject, caller.claims.iss
+    people.remember(subject, issuer=issuer, token=caller.access_token.get_secret_value(), expires_at=caller.claims.exp)
+    people.latest(subject, issuer=issuer)
+    return LakehouseCaller(subject=subject, token=lambda: people.latest(subject, issuer=issuer).token)
 
 
 def lakehouse_service_caller(request: Request, settings: Any) -> LakehouseCaller:
@@ -131,7 +164,7 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
     """
 
     def authenticate(request: Request, settings: settings_dep) -> Caller | None:
-        """The person the request's DPoP-bound token and proof prove, or ``None`` with authentication off."""
+        """The person the request's token proves, with its DPoP proof where one is due; ``None`` with authentication off."""
         if not settings.oidc_enabled:
             return None
         verifier: PersonVerifier | None = getattr(request.app.state, "oidc", None)
@@ -139,28 +172,38 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
         if verifier is None or dpop is None:
             audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="verifier_unavailable")
             raise ServiceUnavailableError("Authentication is enabled but unavailable")
-        scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+        required: bool = getattr(settings, "dpop_required", True)
+        scheme, _, presented = (request.headers.get("authorization") or "").partition(" ")
+        token = presented.strip()
         if not token:
-            raise _refuse("missing_token", "Missing DPoP-bound access token", error=None)
-        if scheme.lower() != "dpop":
-            raise _refuse("not_dpop", "The access token must be presented with the DPoP scheme", error="invalid_token")
+            raise _refuse("missing_token", "Missing access token", error=None, on="dpop", bearer=not required)
+        scheme = scheme.lower()
+        if scheme not in ("dpop", "bearer") or (scheme == "bearer" and required):
+            raise _refuse(
+                "not_dpop",
+                "The access token must be presented with the DPoP scheme",
+                error="invalid_token",
+                on="dpop" if required else "bearer",
+                bearer=not required,
+            )
         proofs = request.headers.getlist("dpop")
-        if len(proofs) != 1:
-            raise _refuse("missing_proof", "Exactly one DPoP proof is required", error="invalid_dpop_proof")
+        if scheme == "dpop" and len(proofs) != 1:
+            raise _refuse("missing_proof", "Exactly one DPoP proof is required", error="invalid_dpop_proof", on="dpop", bearer=not required)
         try:
-            caller = verifier.verify(token.strip())
+            caller = verifier.verify(token)
         except ProviderUnavailableError:
             audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason="verifier_unavailable")
             raise
         except UnauthenticatedError as exc:
-            raise _refuse("invalid_token", "Invalid or expired token", error="invalid_token") from exc
-        try:
-            dpop.verify(proofs[0], method=request.method, url=_public_url(request, settings), access_token=token.strip(), jkt=caller.jkt, person=caller.subject)
-        except InvalidProofError as exc:
-            raise _refuse("invalid_dpop_proof", str(exc), error="invalid_dpop_proof") from exc
-        tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
-        if tokens is not None:
-            tokens.remember(caller.subject, caller.access_token.get_secret_value())
+            raise _refuse("invalid_token", "Invalid or expired token", error="invalid_token", on=scheme, bearer=not required) from exc
+        if scheme == "bearer" and caller.bound:
+            # RFC 9449 § 7.1: a token bound to a key is never accepted as a bearer, whatever the deployment says.
+            raise _refuse("bound_as_bearer", "A DPoP-bound access token must be presented with its DPoP proof", error="invalid_token", on="bearer", bearer=True)
+        if scheme == "dpop":
+            try:
+                dpop.verify(proofs[0], method=request.method, url=_public_url(request, settings), access_token=token, jkt=caller.jkt, person=caller.subject)
+            except InvalidProofError as exc:
+                raise _refuse("invalid_dpop_proof", str(exc), error="invalid_dpop_proof", on="dpop", bearer=not required) from exc
         audit(AuditAction.AUTHN, AuditOutcome.SUCCESS, subject=caller.subject)
         return caller
 
@@ -188,22 +231,33 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
     def _as_lakehouse_caller(request: Request, settings: Any, caller: Caller | None) -> LakehouseCaller:
         if caller is None:
             return ANONYMOUS_CALLER
-        tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
-        if tokens is None:
+        issuer = caller.claims.iss.rstrip("/")
+        delegations: dict[str, Delegation] = getattr(request.app.state, "delegations", {})
+        plan = delegations.get(issuer)
+        if plan is None:
             if getattr(settings, "catalog_uri", None):
-                # A read with no token would be made anonymously on a person's behalf: refused, never sent.
+                # A read with no token would be made anonymously on a person's behalf, and their token is never sent
+                # to another issuer than its own: refused, never sent.
                 raise ServiceUnavailableError(
-                    "this service names no confidential client to read the lakehouse as the person: set WORKBENCH_OIDC_CLIENT_ID, "
-                    "WORKBENCH_OIDC_CLIENT_SECRET_FILE and WORKBENCH_LAKEHOUSE_AUDIENCE"
+                    f"the issuer {issuer} names no way to read the lakehouse as its people: for the primary issuer set "
+                    "WORKBENCH_LAKEHOUSE_DELEGATION=forward, or WORKBENCH_OIDC_CLIENT_ID and WORKBENCH_OIDC_CLIENT_SECRET_FILE to "
+                    "exchange; for a further issuer, its `lakehouse` entry in WORKBENCH_OIDC_PROVIDERS"
                 )
             # A local directory catalog authenticates nobody, so the read needs no token.
             return LakehouseCaller(subject=caller.subject)
+        people: PersonTokens = request.app.state.person_tokens
+        if plan.mode is LakehouseDelegation.FORWARD:
+            return _passed_on(settings, caller, people)
+        tokens = plan.tokens
+        if tokens is None:
+            raise ServiceUnavailableError(f"the issuer {issuer}'s exchange names no client: set WORKBENCH_LAKEHOUSE_AUDIENCE and its client")
         subject = caller.subject
+        tokens.remember(subject, caller.access_token.get_secret_value(), caller.claims.exp)
         return LakehouseCaller(subject=subject, token=lambda: tokens.for_person(subject))
 
     def lakehouse_caller(request: Request, settings: settings_dep, caller: Annotated[Caller | None, Depends(authenticate)]) -> LakehouseCaller:
-        """The person a lakehouse read is made as, with their exchanged token; anonymous with authentication off. With
-        authentication on and no confidential client named, a read of a lakehouse catalog is a 503, never anonymous."""
+        """The person a lakehouse read is made as, with their exchanged or passed-on token; anonymous with authentication
+        off. With authentication on and no token to present, a read of a lakehouse catalog is a 503, never anonymous."""
         return _as_lakehouse_caller(request, settings, caller)
 
     def optional_lakehouse_caller(request: Request, settings: settings_dep) -> LakehouseCaller:

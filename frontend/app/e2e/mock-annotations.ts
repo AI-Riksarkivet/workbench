@@ -164,7 +164,8 @@ interface SaveBody {
 }
 
 /** Answer one call to `/api/annotations/…`, or null when the path is not that door. `perms` is what the caller holds
- *  on a project; `record` writes the call's status into the ledger; `fault` is the spec's switch for this path. */
+ *  on a project; `record` writes the call's status into the ledger; `fault` is the spec's switch for this path;
+ *  `lakehouseWrite` writes a save to the lakehouse as the workbench's own client, as the annotator does. */
 export async function annotationsDoor(
 	req: Request,
 	url: URL,
@@ -173,6 +174,7 @@ export async function annotationsDoor(
 	taskOf: (taskId: string) => Task | undefined,
 	record: (status: number) => void,
 	fault: string | undefined,
+	lakehouseWrite: () => Promise<boolean>,
 ): Promise<Response | null> {
 	const match = /^\/api\/annotations\/(.+?)(\/versions)?$/.exec(url.pathname);
 	if (!match) return null;
@@ -244,6 +246,8 @@ export async function annotationsDoor(
 			{ detail: `the annotations moved: version ${unit.version}, not ${b.base_version}` },
 			409,
 		);
+	if (!(await lakehouseWrite()))
+		return answer({ detail: 'the lakehouse refused the workbench’s write' }, 503);
 	const gone = new Set(b.deletes);
 	const rows = unit.rows
 		.filter((r) => !gone.has(r.id))

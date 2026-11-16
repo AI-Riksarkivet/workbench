@@ -25,7 +25,7 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from client_kit.lancekit.registry import DatasetRegistry
 from client_kit.media.config import MediaSettings
 from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
-from tests.identity import CLIENT_ID, CLIENT_SECRET, LAKEHOUSE_AUDIENCE, BrowserKey, Provider
+from tests.identity import CLIENT_ID, CLIENT_SECRET, LAKEHOUSE_AUDIENCE, BrowserKey, Provider, remember_verified
 from tests.media_catalog import write_table
 from tests.vending_catalog import VendingCatalog, keyed_store, vend
 
@@ -48,7 +48,7 @@ def test_a_token_exchanged_for_one_person_is_never_presented_for_another(monkeyp
     secret.write_text(CLIENT_SECRET)
     tokens = LakehouseTokens(issuer=oidc_provider.issuer, audience=LAKEHOUSE_AUDIENCE, client_id=CLIENT_ID, client_secret_file=str(secret))
     for person in ("a", "b"):
-        tokens.remember(f"keycloak~{person}", oidc_provider.mint(person, jkt=BrowserKey().jkt))
+        remember_verified(tokens, f"keycloak~{person}", oidc_provider.mint(person, jkt=BrowserKey().jkt))
     exchanged = {person: tokens.for_person(f"keycloak~{person}") for person in ("a", "b")}
     people = {person: LakehouseCaller(subject=f"keycloak~{person}", token=lambda p=person: tokens.for_person(f"keycloak~{p}")) for person in ("a", "b")}
 

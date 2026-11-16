@@ -2,12 +2,17 @@
 // as a deployment's HTTPRoutes put them: the viewer (`/api/viewer`), search (`/api/search`) and the
 // annotator (`/api/annotator`). Each answers its own paths below that base, as the edge rewrites it.
 //
-// EVERY CALL IS HELD TO THE SERVICES' RULE (`service_kit.governed.deps`): `Authorization: DPoP
-// <token>`, one `DPoP` proof whose `htm` is the method and whose `htu` is the PUBLIC URL the browser
-// called without its query (the edge passes the public base in `x-forwarded-prefix`, as a service is
-// configured with `WORKBENCH_PUBLIC_URL`), whose `ath` hashes the token, and whose key is the one the
-// token is bound to. A call that breaks any rule is refused 401 and recorded as refused. The one door
-// that takes no token is the signed media link's GET: the link is the permission.
+// EVERY CALL IS HELD TO THE SERVICES' RULE (`service_kit.governed.deps`), as a deployment configures it for the
+// provider that issued the token (`providers.ts`): a token addressed to the workbench's audience; at a provider that
+// binds tokens, `Authorization: DPoP <token>` and one `DPoP` proof whose `htm` is the method and whose `htu` is the
+// PUBLIC URL the browser called without its query (the edge passes the public base in `x-forwarded-prefix`, as a
+// service is configured with `WORKBENCH_PUBLIC_URL`), whose `ath` hashes the token, and whose key is the one the
+// token is bound to; at a provider that binds none (`WORKBENCH_DPOP_REQUIRED=false`), a bearer naming no key. A call
+// that breaks any rule is refused 401 and recorded as refused. The one door that takes no token is the signed media
+// link's GET: the link is the permission.
+//
+// The dataset list is read from the lakehouse as the person, and an annotation save is written to it as the
+// workbench's own client (`mock-lakehouse.ts`); `GET /api/viewer/__lakehouse?sub=<sub>` answers what it admitted.
 //
 // `GET /api/viewer/__calls?sub=<sub>` answers what every service recorded for one person, so a spec
 // can say each call it caused carried a valid proof. `POST /api/viewer/__fault?sub=<sub>&path=<path>&kind=`
@@ -25,7 +30,9 @@ import {
 	tableToIPC,
 	vectorFromArray,
 } from 'apache-arrow';
-import { athOf, readToken, verifyProof } from './dpop';
+import { athOf, readToken, verifyProof, type TokenClaims } from './dpop';
+import { lakehouseCallsOf, readAsPerson, writeAsService } from './mock-lakehouse';
+import { SHAPES, shapeOf } from './providers';
 import { annotationsDoor } from './mock-annotations';
 import { orgsOf, permissionsOn, projectsDoor, taskOf } from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
@@ -53,12 +60,13 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 		headers: { 'content-type': 'application/json', ...headers },
 	});
 
-/** The person a call's token and proof prove, or the 401 that refuses it. */
+/** The person a call's token proves, and the token itself, with its DPoP proof where one is due; or the 401 that
+ *  refuses it. */
 async function authenticate(
 	service: string,
 	req: Request,
 	url: URL,
-): Promise<{ sub: string; name: string; email: string } | Response> {
+): Promise<(TokenClaims & { token: string; host: string }) | Response> {
 	const host = req.headers.get('x-forwarded-host') ?? url.host;
 	const prefix = req.headers.get('x-forwarded-prefix') ?? '';
 	// The path as it came over the wire (`URL.pathname` keeps its percent-encoding), never a decoded one: the services
@@ -76,18 +84,25 @@ async function authenticate(
 		});
 		return json({ detail: reason }, 401, { 'www-authenticate': 'DPoP error="invalid_token"' });
 	};
-	if (scheme !== 'DPoP') return refuse('the token is not presented with the DPoP scheme');
 	if (!claims) return refuse('no token, or not one this issuer minted');
+	const shape = SHAPES[shapeOf(claims.iss)];
+	if (!claims.aud.includes(shape.workbenchAudience))
+		return refuse('the token is not addressed to the workbench');
 	if (claims.exp < Date.now() / 1000) return refuse('the token expired');
+	if (scheme === 'Bearer' && !shape.dpopRequired) {
+		if (claims.cnf) return refuse('a DPoP-bound token must be presented with its DPoP proof');
+		return { ...claims, token, host };
+	}
+	if (scheme !== 'DPoP') return refuse('the token is not presented with the DPoP scheme');
 	if (req.headers.get('dpop')?.includes(',')) return refuse('more than one DPoP proof');
 	try {
 		const proof = await verifyProof(req.headers.get('dpop'), req.method, htu);
 		if (proof.ath !== athOf(token)) return refuse('ath is not the hash of the access token');
-		if (proof.jkt !== claims.cnf.jkt) return refuse('the token is not bound to the proof key');
+		if (proof.jkt !== claims.cnf?.jkt) return refuse('the token is not bound to the proof key');
 	} catch (err) {
 		return refuse(`invalid_dpop_proof: ${err instanceof Error ? err.message : String(err)}`);
 	}
-	return claims;
+	return { ...claims, token, host };
 }
 
 // ── the seed ────────────────────────────────────────────────────────────────────────────────────
@@ -397,6 +412,8 @@ Bun.serve({
 			faults.set(sub, held);
 			return json({ ok: true });
 		}
+		if (url.pathname === '/__lakehouse')
+			return json(lakehouseCallsOf(url.searchParams.get('sub') ?? ''));
 		if (url.pathname === '/__ttl' && req.method === 'POST') {
 			ttl.set(url.searchParams.get('sub') ?? '', Number(url.searchParams.get('seconds') ?? 300));
 			return json({ ok: true });
@@ -434,6 +451,10 @@ Bun.serve({
 			if (who.name === 'Broken') {
 				ok(503);
 				return json({ detail: 'the catalog did not answer' }, 503);
+			}
+			if (!(await readAsPerson(who, who.token, who.host))) {
+				ok(403);
+				return json({ detail: 'the lakehouse refused the read' }, 403);
 			}
 			ok(200);
 			if (who.name === 'Nobody') return json({ datasets: [] });
@@ -827,6 +848,7 @@ Bun.serve({
 			(taskId) => taskOf(who.sub, taskId),
 			ok,
 			faultOf(who.sub, url.pathname),
+			() => writeAsService(who, who.host),
 		);
 		if (annotations) return annotations;
 		const projects = await projectsDoor(

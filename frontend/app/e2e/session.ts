@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from '@playwright/test';
+import type { LakehouseCall } from './mock-lakehouse';
 import type { MockIdentity } from './mock-oidc';
 import { EDGE } from './ports';
 
@@ -44,4 +45,18 @@ export async function callsOf(page: Page, who: MockIdentity): Promise<Call[]> {
 		`${EDGE}/api/viewer/__calls?sub=${encodeURIComponent(who.sub)}`,
 	);
 	return (await res.json()) as Call[];
+}
+
+/** What the lakehouse's door admitted for one person (`mock-lakehouse.ts`). */
+export async function lakehouseOf(page: Page, who: MockIdentity): Promise<LakehouseCall[]> {
+	const res = await page.request.get(
+		`${EDGE}/api/viewer/__lakehouse?sub=${encodeURIComponent(who.sub)}`,
+	);
+	return (await res.json()) as LakehouseCall[];
+}
+
+/** The grants the issuer gave one person, in order (`mock-oidc.ts`). */
+export async function grantsOf(page: Page, who: MockIdentity): Promise<string[]> {
+	const res = await page.request.get(`${EDGE}/oidc/__grants?sub=${encodeURIComponent(who.sub)}`);
+	return (await res.json()) as string[];
 }

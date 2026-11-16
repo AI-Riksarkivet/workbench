@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { User, UserManager, WebStorageStateStore, InMemoryWebStorage } from 'oidc-client-ts';
-import { MemoryDPoPStore, dpopSigner } from '../auth.svelte.ts';
+import { MemoryDPoPStore, sessionSigner } from '../auth.svelte.ts';
 import { authorizedFetch, htuOf, setSigner, writeJSON } from './client.ts';
 import { WriteKey } from '../write-key.svelte.ts';
 import * as v from 'valibot';
@@ -53,7 +53,13 @@ async function signedIn(): Promise<{ store: MemoryDPoPStore }> {
 		profile: { sub: 'ada', iss: `${ORIGIN}/oidc`, aud: 'workbench-app', exp: 0, iat: 0 },
 		expires_at: Math.floor(Date.now() / 1000) + 600,
 	});
-	setSigner(dpopSigner(oidc, () => user));
+	setSigner(
+		sessionSigner(
+			oidc,
+			() => user,
+			async () => null,
+		),
+	);
 	return { store };
 }
 

@@ -1,10 +1,17 @@
 """A real-socket OIDC provider and a browser's DPoP key, for the offline suites that sign a person in.
 
 `Provider` serves discovery, its key set and a token endpoint on a loopback port, so the services' own verifier and
-token client reach it over HTTP as they reach Keycloak. Its token endpoint holds the RFC 8693 request to the rules a
-provider applies: the grant type, a subject token it issued and can verify, its type, the audience asked for, and the
-confidential client's authentication; a client-credentials request is answered for the client itself. Each request it
-answered is kept in `requests`.
+token client reach it over HTTP as they reach a real provider, in one of two shapes:
+
+- `keycloak`: it advertises DPoP, and its token endpoint holds the RFC 8693 request to the rules a provider applies: the
+  grant type, a subject token it issued and can verify, its type, the audience asked for, and the confidential client's
+  authentication; a client-credentials request is answered for the client itself.
+- `dex`: as Dex v2.46.1 behaves (rask's ADR 0181, its dev Dex's discovery read 2026-11-16): no DPoP in discovery, the
+  token-exchange grant advertised but refused for one of its own tokens (Dex exchanges only an upstream connector's), a
+  client-credentials token issued for an audience only to a client asking for `audience:server:client_id:<audience>`,
+  with `aud: [<audience>, <client>]`, `azp` the client and `sub` Dex's encoding of the client id.
+
+Each request it answered is kept in `requests`.
 
 `BrowserKey` is the key a browser binds its token to (RFC 9449): its thumbprint goes in the token's `cnf.jkt`, and it
 signs one proof per request.
@@ -20,7 +27,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Final
+from typing import Any, Final, Literal
 from urllib.parse import parse_qs
 
 import jwt
@@ -28,6 +35,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from joserfc import jws
 from joserfc.jwk import ECKey
 from jwt.algorithms import RSAAlgorithm
+
+from service_kit.governed.token_exchange import LakehouseTokens
 
 
 TOKEN_EXCHANGE: Final = "urn:ietf:params:oauth:grant-type:token-exchange"
@@ -37,6 +46,19 @@ LAKEHOUSE_AUDIENCE: Final = "lakehouse"
 CLIENT_ID: Final = "workbench-services"
 CLIENT_SECRET: Final = "client-secret-for-tests"
 IDP_ID: Final = "keycloak"
+#: Dex's cross-client scope for the lakehouse's audience, which the dev Dex's audience client issues to a trusted client.
+LAKEHOUSE_AUDIENCE_SCOPE: Final = f"audience:server:client_id:{LAKEHOUSE_AUDIENCE}"
+
+
+def dex_client_subject(client_id: str) -> str:
+    """Dex's `sub` for a client signed in for itself (`IDTokenSubject{user_id = <client id>}`, base64url, unpadded)."""
+    raw = client_id.encode()
+    return base64.urlsafe_b64encode(b"\x0a" + bytes([len(raw)]) + raw).rstrip(b"=").decode()
+
+
+def remember_verified(tokens: LakehouseTokens, subject: str, token: str) -> None:
+    """Keep ``token`` as ``subject``'s subject token for an exchange, as the door does once it verified the token."""
+    tokens.remember(subject, token, float(jwt.decode(token, options={"verify_signature": False})["exp"]))
 
 
 class BrowserKey:
@@ -62,10 +84,13 @@ class BrowserKey:
 class Provider:
     """The OIDC provider on a loopback port; see the module docstring."""
 
-    def __init__(self) -> None:
+    def __init__(self, shape: Literal["keycloak", "dex"] = "keycloak") -> None:
+        self.shape = shape
         self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self._kid = uuid.uuid4().hex[:8]
         self.requests: list[dict[str, str]] = []
+        #: The paths of the documents it was asked for: discovery and its key set.
+        self.fetches: list[str] = []
         self.refuse_exchange = False
         provider = self
 
@@ -82,6 +107,7 @@ class Provider:
                 self.wfile.write(payload)
 
             def do_GET(self) -> None:
+                provider.fetches.append(self.path)
                 if self.path == "/.well-known/openid-configuration":
                     self._answer(
                         200,
@@ -90,7 +116,9 @@ class Provider:
                             "jwks_uri": f"{provider.issuer}/jwks",
                             "token_endpoint": f"{provider.issuer}/token",
                             "id_token_signing_alg_values_supported": ["RS256"],
-                        },
+                            "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token", TOKEN_EXCHANGE],
+                        }
+                        | ({"dpop_signing_alg_values_supported": ["ES256"]} if provider.shape == "keycloak" else {}),
                     )
                 elif self.path == "/jwks":
                     public = RSAAlgorithm.to_jwk(provider._key.public_key(), as_dict=True)
@@ -110,7 +138,7 @@ class Provider:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
-    def mint(self, sub: str, *, audience: str = WORKBENCH_AUDIENCE, jkt: str | None = None, lifetime: int = 300, **claims: Any) -> str:
+    def mint(self, sub: str, *, audience: str | list[str] = WORKBENCH_AUDIENCE, jkt: str | None = None, lifetime: int = 300, **claims: Any) -> str:
         """A token this provider signs for ``sub`` at ``audience``, bound to ``jkt`` when given."""
         now = int(time.time())
         body: dict[str, Any] = {"iss": self.issuer, "sub": sub, "aud": audience, "iat": now, "exp": now + lifetime} | claims
@@ -123,7 +151,15 @@ class Provider:
         if authorization != expected:
             return 401, {"error": "invalid_client"}
         if form.get("grant_type") == "client_credentials":
+            if self.shape == "dex":
+                if LAKEHOUSE_AUDIENCE_SCOPE not in (form.get("scope") or "").split():
+                    return 200, self._issued(self.mint(dex_client_subject(CLIENT_ID), audience=CLIENT_ID))
+                token = self.mint(dex_client_subject(CLIENT_ID), audience=[LAKEHOUSE_AUDIENCE, CLIENT_ID], azp=CLIENT_ID)
+                return 200, self._issued(token)
             return 200, self._issued(self.mint(f"service-account-{CLIENT_ID}", audience=form.get("audience") or LAKEHOUSE_AUDIENCE))
+        if self.shape == "dex" and form.get("grant_type") == TOKEN_EXCHANGE:
+            # Dex exchanges a token only for the upstream connector named by `connector_id`, never one of its own.
+            return 400, {"error": "invalid_request", "error_description": "Requested connector does not exist."}
         if form.get("grant_type") != TOKEN_EXCHANGE:
             return 400, {"error": "unsupported_grant_type"}
         if form.get("subject_token_type") != ACCESS_TOKEN or form.get("requested_token_type") not in (None, ACCESS_TOKEN):

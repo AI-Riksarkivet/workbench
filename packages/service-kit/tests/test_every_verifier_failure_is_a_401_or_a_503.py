@@ -48,7 +48,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 import jwt
 import pytest
@@ -64,9 +64,10 @@ from service_kit.governed.deps import make_auth_deps
 from service_kit.governed.dpop import ALGORITHMS, DpopVerifier
 from service_kit.governed.identity import PersonVerifier
 from service_kit.governed.oidc import UNKNOWN_KID_REFRESH_INTERVAL_SECONDS, OIDCVerifier
+from service_kit.governed.settings import ClientMarker, OidcProvider
 from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.ns_errors import install_problem_handlers
-from tests.identity import BrowserKey
+from tests.identity import BrowserKey, Provider
 
 
 AUDIENCE = "workbench"
@@ -84,6 +85,7 @@ SIGN_IN_PAGE = b"<!doctype html><title>Sign in</title>"
 
 class _AuthSettings(BaseModel):
     oidc_enabled: bool = True
+    dpop_required: bool = True
     fga_enabled: bool = False
     public_url: str | None = None
     public_mount: str = ""
@@ -212,9 +214,17 @@ def idp(rsa_key: rsa.RSAPrivateKey) -> Iterator[_IdP]:
         server.server_close()
 
 
-def _token(idp: _IdP, key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey, algorithm: str, *, kid: str | None = KID, jkt: str | None = BROWSER.jkt) -> str:
+def _token(
+    idp: _IdP,
+    key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey,
+    algorithm: str,
+    *,
+    kid: str | None = KID,
+    jkt: str | None = BROWSER.jkt,
+    extra: dict[str, object] | None = None,
+) -> str:
     now = int(time.time())
-    claims = {"iss": idp.issuer, "sub": "gina", "aud": AUDIENCE, "iat": now, "exp": now + 300} | ({"cnf": {"jkt": jkt}} if jkt else {})
+    claims = {"iss": idp.issuer, "sub": "gina", "aud": AUDIENCE, "iat": now, "exp": now + 300} | ({"cnf": {"jkt": jkt}} if jkt else {}) | (extra or {})
     return jwt.encode(claims, key, algorithm=algorithm, headers={} if kid is None else {"kid": kid})
 
 
@@ -226,12 +236,16 @@ class _Clock:
         return self.now
 
 
-def _client(idp: _IdP, *, clock: Callable[[], float] = time.monotonic) -> TestClient:
-    """A governed app wired as every governed service wires one: BOTH handler installers, one verifier."""
+def _client(idp: _IdP, *, clock: Callable[[], float] = time.monotonic, further: OidcProvider | None = None, **naming: Any) -> TestClient:
+    """A governed app wired as every governed service wires one: BOTH handler installers, one verifier, its issuer's
+    people named by `naming`'s rule (`OidcProvider`'s fields), the idp id `corp` by default, and a `further` issuer."""
     app = FastAPI()
     register_handlers(app)
     install_problem_handlers(app, logging.getLogger(__name__))
-    app.state.oidc = PersonVerifier(OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True, clock=clock), "corp")
+    providers = [OidcProvider(issuer=idp.issuer, idp_id="corp", **naming), *([further] if further else [])]
+    app.state.oidc = PersonVerifier(
+        OIDCVerifier([provider.issuer for provider in providers], AUDIENCE, cache_ttl=300, allow_insecure=True, clock=clock), providers
+    )
     app.state.dpop = DpopVerifier()
 
     @app.get("/gated")
@@ -270,6 +284,31 @@ def test_a_token_the_key_set_signed_is_accepted(door: str, idp: _IdP, rsa_key: r
 
     assert status == 200, body
     assert json.loads(body) == {"subject": "corp~gina"}
+
+
+#: How a token names its person, as the lakehouse names them: (the issuer's naming rule, the token's own claims, the
+#: principal), or `None` for a token that names no person. The issuer's `sub` is the case above, and a mapped Dex
+#: connector the annotator's sign-in at a Dex-shaped provider
+#: (`services/annotator/tests/test_a_person_signs_in_at_either_shape_of_provider.py`).
+NAMING = {
+    "a-named-subject-claim": ({"subject_claims": ("oid", "sub")}, {"oid": "o-1"}, "corp~o-1"),
+    "a-dex-connector-unmapped": ({"connectors": {"local": "dex"}}, {"federated_claims": {"connector_id": "ldap", "user_id": "u-1"}}, None),
+    "a-dex-token-without-federated-claims": ({"connectors": {"local": "dex"}}, {}, None),
+    "a-dex-client-for-itself": ({}, {"sub": "Cgl3b3JrYmVuY2g", "azp": "workbench"}, None),
+    "an-rfc-9068-client": ({}, {"sub": "workbench", "client_id": "workbench"}, None),
+    "a-marked-client": ({"client_marker": ClientMarker(claim="client_id")}, {"client_id": "workbench"}, None),
+    "a-sub-that-is-its-own-audience": ({}, {"sub": AUDIENCE}, None),
+    "a-sub-that-is-its-authorized-party": ({}, {"sub": "workbench-app", "azp": "workbench-app"}, None),
+}
+
+
+@pytest.mark.parametrize(("naming", "claims", "principal"), NAMING.values(), ids=NAMING.keys())
+def test_a_token_names_its_person_as_the_lakehouse_does_and_a_clients_names_none(
+    naming: dict[str, Any], claims: dict[str, object], principal: str | None, idp: _IdP, rsa_key: rsa.RSAPrivateKey
+) -> None:
+    status, body = _call(idp, "/gated", _token(idp, rsa_key, "RS256", extra=claims), client=_client(idp, **naming))
+
+    assert (status, json.loads(body).get("subject")) == ((200, principal) if principal else (401, None)), body
 
 
 @pytest.mark.parametrize("door", ["/gated"])
@@ -578,7 +617,8 @@ DOOR_REFUSALS = {
 def test_a_request_without_a_dpop_bound_token_and_its_proof_is_challenged(
     headers: dict[str, str], error: str | None, idp: _IdP, rsa_key: rsa.RSAPrivateKey
 ) -> None:
-    token = _token(idp, rsa_key, "RS256")
+    # Bound to no key: a deployment that requires a proof refuses a bearer whether or not the token names a key.
+    token = _token(idp, rsa_key, "RS256", jkt=None)
     proof = BROWSER.proof("GET", URL, token)
 
     response = _client(idp).get("/gated", headers={k: v.format(token=token, proof=proof) for k, v in headers.items()})
@@ -586,6 +626,72 @@ def test_a_request_without_a_dpop_bound_token_and_its_proof_is_challenged(
     assert response.status_code == 401
     algs = f'algs="{" ".join(sorted(ALGORITHMS))}"'
     assert response.headers["www-authenticate"] == (f'DPoP error="{error}", {algs}' if error else f"DPoP {algs}")
+
+
+_DPOP_ALGS = f'algs="{" ".join(sorted(ALGORITHMS))}"'
+_BEARER_REFUSED = f'Bearer error="invalid_token", DPoP {_DPOP_ALGS}'
+_PROOF_REFUSED = f'Bearer, DPoP error="invalid_dpop_proof", {_DPOP_ALGS}'
+
+#: Where the provider binds no token: how a token is presented, its confirmation claim, whether a proof goes with it,
+#: and the status and challenge it is answered. Any `cnf` at all needs its proof. A bearer bound to no key is accepted
+#: there: the sign-in at a Dex-shaped provider in the annotator's and the viewer's suites.
+UNBOUND_PROVIDER = {
+    "a-bearer-bound-to-a-key": ("Bearer", {"jkt": BROWSER.jkt}, False, 401, _BEARER_REFUSED),
+    "a-bearer-confirmed-by-a-certificate": ("Bearer", {"x5t#S256": "certificate-thumbprint"}, False, 401, _BEARER_REFUSED),
+    "a-bearer-with-a-null-confirmation": ("Bearer", None, False, 401, _BEARER_REFUSED),
+    "a-bound-token-with-its-proof": ("DPoP", {"jkt": BROWSER.jkt}, True, 200, None),
+    "a-bound-token-without-its-proof": ("DPoP", {"jkt": BROWSER.jkt}, False, 401, _PROOF_REFUSED),
+    "a-dpop-token-bound-to-no-key": ("DPoP", "absent", True, 401, _PROOF_REFUSED),
+}
+
+
+@pytest.mark.parametrize(("scheme", "cnf", "with_proof", "status", "challenge"), UNBOUND_PROVIDER.values(), ids=UNBOUND_PROVIDER.keys())
+def test_where_the_provider_binds_no_token_a_bearer_is_accepted_only_when_it_names_no_key(
+    scheme: str, cnf: object, with_proof: bool, status: int, challenge: str | None, idp: _IdP, rsa_key: rsa.RSAPrivateKey
+) -> None:
+    client = _client(idp)
+    cast(FastAPI, client.app).dependency_overrides[_auth_settings] = lambda: _AuthSettings(dpop_required=False)
+    token = _token(idp, rsa_key, "RS256", jkt=None, extra=None if cnf == "absent" else {"cnf": cnf})
+    proof = {"DPoP": BROWSER.proof("GET", URL, token)} if with_proof else {}
+
+    response = client.get("/gated", headers={"Authorization": f"{scheme} {token}"} | proof)
+
+    assert response.status_code == status, response.text
+    assert response.headers.get("www-authenticate") == challenge
+
+
+def test_a_principal_that_reads_as_a_machine_is_never_a_person_whatever_the_issuers_rule(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """Settings refuse a machine's idp id for people; the door holds the line too, for a rule built around them."""
+    app_client = _client(idp)
+    unchecked = OidcProvider.model_construct(issuer=idp.issuer, idp_id="corp-client", connectors={}, subject_claims=None, client_marker=None)
+    cast(FastAPI, app_client.app).state.oidc = PersonVerifier(OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True), [unchecked])
+
+    status, _body = _call(idp, "/gated", _token(idp, rsa_key, "RS256"), client=app_client)
+
+    assert status == 401
+
+
+def test_a_token_from_a_further_issuer_is_named_by_that_issuers_own_rule(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    further = Provider()
+    client = _client(idp, further=OidcProvider(issuer=further.issuer, idp_id="further", allow_insecure=True))
+    token = further.mint("ada", audience=AUDIENCE, jkt=BROWSER.jkt)
+    try:
+        status, body = _call(idp, "/gated", token, client=client)
+    finally:
+        further.close()
+
+    assert (status, json.loads(body)) == (200, {"subject": "further~ada"})
+
+
+def test_a_token_naming_an_issuer_the_deployment_does_not_is_refused_and_its_issuer_never_asked(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    stranger = Provider()
+    token = stranger.mint("ada", audience=AUDIENCE, jkt=BROWSER.jkt)
+    try:
+        status, _body = _call(idp, "/gated", token)
+    finally:
+        stranger.close()
+
+    assert (status, stranger.fetches) == (401, [])
 
 
 def test_behind_a_gateway_that_rewrites_the_prefix_the_proof_names_the_public_url(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:

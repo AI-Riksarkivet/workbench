@@ -14,7 +14,8 @@
 //                              beyond this machine may reach the services through it)
 //   VIEWER_API, SEARCH_API,    /api/viewer, /api/search, /api/annotator → each service's root
 //   ANNOTATOR_API
-//   OIDC_MOCK                  /oidc → the mock issuer (the Playwright suite's; unset, no /oidc route)
+//   OIDC_MOCK                  /oidc and /oidc-dex → the mock issuer in its two shapes (the Playwright suite's; unset,
+//                              neither route)
 //   WORKBENCH_APP_CONFIG_FILE  passed through to serve.ts (absent: /config.json 404s and the app refuses to run)
 //   INNER is PORT + 1000, where serve.ts listens behind this edge.
 
@@ -29,6 +30,7 @@ const routes: { prefix: string; target: string | undefined }[] = [
 	{ prefix: '/api/search', target: env.SEARCH_API },
 	{ prefix: '/api/annotator', target: env.ANNOTATOR_API },
 	{ prefix: '/oidc', target: env.OIDC_MOCK },
+	{ prefix: '/oidc-dex', target: env.OIDC_MOCK },
 ];
 
 const inner = Bun.spawn(['bun', 'serve.ts'], {

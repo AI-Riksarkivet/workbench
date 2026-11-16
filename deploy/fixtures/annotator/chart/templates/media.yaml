@@ -1,0 +1,214 @@
+{{- /*
+The viewer and search, from the one `media` image: each reads datasets through the catalog's doors as the person, on the
+token `auth.lakehouse.delegation` says (exchanged, or the person's own passed on), and the viewer also reads a signed
+media link's one cell as itself. Each is published at its own prefix on the Gateway the annotator's route attaches to,
+rewritten to the service's root, so the prefix is what the browser's DPoP proofs name.
+*/ -}}
+{{- $r := .Values.rask.release -}}
+{{- $l := .Values.lifecycle -}}
+{{- $drain := sub $l.terminationGracePeriodSeconds (add $l.preStopSeconds $l.teardownSeconds) -}}
+{{- $m := .Values.media -}}
+{{- range $service := list "viewer" "search" }}
+{{- $s := index $m $service -}}
+{{- if $s.enabled }}
+{{- $name := printf "%s-%s" $r $service -}}
+{{- $selector := dict "app.kubernetes.io/name" "rask" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" $service -}}
+{{- /* The viewer reads a signed link's cell as itself, so it holds the confidential client; search reads only as the
+person, so it holds it only where it exchanges the person's token. */ -}}
+{{- $client := and $.Values.auth.enabled (or (eq $service "viewer") (eq $.Values.auth.lakehouse.delegation "exchange")) }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $r }}-sa-{{ $service }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $s.port }}
+      targetPort: http
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  replicas: {{ $s.replicas }}
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $selector | nindent 8 }}
+        lance.dev/logs: otlp
+    spec:
+      terminationGracePeriodSeconds: {{ $l.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ $r }}-sa-{{ $service }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $service }}
+          image: "{{ $m.image.repository }}:{{ required "media.image.tag must be set" $m.image.tag }}"
+          imagePullPolicy: {{ $m.image.pullPolicy }}
+          args:
+            - "uvicorn"
+            - "{{ $service }}.main:app"
+            - "--host=0.0.0.0"
+            - "--port={{ $s.port }}"
+            - "--timeout-graceful-shutdown={{ $drain }}"
+            - "--proxy-headers"
+            - "--forwarded-allow-ips={{ $.Values.forwardedAllowIps }}"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $l.preStopSeconds }}"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: http
+              containerPort: {{ $s.port }}
+          env:
+            - { name: MEDIA_HOST, value: "0.0.0.0" }
+            - { name: MEDIA_DOCS, value: {{ $.Values.docs | quote }} }
+            # The app calls each service's doors under `/api` below the service's public prefix.
+            - { name: WORKBENCH_API_PREFIX, value: "/api" }
+            - { name: MEDIA_CATALOG_URI, value: {{ $.Values.catalog.url | default (printf "http://%s-catalog:2333" $r) | quote }} }
+            {{- if eq $service "viewer" }}
+            - { name: VIEWER_MEDIA_URL_KEY_FILE, value: /var/run/secrets/viewer/media-url-key/media-url-key }
+            {{- end }}
+            {{- if $.Values.otel.enabled }}
+            - { name: WORKBENCH_OTEL_ENABLED, value: "true" }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ include "annotator.otlpEndpoint" $ | quote }} }
+            - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf" }
+            - { name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS, value: "/livez,/readyz,/healthz,/api/health,/metrics" }
+            - { name: OTEL_SERVICE_NAME, value: {{ $service | quote }} }
+            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=workbench,deployment.environment.name={{ $.Values.otel.environment }},service.version={{ $.Chart.AppVersion }}" }
+            {{- end }}
+            {{- if $.Values.auth.enabled }}
+            {{- include "workbench.oidcEnv" (list $ (include "workbench.publicUrl" (list $ $s.prefix))) | nindent 12 }}
+            {{- if $client }}
+            {{- include "workbench.lakehouseEnv" $ | nindent 12 }}
+            {{- else }}
+            - { name: WORKBENCH_LAKEHOUSE_AUDIENCE, value: {{ required "auth.lakehouse.audience: the lakehouse's audience" $.Values.auth.lakehouse.audience | quote }} }
+            - { name: WORKBENCH_LAKEHOUSE_DELEGATION, value: {{ $.Values.auth.lakehouse.delegation | quote }} }
+            {{- end }}
+            {{- else }}
+            # Authentication off, said the one loud way the services accept: a local stack only.
+            - { name: WORKBENCH_OIDC_ENABLED, value: "false" }
+            - { name: WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED, value: "true" }
+            {{- end }}
+          startupProbe:
+            httpGet: { path: /livez, port: http }
+            periodSeconds: 10
+            failureThreshold: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /livez, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml $s.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if eq $service "viewer" }}
+            - { name: media-url-key, mountPath: /var/run/secrets/viewer/media-url-key, readOnly: true }
+            {{- end }}
+            {{- if $client }}
+            - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
+            {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: "2Gi" } }
+        {{- if eq $service "viewer" }}
+        # The media-URL signing key alone: the kubelet mounts it, so the pod's ServiceAccount reads no Secret.
+        - name: media-url-key
+          secret:
+            secretName: {{ required "media.viewer.mediaUrlKey.name: the Secret holding the viewer's media-URL signing key" $s.mediaUrlKey.name }}
+            items: [{ key: {{ $s.mediaUrlKey.key }}, path: media-url-key }]
+        {{- end }}
+        {{- if $client }}
+        - name: oidc-client
+          secret:
+            secretName: {{ required "auth.oidc.client.secret.name: the Secret holding the workbench client's secret" $.Values.auth.oidc.client.secret.name }}
+            items: [{ key: {{ $.Values.auth.oidc.client.secret.key }}, path: client-secret }]
+        {{- end }}
+{{- if $.Values.route.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml $.Values.route.parentRefs | nindent 4 }}
+  {{- with $.Values.route.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: {{ $s.prefix | quote }} }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path: { type: ReplacePrefixMatch, replacePrefixMatch: / }
+      backendRefs:
+        - name: {{ $name }}
+          port: {{ $s.port }}
+{{- end }}
+{{- if $.Values.networkPolicy.enabled }}
+---
+# The Gateway's traffic on the service's port (from `networkPolicy.edgeFrom` when named); each request still proves its
+# person.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-edge
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: {{ $s.port }} }
+      {{- with $.Values.networkPolicy.edgeFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

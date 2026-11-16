@@ -1,22 +1,34 @@
 /**
  * Sign-in, in the browser: OpenID Connect authorization code with PKCE against the platform's issuer,
- * as the workbench's own PUBLIC client, with the tokens bound to this tab by DPoP (RFC 9449).
+ * as the workbench's own PUBLIC client, at whatever OIDC provider the deployment names.
  *
  * The app has no backend, so no secret exists to hold: the browser proves possession of the code with
- * the PKCE verifier, keeps the tokens IN MEMORY (`InMemoryWebStorage`), and keeps the DPoP key pair in
- * memory too (`MemoryDPoPStore`). oidc-client-ts 3.5.0 generates that pair with
- * `crypto.subtle.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, false, ...)`: the private key is
- * NOT EXTRACTABLE, so a script injected into the page can sign with it while the page lives but cannot
- * carry it away, and a token it steals is useless without it (RFC 10017 § 6.1). The key is made at the
- * code exchange, which the library signs with it, so the issuer binds the token to it (`cnf.jkt`).
- * Tokens and key die with the tab together; a stored key would outlive tokens nobody holds.
- * Only the transient sign-in state (the PKCE verifier and the return path, for one redirect) rides
- * `sessionStorage`. A reload starts signed out and goes back to the issuer.
+ * the PKCE verifier and keeps the tokens IN MEMORY (`InMemoryWebStorage`). Only the transient sign-in
+ * state (the PKCE verifier and the return path, for one redirect) rides `sessionStorage`. A reload
+ * starts signed out and goes back to the issuer.
+ *
+ * WHAT THE PROVIDER OFFERS DECIDES THE REST, read from its discovery document before anything is asked:
+ *
+ * - DPoP (RFC 9449), where discovery advertises `dpop_signing_alg_values_supported` with ES256 (the
+ *   algorithm oidc-client-ts 3.5.0 signs with) and `/config.json` does not say `dpop: "off"`; where it says
+ *   `dpop: "required"` (the services require a proof), a provider that does not offer it is refused. The key
+ *   pair is then made at the code exchange, which the library signs with it, so the issuer binds the
+ *   token to it (`cnf.jkt`), and kept in memory (`MemoryDPoPStore`). oidc-client-ts generates it with
+ *   `crypto.subtle.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, false, ...)`: the private key is
+ *   NOT EXTRACTABLE, so a script injected into the page can sign with it while the page lives but
+ *   cannot carry it away, and a token it steals is useless without it (RFC 10017 § 6.1). Tokens and key
+ *   die with the tab together.
+ * - Otherwise (Dex advertises no DPoP, measured on the dev Dex v2.46.1 2026-11-16) the token is a plain
+ *   bearer held in memory, and a request presents it under the scheme its `token_type` names.
+ * - Renewal: with a refresh token (the provider's own, or Dex's for `offline_access`), an expired session
+ *   is renewed in place (`signinSilent`, which oidc-client-ts sends with a DPoP proof of the same key
+ *   when the session is bound); without one, or when the provider refuses, the person signs in again.
  *
  * The issuer, client, scopes and the services' public bases come from `/config.json` (`config.ts`).
  */
 import { InMemoryWebStorage, User, UserManager, WebStorageStateStore } from 'oidc-client-ts';
-import type { DPoPState, UserManagerSettings } from 'oidc-client-ts';
+import type { DPoPState, OidcMetadata, UserManagerSettings } from 'oidc-client-ts';
+import * as v from 'valibot';
 import { readConfig } from './config.ts';
 import { setSigner, type Signer } from './api/client.ts';
 import { setServices } from './api/services.ts';
@@ -69,6 +81,8 @@ let manager: UserManager | null = null;
 /** The user oidc-client-ts answered, held for signing; never rendered. */
 let user: User | null = null;
 let ready: Promise<void> | null = null;
+/** The renewal in flight, which every caller that finds the session expired waits on. */
+let renewing: Promise<User | null> | null = null;
 
 function toSession(held: User): Session {
 	const claims = held.profile;
@@ -81,19 +95,93 @@ function toSession(held: User): Session {
 	};
 }
 
-/** The signer of `held()`'s requests: its bound token and a fresh proof for each `htu` and `method`,
- *  signed by `oidc` with the key it holds for the client. Nobody held, or an expired token: no
- *  credentials, and the request goes without. */
-export function dpopSigner(oidc: UserManager, held: () => User | null): Signer {
+/** How long before its expiry a session is renewed, so a request signed on it does not arrive after it lapsed. */
+export const RENEW_MARGIN_SECONDS = 2;
+
+/** Whether `held` is close enough to its expiry to be renewed before it is used. */
+const due = (held: User): boolean => (held.expires_in ?? Infinity) <= RENEW_MARGIN_SECONDS;
+
+/** The algorithm oidc-client-ts signs its DPoP proofs with. */
+const DPOP_ALGORITHM = 'ES256';
+
+/** The part of the provider's discovery document the app decides by; the rest is handed to oidc-client-ts. */
+const DiscoverySchema = v.looseObject({
+	issuer: v.string(),
+	authorization_endpoint: v.string(),
+	token_endpoint: v.string(),
+	dpop_signing_alg_values_supported: v.optional(v.array(v.string()), []),
+});
+
+/** The provider's discovery document, and whether it binds tokens with an algorithm the app signs; or why it could not
+ *  be read. */
+async function discover(
+	fetch: typeof globalThis.fetch,
+	authority: string,
+): Promise<{ metadata: Partial<OidcMetadata>; dpop: boolean } | { error: string }> {
+	const url = `${authority}/.well-known/openid-configuration`;
+	let body: unknown;
+	try {
+		const res = await fetch(url, { headers: { accept: 'application/json' } });
+		if (!res.ok) return { error: `${url} answered ${res.status}` };
+		body = await res.json();
+	} catch (err) {
+		return { error: `${url} could not be read: ${String(err)}` };
+	}
+	const read = v.safeParse(DiscoverySchema, body);
+	if (!read.success)
+		return { error: `${url} is not a discovery document: ${v.summarize(read.issues)}` };
+	// RFC 8414 § 3.3: the document's issuer is the one asked for, or none of its endpoints may be used.
+	if (read.output.issuer.replace(/\/$/, '') !== authority) {
+		return { error: `${url} names the issuer ${read.output.issuer}, not ${authority}` };
+	}
+	return {
+		metadata: read.output as Partial<OidcMetadata>,
+		dpop: read.output.dpop_signing_alg_values_supported.includes(DPOP_ALGORITHM),
+	};
+}
+
+/** The signer of `held()`'s requests. A session bound by DPoP presents its token with a fresh proof for each `htu` and
+ *  `method`, signed by `oidc` with the key it holds for the client; a bearer session presents its token alone. A
+ *  session within `RENEW_MARGIN_SECONDS` of its expiry is renewed first where `renew` can, and nobody held, or a
+ *  session that has expired, sends the request without credentials. */
+export function sessionSigner(
+	oidc: UserManager,
+	held: () => User | null,
+	renew: () => Promise<User | null>,
+): Signer {
 	return async (htu, method) => {
-		const current = held();
+		let current = held();
+		if (current && due(current) && current.refresh_token) current = (await renew()) ?? current;
 		if (!current || current.expired) return null;
+		if (current.token_type.toLowerCase() !== 'dpop')
+			return { token: current.access_token, proof: null };
 		const proof = await oidc.dpopProof(htu, current, method);
 		return proof ? { token: current.access_token, proof } : null;
 	};
 }
 
-/** Read the config once and build the OIDC client. Idempotent; every caller awaits the same read. */
+/** Renew the session with its refresh token, once however many callers ask at the same time; null when there is none
+ *  to renew with, or the provider refused. */
+function renew(): Promise<User | null> {
+	renewing ??= (async () => {
+		try {
+			if (!manager || !user?.refresh_token) return null;
+			const fresh = await manager.signinSilent();
+			if (!fresh) return null;
+			user = fresh;
+			auth.session = toSession(fresh);
+			return fresh;
+		} catch {
+			return null;
+		} finally {
+			renewing = null;
+		}
+	})();
+	return renewing;
+}
+
+/** Read the config and the provider's discovery once, and build the OIDC client. Idempotent; every caller awaits the
+ *  same read. */
 export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Promise<void> {
 	ready ??= (async () => {
 		const read = await readConfig(fetch);
@@ -109,8 +197,19 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
 		const config = read.config;
 		setServices(config.services);
 		setCanvasSettings(config.canvas);
+		const authority = new URL(config.issuer, location.origin).href.replace(/\/$/, '');
+		const provider = await discover(fetch, authority);
+		if ('error' in provider) {
+			auth.configError = `the issuer's discovery document: ${provider.error}`;
+			return;
+		}
+		if (config.dpop === 'required' && !provider.dpop) {
+			auth.configError = `this deployment requires DPoP-bound tokens, and the issuer's discovery offers no ${DPOP_ALGORITHM} DPoP`;
+			return;
+		}
 		manager = new UserManager({
-			authority: new URL(config.issuer, location.origin).href.replace(/\/$/, ''),
+			authority,
+			metadata: provider.metadata,
 			client_id: config.clientId,
 			redirect_uri: `${location.origin}/auth/callback`,
 			post_logout_redirect_uri: `${location.origin}/`,
@@ -118,12 +217,12 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
 			scope: config.scopes.join(' '),
 			userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
 			stateStore: new WebStorageStateStore({ store: window.sessionStorage }),
-			dpop: { store: new MemoryDPoPStore() },
+			...(config.dpop !== 'off' && provider.dpop ? { dpop: { store: new MemoryDPoPStore() } } : {}),
 			loadUserInfo: false,
 			automaticSilentRenew: false,
 			monitorSession: false,
 		});
-		setSigner(dpopSigner(manager, () => user));
+		setSigner(sessionSigner(manager, () => user, renew));
 		auth.enabled = true;
 	})();
 	return ready;
@@ -143,8 +242,15 @@ export async function login(returnTo: string, { reauthenticate = false } = {}): 
 	});
 }
 
-/** Finish the redirect: exchange the code (with the PKCE verifier and a DPoP proof) and hold the
- *  tokens in memory. Answers the same-origin path the person was on when sent to sign in. */
+/** The session has ended: renew it in place where it can be, or send the person to sign in again and come back to
+ *  `returnTo`. */
+export async function renewOrSignIn(returnTo: string): Promise<void> {
+	if (await renew()) return;
+	await login(returnTo);
+}
+
+/** Finish the redirect: exchange the code (with the PKCE verifier, and a DPoP proof where the session is bound) and
+ *  hold the tokens in memory. Answers the same-origin path the person was on when sent to sign in. */
 export async function completeLogin(): Promise<string> {
 	await initAuth();
 	if (!manager) return '/';
@@ -157,9 +263,9 @@ export async function completeLogin(): Promise<string> {
 /** End the session here, and at the issuer when it advertises an end-session endpoint.
  *
  *  `signoutRedirect` reads the held user's id token to send as `id_token_hint` (which session to end)
- *  and removes the user, and with it the DPoP key, before it navigates; removing the user first would
- *  send the request without the hint. An issuer with no end-session endpoint offers no way to end its
- *  session from here, so the browser goes to sign-in with `prompt=login` and whoever comes next must
+ *  and removes the user, and with it any DPoP key, before it navigates; removing the user first would
+ *  send the request without the hint. An issuer with no end-session endpoint (Dex) offers no way to end
+ *  its session from here, so the browser goes to sign-in with `prompt=login` and whoever comes next must
  *  authenticate. */
 export async function logout(): Promise<void> {
 	await initAuth();
@@ -177,9 +283,4 @@ export async function logout(): Promise<void> {
 	await manager.removeUser();
 	const next = new URLSearchParams({ [REAUTHENTICATE.param]: REAUTHENTICATE.value });
 	location.assign(`/auth/login?${next}`);
-}
-
-/** Whether the held token has expired (a token with no expiry claim never does). */
-export function expired(session: Session, nowSeconds = Math.floor(Date.now() / 1000)): boolean {
-	return session.expiresAt > 0 && session.expiresAt <= nowSeconds;
 }

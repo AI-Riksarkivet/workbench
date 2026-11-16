@@ -8,8 +8,15 @@
  *   `<this origin><base><path>`, and each service is configured with the same `<origin><base>` as its
  *   `WORKBENCH_PUBLIC_URL`, so the two agree with nothing in between to translate.
  * - `issuer`, `clientId` and `scopes` are the workbench's own public client at the platform's OIDC
- *   provider. A stack that signs nobody in says `{"signIn": false}` instead; a missing or malformed
- *   config is an error the app refuses to run past, never a quiet fall-back to signing nobody in.
+ *   provider. The scopes are how the token comes to name its audiences: where the provider exchanges no
+ *   token for the lakehouse (Dex), they ask for the lakehouse's audience too (Dex's
+ *   `audience:server:client_id:<audience>`), and the services pass the person's token on. A stack that
+ *   signs nobody in says `{"signIn": false}` instead; a missing or malformed config is an error the app
+ *   refuses to run past, never a quiet fall-back to signing nobody in.
+ * - `dpop` (optional): whether tokens are bound to the tab with DPoP (`auth.svelte.ts`). `required` (where
+ *   the services require a proof) signs in only at a provider whose discovery offers DPoP, and refuses to
+ *   run otherwise; `offered` (the default) binds where the provider offers it and presents a bearer where
+ *   it does not; `off` never asks for a bound token.
  * - `canvas` (optional) tunes the labeling canvas: `autosaveIdleSeconds`, how long after the last edit an autosave
  *   writes (4 by default).
  */
@@ -56,6 +63,7 @@ const SignInSchema = v.object({
 	issuer: v.pipe(v.string(), v.minLength(1)),
 	clientId: v.pipe(v.string(), v.minLength(1)),
 	scopes: v.array(v.string()),
+	dpop: v.optional(v.picklist(['required', 'offered', 'off']), 'offered'),
 	services: ServicesSchema,
 	canvas: v.optional(CanvasSchema, DEFAULT_CANVAS),
 });

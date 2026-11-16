@@ -17,7 +17,8 @@ Security posture (see CHANGELOG in the task notes):
 * **Clock-skew leeway.** A small, configurable ``leeway`` absorbs clock drift
   between us and the IdP while we still *require* ``exp`` / ``iat`` / ``aud``.
 * **HTTPS enforcement.** Both the issuer and its ``jwks_uri`` must be HTTPS unless
-  ``allow_insecure`` is set (needed only for a local development provider over http).
+  ``allow_insecure`` is set, or the issuer is one of ``insecure_issuers`` (needed only for a local development
+  provider over http, and declared issuer by issuer).
 * **Multiple accepted issuers.** ``issuer`` may be a single string or a list; each
   is discovered independently and a token is verified against the issuer whose
   discovery document matches the token's ``iss`` claim.
@@ -47,7 +48,7 @@ import logging
 import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Annotated, Any, Final, NamedTuple
 from urllib.parse import urlsplit
@@ -254,6 +255,7 @@ class OIDCVerifier:
         allowed_algorithms: tuple[str, ...] | list[str] = DEFAULT_ALLOWED_ALGORITHMS,
         leeway: int = 60,
         allow_insecure: bool = False,
+        insecure_issuers: Collection[str] = (),
         discovery_overrides: dict[str, str] | None = None,
         fetch_token_file: str | None = None,
         ca_file: str | None = None,
@@ -275,6 +277,7 @@ class OIDCVerifier:
         self._refresh_paces = {iss: _RefreshPace(clock) for iss in self._issuers}
         self._leeway = leeway
         self._allow_insecure = allow_insecure
+        self._insecure_issuers = frozenset(iss.rstrip("/") for iss in insecure_issuers)
         self._credential = _FetchCredential(fetch_token_file, ca_file)
         # Keep the configured allowlist as an ordered, de-duplicated set of upper-cased
         # algorithm names so the intersection with the provider is deterministic.
@@ -313,7 +316,7 @@ class OIDCVerifier:
         _require_https(
             discovery_base + _DISCOVERY_SUFFIX,
             label="issuer" if override is None else "discovery override",
-            allow_insecure=self._allow_insecure,
+            allow_insecure=self._allow_insecure or configured_issuer in self._insecure_issuers,
         )
         # OURS, NOT THE CALLER'S. Everything from here to the mismatch check below is a statement
         # about this deployment's configuration and the issuer it points at — the presented token is
@@ -357,7 +360,7 @@ class OIDCVerifier:
         jwks_uri = spec.jwks_uri
         if override is not None and (jwks_uri == configured_issuer or jwks_uri.startswith(configured_issuer + "/")):
             jwks_uri = override + jwks_uri[len(configured_issuer) :]
-        _require_https(jwks_uri, label="jwks_uri", allow_insecure=self._allow_insecure)
+        _require_https(jwks_uri, label="jwks_uri", allow_insecure=self._allow_insecure or configured_issuer in self._insecure_issuers)
         algorithms = self._safe_algorithms(spec.id_token_signing_alg_values_supported)
         if not algorithms:
             # The provider's list against this deployment's allowlist; the token's own `alg` is not read.

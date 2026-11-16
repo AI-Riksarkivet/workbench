@@ -117,13 +117,20 @@ export async function verifyProof(
 	};
 }
 
-/** What a mock access token carries. Unsigned: only the mocks read it, and what they check is the
- *  binding to the proof's key, which a token cannot fake. */
+/** What a mock access token carries. Unsigned: only the mocks read it, and what they check is its issuer, its
+ *  audiences and, for a bound token, the binding to the proof's key, which a token cannot fake. */
 export interface TokenClaims {
+	iss: string;
+	aud: string[];
 	sub: string;
 	name: string;
 	email: string;
-	cnf: { jkt: string };
+	/** The key the token is bound to; absent for a provider that binds none. */
+	cnf?: { jkt: string };
+	/** The client the token was issued to, where it names audiences beside it (Dex's cross-client tokens). */
+	azp?: string;
+	/** Dex's claims for the `federated:id` scope: the connector and the user id it reports. */
+	federated_claims?: { connector_id: string; user_id: string };
 	exp: number;
 }
 
