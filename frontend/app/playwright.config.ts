@@ -28,12 +28,12 @@ export default defineConfig({
 	// must refuse plainly. `webgpu` runs the specs that draw on Chromium's software adapter (SwiftShader
 	// over Vulkan, `--enable-unsafe-webgpu`), in the new headless mode (`channel: 'chromium'`), whose
 	// screenshots composite a WebGPU canvas (the headless shell's show it blank, measured 2026-11-14), so a
-	// spec reads what the renderer drew. The labeling canvas (`canvas.spec.ts`) draws with WebGPU too.
+	// spec reads what the renderer drew. The labeling canvas (`canvas.spec.ts`) and the player's page viewer (`player.spec.ts`) draw with WebGPU too.
 	projects: [
-		{ name: 'chromium', testIgnore: /(webgpu|canvas)\.spec\.ts$/ },
+		{ name: 'chromium', testIgnore: /(webgpu|canvas|player)\.spec\.ts$/ },
 		{
 			name: 'webgpu',
-			testMatch: /(webgpu|canvas)\.spec\.ts$/,
+			testMatch: /(webgpu|canvas|player)\.spec\.ts$/,
 			// Every frame here is drawn on the CPU, page transitions included: measured 2026-11-16 at 8 workers on a
 			// loaded host, a 0.25 s view transition took 2.4 s to finish and the labeling canvas was ready 5-6 s
 			// after the page load, past the 5 s default. An assertion in this project waits up to 10 s.

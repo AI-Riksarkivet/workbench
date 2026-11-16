@@ -192,14 +192,15 @@ const DATASETS = {
 type DatasetId = keyof typeof DATASETS;
 const isDataset = (id: string | null): id is DatasetId => id !== null && id in DATASETS;
 
-/** A small picture per document, so a thumbnail and its media are visibly that document's. */
-const picture = (doc: Doc, role: string): string =>
+/** A small picture per document, so a thumbnail and its media are visibly that document's; a chunk's frame turns the
+ *  document's hue by its chunk, so each page of a document is visibly its own. */
+const picture = (doc: Doc, role: string, chunk = 0): string =>
 	`<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">` +
-	`<rect width="160" height="160" fill="hsl(${doc.hue} 60% 45%)"/>` +
+	`<rect width="160" height="160" fill="hsl(${doc.hue + chunk * 120} 60% 45%)"/>` +
 	`<text x="80" y="88" font-size="16" text-anchor="middle" fill="white">${doc.doc_id} ${role}</text></svg>`;
 
 /** The signed links this viewer handed out: the link names one cell and is its own permission. */
-const signed = new Map<string, { doc: Doc; role: string; exp: number }>();
+const signed = new Map<string, { doc: Doc; role: string; chunk: number; exp: number }>();
 /** How long a person's links serve, in seconds: 300, as the viewer's default, unless a spec shortens its
  *  own (`/__ttl`) to see a link expire in real time without touching another spec's. */
 const ttl = new Map<string, number>();
@@ -407,7 +408,7 @@ Bun.serve({
 			const held = signed.get(link[1] ?? '');
 			if (!held) return json({ detail: 'the media URL is not this viewer’s signature' }, 403);
 			if (Date.now() / 1000 > held.exp) return json({ detail: 'the media URL expired' }, 403);
-			return new Response(picture(held.doc, held.role), {
+			return new Response(picture(held.doc, held.role, held.chunk), {
 				headers: {
 					'content-type': 'image/svg+xml',
 					'content-security-policy': "sandbox; default-src 'none'",
@@ -480,7 +481,12 @@ Bun.serve({
 						}
 						const token = crypto.randomUUID();
 						const exp = Date.now() / 1000 + (ttl.get(who.sub) ?? 300);
-						signed.set(token, { doc, role: item.role, exp });
+						signed.set(token, {
+							doc,
+							role: item.role,
+							chunk: item.role === 'frame' ? (item.keys?.[0] ?? 0) : 0,
+							exp,
+						});
 						return { url: `/api/signed-media/${token}`, expires_at: exp };
 					}),
 				},

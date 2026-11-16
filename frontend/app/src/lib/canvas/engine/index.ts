@@ -5,18 +5,12 @@
  * interaction/tools/editors and geometry. Imports no Svelte and no
  * `$app`; the canvas's Svelte binding (`#lib/canvas`) is its one consumer.
  *
- * THE PIXI ENTRY. pixi 8 builds its uniform-buffer and shader sync functions with `new Function`, in
- * its WebGPU renderer too (`createUboSyncFunction.mjs`), which the app's CSP refuses: it names no
- * `unsafe-eval`. `pixi.js/unsafe-eval` installs pixi's own precompiled sync functions in their place,
- * so it is imported here, before anything else, and `Application` is re-exported from here: the canvas
- * cannot make a renderer this module has not prepared.
+ * The picture under the shapes, its stage and its view (fit, zoom, pan) are the shared image viewer's
+ * (`#lib/media/image`), whose pixi entry prepares every renderer for the app's CSP; this engine draws
+ * over that stage.
  */
-import 'pixi.js/unsafe-eval';
-
-export { Application } from 'pixi.js';
 
 // ── Rendering (PixiJS plugins + context types) ──
-export * from './pixi/ImagePlugin.js';
 export * from './pixi/ArrowDataPlugin.js';
 export * from './pixi/types.js';
 

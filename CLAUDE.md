@@ -161,14 +161,14 @@ Two language-pure planes, as in rask; never blur them.
     P-256 key), and calls each service same-origin at the public base `/config.json` names (`services`), which is also
     what every proof's `htu` names. Its data layer is `#lib/reads.svelte.ts`; its fetch seam is `#lib/api/client.ts`,
     which `@workbench/explorer-api` also calls through (`#lib/api/explorer.ts` installs it); every media element's
-    link comes from one batched loader (`#lib/api/media-links.svelte.ts`); its explorer is `#lib/explore`; its dock is
+    link comes from one batched loader (`#lib/api/media-links.svelte.ts`); its explorer is `#lib/explore`; its viewers, shared by the explorer's player and the labeling canvas and importing neither, are `#lib/media` (the WebGPU image stage with fit, zoom and pan, whose pixi entry carries `pixi.js/unsafe-eval` for the CSP; a recording's transport, whose scrubber takes an overlay on its time axis; the synced transcript); its dock is
     `#lib/dock` (horizon-layout 1.0.5, `patches/horizon-layout@1.0.5.patch`). A dataset's pages are its dock
     (`/datasets/[id]`) and its views (`#lib/dataset-nav.ts`): the atlas (`#lib/atlas`, also the dock's Atlas panel), the
     knowledge graph (`#lib/graph`) and the topic tree (`#lib/topics`). The atlas and the graph draw with WebGPU only
     (`#lib/gpu`); a browser without it gets their plain refusal and fetches no points. The annotator's project plane
     is `/projects` and `/projects/[project]` (`#lib/projects`, its calls `#lib/api/projects.api.ts`): a project's
     read answers the reader's `permissions`, and a page offers only what its door would let through; a dataset's
-    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, with `pixi.js/unsafe-eval` for the CSP; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`). Image
+    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`). Image
     `.docker/frontend.dockerfile`; released by `deploy/fixtures/annotator` (`app.*`) at `/`.
   - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
     its Atlas node opens, the player), until D4 merges it with studio's flows. `frontend/annotator`, `frontend/studio`:

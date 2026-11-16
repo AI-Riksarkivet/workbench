@@ -35,7 +35,7 @@
 	import Filmstrip from './Filmstrip.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import TaskStreamNav from './TaskStreamNav.svelte';
-	import ZoomControls from './ZoomControls.svelte';
+	import ZoomControls from '#lib/media/image/ZoomControls.svelte';
 	import { dropPendingEdits, isEmpty, keepPendingEdits, keptPendingEdits } from './pending.ts';
 	import { canvasSettings } from './settings.ts';
 	import type { StreamPosition } from './task-stream.ts';
@@ -412,7 +412,7 @@
 				{statusText}{controller.saveStatus ? ` · ${controller.saveStatus}` : ''}
 			</Badge>
 			<TaskStreamNav {stream} />
-			<ZoomControls {controller} class={narrow ? 'bottom-10' : undefined} />
+			<ZoomControls target={controller} class={narrow ? 'bottom-10' : undefined} />
 		</div>
 	</div>
 {/snippet}

@@ -120,14 +120,11 @@ test('a dataset page searches through Arrow and shows signed media', async ({ pa
 		.toBeGreaterThan(0);
 
 	await results.getByRole('button', { name: /The ships came into the harbour/ }).click();
-	const media = page.getByRole('region', { name: 'Player' }).getByRole('img', {
-		name: 'A letter from the harbour',
-	});
-	await expect(media).toBeVisible();
-	await expect
-		.poll(() => media.evaluate((img: HTMLImageElement) => img.naturalWidth))
-		.toBeGreaterThan(0);
-	expect(await media.getAttribute('src')).toMatch(/^\/api\/viewer\/api\/signed-media\/[\w-]+$/);
+	// The player names the document and the page it opened; the page's picture is the WebGPU project's to draw
+	// (`player.spec.ts`).
+	const player = page.getByRole('region', { name: 'Player' });
+	await expect(player.getByRole('heading', { name: 'A letter from the harbour' })).toBeVisible();
+	await expect(player.getByTestId('viewer-position')).toHaveText('Page 1 of 2');
 
 	const calls = await callsOf(page, who);
 	expect(calls.filter((call) => call.refused !== undefined)).toEqual([]);

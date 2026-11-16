@@ -1,9 +1,10 @@
 /**
  * The canvas's controller — the reactive facade the toolbar, sidebar, layers and zoom bind to.
  *
- * The engine (`InteractionManager`, `ArrowDataPlugin`, `ImagePlugin`) is framework-agnostic and lives
- * inside `PixiCanvas`, reachable only from its `onready` context. This class is the Svelte 5 runes
- * layer over it, one per open unit:
+ * The engine (`InteractionManager`, `ArrowDataPlugin`, `ImagePlugin`) is framework-agnostic: the picture's
+ * plugin is the shared image stage's (`#lib/media/image`), the shapes and tools are the layer `ImageViewer`
+ * adds over it, and all three are reachable only from the context `ImageViewer` builds. This class is the
+ * Svelte 5 runes layer over it, one per open unit:
  *   1. it captures the engine handle (`attach`),
  *   2. mirrors the engine's plain getters and callbacks into reactive state, so the layout components
  *      stay controlled, and
@@ -20,6 +21,7 @@ import { LayerStore, buildBatchTable } from './engine/index.ts';
 import type { LabelDelta, LabelOp, LabelOutcome, Selection } from '@workbench/labeling/types';
 import { canonicalShapeType, engineToolsFor } from '@workbench/labeling/shape-types';
 import { PRODUCERS } from '@workbench/labeling/producers';
+import type { Zoomable } from '#lib/media/image/zoom.ts';
 import { rowSignature } from '@workbench/labeling/history';
 import { remapSpans } from './span-remap.ts';
 import {
@@ -149,7 +151,7 @@ function hexToNum(hex: string): number {
 	return parseInt(hex.replace(/^#/, ''), 16) & 0xffffff;
 }
 
-export class AnnotatorController {
+export class AnnotatorController implements Zoomable {
 	// ── engine handle + data ──
 	ctx = $state<PixiContext | null>(null);
 	table = $state<Table | null>(null);
@@ -162,7 +164,8 @@ export class AnnotatorController {
 	// true while multi-selecting (Shift/Ctrl-click) — keeps the sidebar on the list so
 	// more can be picked, instead of opening the single-annotation detail.
 	multiSelect = $state(false);
-	zoomPercent = $state(1);
+	/** The picture's scale, image pixels per CSS pixel (`Zoomable`): the zoom controls show it. */
+	scale = $state(1);
 	// True when the magnetic corner-snap tool can run — a still image is loaded
 	// (video frames don't qualify). Gates their toolbar buttons.
 	cvCapable = $state(false);
@@ -466,19 +469,19 @@ export class AnnotatorController {
 			}
 		};
 
-		// chain (never overwrite) the image viewport hook PixiCanvas installed, so
-		// zoomPercent tracks wheel-zoom + pan + our zoom buttons alike.
+		// chain (never overwrite) the image viewport hook the image stage installed, so
+		// scale tracks wheel-zoom + pan + the zoom buttons alike.
 		const img = ctx.plugins.image;
 		const prev = img.onViewportChange;
 		img.onViewportChange = (bounds) => {
 			prev?.(bounds);
-			this.zoomPercent = img.zoomPercent;
+			this.scale = img.scale;
 			this.viewport += 1;
 		};
 		this._detachViewport = () => {
 			img.onViewportChange = prev;
 		};
-		this.zoomPercent = img.zoomPercent;
+		this.scale = img.scale;
 		this._syncLayerConfig();
 	}
 
@@ -1493,6 +1496,9 @@ export class AnnotatorController {
 	}
 	resetView(): void {
 		this.ctx?.plugins.image.resetView();
+	}
+	actualSize(): void {
+		this.ctx?.plugins.image.actualSize();
 	}
 
 	// ── layers ──

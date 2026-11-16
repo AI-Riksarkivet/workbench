@@ -12,9 +12,9 @@
 		turns: DiarTurn[];
 		currentTime: number;
 		duration: number;
-		/** Current chunk's [start,end]; when scope='chunk' the timeline zooms to it. */
-		chunkStart?: number;
-		chunkEnd?: number;
+		/** The playing segment's [start,end]; when scope='segment' the timeline zooms to it. */
+		segmentStart?: number;
+		segmentEnd?: number;
 		onSeek: (t: number) => void;
 		/** Gates the voice affordances on GET /api/voice/status `built`. */
 		voiceEnabled?: boolean;
@@ -26,8 +26,8 @@
 		turns,
 		currentTime,
 		duration,
-		chunkStart,
-		chunkEnd,
+		segmentStart,
+		segmentEnd,
 		onSeek,
 		voiceEnabled = false,
 		onFindVoice,
@@ -37,16 +37,18 @@
 
 	const showVoice = $derived(voiceEnabled && onFindVoice !== undefined);
 
-	// Zoom: 'chunk' = just the playing chunk (compact — a chunk has 1–3 speakers);
+	// Zoom: 'segment' = just the playing segment (compact — a segment has 1–3 speakers);
 	// 'whole' = the whole item (every speaker).
-	let scope = $state<'chunk' | 'whole'>('chunk');
-	const canChunk = $derived(chunkStart != null && chunkEnd != null && chunkEnd > chunkStart);
+	let scope = $state<'segment' | 'whole'>('segment');
+	const canSegment = $derived(
+		segmentStart != null && segmentEnd != null && segmentEnd > segmentStart,
+	);
 
 	const win = $derived.by(() => {
-		if (scope === 'chunk') {
-			// Same condition as canChunk, restated so TS narrows via locals (no `as`).
-			const lo = chunkStart;
-			const hi = chunkEnd;
+		if (scope === 'segment') {
+			// Same condition as canSegment, restated so TS narrows via locals (no `as`).
+			const lo = segmentStart;
+			const hi = segmentEnd;
 			if (lo != null && hi != null && hi > lo) return { lo, hi };
 		}
 		return { lo: 0, hi: Math.max(duration, 0.001) };
@@ -61,7 +63,7 @@
 		return out;
 	});
 	// Lanes = only speakers with a turn in the VISIBLE window — keeps it compact
-	// (Chunk scope shows the 1–3 people in this chunk; Video scope shows everyone).
+	// (Segment scope shows the 1–3 people in this segment; the whole scope shows everyone).
 	const speakers = $derived.by((): string[] => {
 		const out: string[] = [];
 		for (const t of turns)
@@ -107,17 +109,19 @@
 			<div class="border-border inline-flex overflow-hidden rounded-md border">
 				<button
 					type="button"
-					onclick={() => (scope = 'chunk')}
-					disabled={!canChunk}
-					class="px-1.5 py-0.5 transition-colors disabled:opacity-40 {scope === 'chunk'
+					onclick={() => (scope = 'segment')}
+					aria-pressed={scope === 'segment'}
+					disabled={!canSegment}
+					class="px-1.5 py-0.5 transition-colors disabled:opacity-40 {scope === 'segment'
 						? 'bg-secondary text-foreground'
 						: 'hover:bg-muted hover:text-foreground'}"
 				>
-					Chunk
+					Segment
 				</button>
 				<button
 					type="button"
 					onclick={() => (scope = 'whole')}
+					aria-pressed={scope === 'whole'}
 					class="border-border border-l px-1.5 py-0.5 transition-colors {scope === 'whole'
 						? 'bg-secondary text-foreground'
 						: 'hover:bg-muted hover:text-foreground'}"
@@ -126,8 +130,8 @@
 				</button>
 			</div>
 			<span class="tabular-nums">
-				{fmtTime(win.lo)} – {fmtTime(win.hi)} · {scope === 'chunk'
-					? 'current chunk'
+				{fmtTime(win.lo)} – {fmtTime(win.hi)} · {scope === 'segment'
+					? 'current segment'
 					: `whole ${noun}`}
 			</span>
 		</div>

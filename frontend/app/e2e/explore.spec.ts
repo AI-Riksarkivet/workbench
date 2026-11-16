@@ -1,4 +1,6 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import { textContrast } from './contrast';
+import { serveRecording } from './recording';
 import { callsOf, person, signIn } from './session';
 import { EDGE } from './ports';
 
@@ -31,34 +33,9 @@ test('before a search the dataset’s documents are browsed, and one opens in th
 		.toBeGreaterThan(0);
 	await documents.getByRole('button', { name: /A map of the harbour/ }).click();
 
+	// The player names what it opened (the picture itself is the WebGPU project's, `player.spec.ts`).
 	const player = page.getByRole('region', { name: 'Player' });
-	await expect(player.getByRole('img', { name: 'A map of the harbour' })).toBeVisible();
-});
-
-test('media the viewer cannot sign is said plainly in the player, with no image, and a retry shows it', async ({
-	page,
-	context,
-}) => {
-	await signIn(context, person('Ada'));
-	await page.route('**/api/viewer/api/signed-media', (route) =>
-		route.request().method() === 'POST'
-			? route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } })
-			: route.continue(),
-	);
-	await page.goto('/datasets/acme%24letters');
-	await page
-		.getByRole('list', { name: 'Documents' })
-		.getByRole('button', { name: /A map of the harbour/ })
-		.click();
-
-	const player = page.getByRole('region', { name: 'Player' });
-	await expect(player.getByRole('alert')).toHaveText("This item's media could not be loaded.");
-	await expect(player.getByRole('img')).toHaveCount(0);
-
-	await page.unroute('**/api/viewer/api/signed-media');
-	await player.getByRole('button', { name: 'Try again' }).click();
-	await expect(player.getByRole('img', { name: 'A map of the harbour' })).toBeVisible();
-	await expect(player.getByRole('alert')).toHaveCount(0);
+	await expect(player.getByRole('heading', { name: 'A map of the harbour' })).toBeVisible();
 });
 
 test('a recording whose media and transcript both fail says so, and one Try again brings both back', async ({
@@ -93,10 +70,11 @@ test('a recording whose media and transcript both fail says so, and one Try agai
 	await expect(player.locator('audio')).toHaveCount(0);
 
 	for (const pattern of failing) await page.unroute(pattern);
+	await serveRecording(page);
 	await player.getByRole('button', { name: 'Try again' }).click();
 	await expect(player.locator('audio')).toHaveAttribute('src', /\/api\/signed-media\//);
 	await expect(player.getByRole('alert')).toHaveCount(0);
-	await expect(player.getByText('Transcript')).toBeVisible();
+	await expect(player.getByRole('region', { name: 'Transcript' })).toBeVisible();
 });
 
 test('a diarized dataset without voice tables says so in its search modes and its Speakers tab', async ({
@@ -279,7 +257,7 @@ test('a topic link opens the page filtered to it, and the keyboard reaches the s
 		.getByRole('button', { name: /Soundings along the harbour/ })
 		.click();
 	const player = page.getByRole('region', { name: 'Player' });
-	await expect(player.getByRole('img')).toBeVisible();
+	await expect(player.getByRole('heading', { name: 'A map of the harbour' })).toBeVisible();
 
 	await page.keyboard.press('Escape');
 	await expect(player.getByText('Click a hit to play.')).toBeVisible();
@@ -382,47 +360,6 @@ test('a thumbnail whose signed link expired is signed again and shown, not hidde
 			.toBeGreaterThan(0);
 	}
 });
-
-/** WCAG 2.2's contrast ratio of an element's text on what is painted behind it: its own background composited over
- *  the first opaque surface beneath it. Every colour is resolved by the browser itself (a canvas paints the computed
- *  CSS colour). */
-function textContrast(target: Locator): Promise<number> {
-	return target.evaluate((el: HTMLElement) => {
-		const context = document
-			.createElement('canvas')
-			.getContext('2d', { willReadFrequently: true })!;
-		const rgba = (css: string): [number, number, number, number] => {
-			context.clearRect(0, 0, 1, 1);
-			context.fillStyle = css;
-			context.fillRect(0, 0, 1, 1);
-			const [r = 0, g = 0, b = 0, a = 0] = context.getImageData(0, 0, 1, 1).data;
-			return [r, g, b, a / 255];
-		};
-		let surface: HTMLElement | null = el.parentElement;
-		let behind = rgba('white');
-		while (surface) {
-			const color = rgba(getComputedStyle(surface).backgroundColor);
-			if (color[3] === 1) {
-				behind = color;
-				break;
-			}
-			surface = surface.parentElement;
-		}
-		const [hr, hg, hb, ha] = rgba(getComputedStyle(el).backgroundColor);
-		const over = (front: number, back: number): number => front * ha + back * (1 - ha);
-		const background = [over(hr, behind[0]), over(hg, behind[1]), over(hb, behind[2])];
-		const text = rgba(getComputedStyle(el).color).slice(0, 3);
-		const luminance = (rgb: number[]): number => {
-			const [r = 0, g = 0, b = 0] = rgb.map((c) => {
-				const v = c / 255;
-				return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-			});
-			return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-		};
-		const [hi, lo] = [luminance(text), luminance(background)].sort((x, y) => y - x);
-		return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
-	});
-}
 
 test('dark mode is readable: a search match on its highlight and the Search button each meet 4.5:1', async ({
 	page,

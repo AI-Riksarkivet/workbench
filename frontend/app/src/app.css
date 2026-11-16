@@ -13,11 +13,10 @@
    ignores node_modules by default. */
 @source '../../packages/ui/src';
 
-/* The transcript-reading affordance: a search match (`<mark>`, `#lib/explore/utils.ts`) and the
-   player's karaoke cursor. Not a status colour, so it has no design-system equivalent; it rides the
-   same light and dark switch. A match is the highlight at 30% over the panel with the foreground text
-   on it: about 14:1 in light and 9:1 in dark (WCAG 2.2 § 1.4.3 asks 4.5:1), checked in the browser by
-   `e2e/explore.spec.ts`. */
+/* A search match (`<mark>`, `#lib/explore/utils.ts`, and the underline the transcript draws under a matching word).
+   Not a status colour, so it has no design-system equivalent; it rides the same light and dark switch. A match is the
+   highlight at 30% over the panel with the foreground text on it: about 14:1 in light and 9:1 in dark (WCAG 2.2
+   § 1.4.3 asks 4.5:1), checked in the browser by `e2e/explore.spec.ts`. */
 :root {
 	--highlight: oklch(0.72 0.15 75);
 }
@@ -28,24 +27,6 @@
 
 @theme inline {
 	--color-highlight: var(--highlight);
-}
-
-/* The karaoke cursor is toggled with `classList` on every animation frame
-   (`transcript-highlighter.svelte`), so it is plain CSS rather than utilities. */
-.cursor-word {
-	background: color-mix(in oklab, var(--color-highlight) 45%, transparent);
-	color: var(--color-foreground);
-	font-weight: 600;
-	border-radius: 3px;
-	padding: 1px 2px;
-	margin: 0 -2px;
-}
-.cursor-sentence {
-	background: color-mix(in oklab, var(--color-highlight) 12%, transparent);
-	border-left: 2px solid color-mix(in oklab, var(--color-highlight) 70%, transparent);
-	padding-left: 6px;
-	margin-left: -8px;
-	border-radius: 3px;
 }
 
 /* bits-ui's Popover content fades its opacity in and out; held to the popover surface and a visible

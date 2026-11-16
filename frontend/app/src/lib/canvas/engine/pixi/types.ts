@@ -1,6 +1,6 @@
 import type { Application } from 'pixi.js';
 import type { ArrowDataPlugin } from './ArrowDataPlugin.js';
-import type { ImagePlugin } from './ImagePlugin.js';
+import type { ImagePlugin } from '#lib/media/image/ImagePlugin.ts';
 import type { InteractionManager } from '../interaction/InteractionManager.js';
 
 export interface PixiContext {
@@ -12,12 +12,7 @@ export interface PixiContext {
 	};
 }
 
-export interface ViewportBounds {
-	x: number;
-	y: number;
-	width: number;
-	height: number;
-}
+export type { ViewportBounds } from '#lib/media/image/ImagePlugin.ts';
 
 export type Tool =
 	| 'select'

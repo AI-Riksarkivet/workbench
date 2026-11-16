@@ -3,14 +3,7 @@ import { activeView, type Row } from '@workbench/explorer-api/descriptor';
 /** shadcn-svelte's standard `cn` helper: clsx for conditionals, twMerge for conflicts. */
 export { cn } from '@workbench/ui/utils';
 /** Format seconds as `H:MM:SS` (or `M:SS` under an hour). */
-export function fmtTime(s: number): string {
-	const total = Math.round(s);
-	const h = Math.floor(total / 3600);
-	const m = Math.floor((total % 3600) / 60);
-	const sec = total % 60;
-	const pad = (n: number) => String(n).padStart(2, '0');
-	return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
-}
+export { formatClock as fmtTime } from '#lib/media/time/timeline.ts';
 
 /** Escape HTML special characters for safe innerHTML interpolation. */
 function escapeHtml(s: string | null | undefined): string {

@@ -1,4 +1,14 @@
 <script lang="ts">
+	/**
+	 * The viewer of the item the reader opened, one layout for every kind: a header that says what is open and where
+	 * in it the reader is (a page of a document, a moment of a recording), the media filling the height left, the
+	 * transport for anything that plays, the views synced to it that the dataset declares (transcript, speakers), and
+	 * the item's metadata.
+	 *
+	 * The viewers themselves are the app's shared ones (`#lib/media`): the still on the WebGPU image stage, the
+	 * transport and the transcript on the recording's time axis. This pane is what the explorer adds: which rows are
+	 * a document's pages and segments, the signed links, the speakers, the failures and how to ask again.
+	 */
 	import { onMount, untrack } from 'svelte';
 	import {
 		type Hit,
@@ -11,14 +21,24 @@
 	import { frameLink, mediaLink, resolveFrame, resolveMedia } from '#lib/explore/media.ts';
 	import { linkMayHaveExpired, resumeAfterSwap } from '#lib/explore/media-source.ts';
 	import { documentChunks, speakerTurns } from '#lib/api/explore.api.ts';
-	import { fmtTime, hitKey, mediaNoun } from '#lib/explore/utils.ts';
-	import { ChevronRight, Maximize2, Minimize2 } from '@lucide/svelte';
+	import { fmtTime, hitKey, mediaNoun, queryTerms } from '#lib/explore/utils.ts';
+	import { partIndexOf, turnedTo } from '#lib/explore/doc-parts.ts';
+	import {
+		AudioLines,
+		ChevronLeft,
+		ChevronRight,
+		Maximize2,
+		Minimize2,
+		MousePointerClick,
+	} from '@lucide/svelte';
 	import { Button } from '@workbench/ui';
-	import ChunkBodyWindow from '#lib/explore/components/chunk-body-window.svelte';
 	import { panesFor, shownTab } from '#lib/explore/pane-capabilities.ts';
-	import ChunkTimeline from '#lib/explore/components/chunk-timeline.svelte';
 	import DiarizationTimeline from '#lib/explore/components/diarization-timeline.svelte';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
+	import ImageStage, { type ImageStageFailure } from '#lib/media/image/ImageStage.svelte';
+	import MediaTransport from '#lib/media/time/MediaTransport.svelte';
+	import TranscriptView, { type TranscriptLine } from '#lib/media/time/TranscriptView.svelte';
+	import { spanAt, type Span } from '#lib/media/time/timeline.ts';
 	import { on } from 'svelte/events';
 
 	type Props = {
@@ -29,17 +49,54 @@
 	};
 	let { hit, query = '', idle = 'Click a hit to play.' }: Props = $props();
 
-	// The hit's media and frame, each a signed link (media elements send no token); undefined while
-	// being signed, or the viewer's reason when it named none.
-	const media = $derived(hit ? mediaLink(hit) : undefined);
-	const frame = $derived(hit ? frameLink(hit) : undefined);
+	/** The view THIS hit is rendered through: a fused result set carries rows of several datasets, and each names its
+	 *  own (`_dataset`, stamped by search). A hit that names none is the active dataset's. */
+	const view = $derived(hit ? viewForHit(hit) : activeView());
+	const mediaKind = $derived(view.mediaKind);
+	const noun = $derived(mediaNoun(mediaKind));
+	const plays = $derived(mediaKind === 'audio' || mediaKind === 'video');
+	// Which views this dataset may show, from what it DECLARES: a still has no time axis, no transcript, no speakers.
+	const panes = $derived(panesFor(view));
 
-	// The playing element keeps ONE source per document (`media-source.ts`): the loader renews its links
-	// on its own schedule, and following each renewal would restart playback. The first link for a
-	// document is latched here; a later one replaces it only when the element's source stopped serving.
-	const mediaKey = $derived(
-		hit ? `${viewForHit(hit).id}\u0000${viewForHit(hit).docId(hit)}` : null,
+	// ── the document's parts: its pages, or a recording's segments, in order ──
+	const docKey = $derived(hit ? { dataset: view.id, docId: view.docId(hit) } : null);
+	const chunksRead = $derived(docKey ? documentChunks(docKey) : null);
+	const docChunks = $derived<DocChunk[]>(chunksRead?.current?.chunks ?? []);
+	const turnsRead = $derived(docKey && panes.speakers ? speakerTurns(docKey) : null);
+	const diarTurns = $derived<DiarTurn[]>(turnsRead?.current?.turns ?? []);
+	/** Where the opened row is among its document's parts; -1 when the document does not list it. */
+	const hitPart = $derived(hit ? partIndexOf(view, docChunks, hit) : -1);
+
+	// ── pages: a still-image document is read a page at a time, in the order its rows are listed ──
+	/** Which opened row the pager's memory is for: the pane mounts again when the dock moves or maximizes it, and
+	 *  the reader stays on the page they turned to. */
+	const opened = $derived(hit ? `${view.id}\u0000${hitKey(hit)}` : '');
+	/** The page shown, an index into the document's parts; -1 shows the opened row itself (its document lists no
+	 *  parts, or not this one). A newly opened row starts on its own page. */
+	const page = $derived(
+		mediaKind !== 'image' || hitPart < 0
+			? -1
+			: Math.min(docChunks.length - 1, turnedTo.get(opened) ?? hitPart),
 	);
+	const pageCount = $derived(page >= 0 ? docChunks.length : 0);
+	/** The row the still shows: the page's own keys over the opened row's document and dataset. */
+	const shownRow = $derived(
+		hit && page >= 0 && docChunks[page] ? { ...hit, ...docChunks[page] } : hit,
+	);
+
+	function goToPage(i: number): void {
+		if (pageCount === 0) return;
+		turnedTo.set(opened, Math.min(pageCount - 1, Math.max(0, i)));
+	}
+
+	// ── links: each a signed one (media elements send no token), or the viewer's reason when it named none ──
+	const media = $derived(hit && plays ? mediaLink(hit) : undefined);
+	const frame = $derived(shownRow && mediaKind === 'image' ? frameLink(shownRow) : undefined);
+
+	// The playing element keeps ONE source per document (`media-source.ts`): the loader renews its links on its own
+	// schedule, and following each renewal would restart playback. The first link for a document is latched here; a
+	// later one replaces it only when the element's source stopped serving.
+	const mediaKey = $derived(hit ? `${view.id}\u0000${view.docId(hit)}` : null);
 	let source = $state<{ key: string; url: string } | null>(null);
 	$effect(() => {
 		const key = mediaKey;
@@ -63,62 +120,46 @@
 		return true;
 	}
 
-	// Sliding transcript window: how many chunks of context to show on each side
-	// of the currently-playing chunk. Tunable; the window stays ≤ BEFORE+AFTER+1.
-	const WINDOW_BEFORE = 1;
-	const WINDOW_AFTER = 1;
-
-	// Which element this corpus actually needs — read from the dataset's own declaration, so a
-	// page-image corpus never gets a <video>. Derived, not constant: the dataset can be switched
-	// under the pane.
-	/** The view THIS hit is rendered through, not the active corpus's.
-	 *
-	 *  Every accessor below was `activeView()`, which is correct exactly while one corpus fills the
-	 *  screen. In a fused result set carrying rows from two corpora it describes every row as if it
-	 *  came from whichever corpus happens to be selected — and it renders, so nothing complains. The
-	 *  hit names its own origin (`_dataset`, stamped by the search service); this reads it.
-	 *
-	 *  Falls back to the active view for a hit that names none, which reproduces the previous
-	 *  behaviour exactly for the case where that behaviour was right. */
-	const view = $derived(hit ? viewForHit(hit) : activeView());
-
-	const mediaKind = $derived(view.mediaKind);
-	const noun = $derived(mediaNoun(mediaKind));
-	/** Why voice search is not offered on a diarized dataset, once the probe has answered; null while it is. */
-	const voiceAbsent = $derived(
-		voiceSearch.status !== null && !voiceSearch.built
-			? 'Voice search needs voice tables this dataset has not built.'
-			: null,
-	);
-
-	// The link the element shows: the frame for a still, the document's media for anything that plays. When the
-	// viewer named none, the pane shows why and a way to ask again, and no element at all.
 	const shownLink = $derived(mediaKind === 'image' ? frame : media);
 	const linkFailure = $derived(shownLink?.url === null ? shownLink.detail : null);
 
-	/** Read again everything the pane shows for the hit: its media link, its chunks and its speaker turns. */
+	// What the image stage could not do. No WebGPU is the browser's and outlives the picture; a picture that did not
+	// load is that picture's, so a new one clears it.
+	let gpuFailure = $state<string | null>(null);
+	let pictureFailure = $derived.by((): string | null => {
+		void frame?.url;
+		return null;
+	});
+	function onStageError(failure: ImageStageFailure): void {
+		if (failure.kind === 'gpu') gpuFailure = failure.message;
+		else pictureFailure = failure.message;
+	}
+
+	/** Read again everything the pane shows for the hit: its media link, its parts and its speaker turns. */
 	function retryAll(): void {
-		const h = hit;
+		const h = shownRow;
 		if (!h) return;
+		mediaError = null;
+		pictureFailure = null;
 		void (mediaKind === 'image' ? resolveFrame(h, true) : resolveMedia(h, true));
 		void chunksRead?.refresh();
 		if (panes.speakers) void turnsRead?.refresh();
 	}
 
 	const reason = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-	// What the pane's synced views could not read, in the reader's words: the chunks feed the timeline and the
-	// transcript, the turns the Speakers tab. A read the corpus does not use is no failure of this item.
+	// What the synced views could not read, in the reader's words: the parts feed the scrubber's segments and the
+	// transcript, the turns the Speakers tab. A read the dataset does not use is no failure of this item.
 	const viewsFailure = $derived.by((): { what: string; detail: string } | null => {
 		const chunksFailed = (panes.timeline || panes.transcript) && chunksRead?.error !== undefined;
 		const turnsFailed = panes.speakers && turnsRead?.error !== undefined;
 		if (chunksFailed && turnsFailed)
 			return {
-				what: "This item's transcript, timeline and speakers could not be loaded.",
+				what: "This item's transcript, segments and speakers could not be loaded.",
 				detail: `${reason(chunksRead?.error)}; ${reason(turnsRead?.error)}`,
 			};
 		if (chunksFailed)
 			return {
-				what: "This item's transcript and timeline could not be loaded.",
+				what: "This item's transcript and segments could not be loaded.",
 				detail: reason(chunksRead?.error),
 			};
 		if (turnsFailed)
@@ -129,62 +170,81 @@
 		return null;
 	});
 
-	// WHICH PANES this corpus may show. The media element was already chosen from the declared kind,
-	// but the chrome around it was not gated at all — so an image corpus got a time scrubber and both
-	// audio tabs. Gate on what the dataset DECLARES.
-	const panes = $derived(panesFor(view));
-
+	// ── time: the element's own state, bound, and handed to the transport and the synced views ──
 	let mediaEl = $state<HTMLVideoElement | HTMLAudioElement | null>(null);
 	let mediaError = $state<string | null>(null);
-
-	// Whole-doc time + chunk envelope drive the timeline under the video. Svelte
-	// polls currentTime via its own rAF (only while playing) through the
-	// `bind:currentTime` on <video> — smooth, auto-cleaned, zero manual loop.
 	let currentTime = $state(0);
 	let duration = $state(0);
-	const chunksRead = $derived(
-		hit ? documentChunks({ dataset: viewForHit(hit).id, docId: viewForHit(hit).docId(hit) }) : null,
-	);
-	const docChunks = $derived<DocChunk[]>(chunksRead?.current?.chunks ?? []);
+	let paused = $state(true);
+	let volume = $state(1);
+	let muted = $state(false);
+	let playbackRate = $state(1);
 
-	// Bridge-bar tab: which sync view is shown under the video. Default
-	// 'transcript' so existing behaviour (the karaoke window) is unchanged; the
-	// <video> stays mounted across tabs so playback/seek never resets.
+	/** The document's timed parts, as the scrubber's segments, each with its index among the parts. */
+	const timed = $derived.by((): (Span & { part: number })[] => {
+		const out: (Span & { part: number })[] = [];
+		docChunks.forEach((c, part) => {
+			const t = view.time(c);
+			if (t) out.push({ start: t.start, end: t.end, part });
+		});
+		return out;
+	});
+
+	/** The part the playhead is in: the timed part that holds it (or, in a gap, the last one before it); before the
+	 *  playhead moves, the part the reader opened, so the right segment shows the moment a row opens. */
+	const currentPart = $derived.by((): number => {
+		if (docChunks.length === 0) return -1;
+		const i = spanAt(timed, currentTime);
+		if (i >= 0 && (currentTime > 0 || hitPart < 0)) return timed[i]?.part ?? -1;
+		return hitPart >= 0 ? hitPart : 0;
+	});
+	const currentSegment = $derived(timed.findIndex((s) => s.part === currentPart));
+
+	// The playing segment's span, for the speakers' segment zoom; the opened row's before the parts are read.
+	const segmentSpan = $derived.by((): Span | null => {
+		const c = docChunks[currentPart] ?? hit;
+		return c ? viewForHit(c).time(c) : null;
+	});
+
+	/** The transcript: each part's aligned lines, or its text over its span when it has no alignment. */
+	const lines = $derived.by((): TranscriptLine[] => {
+		const out: TranscriptLine[] = [];
+		docChunks.forEach((c, part) => {
+			const key = hitKey(c);
+			const aligned = c.alignments ?? [];
+			if (aligned.length > 0) {
+				aligned.forEach((a, i) => out.push({ ...a, key: `${part}:${key}:${i}` }));
+				return;
+			}
+			const t = view.time(c);
+			const text = view.body(c);
+			if (t && text) out.push({ key: `${part}:${key}`, start: t.start, end: t.end, text });
+		});
+		return out;
+	});
+	const terms = $derived(new Set(queryTerms(query)));
+
+	// Which synced view shows under the media; the element stays mounted across tabs, so playback and position never
+	// reset. The tab SHOWN is derived from the pick and what the dataset offers.
 	let tab = $state<'transcript' | 'speakers'>('transcript');
-
-	/** The tab actually shown. DERIVED, not a corrected `tab`: clamping by assigning inside an effect
-	 *  hides the coupling, and it would rewrite the user's pick where they cannot see it happen. */
 	const shown = $derived(shownTab(tab, panes));
-	const turnsRead = $derived(
-		hit ? speakerTurns({ dataset: viewForHit(hit).id, docId: viewForHit(hit).docId(hit) }) : null,
-	);
-	const diarTurns = $derived<DiarTurn[]>(turnsRead?.current?.turns ?? []);
 
-	// Search hits ship `alignments: []` (the per-word timing blob is ~80% of a
-	// search payload and only the player needs it). On opening a hit we lazy-fetch
-	// the WHOLE document transcript (keyed on doc_id) so a sliding window of chunks
-	// around the playhead can render past the selected chunk; atlas/selection hits
-	// carry only the selected chunk so we can't rely on `hit.alignments`. The seek
-	// $effect below sets currentTime to the hit's start, and the windowed transcript
-	// tracks it once these absolute-time chunks populate. `docChunks` is the single
-	// source — we no longer flatten into one giant alignments array.
-	// Speaker turns for the Speakers tab, keyed on the doc id; `built: false` (no table, or no row for the
-	// document) yields an empty list and the tab says so. The media plays regardless.
-	// Gate for the timeline's "Find this voice" buttons: the shared voiceSearch
-	// status probe (idempotent, never throws — `built` stays false on failure so
-	// the affordance simply never shows). onMount, not init, so a prerender
-	// never fetches.
+	/** Why voice search is not offered on a diarized dataset, once the probe has answered; null while it is. */
+	const voiceAbsent = $derived(
+		voiceSearch.status !== null && !voiceSearch.built
+			? 'Voice search needs voice tables this dataset has not built.'
+			: null,
+	);
+	// The probe is shared and idempotent, and never throws (`built` stays false on a failure).
 	onMount(() => {
 		voiceSearch.probe();
 	});
 
-	// "Find this voice" → queue the request on the shared voiceSearch store, which the dataset page
-	// consumes: the player is one of its panels, so the request needs no navigation.
+	// "Find this voice" queues the request on the shared voice search, which the dataset page consumes.
 	const findVoice = (pick: { speaker: string } | { turnId: number }) => {
 		const h = hit;
 		if (!h) return;
 		const docId = view.docId(h);
-		// Chip label: the descriptor's display title for this row (mirrors hit-card).
 		const label = view.title(h) || undefined;
 		voiceSearch.request(
 			'speaker' in pick ? { docId, speaker: pick.speaker } : { docId, turnId: pick.turnId },
@@ -192,115 +252,76 @@
 		);
 	};
 
-	// Which chunk the playhead is in. Reactive on currentTime + docChunks + hit.
-	// 1) time-based: the chunk whose [start,end) contains currentTime.
-	// 2) once playing but in an inter-chunk gap (silence between speech segments):
-	//    clamp to the nearest PRECEDING chunk so the window stays at the playhead.
-	//    This must beat the hit fallback — otherwise the window snaps back to the
-	//    opened hit's chunk on every silence gap after the user has played past it.
-	// 3) before playback (t === 0, pre-seek): fall back to the opened hit's segment
-	//    so the right chunk is shown the instant a hit opens; else 0.
-	const currentChunkIdx = $derived.by((): number => {
-		const cs = docChunks;
-		if (cs.length === 0) return 0;
-		const t = currentTime;
-		const i = cs.findIndex((c) => {
-			const span = view.time(c);
-			return span != null && t >= span.start && t < span.end;
-		});
-		if (i !== -1) return i;
-		if (t > 0) {
-			let last = 0;
-			for (let k = 0; k < cs.length; k++) {
-				const span = view.time(cs[k]!);
-				if (span != null && span.start <= t) last = k;
-			}
-			return last;
-		}
-		const h = hit;
-		if (h) {
-			const hk = hitKey(h);
-			const j = cs.findIndex((c) => hitKey(c) === hk);
-			if (j !== -1) return j;
-		}
-		return 0;
-	});
-
-	// The slice `lo` — the absolute index of the first windowed chunk. The window
-	// child uses it to flag the playing block without re-deriving the window.
-	const windowStartIdx = $derived(Math.max(0, currentChunkIdx - WINDOW_BEFORE));
-
-	// Window of chunks around the playhead. As currentTime crosses into the next
-	// chunk, currentChunkIdx increments → this slice shifts by one (prev drops,
-	// next appears): the recycle behaviour, with zero manual rotation.
-	const windowChunks = $derived.by((): DocChunk[] => {
-		const cs = docChunks;
-		if (cs.length === 0) return [];
-		const lo = windowStartIdx;
-		const hi = Math.min(cs.length, currentChunkIdx + WINDOW_AFTER + 1);
-		return cs.slice(lo, hi);
-	});
-
-	// The descriptor row key of the opened hit → highlights its segment.
-	const activeKey = $derived(hit ? hitKey(hit) : null);
-
-	// The playing chunk's [start,end] → feeds the diarization timeline's "Chunk"
-	// zoom. Falls back to the opened hit's span before the doc transcript loads.
-	const currentChunk = $derived(docChunks[currentChunkIdx]);
-	const chunkStart = $derived.by((): number => {
-		const c = currentChunk ?? hit;
-		return c ? (viewForHit(c).time(c)?.start ?? 0) : 0;
-	});
-	const chunkEnd = $derived.by((): number => {
-		const c = currentChunk ?? hit;
-		return c ? (viewForHit(c).time(c)?.end ?? 0) : 0;
-	});
-
-	// Timeline click → jump there and play. Mirrors the hit-seek $effect; here
-	// the doc is already loaded so we seek immediately.
+	/** Jump there and play: a transcript line, a speaker's turn. */
 	const seekTo = (t: number) => {
 		if (!mediaEl) return;
-		try {
-			mediaEl.currentTime = t;
-		} catch {
-			// ignore — metadata may not be ready; the bound currentTime corrects it
-		}
-		mediaEl.play().catch(() => {});
+		currentTime = t;
+		paused = false;
 	};
 
-	// The unified video+transcript card. We fullscreen THIS wrapper (not the bare
-	// <video>) so the live transcript overlay survives — native video fullscreen
-	// can't render HTML on top.
-	let fsWrap = $state<HTMLDivElement | null>(null);
+	// ── fullscreen: the whole viewer, so the transport and the captions come along ──
+	let root = $state<HTMLDivElement | null>(null);
 	let isFullscreen = $state(false);
-
 	const toggleFullscreen = () => {
-		if (document.fullscreenElement) {
-			void document.exitFullscreen();
-		} else {
-			void fsWrap?.requestFullscreen();
-		}
+		if (document.fullscreenElement) void document.exitFullscreen();
+		else void root?.requestFullscreen();
+	};
+	const onFullscreenChange = () => {
+		isFullscreen = root !== null && document.fullscreenElement === root;
 	};
 
-	// Mirror the browser's fullscreen state into a rune so the layout can react.
-	$effect(() => {
-		const onChange = () => {
-			isFullscreen = document.fullscreenElement === fsWrap;
-		};
-		const offFullscreen = on(document, 'fullscreenchange', onChange);
-		return () => {
-			offFullscreen();
-		};
+	// ── the header: what is open, and where in it ──
+	const title = $derived(hit ? view.title(hit) : '');
+	const position = $derived.by((): string => {
+		if (mediaKind === 'image') return pageCount > 1 ? `Page ${page + 1} of ${pageCount}` : '';
+		if (!plays) return '';
+		const at = fmtTime(currentTime);
+		return timed.length > 1 && currentSegment >= 0
+			? `Segment ${currentSegment + 1} of ${timed.length} · ${at}`
+			: at;
 	});
+	const pictureLabel = $derived(
+		pageCount > 1 ? `${title}, page ${page + 1} of ${pageCount}` : title,
+	);
 
-	// Archival metadata, collapsed by default into an accordion so it doesn't eat
-	// the height the transcript needs — expand on demand.
+	// ── the keyboard, on the focused viewer ──
+	// A control that takes the key itself (a button's Space, the scrubber's arrows) keeps it; the rest are the viewer's:
+	// the arrows and Page Up/Down turn a document's pages (the image stage keeps the arrows while the picture
+	// overflows, to pan), Space plays and pauses, the arrows step five seconds, M mutes, F goes fullscreen.
+	function onkeydown(e: KeyboardEvent): void {
+		if (!hit || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+		const target = e.target instanceof Element ? e.target : null;
+		const control = target?.closest('button, a, input, textarea, select, [role="slider"]') ?? null;
+		const key = e.key;
+		if (key === 'f' || key === 'F') {
+			if (control !== null && control.matches('input, textarea')) return;
+			toggleFullscreen();
+		} else if (mediaKind === 'image') {
+			const step =
+				key === 'ArrowRight' || key === 'PageDown'
+					? 1
+					: key === 'ArrowLeft' || key === 'PageUp'
+						? -1
+						: null;
+			if (step !== null && pageCount > 1) goToPage(page + step);
+			else if (key === 'Home' && pageCount > 1 && control === null) goToPage(0);
+			else if (key === 'End' && pageCount > 1 && control === null) goToPage(pageCount - 1);
+			else return;
+		} else if (plays) {
+			if ((key === ' ' || key === 'k') && control === null) paused = !paused;
+			else if (key === 'ArrowRight' && control === null)
+				currentTime = Math.min(duration || 0, currentTime + 5);
+			else if (key === 'ArrowLeft' && control === null) currentTime = Math.max(0, currentTime - 5);
+			else if (key === 'm' || key === 'M') muted = !muted;
+			else return;
+		} else return;
+		e.preventDefault();
+	}
+
+	// ── metadata: the declared fields of what is shown, collapsed so it does not take the synced views' height ──
 	let showMeta = $state(false);
-
-	// Archival metadata shown under the player — descriptor-declared fields plus
-	// caption + time span, only the ones present (absent values already dropped).
 	const metaRows = $derived.by((): [string, string][] => {
-		const h = hit;
+		const h = shownRow;
 		if (!h) return [];
 		const rows: [string, string][] = [];
 		const caption = view.caption(h);
@@ -314,19 +335,13 @@
 	});
 
 	/**
-	 * Whenever `hit` changes, seek the player to the hit's start and play.
+	 * Whenever `hit` changes, seek the element to the hit's start and play.
 	 *
-	 * `src` is owned reactively by the `<video src={mediaSrc}>` binding
-	 * below — this effect must NOT touch it. The old code called
-	 * `el.removeAttribute('src'); el.load()` in cleanup; when the next hit was
-	 * in the *same* document the bound URL didn't change, so Svelte never
-	 * re-applied `src` and the element was left sourceless and wedged (the
-	 * "second click freezes the player until full refresh" bug).
-	 *
-	 * We read the hit's doc id + start so the effect re-runs on either a new
-	 * document (src changes → metadata reloads → seek on `loadedmetadata`) or a
-	 * new chunk in the same already-loaded document (seek immediately, since
-	 * `loadedmetadata`/`canplay` won't fire again).
+	 * `src` is owned by the `src={mediaSrc}` binding, never by this effect: when the next hit is in the SAME
+	 * document the bound URL does not change, Svelte does not re-apply it, and an effect that had cleared the source
+	 * would leave the element sourceless. The effect reads the hit's document and start, so it re-runs on a new
+	 * document (the source changes, the metadata loads, the seek waits for it) and on a new part of the same, loaded
+	 * document (the seek is immediate; `loadedmetadata` will not fire again).
 	 */
 	$effect(() => {
 		mediaError = null;
@@ -340,7 +355,7 @@
 			try {
 				el.currentTime = start;
 			} catch {
-				// ignore — some browsers throw if metadata isn't fully ready
+				// A browser may refuse a seek before the metadata is ready; the bound currentTime corrects it.
 			}
 			el.play().catch(() => {});
 		};
@@ -361,9 +376,6 @@
 			mediaError = err ? (codes[err.code] ?? 'unknown') : 'unknown';
 		};
 
-		// `on()` returns its own unsubscribe, so the teardown cannot drift out of sync with the
-		// registration the way a hand-paired add/removeEventListener can (and `{ once: true }` handlers
-		// were being removed by hand even after they had already fired).
 		const offs: (() => void)[] = [];
 		if (el.readyState >= 1 /* HAVE_METADATA */) {
 			seek();
@@ -381,254 +393,300 @@
 	});
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-3 p-4">
-	{#if !hit}
-		<div class="text-muted-foreground m-auto px-4 text-center text-sm">{idle}</div>
-	{:else}
-		<!-- ONE media component: the video and its synced transcript live in a
-         single card, bridged by a slim "Transcript" bar that also carries the
-         fullscreen toggle (off the video, so nothing covers it). In fullscreen
-         we fullscreen THIS wrapper so the transcript can overlay the video as a
-         centred caption band. -->
-		{#snippet fsToggle(cls: string)}
-			<button
-				type="button"
-				onclick={toggleFullscreen}
-				title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen with transcript'}
-				aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen with transcript'}
-				class={cls}
-			>
-				{#if isFullscreen}
-					<Minimize2 class="size-4" />
-				{:else}
-					<Maximize2 class="size-4" />
+<svelte:document onfullscreenchange={onFullscreenChange} />
+
+{#snippet fullscreenButton()}
+	<Button
+		variant="ghost"
+		size="icon-sm"
+		onclick={toggleFullscreen}
+		title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+		aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+	>
+		{#if isFullscreen}<Minimize2 class="size-4" />{:else}<Maximize2 class="size-4" />{/if}
+	</Button>
+{/snippet}
+
+{#snippet failure(what: string, detail: string)}
+	<div class="flex h-full min-h-0 items-center justify-center overflow-auto">
+		<LoadFailure {what} {detail} onretry={retryAll} />
+	</div>
+{/snippet}
+
+{#if !hit}
+	<div
+		class="text-muted-foreground flex h-full min-h-0 flex-col items-center justify-center gap-2 px-6 text-center text-sm"
+	>
+		<MousePointerClick class="size-5 opacity-60" aria-hidden="true" />
+		<p>{idle}</p>
+	</div>
+{:else}
+	<!-- One element holds the whole viewer, so it is the one that goes fullscreen and the one whose keys are the
+	     viewer's. Focusable by script and pointer only (tabindex -1): its controls are the tab stops. In a panel too
+	     short for all of it, it scrolls rather than cutting off what is below. -->
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+	<div
+		bind:this={root}
+		class="bg-card text-card-foreground @container flex h-full min-h-0 flex-col overflow-y-auto outline-none"
+		role="group"
+		aria-label={`Viewer: ${title}`}
+		tabindex="-1"
+		data-testid="viewer"
+		{onkeydown}
+	>
+		<header class="border-border flex shrink-0 items-center gap-2 border-b py-1.5 pr-1.5 pl-3">
+			<div class="min-w-0 flex-1">
+				<h2 class="truncate text-sm leading-5 font-medium" {title} data-testid="viewer-title">
+					{title}
+				</h2>
+				{#if position}
+					<p
+						class="text-muted-foreground truncate text-xs leading-4 tabular-nums"
+						data-testid="viewer-position"
+					>
+						{position}
+					</p>
 				{/if}
-			</button>
-		{/snippet}
-
-		<div
-			bind:this={fsWrap}
-			class={isFullscreen
-				? 'relative flex min-h-0 flex-col bg-black'
-				: 'border-border bg-card relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border shadow-sm'}
-		>
-			{#if isFullscreen}
-				{@render fsToggle(
-					'absolute right-2 top-2 z-10 rounded-md bg-black/50 p-1.5 text-white/90 backdrop-blur transition-colors hover:bg-black/70 hover:text-white',
-				)}
+			</div>
+			{#if pageCount > 1}
+				<nav class="flex shrink-0 items-center" aria-label="Pages">
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						aria-label="Previous page"
+						title="Previous page (←)"
+						disabled={page <= 0}
+						onclick={() => goToPage(page - 1)}
+					>
+						<ChevronLeft class="size-4" />
+					</Button>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						aria-label="Next page"
+						title="Next page (→)"
+						disabled={page >= pageCount - 1}
+						onclick={() => goToPage(page + 1)}
+					>
+						<ChevronRight class="size-4" />
+					</Button>
+				</nav>
 			{/if}
+			{@render fullscreenButton()}
+		</header>
 
-			<!-- The element comes from the corpus's OWN declaration, not from an assumption. A page-
-           image corpus declares `document.kind: image` (or no kind and no `time` binding); handing
-           that to a <video> is how "Video failed to load: MEDIA_ERR_SRC_NOT_SUPPORTED" happened on a
-           dataset that has no video at all. See DatasetView.mediaKind. -->
-			{#if linkFailure !== null}
-				<div class="flex shrink-0 justify-center">
-					<LoadFailure
-						what="This item's media could not be loaded."
-						detail={linkFailure}
-						onretry={retryAll}
-					/>
-				</div>
-			{:else if mediaKind === 'image'}
-				<!-- The per-row FRAME, not the doc blob: on a paged corpus the row IS the page, so
-             its frame is the thing the hit points at. Nothing is drawn until its link is signed. -->
-				{#if frame?.url}
-					<img
-						src={frame.url}
-						alt={view.title(hit)}
-						class={isFullscreen
-							? 'min-h-0 w-full flex-1 bg-black object-contain'
-							: 'max-h-[45vh] w-full shrink-0 bg-black object-contain'}
+		<!-- The media: the element comes from the dataset's OWN declaration (a page-image dataset never gets a
+		     <video>), and it fills the height the header, the transport and the synced views leave. -->
+		{#if linkFailure !== null}
+			<div class="min-h-40 flex-1">
+				{@render failure("This item's media could not be loaded.", linkFailure)}
+			</div>
+		{:else if mediaKind === 'image'}
+			<div class="bg-muted/40 relative min-h-48 flex-1" data-testid="viewer-media">
+				{#if gpuFailure !== null}
+					<div
+						class="text-muted-foreground flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm"
+					>
+						<span class="text-destructive">{gpuFailure}</span>
+						<span>Pages are drawn with WebGPU. The metadata and the search work without it.</span>
+					</div>
+				{:else if pictureFailure !== null}
+					{@render failure("This item's media could not be loaded.", pictureFailure)}
+				{:else if frame?.url}
+					<ImageStage
+						url={frame.url}
+						label={pictureLabel}
+						keyboard
+						fitPadding={12}
+						onerror={onStageError}
 					/>
 				{:else}
 					<div
-						class="bg-muted aspect-[3/4] max-h-[45vh] w-full shrink-0 animate-pulse"
+						class="flex h-full items-center justify-center"
 						role="status"
 						aria-label="Loading the image"
-					></div>
+					>
+						<div class="bg-muted aspect-[3/4] h-3/4 max-h-96 animate-pulse rounded-md"></div>
+					</div>
 				{/if}
-			{:else if mediaKind === 'audio'}
-				<!-- Audio keeps the transport (the timeline below is meaningful) but not a 16:9 box. -->
+			</div>
+		{:else if plays}
+			{#if mediaKind === 'video'}
+				<div
+					class={[
+						'bg-muted relative min-h-40',
+						isFullscreen || shown === null ? 'flex-1' : 'flex-[3]',
+					]}
+					data-testid="viewer-media"
+				>
+					<!-- A press on the picture plays and pauses it; the transport is the keyboard's way. -->
+					<video
+						bind:this={mediaEl}
+						bind:currentTime
+						bind:duration
+						bind:paused
+						bind:volume
+						bind:muted
+						bind:playbackRate
+						preload="metadata"
+						src={mediaSrc}
+						class="absolute inset-0 h-full w-full object-contain"
+						onclick={() => (paused = !paused)}
+					>
+						<track kind="captions" />
+					</video>
+					{#if isFullscreen && shown === 'transcript'}
+						<div
+							class="bg-card/85 text-card-foreground absolute inset-x-0 bottom-4 mx-auto w-[min(92%,60rem)] rounded-xl px-6 py-3 shadow-lg backdrop-blur"
+						>
+							<TranscriptView {lines} {currentTime} onseek={seekTo} {terms} variant="caption" />
+						</div>
+					{/if}
+				</div>
+			{:else}
+				<!-- Audio has nothing to look at: the element is the transport's, and the transcript takes the height. -->
 				<audio
 					bind:this={mediaEl}
 					bind:currentTime
 					bind:duration
-					controls
+					bind:paused
+					bind:volume
+					bind:muted
+					bind:playbackRate
 					preload="metadata"
 					src={mediaSrc}
-					class="w-full shrink-0 bg-black"
+					class="hidden"
 				></audio>
-			{:else}
-				<!-- 16:9 box sized from the pane WIDTH (not height) so the video stays
-             visible even when the pane is dragged short. In fullscreen it fills
-             the screen height instead. -->
-				<video
-					bind:this={mediaEl}
-					bind:currentTime
-					bind:duration
-					controls
-					controlslist="nofullscreen"
-					preload="metadata"
-					src={mediaSrc}
-					class={isFullscreen
-						? 'min-h-0 w-full flex-1 bg-black object-contain'
-						: 'aspect-video max-h-[45vh] w-full shrink-0 bg-black object-contain'}
-				>
-					<track kind="captions" />
-				</video>
+				{#if shown === null && viewsFailure === null}
+					<div
+						class="bg-muted/40 text-muted-foreground flex min-h-24 flex-1 items-center justify-center"
+						data-testid="viewer-media"
+					>
+						<AudioLines class="size-10 opacity-50" aria-hidden="true" />
+					</div>
+				{/if}
 			{/if}
-
-			{#if viewsFailure !== null && linkFailure === null}
-				<div class="flex shrink-0 justify-center">
-					<LoadFailure what={viewsFailure.what} detail={viewsFailure.detail} onretry={retryAll} />
+			{#if mediaError}
+				<div class="border-border shrink-0 border-t">
+					{@render failure("This item's media could not be played.", mediaError)}
 				</div>
 			{/if}
+			<MediaTransport
+				bind:currentTime
+				bind:paused
+				bind:volume
+				bind:muted
+				bind:playbackRate
+				{duration}
+				{noun}
+				segments={timed}
+				{currentSegment}
+				class="border-border shrink-0 border-t"
+			/>
+		{/if}
 
-			<!-- The scrubber is meaningless without a time axis: a still image has nothing to scrub. -->
-			{#if !isFullscreen && panes.timeline}
-				<ChunkTimeline
-					chunks={docChunks}
-					{duration}
-					{currentTime}
-					{activeKey}
-					{currentChunkIdx}
-					onSeek={seekTo}
-				/>
-			{/if}
-			<!-- Bridge bar: ties the media to its synced views and holds the fullscreen toggle (kept off
-           the media so nothing covers it). Rendered for EVERY corpus, because the toggle applies to
-           an image as much as to a video — it is the TABS inside it that are conditional. Gating the
-           whole bar on the timeline is what would take fullscreen away from image corpora. -->
-			{#if !isFullscreen}
-				<div
-					class="border-border/70 text-muted-foreground flex items-center gap-1.5 border-t px-3 py-1.5 text-xs font-medium"
-					data-testid="viewer-bridge-bar"
-				>
-					{#if panes.transcript}
-						<Button
-							variant={shown === 'transcript' ? 'secondary' : 'ghost'}
-							size="xs"
-							aria-pressed={shown === 'transcript'}
-							data-testid="tab-transcript"
-							onclick={() => (tab = 'transcript')}
-						>
-							Transcript
-						</Button>
-					{/if}
-					{#if panes.speakers}
-						<Button
-							variant={shown === 'speakers' ? 'secondary' : 'ghost'}
-							size="xs"
-							aria-pressed={shown === 'speakers'}
-							data-testid="tab-speakers"
-							onclick={() => (tab = 'speakers')}
-						>
-							Speakers
-						</Button>
-					{/if}
-					{@render fsToggle(
-						'ml-auto rounded-md p-1 transition-colors hover:bg-muted hover:text-foreground',
-					)}
-				</div>
-			{/if}
-
-			<!-- Sync body. Normal: scrolls below the bar inside the card with a
-           guaranteed min-height floor so it never collapses to 0 in a short pane
-           (the map view's right column is wide-but-short, which used to squeeze
-           the flex-1 transcript to nothing). Fullscreen: a centred caption band
-           lifted ABOVE the native control bar (bottom-20) so it never covers the
-           play button — only the ≤3 windowed chunks render, so it stays small.
-           Fullscreen always shows the transcript overlay (the tab switch lives
-           on the bridge bar, which is hidden in fullscreen). -->
-			<!-- `shown` is null when the corpus declares NEITHER an alignment table nor speaker turns —
-           an image corpus — so the whole sync body is absent rather than an empty panel that reads
-           as a failed load. -->
-			{#if shown !== null}
-				<div
-					class={isFullscreen
-						? 'absolute inset-x-0 bottom-20 mx-auto max-h-[32%] w-[min(92%,60rem)] overflow-y-auto rounded-xl bg-black/55 px-6 py-4 text-lg leading-8 text-white backdrop-blur-sm'
-						: shown === 'speakers'
-							? 'flex min-h-[10rem] flex-1 flex-col overflow-hidden'
-							: 'min-h-[8rem] flex-1 overflow-y-auto text-sm leading-7'}
-					data-testid="viewer-sync-body"
-				>
-					{#if !isFullscreen && shown === 'speakers'}
+		{#if plays && !(isFullscreen && mediaKind === 'video') && (shown !== null || viewsFailure !== null)}
+			<section
+				class={[
+					'border-border flex min-h-32 flex-col border-t',
+					mediaKind === 'video' ? 'flex-[2]' : 'flex-1',
+				]}
+				aria-label="Synced views"
+			>
+				{#if panes.tabs}
+					<div class="flex shrink-0 items-center gap-1 px-2 pt-1.5" data-testid="viewer-bridge-bar">
+						{#if panes.transcript}
+							<Button
+								variant={shown === 'transcript' ? 'secondary' : 'ghost'}
+								size="xs"
+								aria-pressed={shown === 'transcript'}
+								data-testid="tab-transcript"
+								onclick={() => (tab = 'transcript')}
+							>
+								Transcript
+							</Button>
+						{/if}
+						{#if panes.speakers}
+							<Button
+								variant={shown === 'speakers' ? 'secondary' : 'ghost'}
+								size="xs"
+								aria-pressed={shown === 'speakers'}
+								data-testid="tab-speakers"
+								onclick={() => (tab = 'speakers')}
+							>
+								Speakers
+							</Button>
+						{/if}
+					</div>
+				{/if}
+				{#if viewsFailure !== null && linkFailure === null}
+					{@render failure(viewsFailure.what, viewsFailure.detail)}
+				{:else if shown === 'speakers'}
+					<div class="flex min-h-0 flex-1 flex-col" data-testid="viewer-sync-body">
 						{#if voiceAbsent}
 							<p class="text-muted-foreground px-3 pt-2 text-xs" data-testid="voice-absent">
 								{voiceAbsent}
 							</p>
 						{/if}
 						{#if diarTurns.length > 0}
-							<!-- Compact speaker lanes (Chunk⇄Video zoom) pinned on top; the karaoke
-                 transcript fills the rest and is the only part that scrolls, so the
-                 video + lanes + transcript all stay in view. Both synced to <video>. -->
-							<div class="flex h-full min-h-0 flex-col">
-								<div class="shrink-0">
-									<DiarizationTimeline
-										turns={diarTurns}
-										{currentTime}
-										{duration}
-										{chunkStart}
-										{chunkEnd}
-										onSeek={seekTo}
-										voiceEnabled={voiceSearch.built}
-										onFindVoice={findVoice}
-										{noun}
-									/>
-								</div>
-								<div
-									class="border-border/70 min-h-0 flex-1 overflow-y-auto border-t text-sm leading-7"
-								>
-									<ChunkBodyWindow
-										chunks={windowChunks}
-										{currentChunkIdx}
-										{windowStartIdx}
-										media={mediaEl}
-										{query}
-										variant="panel"
-									/>
-								</div>
+							<div class="shrink-0 px-1.5">
+								<DiarizationTimeline
+									turns={diarTurns}
+									{currentTime}
+									{duration}
+									segmentStart={segmentSpan?.start}
+									segmentEnd={segmentSpan?.end}
+									onSeek={seekTo}
+									voiceEnabled={voiceSearch.built}
+									onFindVoice={findVoice}
+									{noun}
+								/>
 							</div>
+							<TranscriptView
+								{lines}
+								{currentTime}
+								onseek={seekTo}
+								{terms}
+								class="border-border flex-1 border-t"
+							/>
 						{:else}
-							<div class="text-muted-foreground p-3 text-xs">
-								No speaker turns for this {noun}.
-							</div>
+							<p class="text-muted-foreground p-3 text-xs">No speaker turns for this {noun}.</p>
 						{/if}
-					{:else}
-						<ChunkBodyWindow
-							chunks={windowChunks}
-							{currentChunkIdx}
-							{windowStartIdx}
-							media={mediaEl}
-							{query}
-							variant={isFullscreen ? 'overlay' : 'panel'}
-						/>
-					{/if}
-				</div>
-			{/if}
-		</div>
-
-		{#if mediaError}
-			<div class="text-destructive shrink-0 text-sm">
-				The media failed to load: {mediaError}.
-			</div>
+					</div>
+				{:else if shown === 'transcript'}
+					<TranscriptView
+						{lines}
+						{currentTime}
+						onseek={seekTo}
+						{terms}
+						empty={chunksRead?.current
+							? `No transcript for this ${noun}.`
+							: 'Reading the transcript…'}
+						class="flex-1"
+					/>
+				{/if}
+			</section>
 		{/if}
 
-		{#if metaRows.length}
-			<div class="border-border bg-card/40 shrink-0 overflow-hidden rounded-md border text-xs">
+		{#if metaRows.length && !isFullscreen}
+			<div class="border-border shrink-0 border-t text-xs">
 				<button
 					type="button"
 					onclick={() => (showMeta = !showMeta)}
 					aria-expanded={showMeta}
-					class="text-muted-foreground hover:bg-muted/60 flex w-full items-center gap-1.5 px-3 py-1.5 transition-colors"
+					class="text-muted-foreground hover:bg-muted/60 focus-visible:ring-ring/50 flex w-full items-center gap-1.5 px-3 py-1.5 transition-colors outline-none focus-visible:ring-3 focus-visible:ring-inset"
 				>
-					<ChevronRight class="size-3.5 transition-transform {showMeta ? 'rotate-90' : ''}" />
+					<ChevronRight
+						class={['size-3.5 transition-transform', showMeta && 'rotate-90']}
+						aria-hidden="true"
+					/>
 					<span class="font-medium">Metadata</span>
-					<span class="text-muted-foreground ml-auto text-[0.7rem]">{metaRows.length} fields</span>
+					<span class="ml-auto text-[0.7rem]">{metaRows.length} fields</span>
 				</button>
 				{#if showMeta}
-					<dl class="border-border grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 border-t px-3 py-2">
+					<dl
+						class="border-border grid max-h-40 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 overflow-y-auto border-t px-3 py-2"
+					>
 						{#each metaRows as [label, value] (label)}
 							<dt class="text-muted-foreground">{label}</dt>
 							<dd class="text-foreground truncate font-medium" title={value}>{value}</dd>
@@ -637,5 +695,5 @@
 				{/if}
 			</div>
 		{/if}
-	{/if}
-</div>
+	</div>
+{/if}
