@@ -65,8 +65,13 @@ The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and w
 
 The open rows are issues #6 to #10 (WB-A to WB-E), each with its decisions in its body and comments. #9 (WB-D, the
 one app) is split into steps, and each landed step has a comment saying what landed, the gates, what was not
-confirmed and the next step: **read #9's latest comment before starting.** A row's live closes-when waits for rask's
-XC-214 (`AI-Riksarkivet/rask#829`, Keycloak for token exchange); until then the app is proven against the e2e mocks.
+confirmed and the next step: **read #9's latest comment before starting.** The owner's order (2026-11-16) is to make
+it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
+keeps its state in its own Postgres (R2). Next is R3, sign-in with whatever OIDC provider the cluster runs (token
+exchange and DPoP only where the provider's discovery offers them) and the first cluster run, which is asked of the
+owner first; then R4 (read-only from any Lance source), R5 (graph and tree as dock panels), D3b-2, D3c and D4. Nothing
+has run on a cluster yet. Two live copies of one session must never drive the same worktree: before resuming an agent
+after a restart, check `~/.claude/sessions/*.json` for a second process with the same session id.
 Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 
 ## Engineering principles (read first)
