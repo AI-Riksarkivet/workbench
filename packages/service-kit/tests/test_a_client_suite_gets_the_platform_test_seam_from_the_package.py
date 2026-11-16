@@ -1,7 +1,7 @@
 """[[XC-190]] A client's suite gets the platform's test seam from `service-kit` alone, with no conftest of this repository.
 
 A client pins `service-kit` by lakehouse tag, and its suite runs in its own repository. The state the platform keeps
-across a process (the cache of secret-store reads, the token files its doors' callers read) and the respx default the
+across a process (Dapr's sidecar handshake and actor-proxy factory) and the respx default the
 estate's suites rely on therefore have to arrive with the package, as a pytest plugin, rather than from this
 repository's root `conftest.py`, which no client has. So the suite below runs in a directory outside this repository,
 where no conftest of ours reaches it, and is answered by the plugin alone.
@@ -16,26 +16,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-#: A client's suite, one test per seam the plugin provides. The two reads run in this order (pytest keeps file order):
-#: the second sees the store's second answer only when it is given a cache of its own.
+#: A client's suite, one test per seam the plugin provides.
 _CLIENT_SUITE = """
-import os
-from pathlib import Path
-
 import respx
 from dapr.conf import settings as dapr_settings
-
-from service_kit.governed import secret_cache
-
-READ = secret_cache.StoreRead(store="a-store", secret="a-secret", fields=("k",))
-
-
-def test_a_first_read_is_the_stores_answer():
-    assert secret_cache.STORE_READS.get(READ, lambda: {"k": "first"}) == {"k": "first"}
-
-
-def test_the_next_test_reads_the_store_again():
-    assert secret_cache.STORE_READS.get(READ, lambda: {"k": "second"}) == {"k": "second"}
 
 
 def test_the_sidecar_handshake_is_bounded():
@@ -76,8 +60,6 @@ def test_a_suite_outside_the_repository_is_served_the_seam_by_the_installed_pack
         for case in ET.parse(report).getroot().iter("testcase")  # noqa: S314 -- the report is the child pytest's own, written just now
     }
     assert outcomes == {
-        "test_a_first_read_is_the_stores_answer": "passed",
-        "test_the_next_test_reads_the_store_again": "passed",
         "test_the_sidecar_handshake_is_bounded": "passed",
         "test_a_route_nobody_calls_fails_the_test": "failure",
         "test_a_route_registered_to_prove_it_is_not_called_may_stay_uncalled": "passed",

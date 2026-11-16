@@ -8,6 +8,7 @@ and a ``?version=N`` wire read checks the table out at ``N``. Driven through the
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import lance
@@ -18,10 +19,9 @@ from fastapi.testclient import TestClient
 
 from annotator.annotations.router import router as annotations_router
 from annotator.annotations.store import table_name
-from annotator.api.v1.endpoints import tasks as tasks_ep
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Task, TaskState
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
-from service_kit.exceptions import register_handlers
 from tests.media_catalog import namespace_client, write_table
 
 
@@ -38,42 +38,46 @@ CHUNKS = pa.table({"doc_id": [DOC], "speech_id": pa.array([0], pa.int64()), "chu
 UNIT_PATH = f"/api/annotations/{DOC}/0/19"
 
 
-class _Task:
-    """Task t1's actor: an item of project p1 holding the unit, on the default dataset."""
+@pytest.fixture
+def client_of(state_app: Callable[..., FastAPI]) -> Iterator[Callable[[Path], TestClient]]:
+    """A client over the annotations routes on the catalog at ``root``, whose store holds task t1 of project p1: an item
+    holding the unit, on the default dataset, claimed by the local person."""
+    opened: list[TestClient] = []
 
-    async def get(self) -> dict[str, object]:
-        return {
-            "task_id": "t1",
-            "project_id": "p1",
-            "state": "claimed",
-            "assignee": "anon",
-            "source": {"kind": "chunks", "keys": [f"{DOC}/0/19"], "where": None},
-            "media": {"kind": "image"},
-        }
+    def open_at(root: Path) -> TestClient:
+        app = state_app(annotations_router)
+        app.state.resources = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(root), "MEDIA_DEFAULT_DATASET": "acme$proj1"}))
+        client = TestClient(app)
+        client.__enter__()
+        opened.append(client)
+        store, portal = app.state.store, client.portal
+        assert portal is not None, "the client is not running the app"
+        portal.call(store.create_project, AnnotationProject(project_id="p1", tenant="acme", slug="p1"))
+        task = Task(
+            task_id="t1",
+            project_id="p1",
+            state=TaskState.CLAIMED,
+            assignee="anon",
+            source=ItemSource(kind="chunks", keys=[f"{DOC}/0/19"]),
+            media=MediaRef(kind="image"),
+        )
+        portal.call(store.send_tasks, "p1", [task])
+        return client
 
-
-@pytest.fixture(autouse=True)
-def task_t1(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: _Task())
-
-
-def _client(root: Path) -> TestClient:
-    app = FastAPI()
-    register_handlers(app)
-    app.include_router(annotations_router)
-    app.state.resources = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(root), "MEDIA_DEFAULT_DATASET": "acme$proj1"}))
-    return TestClient(app)
+    yield open_at
+    for client in opened:
+        client.__exit__(None, None, None)
 
 
 @pytest.fixture
-def two_versions(tmp_path: Path) -> TestClient:
+def two_versions(tmp_path: Path, client_of: Callable[[Path], TestClient]) -> TestClient:
     """Project p1's annotations on ``acme$proj1`` at two versions: v1 holds one row of the unit, v2 adds one more and
     another unit's."""
     write_table(tmp_path, ["acme", "proj1", "chunks"], CHUNKS, descriptor=DECLARED)
     write_table(tmp_path, TABLE, pa.Table.from_pylist([{**UNIT, "id": "a1"}], schema=SCHEMA), descriptor=DECLARED)
     ds = lance.dataset(namespace_client=namespace_client(tmp_path), table_id=TABLE)
     ds.merge_insert("id").when_not_matched_insert_all().execute(pa.Table.from_pylist([{**UNIT, "id": "a2"}, {**OTHER, "id": "b1"}], schema=SCHEMA))
-    return _client(tmp_path)
+    return client_of(tmp_path)
 
 
 def test_the_history_counts_the_unit_at_each_version_newest_first(two_versions: TestClient) -> None:
@@ -90,10 +94,10 @@ def test_the_history_respects_its_limit(two_versions: TestClient) -> None:
     assert [entry["version"] for entry in response.json()] == [3]
 
 
-def test_a_dataset_with_no_annotations_table_has_no_history(tmp_path: Path) -> None:
+def test_a_dataset_with_no_annotations_table_has_no_history(tmp_path: Path, client_of: Callable[[Path], TestClient]) -> None:
     write_table(tmp_path, ["acme", "proj1", "chunks"], CHUNKS, descriptor=DECLARED)
 
-    response = _client(tmp_path).get(f"{UNIT_PATH}/versions?project=p1&task=t1")
+    response = client_of(tmp_path).get(f"{UNIT_PATH}/versions?project=p1&task=t1")
 
     assert (response.status_code, response.json()) == (200, [])
 

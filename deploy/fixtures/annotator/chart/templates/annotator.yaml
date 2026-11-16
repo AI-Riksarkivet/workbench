@@ -1,11 +1,10 @@
 {{- $r := .Values.rask.release -}}
 {{- $name := include "annotator.name" . -}}
-{{- $dapr := and .Values.dapr.enabled (.Capabilities.APIVersions.Has "dapr.io/v1alpha1") -}}
+{{- $cluster := include "annotator.stateCluster" . -}}
 {{- $l := .Values.lifecycle -}}
 {{- $drain := sub $l.terminationGracePeriodSeconds (add $l.preStopSeconds $l.teardownSeconds) -}}
 {{- if le (int $drain) 0 }}{{ fail "lifecycle: need teardownSeconds < terminationGracePeriodSeconds - preStopSeconds" }}{{ end -}}
 {{- if eq (toString .Values.forwardedAllowIps) "*" }}{{ fail "forwardedAllowIps must not be '*': any client could forge its own source IP" }}{{ end -}}
-{{- if not $dapr }}{{ fail "the annotator keeps its projects, tasks and roles in Dapr actors: dapr.enabled must be on, on a cluster that serves dapr.io/v1alpha1" }}{{ end -}}
 {{- $selector := include "annotator.selector" . | fromYaml -}}
 apiVersion: v1
 kind: ServiceAccount
@@ -43,28 +42,8 @@ spec:
       {{- toYaml $selector | nindent 6 }}
   template:
     metadata:
-      annotations:
-        dapr.io/enabled: "true"
-        dapr.io/app-id: {{ .Values.dapr.appId | quote }}
-        dapr.io/app-port: {{ .Values.port | quote }}
-        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
-        dapr.io/log-as-json: "true"
-        dapr.io/max-body-size: {{ .Values.dapr.maxBodySize | quote }}
-        dapr.io/app-token-secret: {{ $name }}-dapr-app-token
-        dapr.io/block-shutdown-duration: {{ printf "%ds" (int $l.sidecarBlockShutdownSeconds) | quote }}
-        dapr.io/sidecar-cpu-request: {{ .Values.dapr.sidecarResources.cpuRequest | quote }}
-        dapr.io/sidecar-cpu-limit: {{ .Values.dapr.sidecarResources.cpuLimit | quote }}
-        dapr.io/sidecar-memory-request: {{ .Values.dapr.sidecarResources.memoryRequest | quote }}
-        dapr.io/sidecar-memory-limit: {{ .Values.dapr.sidecarResources.memoryLimit | quote }}
-        dapr.io/disable-builtin-k8s-secret-store: "true"
-        dapr.io/config: {{ include "annotator.daprConfigName" . }}
-        # The sidecar alone reads the state store's credential, as this release's ServiceAccount (`state.yaml`), and
-        # verifies the Postgres it dials against the Cluster's own CA. The app container mounts neither.
-        dapr.io/volume-mounts: "kube-api:/var/run/secrets/kubernetes.io/serviceaccount,state-ca:/var/run/secrets/annotator/state-ca"
-        dapr.io/env: "PGSSLMODE=verify-full,PGSSLROOTCERT=/var/run/secrets/annotator/state-ca/ca.crt"
       labels:
         {{- toYaml $selector | nindent 8 }}
-        dapr.io/enabled: "true"
         lance.dev/logs: otlp
     spec:
       terminationGracePeriodSeconds: {{ $l.terminationGracePeriodSeconds }}
@@ -99,7 +78,8 @@ spec:
               type: RuntimeDefault
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-            - { name: app-token, mountPath: /var/run/secrets/annotator/app-token, readOnly: true }
+            - { name: state-password, mountPath: /var/run/secrets/annotator/state-password, readOnly: true }
+            - { name: state-ca, mountPath: /var/run/secrets/annotator/state-ca, readOnly: true }
             {{- if .Values.auth.enabled }}
             - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
             {{- if .Values.auth.fga.credential.name }}
@@ -115,17 +95,21 @@ spec:
             # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only: each
             # table opens through lance-namespace on the credential the catalog vends the person, so the pod holds no store key.
             - { name: MEDIA_CATALOG_URI, value: {{ .Values.catalog.url | default (printf "http://%s-catalog:2333" $r) | quote }} }
-            # The token the sidecar presents to the actor callbacks, mounted from the Secret this release generates.
-            - { name: WORKBENCH_APP_TOKEN_FILE, value: /var/run/secrets/annotator/app-token/token }
+            # The annotator's own state: the Cluster this release renders, reached by its read-write Service, the server
+            # verified against the Cluster's own CA, the password read from its mounted file on every new connection.
+            - { name: ANNOTATOR_STATE_HOST, value: {{ printf "%s-rw" $cluster | quote }} }
+            - { name: ANNOTATOR_STATE_PORT, value: "5432" }
+            - { name: ANNOTATOR_STATE_DATABASE, value: "annotator" }
+            - { name: ANNOTATOR_STATE_USER, value: "annotator" }
+            - { name: ANNOTATOR_STATE_SSLMODE, value: "verify-full" }
+            - { name: ANNOTATOR_STATE_CA_FILE, value: /var/run/secrets/annotator/state-ca/ca.crt }
+            - { name: ANNOTATOR_STATE_PASSWORD_FILE, value: /var/run/secrets/annotator/state-password/password }
             {{- with .Values.serve.discoveryUrl }}
             - { name: ANNOTATOR_SERVE_DISCOVERY_URL, value: {{ . | quote }} }
             - { name: ANNOTATOR_SERVE_PROXY_URL, value: {{ $.Values.serve.proxyUrl | default . | quote }} }
             {{- end }}
             {{- if .Values.assist.enabled }}
             - { name: ANNOTATOR_ASSIST_URL, value: {{ printf "http://%s-assist:%v/v1/assist" $r .Values.assist.port | quote }} }
-            {{- end }}
-            {{- with .Values.jobsUrl }}
-            - { name: ANNOTATOR_JOBS_URL, value: {{ . | quote }} }
             {{- end }}
             {{- if .Values.otel.enabled }}
             - { name: WORKBENCH_OTEL_ENABLED, value: "true" }
@@ -162,10 +146,12 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: "2Gi" } }
-        - name: app-token
+        # The Cluster's generated application credential, its password alone: the kubelet mounts it, so the pod's
+        # ServiceAccount needs no grant to read Secrets.
+        - name: state-password
           secret:
-            secretName: {{ $name }}-dapr-app-token
-            items: [{ key: token, path: token }]
+            secretName: {{ $cluster }}-app
+            items: [{ key: password, path: password }]
         {{- if .Values.auth.enabled }}
         # The workbench's confidential client's secret: the token exchange and its own token for the lakehouse.
         - name: oidc-client
@@ -179,15 +165,8 @@ spec:
             items: [{ key: {{ $.Values.auth.fga.credential.key }}, path: preshared-key }]
         {{- end }}
         {{- end }}
-        # The sidecar's Kubernetes API identity, the one its secret store reads the state credential with.
-        - name: kube-api
-          projected:
-            sources:
-              - serviceAccountToken: { path: token, expirationSeconds: 600 }
-              - configMap: { name: kube-root-ca.crt, items: [{ key: ca.crt, path: ca.crt }] }
-              - downwardAPI: { items: [{ path: namespace, fieldRef: { fieldPath: metadata.namespace } }] }
         # The Cluster's CA certificate alone, never its key.
         - name: state-ca
           secret:
-            secretName: {{ include "annotator.stateCluster" . }}-ca
+            secretName: {{ $cluster }}-ca
             items: [{ key: ca.crt, path: ca.crt }]

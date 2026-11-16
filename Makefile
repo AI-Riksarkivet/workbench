@@ -1,11 +1,11 @@
-.PHONY: help install sync local test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga fga-test fga-model
+.PHONY: help install sync local test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
 PYTEST_WORKERS ?= 8
 
 help:
-	@echo "Targets: install local test lint fmt typecheck check frontend-check app-dev app-e2e fga-test fga-model openfga image NAME=<stem> claude-bootstrap"
+	@echo "Targets: install local test lint fmt typecheck check frontend-check app-dev app-e2e fga-test fga-model openfga postgres image NAME=<stem> claude-bootstrap"
 
 # The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
 # `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
@@ -19,6 +19,19 @@ $(OPENFGA_BIN): .dagger/main.go
 	cd /tmp && $(DAGGER) core container from --address=$(OPENFGA_IMAGE) file --path=/openfga export --path=$@
 	@chmod +x $@ && touch $@
 openfga: $(OPENFGA_BIN)
+
+# The pinned PostgreSQL server the offline suite (tests/postgres.py) and the local stack run the annotator's state on,
+# exported from the image `.dagger/main.go` pins as a relocatable tree (`scripts/postgres-server.sh`), so a developer
+# box and `dagger call test` run one server.
+POSTGRES_DIR := $(CURDIR)/.localbin/postgres
+POSTGRES_IMAGE = $(shell sed -n 's/^[[:space:]]*PostgresImage[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' .dagger/main.go)
+$(POSTGRES_DIR)/bin/postgres: .dagger/main.go scripts/postgres-server.sh
+	rm -rf $(POSTGRES_DIR)
+	cd /tmp && $(DAGGER) core container from --address=$(POSTGRES_IMAGE) \
+		with-file --path=/postgres-server.sh --source=$(CURDIR)/scripts/postgres-server.sh \
+		with-exec --args=sh,/postgres-server.sh directory --path=/out export --path=$(POSTGRES_DIR)
+	@touch $@
+postgres: $(POSTGRES_DIR)/bin/postgres
 
 # The authorization model's own tests, and model.json checked to be model.fga's compiled form.
 fga-test:
@@ -42,11 +55,11 @@ sync:
 # (`scripts/local-stack.sh`, which prints the URL to open, by default http://127.0.0.1:8700/datasets). LOCAL_CATALOG
 # names the catalog's directory; EDGE_PORT and the *_PORT variables move the ports, and a port already in use is refused.
 LOCAL_CATALOG ?= $(or $(TMPDIR),/tmp)/workbench-catalog
-local: sync
+local: sync $(POSTGRES_DIR)/bin/postgres
 	bun --cwd=frontend/app run build
 	SEED=1 MEDIA_CATALOG_DIR=$(LOCAL_CATALOG) bash scripts/local-stack.sh
 
-test: $(OPENFGA_BIN)
+test: $(OPENFGA_BIN) $(POSTGRES_DIR)/bin/postgres
 	uv run pytest -m "not e2e" -n $(PYTEST_WORKERS)
 
 lint:

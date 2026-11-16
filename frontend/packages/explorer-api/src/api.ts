@@ -103,7 +103,7 @@ export function upstreamFor(path: string): string | null {
 	// the routing table rather than a guess — and it means a newly added viewer path is named correctly
 	// without touching this function.
 	if (api.startsWith('/api/search')) return 'search';
-	if (api.startsWith('/api/annotations') || api.startsWith('/api/jobs')) return 'annotator';
+	if (api.startsWith('/api/annotations')) return 'annotator';
 	if (api.startsWith('/api/assist') || api.startsWith('/api/config')) return 'assist';
 	return 'viewer';
 }

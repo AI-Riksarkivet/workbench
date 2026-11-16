@@ -1,121 +1,40 @@
-"""The publish saga — every crash point, replayed.
+"""The publish saga — every crash point, replayed, on the real state store.
 
-`docs/OPERATORS.md` §4 permits skipping a workflow engine ONLY for paths that are token-keyed
-idempotent. That is a claim about this code, so it is tested as one: the saga is run, killed after
-each step in turn, and run again, and the assertion is always the same — one table, one publish
-record, one logical publish.
+`docs/OPERATORS.md` §4 permits skipping a workflow engine ONLY for paths that are token-keyed idempotent. That is a
+claim about this code, so it is tested as one: the saga is run, killed after a step, and run again, and the assertion
+is always the same — one table, one publish record, one logical publish.
 
-The second theme is the index's blind spot. `reopen` moves a task out of `accepted`, and if the
-report of that never reached the project index the precondition passes on stale data. The saga
-re-reads tasks from their own actors precisely to catch that, so it is tested directly.
+The project and its tasks are rows in a PostgreSQL database of the test's own; the catalog is the one collaborator
+stood in for (`_Publisher`), with the contract the real one keeps: a create is idempotent on the table id.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
-from datetime import UTC, datetime
+import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
-from annotator.projects.models import AnnotationProject, ProjectState, Task, TaskState
+from annotator.core.config import AnnotatorSettings
+from annotator.projects.lakehouse import PublishRunner
+from annotator.projects.models import AnnotationProject, ProjectState, PublishRecord, Shape, Task, TaskState
 from annotator.projects.publish import PublishRefusal
 from annotator.projects.saga import run_publish, table_id_for
+from annotator.state.store import AnnotatorStore
 
 
-PUBLISH_TOKEN = "0123456789abcdef0123456789abcdef"
-MINTED_AT = datetime(2026, 7, 28, 9, 0, tzinfo=UTC)
+TARGET = "acme$published"
 
 
-class _Project:
-    """The project actor, in memory, with the real set-once / converge semantics."""
-
-    def __init__(self, state: ProjectState = ProjectState.PUBLISHING, token: str | None = PUBLISH_TOKEN) -> None:
-        self.doc = AnnotationProject(
-            project_id="p1",
-            tenant="acme",
-            slug="vasa",
-            state=state,
-            pending_publish_id=token,
-            # Minted WITH the token by the real actor, so the double must do the same or the
-            # replay-determinism tests below would be testing a fiction.
-            pending_publish_at=MINTED_AT if token else None,
-        ).model_dump(mode="json")
-        self.index: dict[str, str] = {}
-        self.fired: list[str] = []
-        self.progress_steps: list[str] = []
-
-    async def get(self) -> dict[str, Any] | None:
-        return dict(self.doc)
-
-    async def list_tasks(self) -> dict[str, Any]:
-        return {"tasks": dict(self.index), "counts": {}, "total": len(self.index), "terminal": 0, "may_publish": True}
-
-    async def fire(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Mirrors `AnnotationProjectActor.fire` — including the two side effects the saga depends
-        on: `publish_failed` records the reason, and `publish` REUSES an existing token rather than
-        minting a new one. A double that skipped either would make the retry tests prove nothing."""
-        from annotator.projects.machines import project_transition
-
-        target, _ = project_transition(ProjectState(self.doc["state"]), payload["event"])
-        self.doc["state"] = str(target)
-        if payload["event"] == "publish_failed":
-            self.doc["publish_error"] = str(payload.get("error", "publish failed"))
-        elif payload["event"] == "publish":
-            self.doc["publish_error"] = None
-            # Mint token AND instant together, once — mirroring the real actor.
-            if not self.doc.get("pending_publish_id"):
-                self.doc["pending_publish_id"] = "minted-fresh"
-                self.doc["pending_publish_at"] = MINTED_AT.isoformat()
-        self.fired.append(payload["event"])
-        return dict(self.doc)
-
-    async def record_publish(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if self.doc.get("published"):
-            return dict(self.doc["published"])
-        self.doc["published"] = dict(payload)
-        return dict(payload)
-
-    async def note_progress(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Mirrors the real actor: recorded only while PUBLISHING, so a stale run cannot scribble
-        on a terminal state."""
-        if self.doc["state"] == str(ProjectState.PUBLISHING):
-            self.doc["publish_progress"] = str(payload.get("step") or "")
-            self.progress_steps.append(str(payload.get("step") or ""))
-        return dict(self.doc)
-
-
-class _Task:
-    def __init__(self, task_id: str, state: TaskState, shapes: int = 1) -> None:
-        self.doc = Task(
-            task_id=task_id,
-            project_id="p1",
-            state=state,
-            submitted_by="gina",
-            reviewed_by="carol",
-            review_action="accepted",
-            source={"kind": "chunks", "keys": [task_id]},
-            media={"kind": "image", "image_url": "s3://b/x.jpg"},
-        ).model_dump(mode="json")
-        # Shape ids are minted at SAVE time by the real actor and PERSISTED, so a re-read returns
-        # the same ids. Minting them here per read would make the double lie about replay stability
-        # — which is exactly what it did until this was fixed, and it is why the annotation_id
-        # column, not published_at, was the thing that drifted.
-        self.draft_shapes = [{"shape_id": f"{task_id}-shape-{i}", "shape_type": "bbox", "x": 1.0, "y": 1.0, "width": 1.0, "height": 1.0} for i in range(shapes)]
-
-    async def get(self) -> dict[str, Any] | None:
-        return dict(self.doc)
-
-    async def get_draft(self) -> dict[str, Any] | None:
-        if not self.draft_shapes:
-            return None
-        return {
-            "task_id": self.doc["task_id"],
-            "project_id": "p1",
-            "author": "gina",
-            "revision": 1,
-            "shapes": [dict(s) for s in self.draft_shapes],
-        }
+@pytest_asyncio.fixture
+async def store(state_settings: AnnotatorSettings) -> AsyncGenerator[AnnotatorStore]:
+    opened = await AnnotatorStore.open(state_settings)
+    yield opened
+    await opened.close()
 
 
 class _Publisher:
@@ -148,26 +67,58 @@ class _Publisher:
         # The contract the saga relies on: an existing id is success, not an error.
         self.tables.setdefault(table_id, 7)
         self.rows = list(plan.rows)
-        self.properties = properties
         self.run_id = run_id
         if self.fail_on == "after-create":
             raise RuntimeError("the create committed and its answer was lost")
         return self.tables[table_id]
 
 
-def _wire(tasks: dict[str, _Task], project: _Project) -> Any:
-    project.index = {tid: str(t.doc["state"]) for tid, t in tasks.items()}
-    return lambda task_id: tasks[task_id]
-
-
-async def _run(project: _Project, tasks: dict[str, _Task], publisher: _Publisher) -> Any:
-    return await run_publish(
-        project_handle=project,
-        task_handle=_wire(tasks, project),
-        publisher=publisher,
-        namespace="acme$published",
-        subject="henry",
+async def _publishing(store: AnnotatorStore, *tasks: tuple[str, TaskState, int, str | None, int | None], publish: bool = True) -> str:
+    """A project whose tasks are `(id, terminal state, shapes drawn, captured table, captured version)`, frozen and
+    taken through the `publish` transition, as a person drives it."""
+    project = AnnotationProject(tenant="acme", slug="vasa", state=ProjectState.LABELING)
+    await store.create_project(project)
+    await store.send_tasks(
+        project.project_id,
+        [
+            Task.model_validate(
+                {
+                    "task_id": task_id,
+                    "project_id": project.project_id,
+                    "source": {"kind": "chunks", "keys": [task_id], "where": table or "acme$notes", "table": table, "dataset_version": version},
+                    "media": {"kind": "image"},
+                }
+            )
+            for task_id, _state, _shapes, table, version in tasks
+        ],
     )
+    for task_id, state, shapes, _table, _version in tasks:
+        await store.fire_task(task_id, event="claim", actor="gina")
+        if shapes:
+            drawn = [Shape(shape_type="bbox", x=1.0, y=1.0, width=1.0, height=1.0) for _ in range(shapes)]
+            await store.save_draft(task_id, author="gina", shapes=drawn, links=[], base_revision=None)
+        if state is TaskState.SKIPPED:
+            await store.fire_task(task_id, event="skip", actor="gina")
+        else:
+            await store.fire_task(task_id, event="submit", actor="gina")
+            await store.fire_task(task_id, event="accept", actor="carol")
+    await store.fire_project(project.project_id, event="freeze", actor="meg")
+    if publish:
+        await store.fire_project(project.project_id, event="publish", actor="henry", target_namespace=TARGET)
+    return project.project_id
+
+
+async def _run(store: AnnotatorStore, project_id: str, publisher: _Publisher) -> Any:
+    return await run_publish(store=store, project_id=project_id, publisher=publisher, namespace=TARGET, subject="henry")
+
+
+async def _state(store: AnnotatorStore, project_id: str) -> AnnotationProject:
+    project = await store.get_project(project_id)
+    assert project is not None
+    return project
+
+
+ONE_ACCEPTED = ("t0", TaskState.ACCEPTED, 1, None, None)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -176,62 +127,66 @@ async def _run(project: _Project, tasks: dict[str, _Task], publisher: _Publisher
 
 
 @pytest.mark.asyncio
-async def test_a_publish_creates_one_table_and_records_it() -> None:
-    project, publisher = _Project(), _Publisher()
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 2), "t1": _Task("t1", TaskState.SKIPPED, 0)}
+async def test_a_publish_creates_one_table_and_records_it(store: AnnotatorStore) -> None:
+    project_id = await _publishing(store, ("t0", TaskState.ACCEPTED, 2, None, None), ("t1", TaskState.SKIPPED, 0, None, None))
+    publisher = _Publisher()
 
-    out = await _run(project, tasks, publisher)
+    out = await _run(store, project_id, publisher)
 
-    assert out.shapes == 2 and out.rows == 3  # 2 shapes + 1 skip sentinel
+    project = await _state(store, project_id)
+    assert (out.shapes, out.rows) == (2, 3)  # 2 shapes + 1 skip sentinel
     assert publisher.creates == 1
-    assert project.fired == ["publish_succeeded"]
-    assert project.doc["published"]["publish_id"] == PUBLISH_TOKEN
+    assert project.state is ProjectState.PUBLISHED
+    assert project.published is not None and project.published.publish_id == project.pending_publish_id == publisher.run_id
 
 
 @pytest.mark.asyncio
-async def test_the_saga_narrates_its_steps_so_a_publish_is_not_just_a_spinner() -> None:
-    """A4: a watching human sees WHERE the publish is. The narration is best-effort — but when it
-    works, the steps must arrive in execution order and name the real work."""
-    project, publisher = _Project(), _Publisher()
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1)}
+async def test_the_saga_narrates_its_steps_in_order_so_a_publish_is_not_just_a_spinner(store: AnnotatorStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A4: a watching human sees WHERE the publish is. The steps reach the project in execution order, named after the
+    real work; the project shows the step running now."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    steps: list[str] = []
+    recorded = store.note_progress
 
-    await _run(project, tasks, publisher)
+    async def note(project: str, step: str) -> None:
+        steps.append(step)
+        await recorded(project, step)
 
-    assert project.progress_steps[0] == "reading tasks"
-    assert project.progress_steps[1] == "building plan"
-    assert project.progress_steps[2].startswith("creating table acme$published$vasa_")
-    assert project.progress_steps[3] == "recording publish"
+    monkeypatch.setattr(store, "note_progress", note)
+
+    await _run(store, project_id, _Publisher())
+
+    assert steps[:2] == ["reading tasks", "building plan"]
+    assert steps[2].startswith("creating table acme$published$vasa_")
+    assert steps[3:] == ["recording publish"]
 
 
 @pytest.mark.asyncio
-async def test_a_narration_failure_does_not_fail_the_publish() -> None:
-    """Progress is telemetry, not a step. A project actor that refuses the note must not turn a
-    working publish into a failed one."""
+async def test_a_narration_failure_does_not_fail_the_publish(store: AnnotatorStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Progress is telemetry, not a step: a note the store refuses must not turn a working publish into a failed one."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
 
-    class _Mute(_Project):
-        async def note_progress(self, payload: dict[str, Any]) -> dict[str, Any]:
-            raise RuntimeError("note refused")
+    async def refuse(_project: str, _step: str) -> None:
+        raise RuntimeError("note refused")
 
-    project, publisher = _Mute(), _Publisher()
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1)}
+    monkeypatch.setattr(store, "note_progress", refuse)
 
-    out = await _run(project, tasks, publisher)
+    out = await _run(store, project_id, _Publisher())
 
     assert out.rows == 1
-    assert project.doc["state"] == ProjectState.PUBLISHED
+    assert (await _state(store, project_id)).state is ProjectState.PUBLISHED
 
 
-@pytest.mark.asyncio
-async def test_the_table_id_is_derived_from_the_token_not_the_slug_alone() -> None:
+def test_the_table_id_is_derived_from_the_token_not_the_slug_alone() -> None:
     """Two publishes of one project (a republish after `reopen`) are two datasets. A slug-only id
     would collide and silently overwrite the first."""
     p = AnnotationProject(project_id="p1", tenant="acme", slug="vasa")
-    a = table_id_for(p, "aaaaaaaaaaaaaaaa", "acme$published")
-    b = table_id_for(p, "bbbbbbbbbbbbbbbb", "acme$published")
+    a = table_id_for(p, "aaaaaaaaaaaaaaaa", TARGET)
+    b = table_id_for(p, "bbbbbbbbbbbbbbbb", TARGET)
 
     assert a != b
     assert a.startswith("acme$published$vasa_")
-    assert table_id_for(p, "aaaaaaaaaaaaaaaa", "acme$published") == a, "the id must be deterministic in the token"
+    assert table_id_for(p, "aaaaaaaaaaaaaaaa", TARGET) == a, "the id must be deterministic in the token"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -240,95 +195,92 @@ async def test_the_table_id_is_derived_from_the_token_not_the_slug_alone() -> No
 
 
 @pytest.mark.asyncio
-async def test_a_crash_after_create_retries_onto_the_same_table() -> None:
-    """The saga's only non-idempotent step, made idempotent by key. A second attempt must NOT create
-    a second table — that is the whole reason the token is minted before the work, not after."""
-    project, publisher = _Project(), _Publisher(fail_on="after-create")
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1)}
+async def test_a_crash_after_create_retries_onto_the_same_table(store: AnnotatorStore) -> None:
+    """The saga's only non-idempotent step, made idempotent by key: the retry the door fires reuses the token, so a
+    second attempt does not create a second table."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    publisher = _Publisher(fail_on="after-create")
 
     with pytest.raises(RuntimeError):
-        await _run(project, tasks, publisher)
-    assert project.doc["state"] == ProjectState.PUBLISH_FAILED
-    assert len(publisher.tables) == 1
-
-    # Operator retries: the endpoint fires `publish` again, which REUSES the token.
-    await project.fire({"event": "publish"})
+        await _run(store, project_id, publisher)
+    failed = await _state(store, project_id)
+    await store.fire_project(project_id, event="publish", actor="henry", target_namespace=TARGET)
     publisher.fail_on = None
-    out = await _run(project, tasks, publisher)
+    out = await _run(store, project_id, publisher)
 
-    assert len(publisher.tables) == 1, "the retry created a SECOND table — the token was not reused"
-    assert out.table_id in publisher.tables
-    assert project.doc["state"] == ProjectState.PUBLISHED
+    assert failed.state is ProjectState.PUBLISH_FAILED
+    assert list(publisher.tables) == [out.table_id], "the retry created a SECOND table — the token was not reused"
+    assert (await _state(store, project_id)).state is ProjectState.PUBLISHED
 
 
 @pytest.mark.asyncio
-async def test_a_failure_records_the_reason_and_leaves_a_retryable_state() -> None:
-    project, publisher = _Project(), _Publisher(fail_on="create")
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1)}
+async def test_a_failure_records_the_reason_and_leaves_a_retryable_state(store: AnnotatorStore) -> None:
+    project_id = await _publishing(store, ONE_ACCEPTED)
 
     with pytest.raises(RuntimeError, match="catalog unreachable"):
-        await _run(project, tasks, publisher)
+        await _run(store, project_id, _Publisher(fail_on="create"))
 
-    assert project.fired == ["publish_failed"]
-    assert project.doc["state"] == ProjectState.PUBLISH_FAILED
-    assert "catalog unreachable" in project.doc["publish_error"]
+    project = await _state(store, project_id)
+    assert (project.state, project.publish_error) == (ProjectState.PUBLISH_FAILED, "catalog unreachable")
+    assert project.publish_progress is not None and project.publish_progress.startswith("creating table"), "the failed step must stay named"
 
 
 @pytest.mark.asyncio
-async def test_running_the_saga_again_after_success_converges_instead_of_republishing() -> None:
-    """A redelivered trigger must not produce a second dataset for one logical publish."""
-    project, publisher = _Project(), _Publisher()
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1)}
-    first = await _run(project, tasks, publisher)
+async def test_running_the_saga_again_after_success_converges_instead_of_republishing(store: AnnotatorStore) -> None:
+    """A second start of one publish must not produce a second dataset for it."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    publisher = _Publisher()
+    first = await _run(store, project_id, publisher)
 
-    second = await _run(project, tasks, publisher)
+    second = await _run(store, project_id, publisher)
 
     assert second.already_published is True
     assert second.table_id == first.table_id
     assert publisher.creates == 1, "a replay republished the project"
 
 
-# --------------------------------------------------------------------------------------------------
-# The index's blind spot
-# --------------------------------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_a_crash_between_record_and_succeeded_does_not_strand_the_project(store: AnnotatorStore) -> None:
+    """`record_publish` lands, then the process dies before `publish_succeeded`: the project is `publishing` WITH a
+    publish record, and `publishing` has no principal edge out. The next run converges the state before reporting."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    pending = await _state(store, project_id)
+    assert pending.pending_publish_id is not None and pending.pending_publish_at is not None
+    await store.record_publish(
+        project_id,
+        PublishRecord(
+            table_id=table_id_for(pending, pending.pending_publish_id, TARGET),
+            namespace=TARGET,
+            version=7,
+            publish_id=pending.pending_publish_id,
+            published_at=pending.pending_publish_at,
+            published_by="henry",
+        ),
+    )
+    publisher = _Publisher()
+
+    out = await _run(store, project_id, publisher)
+
+    assert out.already_published is True
+    assert (await _state(store, project_id)).state is ProjectState.PUBLISHED, "the run left the project stranded in publishing"
+    assert publisher.creates == 0, "the run republished"
 
 
 @pytest.mark.asyncio
-async def test_a_stale_index_cannot_let_an_unreviewed_task_into_the_lakehouse() -> None:
-    """The scenario the whole re-read exists for: a task was REOPENED, but the report to the project
-    index failed, so the index still says `accepted` and the precondition passed. Reading the task's
-    own actor is the only thing that sees the truth."""
-    project, publisher = _Project(), _Publisher()
-    reopened = _Task("t1", TaskState.CHANGES_REQUESTED, 1)
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1), "t1": reopened}
-    handle = _wire(tasks, project)
-    project.index["t1"] = str(TaskState.ACCEPTED)  # the index LIES — the report never landed
+async def test_a_failure_while_recording_the_failure_keeps_the_original_error(store: AnnotatorStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Otherwise the operator is shown the store's error instead of the one that broke the publish."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    fire = store.fire_project
 
-    with pytest.raises(PublishRefusal, match="stale"):
-        await run_publish(project_handle=project, task_handle=handle, publisher=publisher, namespace="acme$published", subject="henry")
+    async def wedged(project: str, *, event: str, **kwargs: Any) -> AnnotationProject:
+        if event == "publish_failed":
+            raise RuntimeError("the store is unreachable too")
+        return await fire(project, event=event, **kwargs)
 
-    assert publisher.creates == 0, "unreviewed work reached the lakehouse"
-    assert project.doc["state"] == ProjectState.PUBLISH_FAILED
+    monkeypatch.setattr(store, "fire_project", wedged)
 
-
-@pytest.mark.asyncio
-async def test_an_indexed_task_whose_actor_lost_its_state_refuses_the_publish() -> None:
-    """A half-completed `send` (indexed, never seeded). Publishing the rest would produce a dataset
-    that looks complete and silently omits an item."""
-
-    class _Empty:
-        async def get(self) -> None:
-            return None
-
-        async def get_draft(self) -> None:
-            return None
-
-    project, publisher = _Project(), _Publisher()
-    project.index = {"ghost": str(TaskState.ACCEPTED)}
-
-    with pytest.raises(PublishRefusal, match="holds no state"):
-        await run_publish(project_handle=project, task_handle=lambda _t: _Empty(), publisher=publisher, namespace="acme$published", subject="henry")
-    assert publisher.creates == 0
+    with pytest.raises(RuntimeError, match="catalog unreachable"):
+        await _run(store, project_id, _Publisher(fail_on="create"))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -337,88 +289,37 @@ async def test_an_indexed_task_whose_actor_lost_its_state_refuses_the_publish() 
 
 
 @pytest.mark.asyncio
-async def test_the_saga_refuses_to_run_outside_publishing() -> None:
-    project, publisher = _Project(state=ProjectState.FROZEN), _Publisher()
+async def test_the_saga_refuses_to_run_outside_publishing(store: AnnotatorStore) -> None:
+    project_id = await _publishing(store, ONE_ACCEPTED, publish=False)
+
     with pytest.raises(PublishRefusal, match="not publishing"):
-        await _run(project, {"t0": _Task("t0", TaskState.ACCEPTED)}, publisher)
+        await _run(store, project_id, _Publisher())
+
+    assert (await _state(store, project_id)).state is ProjectState.FROZEN
 
 
 @pytest.mark.asyncio
-async def test_a_missing_token_stops_rather_than_minting_one() -> None:
-    """Inventing a token here would defeat the entire idempotency argument: a retry would mint a
-    different one and create a second table. Disagreement between the machine and the saga is a
-    bug to surface, not to paper over."""
-    project, publisher = _Project(token=None), _Publisher()
+async def test_a_missing_token_stops_rather_than_minting_one(store: AnnotatorStore) -> None:
+    """Inventing a token here would defeat the idempotency argument: a retry would mint a different one and create a
+    second table. A publishing project that carries none is refused, and the refusal is recorded."""
+    project = AnnotationProject(tenant="acme", slug="vasa", state=ProjectState.PUBLISHING)
+    await store.create_project(project)
+    publisher = _Publisher()
+
     with pytest.raises(PublishRefusal, match="no publish token"):
-        await _run(project, {"t0": _Task("t0", TaskState.ACCEPTED)}, publisher)
+        await _run(store, project.project_id, publisher)
+
     assert publisher.creates == 0
+    assert (await _state(store, project.project_id)).state is ProjectState.PUBLISH_FAILED
 
 
 @pytest.mark.asyncio
-async def test_a_crash_between_record_and_succeeded_does_not_strand_the_project() -> None:
-    """The wedge. `record_publish` lands, then the process dies before `publish_succeeded`. The
-    project is now `publishing` WITH a publish record — and `PROJECT_EDGES` has no edge out of
-    `publishing` except the two system ones, so a retry that returns early on "already published"
-    leaves it stuck there forever, on precisely the crash this saga exists to survive.
+async def test_every_captured_table_version_reaches_the_publisher_as_an_input(store: AnnotatorStore) -> None:
+    """§7.2: the create names each table version the items came from; the saga computes them from the plan."""
+    project_id = await _publishing(store, ("t0", TaskState.ACCEPTED, 1, "acme$media$pages", 24), ("t1", TaskState.ACCEPTED, 1, "acme$media$letters", 3))
+    publisher = _Publisher(run_rule=True)
 
-    The retry must CONVERGE the state before reporting.
-    """
-    project, publisher = _Project(), _Publisher()
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1)}
-
-    # Simulate the crash: the record landed, the transition never fired.
-    project.doc["published"] = {
-        "table_id": "acme$published$vasa_0123456789ab",
-        "namespace": "acme$published",
-        "version": 7,
-        "publish_id": PUBLISH_TOKEN,
-        "published_at": MINTED_AT.isoformat(),
-        "published_by": "henry",
-    }
-    assert project.doc["state"] == ProjectState.PUBLISHING
-
-    out = await _run(project, tasks, publisher)
-
-    assert out.already_published is True
-    assert project.doc["state"] == ProjectState.PUBLISHED, "the retry left the project stranded in publishing"
-    assert publisher.creates == 0, "the retry republished"
-
-
-@pytest.mark.asyncio
-async def test_a_failure_while_recording_the_failure_keeps_the_original_error() -> None:
-    """Otherwise the operator is shown the actor's error instead of the one that broke the publish,
-    and the real cause is never logged at all."""
-
-    class _Wedged(_Project):
-        async def fire(self, payload: dict[str, Any]) -> dict[str, Any]:
-            if payload["event"] == "publish_failed":
-                raise RuntimeError("actor unreachable too")
-            return await super().fire(payload)
-
-    project, publisher = _Wedged(), _Publisher(fail_on="create")
-
-    with pytest.raises(RuntimeError, match="catalog unreachable"):
-        await _run(project, {"t0": _Task("t0", TaskState.ACCEPTED, 1)}, publisher)
-
-
-def _captured(tasks: dict[str, _Task], *sources: tuple[str | None, int | None]) -> None:
-    """Each task's send capture: the table the server stamped and the version kept of it. No table is a dataset that
-    declares no search, sent with the version the sender saw."""
-    for task, (table, version) in zip(tasks.values(), sources, strict=True):
-        task.doc["source"]["where"] = table or "acme$notes"
-        task.doc["source"]["table"] = table
-        task.doc["source"]["dataset_version"] = version
-
-
-@pytest.mark.asyncio
-async def test_every_captured_table_version_reaches_the_publisher_as_an_input() -> None:
-    """§7.2: the create names each table version the items came from, several of them alike; the saga computes them from
-    the plan, and the publisher never guesses."""
-    project, publisher = _Project(), _Publisher(run_rule=True)
-    tasks = {"t0": _Task("t0", TaskState.ACCEPTED, 1), "t1": _Task("t1", TaskState.ACCEPTED, 1)}
-    _captured(tasks, ("acme$media$pages", 24), ("acme$media$letters", 3))
-
-    await _run(project, tasks, publisher)
+    await _run(store, project_id, publisher)
 
     assert publisher.inputs == [("acme$media$letters", 3), ("acme$media$pages", 24)]
 
@@ -428,27 +329,169 @@ async def test_every_captured_table_version_reaches_the_publisher_as_an_input() 
     ("run_rule", "sources", "refusal"),
     [
         pytest.param(
-            True, [("acme$media$pages", 24), (None, 24)], "acme$published requires every write to name the tables", id="uncaptured-under-the-run-rule"
+            True, [("acme$media$pages", 24), (None, None)], "acme$published requires every write to name the tables", id="uncaptured-under-the-run-rule"
         ),
-        pytest.param(False, [("acme$media$pages", 24), (None, 24)], None, id="uncaptured-with-no-run-rule"),
+        pytest.param(False, [("acme$media$pages", 24), (None, None)], None, id="uncaptured-with-no-run-rule"),
         pytest.param(False, [(f"acme$media$t{i}", 1) for i in range(65)], "one publish names at most 64 inputs", id="more-inputs-than-one-run-names"),
     ],
 )
-async def test_a_publish_the_catalog_could_not_take_fails_before_it_writes(run_rule: bool, sources: list[tuple[str | None, int]], refusal: str | None) -> None:
+async def test_a_publish_the_catalog_could_not_take_fails_before_it_writes(
+    store: AnnotatorStore, run_rule: bool, sources: list[tuple[str | None, int | None]], refusal: str | None
+) -> None:
     """Every item's input is named or the run rule cannot be met, and the publish says so in plain words before any
-    table is created; with no run rule an uncaptured item publishes and names no input, its dataset least of all."""
-    project, publisher = _Project(), _Publisher(run_rule=run_rule)
-    tasks = {f"t{i}": _Task(f"t{i}", TaskState.ACCEPTED, 1) for i in range(len(sources))}
-    _captured(tasks, *sources)
+    table is created; with no run rule an uncaptured item publishes and names no input."""
+    project_id = await _publishing(store, *((f"t{i:02d}", TaskState.ACCEPTED, 1, table, version) for i, (table, version) in enumerate(sources)))
+    publisher = _Publisher(run_rule=run_rule)
 
     if refusal is None:
-        await _run(project, tasks, publisher)
+        await _run(store, project_id, publisher)
     else:
         with pytest.raises(PublishRefusal, match=re.escape(refusal)):
-            await _run(project, tasks, publisher)
+            await _run(store, project_id, publisher)
 
+    project = await _state(store, project_id)
     assert publisher.creates == (1 if refusal is None else 0)
     assert publisher.inputs == ([("acme$media$pages", 24)] if refusal is None else None)
-    assert project.fired == (["publish_succeeded"] if refusal is None else ["publish_failed"])
+    assert project.state is (ProjectState.PUBLISHED if refusal is None else ProjectState.PUBLISH_FAILED)
     if refusal is not None:
-        assert refusal in project.doc["publish_error"]
+        assert project.publish_error is not None and refusal in project.publish_error
+
+
+# --------------------------------------------------------------------------------------------------
+# The publish lease: who drives a publish, in any replica
+# --------------------------------------------------------------------------------------------------
+
+
+class _HeldPublisher(_Publisher):
+    """A catalog whose create does not answer until the test lets it: a run is then mid-publish, holding its lease and
+    no connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.answer = asyncio.Event()
+        self.in_create = 0
+        self.most_in_create = 0
+
+    async def create_table(self, table_id: str, plan: Any, *, properties: dict[str, str], run_id: str, inputs: list[tuple[str, int]]) -> int:
+        self.in_create += 1
+        self.most_in_create = max(self.most_in_create, self.in_create)
+        self.entered.set()
+        try:
+            await self.answer.wait()
+        finally:
+            self.in_create -= 1
+        return await super().create_table(table_id, plan, properties=properties, run_id=run_id, inputs=inputs)
+
+
+def _runner(store: AnnotatorStore, publisher: _Publisher, *, lease_seconds: int = 300, concurrency: int = 2) -> PublishRunner:
+    return PublishRunner(store, None, lease_seconds=lease_seconds, redrive_seconds=30, concurrency=concurrency, publisher_for=lambda _subject: publisher)
+
+
+async def _until(condition: Any, what: str, seconds: float = 10) -> None:
+    deadline = time.monotonic() + seconds
+    while not await condition():
+        assert time.monotonic() < deadline, what
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_publish_whose_run_stopped_is_finished_by_another_runner_and_the_late_run_records_nothing(store: AnnotatorStore) -> None:
+    """A run that stops renewing (its process hung or died) loses its lease at the expiry, and another runner's sweep
+    claims the publish and finishes it, with no restart. When the stalled run wakes, its create lands on the same table
+    id and its next renewal finds the lease gone, so it stops: one table, one record, and no `publish_failed` over the
+    finished publish."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    stalled, finisher = _HeldPublisher(), _Publisher()
+    first, second = _runner(store, stalled, lease_seconds=1), _runner(store, finisher)
+    run = first.spawn(project_id)
+    await stalled.entered.wait()
+
+    held_while_live = await second.sweep()
+    await _until(lambda: second.sweep(), "the lapsed lease was never claimed by the second runner")
+    await _until(lambda: _published(store, project_id), "the second runner did not finish the publish")
+    stalled.answer.set()
+    assert run is not None
+    await run
+
+    project = await _state(store, project_id)
+    assert held_while_live == []
+    assert (project.state, project.publish_error) == (ProjectState.PUBLISHED, None)
+    assert project.published is not None and list(finisher.tables) == [project.published.table_id]
+    # The stalled create landed after all: on the same table id, which the catalog's `exist_ok` makes the one table.
+    assert list(stalled.tables) == list(finisher.tables)
+
+
+async def _published(store: AnnotatorStore, project_id: str) -> bool:
+    return (await _state(store, project_id)).state is ProjectState.PUBLISHED
+
+
+@pytest.mark.asyncio
+async def test_two_runners_sweeping_one_publish_drive_it_once(store: AnnotatorStore) -> None:
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    publisher = _HeldPublisher()
+    first, second = _runner(store, publisher), _runner(store, publisher)
+
+    together = await asyncio.gather(first.sweep(), second.sweep(), first.sweep(), second.sweep())
+    await publisher.entered.wait()
+    while_live = await asyncio.gather(first.sweep(), second.sweep())
+    in_create = publisher.in_create
+    publisher.answer.set()
+    await _until(lambda: _published(store, project_id), "the publish did not finish")
+    await first.close()
+    await second.close()
+
+    assert sorted(id_ for claimed in together for id_ in claimed) == [project_id], "two sweeps at one moment both claimed"
+    assert while_live == [[], []], "a sweep claimed a publish whose run's lease is live"
+    assert (in_create, publisher.most_in_create, publisher.creates) == (1, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_more_publishes_than_a_runner_takes_leave_the_pool_to_requests(state_settings: AnnotatorSettings) -> None:
+    """A runner claims no more publishes than its bound, and a run holds no connection while the catalog takes its time,
+    so a small pool keeps serving requests while every run is mid-publish."""
+    small = await AnnotatorStore.open(state_settings.model_copy(update={"state_pool_size": 3}))
+    try:
+        projects = [await _publishing(small, (f"t{i}", TaskState.ACCEPTED, 1, None, None)) for i in range(5)]
+        publisher = _HeldPublisher()
+        runner = _runner(small, publisher, concurrency=2)
+        claimed = await runner.sweep()
+        await _until(lambda: _in_create(publisher, 2), "the claimed runs never reached the catalog")
+
+        started = time.monotonic()
+        reads = await asyncio.wait_for(asyncio.gather(*(small.get_project(p) for p in projects * 4)), timeout=10)
+        took = time.monotonic() - started
+        publisher.answer.set()
+        await runner.close()
+    finally:
+        await small.close()
+
+    assert len(claimed) == 2
+    assert all(read is not None for read in reads)
+    assert took < 5, f"20 reads beside two publishes in flight took {took:.1f} s on a pool of 3"
+
+
+async def _in_create(publisher: _HeldPublisher, runs: int) -> bool:
+    return publisher.in_create == runs
+
+
+@pytest.mark.asyncio
+async def test_a_publish_retried_before_the_failed_run_let_go_of_its_lease_gets_a_run(store: AnnotatorStore) -> None:
+    """A failed run's `publish_failed` ends its lease with the state, so the retry the person fires next is claimable at
+    once, even though the failed run has not yet released it; that release, arriving late, leaves the retry's lease."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    assert await store.claim_publish("old-run", 300, project_id=project_id) == [project_id]
+    await store.fire_project(project_id, event="publish_failed", actor="henry", error="catalog unreachable")
+    await store.fire_project(project_id, event="publish", actor="henry", target_namespace=TARGET)
+    publisher = _HeldPublisher()
+    runner = _runner(store, publisher)
+
+    run = runner.spawn(project_id)
+    await publisher.entered.wait()
+    await store.release_publish(project_id, "old-run")
+    publisher.answer.set()
+    assert run is not None
+    await run
+
+    project = await _state(store, project_id)
+    assert (project.state, project.publish_error) == (ProjectState.PUBLISHED, None)

@@ -385,7 +385,7 @@
 			<div class="flex flex-col gap-3">
 				<label class="flex flex-col gap-1 text-sm">
 					<span>Slug</span>
-					<Input bind:value={slug} placeholder="vasa-portraits" required pattern="[a-z0-9-]+" />
+					<Input bind:value={slug} placeholder="vasa-portraits" required pattern="[a-z0-9\-]+" />
 				</label>
 				<label class="flex flex-col gap-1 text-sm">
 					<span>Title</span>

@@ -223,7 +223,7 @@
 				<div class="flex flex-col gap-2 sm:flex-row">
 					<label class="flex flex-1 flex-col gap-1">
 						<span>Slug</span>
-						<Input bind:value={newSlug} placeholder="letters-2026" pattern="[a-z0-9-]+" required />
+						<Input bind:value={newSlug} placeholder="letters-2026" pattern="[a-z0-9\-]+" required />
 					</label>
 					<label class="flex flex-1 flex-col gap-1">
 						<span>Title</span>

@@ -21,14 +21,6 @@ from fastapi.routing import APIRoute
 EXEMPT: dict[tuple[str, str], str] = {
     ("GET", "/livez"): "process liveness, dependency-free by contract",
     ("GET", "/readyz"): "readiness, no person's data",
-    ("GET", "/healthz"): "the sidecar's health probe, no person's data",
-    ("GET", "/dapr/config"): "the sidecar reads the actor configuration from its own app",
-    ("DELETE", "/actors/{actor_type_name}/{actor_id}"): "the sidecar's actor callback, inside the pod",
-    ("PUT", "/actors/{actor_type_name}/{actor_id}/method/{method_name}"): "the sidecar's actor callback, inside the pod",
-    ("PUT", "/actors/{actor_type_name}/{actor_id}/method/timer/{timer_name}"): "the sidecar's actor callback, inside the pod",
-    ("PUT", "/actors/{actor_type_name}/{actor_id}/method/remind/{reminder_name}"): "the sidecar's actor callback, inside the pod",
-    ("POST", "/api/jobs/apply"): "a batch job's door, called service to service with the sidecar's app token, never published",
-    ("GET", "/api/jobs/{job_id}"): "a batch job's status, called service to service with the sidecar's app token, never published",
 }
 
 

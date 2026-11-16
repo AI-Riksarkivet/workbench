@@ -11,22 +11,21 @@ target namespace (and, under the run rule the namespace may declare, whether the
 target is a namespace of the project's own warehouse. The person needs no lakehouse write grant, and the commit
 names them as the run's originator.
 
-The third precondition — every task terminal — is NOT checked here. It lives in the project actor
-(`fire`), so it holds for any caller, including the publish workflow retrying after a crash.
+The third precondition — every task terminal — is NOT checked here. It lives in the state store's `publish`
+transition (`annotator.state.store`), on the task rows its transaction holds, so it holds for any caller.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Any, Final, cast
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Path, Query, status
 from pydantic import BaseModel, Field
-from pydantic import ValidationError as PydanticValidationError
 from starlette.concurrency import run_in_threadpool
 
+from annotator.api.dependencies import PublishRunnerDep, StoreDep
 from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, require_view, unseen_project
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
@@ -35,27 +34,21 @@ from annotator.corpus import input_tables, unheld_versions
 from annotator.projects.machines import (
     FROZEN_PROJECT_STATES,
     PROJECT_EDGES,
+    PROJECT_SEND_STATES,
     IllegalTransition,
     legal_task_events,
     project_transition,
-    refuse_unreadable_ontology,
 )
-from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Shape, Task, TaskState, new_id, publish_warehouse_of
-from annotator.projects.ontology import LabelOntology, ShapeLike, membership_violation
-from annotator.projects.project_actor import AnnotationProjectActorInterface
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Shape, Task, new_id
+from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.projects.publish import publish_namespace, require_in_warehouse
+from annotator.state.store import AnnotatorStore
 from client_kit.media.deps import StateDep
+from client_kit.media.state import AppState
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Grant
 from service_kit.governed.token_exchange import LakehouseCaller
-
-
-if TYPE_CHECKING:
-    # Resolves the `_task_proxy` return type without importing the actor module (which pulls in
-    # `dapr.actor`) at module scope — the runtime import stays lazy inside the function.
-    from annotator.projects.actor import AnnotationTaskActorInterface
-from client_kit.media.state import AppState
 
 
 logger = logging.getLogger(__name__)
@@ -66,16 +59,12 @@ router = APIRouter(prefix="/projects", tags=["annotation-projects"])
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
 
 #: Project edges caused by the SYSTEM (the publish saga), never by a principal. Refused on the HTTP
-#: surface: `TASK_EDGES`/`PROJECT_EDGES` giving them no permission means "no principal fires this",
-#: and exposing them unauthenticated would let anyone mark another operator's publish succeeded.
+#: surface: `PROJECT_EDGES` giving them no permission means "no principal fires this",
+#: and exposing them would let anyone mark another operator's publish succeeded.
 SYSTEM_ONLY_EVENTS: Final[frozenset[str]] = frozenset(e for (_s, e), (_t, p) in PROJECT_EDGES.items() if p is None)
 
-#: How many task-actor calls this service keeps in flight at once. Every fan-out here addresses one
-#: actor id PER CALL, so the calls genuinely parallelise; the bound exists because the alternative is
-#: one sidecar connection per task and a send admits 1000 of them. Deliberately NOT applied to the
-#: project actor: reentrancy is disabled estate-wide, so calls to a single id queue on that actor's
-#: turn lock whatever the caller does — those are collapsed into one batch instead.
-_ACTOR_FANOUT: Final[int] = 16
+#: The most tasks one send creates, replicas included.
+SEND_CAP: Final[int] = 1000
 
 
 class ProjectEventRequest(BaseModel):
@@ -142,31 +131,14 @@ class SendItem(BaseModel):
     source: ItemSource
     media: MediaRef
     #: PRE-ANNOTATIONS for this item — the bulk-labeling payload. Empty for an ordinary send. Capped
-    #: because a prediction rides the task DOCUMENT: an unbounded list is an unbounded actor state.
+    #: because a prediction rides the task document: an unbounded list is an unbounded row.
     prediction: list[PredictionShape] = Field(default_factory=list, max_length=200)
 
 
 class SendItemsRequest(BaseModel):
     """Send items into a project as tasks (§5.1: legal in draft/labeling, state unchanged)."""
 
-    items: list[SendItem] = Field(min_length=1, max_length=1000)
-
-
-def _project_proxy(project_id: str) -> AnnotationProjectActorInterface:
-    """A typed proxy to one project's actor. Imported lazily — the proxy opens a sidecar channel,
-    so importing it at module scope would make this module require daprd just to be read.
-    `typed_proxy` maps Python names onto the interface's wire names (a raw `ActorProxy` dispatches
-    only the wire names — the mismatch the first live drive found)."""
-    from annotator.projects.proxies import typed_proxy  # noqa: PLC0415 - deliberate, see docstring
-
-    return cast(AnnotationProjectActorInterface, typed_proxy("AnnotationProjectActor", project_id, AnnotationProjectActorInterface))
-
-
-def _task_proxy(task_id: str) -> AnnotationTaskActorInterface:
-    from annotator.projects.actor import AnnotationTaskActorInterface  # noqa: PLC0415 - deliberate, see above
-    from annotator.projects.proxies import typed_proxy  # noqa: PLC0415 - same reason
-
-    return cast(AnnotationTaskActorInterface, typed_proxy("AnnotationTaskActor", task_id, AnnotationTaskActorInterface))
+    items: list[SendItem] = Field(min_length=1, max_length=SEND_CAP)
 
 
 async def _check(checker: Checker, subject: str, relation: str, obj: str, what: AnnotatorAuditAction, **context: str) -> None:
@@ -176,12 +148,21 @@ async def _check(checker: Checker, subject: str, relation: str, obj: str, what: 
         raise ForbiddenError(f"{subject} lacks {relation} on {obj}")
 
 
+async def _project(store: AnnotatorStore, project_id: str) -> AnnotationProject:
+    project = await store.get_project(project_id)
+    if project is None:
+        raise ConflictError(f"annotation project {project_id} does not exist")
+    return project
+
+
 @router.post("/{project_id}/events", status_code=status.HTTP_200_OK)
-async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest, checker: CheckerDep, subject: CurrentSubject) -> AnnotationProject:
+async def fire_project_event(
+    project_id: ProjectId, payload: ProjectEventRequest, checker: CheckerDep, subject: CurrentSubject, store: StoreDep, runner: PublishRunnerDep
+) -> AnnotationProject:
     """Drive one project transition.
 
-    The permission comes from `PROJECT_EDGES`; `publish` additionally crosses the lakehouse doors.
-    The every-task-terminal precondition is enforced by the actor, not here.
+    The permission comes from `PROJECT_EDGES`; `publish` additionally crosses the lakehouse doors and, once the
+    transition commits, starts the saga.
     """
     obj = f"project:{project_id}"
     # VIEW FIRST, before the project is read: which relation an event needs depends on the project's state, and every
@@ -191,21 +172,16 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
     if payload.event in SYSTEM_ONLY_EVENTS:
         raise ForbiddenError(f"{payload.event} is fired by the publish saga, not by a principal, and cannot be posted over HTTP")
 
-    actor = _project_proxy(project_id)
-    current = await actor.get()
-    if current is None:
-        raise ConflictError(f"annotation project {project_id} does not exist")
-
+    current = await _project(store, project_id)
     try:
-        _target, permission = project_transition(ProjectState(current["state"]), payload.event)
+        _target, permission = project_transition(current.state, payload.event)
     except IllegalTransition as exc:
         raise ConflictError(str(exc)) from exc
 
-    # RESOLVED ONCE, here, and pinned by the actor with the publish token, so the write lands in the namespace this
-    # request named. Only a publish has a target.
+    # RESOLVED ONCE, here, and pinned with the publish token, so the write lands in the namespace this request named.
     target: str | None = None
     if payload.event == "publish":
-        warehouse = publish_warehouse_of(current)
+        warehouse = current.publish_warehouse
         try:
             target = publish_namespace(warehouse, get_annotator_settings().publish_namespace)
         except ValueError as exc:
@@ -220,16 +196,15 @@ async def fire_project_event(project_id: ProjectId, payload: ProjectEventRequest
         await _check(checker, subject, permission, obj, AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
 
     try:
-        # `target_namespace` rides along so the actor can PIN it with the publish token — the saga
-        # (which may run after a crash, with no request in sight) reads the authorized target off
-        # the project document rather than guessing one. Ignored by every other event.
-        updated = await actor.fire({"event": payload.event, "actor": subject, "target_namespace": target})
+        updated = await store.fire_project(project_id, event=payload.event, actor=subject, target_namespace=target)
     except IllegalTransition as exc:
-        # The actor's own preconditions — every task terminal, and a non-empty project.
+        # The store's own preconditions — every task terminal, and a non-empty project.
         raise ConflictError(str(exc)) from exc
 
+    if payload.event == "publish":
+        runner.spawn(project_id)
     audit(AnnotatorAuditAction.PROJECT_TRANSITION, AuditOutcome.SUCCESS, event=payload.event, subject=subject, resource=project_id)
-    return AnnotationProject.model_validate(updated)
+    return updated
 
 
 class AdjudicationRequest(BaseModel):
@@ -239,55 +214,40 @@ class AdjudicationRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=80)
 
 
+GroupId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
+
+
+async def _adjudicate(store: AnnotatorStore, checker: Checker, subject: str, project_id: str, group_id: str, task_id: str | None) -> AnnotationProject:
+    await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
+    try:
+        updated = await store.adjudicate(project_id, group=group_id, task_id=task_id, actor=subject)
+    except IllegalTransition as exc:
+        raise ConflictError(str(exc)) from exc
+    audit(AnnotatorAuditAction.PROJECT_ADJUDICATE, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
+    return updated
+
+
 @router.put("/{project_id}/adjudications/{group_id}", status_code=status.HTTP_200_OK)
 async def adjudicate_group(
-    project_id: ProjectId,
-    group_id: Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")],
-    payload: AdjudicationRequest,
-    checker: CheckerDep,
-    subject: CurrentSubject,
+    project_id: ProjectId, group_id: GroupId, payload: AdjudicationRequest, checker: CheckerDep, subject: CurrentSubject, store: StoreDep
 ) -> AnnotationProject:
     """Consensus v1's merge step: name ONE accepted replica of the group canonical (a pick, never a
     blend — every replica's rows still publish; the facet carries the pick with attribution).
 
     `can_manage`, not `can_review`: adjudication decides which OPINION wins, which is the manager's
     distribution authority, not a review of any single submission. PUT because re-picking while the
-    project is adjudicable is the intended idempotent shape; the actor refuses once provenance is
+    project is adjudicable is the intended idempotent shape; the store refuses once provenance is
     frozen, and refuses a target that is not an accepted member of the group.
     """
-    await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
-    try:
-        updated = await _project_proxy(project_id).adjudicate({"group": group_id, "task_id": payload.task_id, "actor": subject})
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
-    audit(AnnotatorAuditAction.PROJECT_ADJUDICATE, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
-    return AnnotationProject.model_validate(updated)
+    return await _adjudicate(store, checker, subject, project_id, group_id, payload.task_id)
 
 
 @router.delete("/{project_id}/adjudications/{group_id}", status_code=status.HTTP_200_OK)
-async def clear_adjudication(
-    project_id: ProjectId,
-    group_id: Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")],
-    checker: CheckerDep,
-    subject: CurrentSubject,
-) -> AnnotationProject:
+async def clear_adjudication(project_id: ProjectId, group_id: GroupId, checker: CheckerDep, subject: CurrentSubject, store: StoreDep) -> AnnotationProject:
     """Withdraw the pick for one group. Exists because a pick has no other exit: the publish
-    refuses a stale or groupless pick (correctly), so without removal one wrong pick would wedge
-    the publish permanently (audit finding). Idempotent — clearing an absent pick is a no-op —
-    and refused once provenance is frozen, exactly like setting one."""
-    await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
-    try:
-        updated = await _project_proxy(project_id).adjudicate({"group": group_id, "task_id": None, "actor": subject})
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
-    audit(AnnotatorAuditAction.PROJECT_ADJUDICATE, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
-    return AnnotationProject.model_validate(updated)
-
-
-#: A task may be dropped only while the project can still change what it will publish. Past
-#: `frozen` the answer set is closed and a publish is being prepared against it — removing an item
-#: then would change what the run facet describes after the description was fixed.
-DROPPABLE_STATES = frozenset({ProjectState.DRAFT, ProjectState.LABELING})
+    refuses a stale or groupless pick, so without removal one wrong pick would wedge the publish.
+    Idempotent — clearing an absent pick is a no-op — and refused once provenance is frozen."""
+    return await _adjudicate(store, checker, subject, project_id, group_id, None)
 
 
 @router.delete("/{project_id}/tasks/{task_id}", status_code=status.HTTP_200_OK)
@@ -296,30 +256,27 @@ async def drop_task(
     task_id: Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")],
     checker: CheckerDep,
     subject: CurrentSubject,
+    store: StoreDep,
 ) -> DropReceipt:
-    """Remove one item from a project.
+    """Remove one item from a project, with its draft.
 
-    Exists because a send can put items into a project that can NEVER be completed. The case we hit
-    is an item naming a media dataset that has since been renamed or removed: the canvas cannot open
-    it, so it cannot be claimed, submitted or skipped — and the publish precondition requires every
-    task terminal. One unfinishable item wedges the project permanently, and before this the only way
-    past it was to abandon the project and re-send everything.
+    Exists because a send can put items into a project that can NEVER be completed (an item naming a dataset that has
+    since been renamed or removed cannot be opened, claimed or skipped), and the publish precondition requires every
+    task terminal.
 
     `can_manage`, not the annotator's own permission: discarding work is a manager act. Idempotent —
     dropping an absent task is a no-op, so a retry cannot 404 a project that is already how the
     caller wants it.
     """
     await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_DROP_TASK)
-    proxy = _project_proxy(project_id)
-    doc = await proxy.get()
-    if doc is None:
+    if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
-    state = ProjectState(doc["state"])
-    if state not in DROPPABLE_STATES:
-        raise ConflictError(f"project {project_id} is {state.value} — items can be dropped only in {sorted(s.value for s in DROPPABLE_STATES)}")
-    result = await proxy.drop_task({"task_id": task_id, "actor": subject})
+    try:
+        result = await store.drop_task(project_id, task_id)
+    except IllegalTransition as exc:
+        raise ConflictError(str(exc)) from exc
     audit(AnnotatorAuditAction.PROJECT_DROP_TASK, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
-    return DropReceipt.model_validate(result)
+    return DropReceipt.model_validate(result.model_dump())
 
 
 def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller: LakehouseCaller) -> dict[str, str | None]:
@@ -334,10 +291,6 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller:
     The catalog is asked, as the sender (`annotator.corpus.input_tables`): a dataset or table the sender cannot see is
     one their items could never open, and each one it shows names the governed table its captured version is of, which
     the send stamps on the item (`ItemSource.table`).
-
-    The whole send, not the offending items: a partial send produces exactly the half-populated
-    project this is meant to prevent, and it costs ZERO seeded task actors to refuse here — the same
-    argument the project-state check above makes.
 
     An UNVERIFIABLE source refuses the send (503): the check is whether the sender may read what they send, and a check
     that did not run proves nothing (zero trust fails closed). The sender tries again once the catalog answers.
@@ -357,9 +310,9 @@ def _refuse_unheld_versions(state: AppState, payload: SendItemsRequest, tables: 
     """Refuse the WHOLE send (409) when an item names a version its table does not have.
 
     The version an item carries is the sender's: the row table's version they were looking at, which the publish then
-    names as its run's input. So the server holds it to the catalog before anything is seeded: the table the send stamps
-    (`ItemSource.table`) must have that version, as the sender reads it. A version of an item whose source names no
-    table is never an input, and the send drops it. Unverifiable is a 503, as `_refuse_unknown_datasets` is.
+    names as its run's input. So the server holds it to the catalog before anything is written: the table the send
+    stamps (`ItemSource.table`) must have that version, as the sender reads it. A version of an item whose source names
+    no table is never an input, and the send drops it. Unverifiable is a 503, as `_refuse_unknown_datasets` is.
     """
     captured = {
         (table, item.source.dataset_version)
@@ -375,47 +328,27 @@ def _refuse_unheld_versions(state: AppState, payload: SendItemsRequest, tables: 
         raise ConflictError(f"the catalog holds no {', '.join(unheld)}: send the items again from what the dataset shows now")
 
 
-#: What `send` stamps onto a pre-annotation's `source`. The `import` precedent (§ `projects.imports`
-#: `IMPORT_SOURCE`): a free-form provenance string written by the SERVER, which `publish` carries
-#: through verbatim (`shape.source or "human"`). "bulk" is the honest word — a human chose the label,
-#: but chose it for a selection rather than for this item.
+#: What `send` stamps onto a pre-annotation's `source`: a free-form provenance string written by the SERVER, which
+#: `publish` carries through verbatim. "bulk" is the honest word — a human chose the label, but chose it for a selection
+#: rather than for this item.
 BULK_SOURCE: Final[str] = "bulk"
 
 
-def _validated_predictions(project: dict[str, Any], payload: SendItemsRequest) -> list[list[Shape]]:
+def _validated_predictions(project: AnnotationProject, payload: SendItemsRequest) -> list[list[Shape]]:
     """Every item's pre-annotations, checked against the project's taxonomy and stamped.
 
     Returns one list per item, positionally aligned with ``payload.items``. Raises before returning
-    if ANY item violates, so the caller can seed knowing the whole send is legal.
+    if ANY item violates, so the caller can write knowing the whole send is legal.
 
     The taxonomy check is `membership_violation` — the same function import and submit use, shared
     rather than reimplemented so the three stages cannot drift. A bulk action is the worst possible
-    place to leak an invented label: one click is five hundred rows, and the closed-set property is
-    the entire reason a class list is a first-class object.
+    place to leak an invented label: one click is five hundred rows.
     """
-    ontology = LabelOntology()
-    raw = project.get("ontology")
-    if raw:
-        try:
-            ontology = LabelOntology.model_validate(raw)
-        except PydanticValidationError as exc:
-            # FAIL CLOSED. An ontology this build cannot read is not "no rules" — it is rules we
-            # cannot apply, and reading it as `LabelOntology()` would let a bulk send seed hundreds
-            # of rows carrying invented classes into a project whose whole point is a closed set.
-            #
-            # Reachable only across a ROLLING UPGRADE that changes `LabelOntology`: within one
-            # deployed version the project actor's `_load` refuses the document first, so this parse
-            # cannot fail. During an upgrade the call can be served by an actor pod still on the old
-            # code, whose `model_dump` this endpoint's newer model rejects — and the named refusal is
-            # what makes that window one legible 409 instead of a burst of unattributed 500s.
-            refuse_unreadable_ontology(exc, "project", str(project.get("project_id") or "unknown"), path="")
-
     out: list[list[Shape]] = []
     for index, item in enumerate(payload.items):
-        # `source` is set HERE and nowhere else: `PredictionShape` does not declare it, so this is
-        # the only path by which a stored prediction can acquire provenance at all.
+        # `source` is set HERE and nowhere else: `PredictionShape` does not declare it.
         shapes = [Shape(**shape.model_dump(), source=BULK_SOURCE) for shape in item.prediction]
-        violation = membership_violation(ontology, [ShapeLike.model_validate(s.model_dump()) for s in shapes])
+        violation = membership_violation(project.ontology, [ShapeLike.model_validate(s.model_dump()) for s in shapes])
         if violation is not None:
             raise ConflictError(f"item {index + 1} of {len(payload.items)}: {violation}")
         out.append(shapes)
@@ -431,227 +364,123 @@ async def send_items(
     checker: CheckerDep,
     authz: AuthorizerDep,
     subject: CurrentSubject,
+    store: StoreDep,
 ) -> SendReceipt:
-    """Send items into the project as tasks.
+    """Send items into the project as tasks, in one transaction.
 
-    Two phases, and the ORDER between them is the whole correctness argument: seed EVERY task actor
-    first, then register the whole batch in the project index with one call. A crash between the
-    phases leaves tasks that exist but are not indexed — invisible to the publish precondition, which
-    is the safe direction only because `send_many` is idempotent on `task_id` and a re-send repairs
-    it. The reverse order would index tasks whose actors were never seeded, and the publish
-    precondition would then read a state for a task that cannot answer for itself.
-
-    Both phases are shaped by which actor they address, which is the thing that makes them different
-    (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-03). The seeds each address their OWN task actor id, so they fan out under
-    `_ACTOR_FANOUT`. The index writes all address the SAME project actor, which serialises them on
-    its turn lock regardless — and each one rewrote the entire index — so they are collapsed into one
-    `send_many` rather than made concurrent. At the 1000-replica cap this is 1000 bounded-concurrent
-    calls plus one, where it was 2000 strictly sequential ones.
-
-    Batching also makes the ownership refusal ATOMIC. Refusing per item left every replica before the
-    offending one already indexed, and an index entry for a task owned by another project can never
-    become terminal — `may_publish` false for the life of the project, for a prefix of the send.
-    Now a refusal writes no index entry at all.
+    Idempotent on the task id: an item already in this project reports as not created, and one whose id belongs to
+    another project refuses the whole send, writing nothing.
     """
     # The roles first: the refusals below say whether the project exists and which state it is in.
     await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
     await _check(checker, subject, "can_send_items", f"project:{project_id}", AnnotatorAuditAction.PROJECT_SEND)
-    project = await _project_proxy(project_id).get()
-    if project is None:
-        raise ConflictError(f"annotation project {project_id} does not exist")
-    if ProjectState(project["state"]) not in {ProjectState.DRAFT, ProjectState.LABELING}:
-        # Checked here as well as in the actor so a refusal costs zero seeded task actors — the
-        # actor's own refusal would fire only after the first `seed` had already landed.
-        raise ConflictError(f"project {project_id} is {project['state']} — items may only be sent while it is draft or labeling")
+    project = await _project(store, project_id)
+    if project.state not in PROJECT_SEND_STATES:
+        # Checked here as well as in the store so the catalog is not asked about a send that cannot land.
+        raise ConflictError(f"project {project_id} is {project.state} — items may only be sent while it is draft or labeling")
 
-    # REFUSE an item whose media dataset does not resolve. Deliberately after the role check: the
-    # refusal can name the datasets that DO exist, which is what makes it actionable and also what
-    # makes it something an unauthorised caller must not be able to enumerate. Off the loop: the
-    # body asks the catalog or the registry (blocking) per named dataset — inline it froze every
-    # in-flight request on a cold miss (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-01).
+    # REFUSE an item whose media dataset does not resolve. Deliberately after the role check: the refusal names
+    # datasets, which an unauthorised caller must not be able to enumerate. Off the loop: the catalog is asked
+    # synchronously per named dataset.
     tables = await run_in_threadpool(_refuse_unknown_datasets, state, payload, caller)
     await run_in_threadpool(_refuse_unheld_versions, state, payload, tables, caller)
 
-    # BIND each corpus the items come from to this project (`corpus:<dataset>#project`), so the people who annotate
-    # here may write that corpus's annotations through the workbench (`can_annotate` on the corpus). The send's own
-    # `can_send_items` is the model's `can_bind_corpus`, so no second check is asked.
-    if authz is not None:
-        corpora = sorted({item.source.where or state.settings.default_dataset or "" for item in payload.items} - {""})
-        await authz.write(Grant(user=f"project:{project_id}", relation="project", object=f"corpus:{name}") for name in corpora)
+    # Consensus v1: N>1 writes N independent replica items per source item, deterministic sibling ids (`{gid}-r{k}`).
+    consensus_n = project.consensus_n
+    if len(payload.items) * consensus_n > SEND_CAP:
+        raise ConflictError(f"{len(payload.items)} items × consensus_n={consensus_n} exceeds the {SEND_CAP}-task send cap — split the send")
 
-    # Consensus v1: N>1 seeds N independent replica items per source item, deterministic sibling
-    # ids (`{gid}-r{k}`) — determinism is what lets the one-replica-per-annotator guard find them.
-    consensus_n = int(project.get("consensus_n") or 1)
-    if len(payload.items) * consensus_n > 1000:
-        raise ConflictError(f"{len(payload.items)} items × consensus_n={consensus_n} exceeds the 1000-task send cap — split the send")
-
-    # Every prediction in the send, validated against the project's taxonomy and stamped, BEFORE the
-    # first actor is seeded. Doing it inside the loop would leave the good items queued and the bad
-    # ones not — a half-applied bulk action, which is worse than a refused one because nothing says
-    # which half landed and `seed` is idempotent, so a retry cannot undo the part that did.
+    # Every prediction validated against the project's taxonomy and stamped BEFORE anything is written: a half-applied
+    # bulk action is worse than a refused one.
     predictions = _validated_predictions(project, payload)
 
-    # EVERY replica of the whole send, built before the first actor is touched — the same reasoning
-    # as the prediction validation above, and what lets the two phases below each be one pass.
     tasks: list[Task] = []
     for index, item in enumerate(payload.items):
-        # Built HERE from the two client-supplied descriptive fields plus the project's own config.
-        # Every provenance and state field takes its model default, so a sender cannot pre-set
-        # `state=accepted` or name someone else as the annotator.
+        # Built HERE from the two client-supplied descriptive fields plus the project's own config. Every provenance and
+        # state field takes its model default, so a sender cannot pre-set `state=accepted` or name another annotator.
         group_id = item.task_id or new_id()
         # The input table is the server's to name, whatever the sender put there, and a version is kept only as a version
         # of that table, which `_refuse_unheld_versions` checked the catalog holds.
         table = tables.get(item.source.where or "")
         source = item.source.model_copy(update={"table": table, "dataset_version": item.source.dataset_version if table else None})
         capture: dict[str, Any] = {
-            "review_required": bool(project.get("review_required", True)),
-            "lease_seconds": int(project.get("lease_seconds") or 1800),
-            # The ONTOLOGY rides every item, like the two captures above: submit enforcement reads
-            # the ITEM's copy, so a mid-flight ontology edit cannot retroactively invalidate work.
-            # This used to capture the `template` and leave the taxonomy behind on the project —
-            # which is precisely why the closed-set label check could not exist: the class list was
-            # not in scope where enforcement happens, so `label="asdf"` submitted and published.
-            "ontology": project.get("ontology") or {},
-            # Every replica of a group gets the SAME suggestion. Consensus asks several people the
-            # same question; handing some of them a pre-annotation and not others would make their
-            # disagreement an artefact of the send rather than of the images.
+            # Captured from the PROJECT: `submit` reads review_required, the claim reads lease_seconds, and submit judges
+            # the item against ITS copy of the ontology, so a mid-flight edit cannot retroactively invalidate work.
+            "review_required": project.review_required,
+            "lease_seconds": project.lease_seconds,
+            "ontology": project.ontology,
+            # Every replica of a group gets the SAME suggestion: consensus asks several people the same question.
             "prediction": predictions[index],
         }
-        replicas = (
-            [Task(task_id=group_id, project_id=project_id, source=source, media=item.media, **capture)]
-            if consensus_n == 1
-            else [
-                Task(
-                    task_id=f"{group_id}-r{k}",
-                    project_id=project_id,
-                    replica_of=group_id,
-                    source=source,
-                    media=item.media,
-                    **capture,
-                )
+        if consensus_n == 1:
+            tasks.append(Task(task_id=group_id, project_id=project_id, source=source, media=item.media, **capture))
+        else:
+            tasks.extend(
+                Task(task_id=f"{group_id}-r{k}", project_id=project_id, replica_of=group_id, source=source, media=item.media, **capture)
                 for k in range(1, consensus_n + 1)
-            ]
-        )
-        tasks.extend(replicas)
+            )
 
-    gate = asyncio.Semaphore(_ACTOR_FANOUT)
+    try:
+        created = await store.send_tasks(project_id, tasks)
+    except IllegalTransition as exc:
+        raise ConflictError(str(exc)) from exc
 
-    async def _seed(task: Task) -> tuple[dict[str, Any], dict[str, Any]]:
-        body = task.model_dump(mode="json")
-        async with gate:
-            return body, await _task_proxy(task.task_id).seed(body)
-
-    # PHASE 1. `gather` preserves INPUT order, which the refusal below depends on.
-    seeded = await asyncio.gather(*(_seed(task) for task in tasks))
-
-    # Checked over the gathered results rather than inside `_seed`, so the refusal names the first
-    # offender in SEND order. Raising from inside the fan-out would name whichever call happened to
-    # finish first, making the same request refuse a different task from run to run.
-    #
-    # `seed` is idempotent and returns what is ALREADY there. Checking its return is what stops a
-    # client-chosen `task_id` that already belongs to another project from being indexed here: the
-    # index entry would be written from the payload, the task's own `_report_state` would only ever
-    # address its real owner, and this project's entry would freeze at its seeded value —
-    # permanently non-terminal, `may_publish` false forever.
-    for body, result in seeded:
-        if str(result.get("project_id")) != project_id:
-            raise ConflictError(f"task {body['task_id']} already belongs to project {result.get('project_id')} — refusing to index it into {project_id}")
-
-    # PHASE 2, and one call: see the docstring. `created` comes from the batch's per-task answers,
-    # not from the send list, so an item that was already indexed still reports as not created.
-    batch = await _project_proxy(project_id).send_many({"tasks": [body for body, _ in seeded]})
-    created = [str(row["task_id"]) for row in batch["results"] if row.get("created")]
+    # BIND each corpus the items come from to this project (`corpus:<dataset>#project`), so the people who annotate
+    # here may write that corpus's annotations through the workbench (`can_annotate` on the corpus). The send's own
+    # `can_send_items` is the model's `can_bind_corpus`, so no second check is asked. Written once the tasks are, and
+    # idempotent, so a send retried after a failure here binds what the first one could not.
+    if authz is not None:
+        corpora = sorted({item.source.where or state.settings.default_dataset or "" for item in payload.items} - {""})
+        await authz.write(Grant(user=f"project:{project_id}", relation="project", object=f"corpus:{name}") for name in corpora)
 
     audit(AnnotatorAuditAction.PROJECT_SEND, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
     return SendReceipt(sent=len(payload.items), created=len(created), task_ids=created)
 
 
 class TaskInclude(StrEnum):
-    """What extra payload the task listing should carry.
-
-    One member today, and it is still an enum rather than a bool: `?include=details` is the queue UI's
-    payload while the bare listing is the publish precondition, and a second projection is the obvious
-    next request. A closed set makes a typo a 422 naming the legal values instead of a 200 carrying the
-    wrong shape.
-    """
+    """What extra payload the task listing should carry. A closed set makes a typo a 422 naming the legal values
+    instead of a 200 carrying the wrong shape."""
 
     DETAILS = "details"
 
 
 # `exclude_unset`: the plain listing publishes FIVE keys and the details listing publishes eight.
-# Emitting the extra three as `null` on the plain path would be a wire change — see `TaskListing`.
 @router.get("/{project_id}/tasks", response_model_exclude_unset=True)
 async def list_project_tasks(
     project_id: ProjectId,
     checker: CheckerDep,
     subject: CurrentSubject,
-    # A STRENUM, not a bare string. `?include=detials` used to return the plain index with no `details`
-    # key and no error, so the caller could not tell a misspelling from a project that had none — a
-    # silent wrong answer with a 200 on it.
-    #
-    # A StrEnum rather than a `Literal` (which closes the set equally well) because that is what
-    # `core-conventions.md` names for fixed-set query values — "auto-documents as a dropdown in /docs
-    # and beats Query(pattern=…)" — and because the estate already has 23 of them, one doing exactly
-    # this job one service over (`InboxFilter` on the notifications inbox). A Literal here would make
-    # this route the outlier rather than the rule.
+    store: StoreDep,
     include: TaskInclude | None = None,
-    # THE PAGE. `_ACTOR_FANOUT` below bounds CONCURRENCY, not COUNT — sixteen at a time, ten thousand
-    # times, is still ten thousand actor round trips. Nothing caps the collection either: the send door
-    # caps one CALL at 1000 items, while tasks accumulate one per sent item per consensus replica for
-    # the life of the project, and `consensus_n` multiplies each item into several.
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
-    # Keyset on the task id, which the handler already sorts — so the tail stays reachable rather than
-    # merely slow. A limit with no cursor would hide the rest of the project behind the first page.
+    # Keyset on the task id, so the tail stays reachable rather than merely slow.
     cursor: Annotated[str | None, Query()] = None,
 ) -> TaskListing:
     """The task index plus the publish precondition, computed from ONE snapshot.
 
-    Returned together deliberately: a caller that read the index and then asked "may I publish?"
-    separately could compute the answer from a different snapshot than the one it is showing.
-
-    ``include=details`` additionally fans out to each task's OWN actor (bounded concurrency) for
-    the full document — assignee, lease, media, review notes — plus its ``legal_events`` from
-    `machines.legal_task_events`, the single source A2/A3 render their actions from. The index
-    carries only ``task_id → state`` by design (the publish precondition needs no more); the
-    queue UI needs the rest. A task whose actor holds no state is reported in ``missing`` rather
-    than silently dropped or a 500 — the index can lead its actors after a half-completed send.
+    ``include=details`` adds a page of the tasks' whole documents (assignee, lease, media, review notes), each with its
+    ``legal_events`` from `machines.legal_task_events`, the single source the queue renders its actions from.
     """
     await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
-    listing = await _project_proxy(project_id).list_tasks()
-    # Against the MEMBER, not the string. A StrEnum compares equal to its value so the old form still
-    # worked, but comparing to a literal here would leave the enum decorative — a renamed member
-    # would keep this branch silently correct against the old spelling.
+    index = await store.task_index(project_id)
+    listing: dict[str, Any] = index.model_dump(mode="json")
     if include is not TaskInclude.DETAILS:
         return TaskListing.model_validate(listing)
 
     # Rule 5 (§5.2): once the project is publishing/published/archived, EVERY task transition is
-    # refused — so the details must not hand the UI actions that can only 409. The tasks' own
-    # states still admit edges (accepted → reopen); the PROJECT is the gate.
-    project = await _project_proxy(project_id).get()
-    project_frozen = project is not None and ProjectState(project["state"]) in FROZEN_PROJECT_STATES
+    # refused — so the details must not hand the UI actions that can only 409.
+    project = await store.get_project(project_id)
+    project_frozen = project is not None and project.state in FROZEN_PROJECT_STATES
 
-    gate = asyncio.Semaphore(_ACTOR_FANOUT)
-
-    async def _detail(task_id: str) -> tuple[str, dict[str, Any] | None]:
-        async with gate:
-            return task_id, await _task_proxy(task_id).get()
-
-    # SLICED BEFORE THE GATHER, which is the whole point: paging after the fan-out would still make
-    # every round trip. `may_publish` is untouched — the actor computes it from the FULL index, so the
-    # publish precondition cannot change with the page the UI happens to be reading.
-    task_ids = sorted(listing["tasks"])
+    task_ids = sorted(index.tasks)
     if cursor is not None:
         task_ids = [tid for tid in task_ids if tid > cursor]
     page_ids = task_ids[:limit]
     next_cursor = page_ids[-1] if len(task_ids) > limit else None
 
-    pairs = await asyncio.gather(*(_detail(tid) for tid in page_ids))
-    details: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for task_id, doc in pairs:
-        if doc is None:
-            missing.append(task_id)
-            continue
-        events = [] if project_frozen else legal_task_events(TaskState(doc["state"]))
-        details.append({**doc, "legal_events": events})
-    return TaskListing.model_validate({**listing, "details": details, "missing": missing, "next_cursor": next_cursor})
+    details = [
+        {**task.model_dump(mode="json"), "legal_events": [] if project_frozen else legal_task_events(task.state)}
+        for task in await store.get_tasks(project_id, page_ids)
+    ]
+    found = {d["task_id"] for d in details}
+    return TaskListing.model_validate({**listing, "details": details, "missing": [tid for tid in page_ids if tid not in found], "next_cursor": next_cursor})

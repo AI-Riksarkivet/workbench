@@ -50,7 +50,6 @@ describe('the path → service mapping follows the BFF routes', () => {
 		['/explorer/api/search', 'search'],
 		['/explorer/api/annotations/tags', 'annotator'],
 		['/annotator/api/annotations/abc', 'annotator'],
-		['/annotator/api/jobs/apply', 'annotator'],
 		['/annotator/api/assist/suggest', 'assist'],
 		['/annotator/api/config', 'assist'],
 		// No dedicated route → `api/[...path]`, which is makeViewerProxy in BOTH zones.

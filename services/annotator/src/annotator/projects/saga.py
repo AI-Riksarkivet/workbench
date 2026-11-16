@@ -1,49 +1,44 @@
 """The publish saga — project → lakehouse, crash-safe without a workflow engine.
 
-**Why this is not a Dapr Workflow.** `docs/OPERATORS.md` §4 pins a reasoned ruling: Dapr Workflow
-stays un-adopted, because every multi-step path in the estate is *token-keyed idempotent*, so
-JetStream's redeliver-the-whole-message model already provides the crash-recovery a workflow engine
-would sell us — at the cost of a new dependency and a sidecar state-store coupling. This saga is
-built to satisfy that criterion rather than to argue with it.
-
-The criterion has one real teeth-bearing consequence: **creating the table is the only step that is
-not naturally idempotent**, and it is made idempotent BY KEY. `AnnotationProject.pending_publish_id`
-is minted once by the project actor at the `publish` transition and reused by every retry, the table
-id is derived from it, so a crashed-and-retried publish finds the table it already created rather
-than making a second one. Mint per attempt and you get an orphan table per crash, tracked by nothing.
-
-Every step therefore has a defined answer to "what if this runs twice":
+Every step is idempotent by key, so running the saga again after any crash converges on one publish. **Creating the
+table is the only step that is not naturally idempotent**, and it is made idempotent BY KEY: `AnnotationProject.
+pending_publish_id` is minted once at the `publish` transition and reused by every retry, and the table id derives
+from it, so a resumed publish finds the table it already created rather than making a second one.
 
 | step | run twice |
 | --- | --- |
-| read project + tasks | pure read |
+| read the project and its tasks | pure read |
 | build the plan | pure; a replay is byte-identical (`build_plan` sorts everything derived) |
 | create the table | same id ⇒ already-exists, treated as success, NOT an error |
-| record the publish | actor is set-once; the second call returns the first record |
+| record the publish | set once; the second call answers the first record |
 | fire `publish_succeeded` | already `published` ⇒ `IllegalTransition`, swallowed as converged |
 
-**The saga re-reads tasks from their own actors rather than trusting the index.** The index is
-maintained by a best-effort call from the task actor, so it can lag; `reopen` is the one edge where
-lagging is the UNSAFE direction. Re-reading closes that hole — it is the reason index drift can only
-delay a publish, never let unreviewed work into the lakehouse.
+The same table holds for two runs at once, which a lease that lapsed under a slow step allows: both create the one
+table id, the record is set once, and the later `publish_succeeded` converges. A run that finds its lease gone
+before a step stops with nothing recorded (`LostLease`).
 
-The transport is injected (`Publisher`), so every path here is testable without a catalog, a sidecar
-or a cluster.
+The tasks are read from the store in one statement while the project is `publishing`, a state in which no task
+transition is taken (`annotator.state.store`), so the plan is built from the rows the `publish` transition judged.
+
+The transport is injected (`Publisher`), so every path here runs against a real store with no catalog.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections.abc import Callable
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from annotator.projects.machines import IllegalTransition
-from annotator.projects.models import AnnotationProject, Draft, ProjectState, Task, TaskState
+from annotator.projects.models import AnnotationProject, ProjectState, PublishRecord
 from annotator.projects.publish import PublishPlan, PublishRefusal, build_plan, publish_inputs, table_properties
 from service_kit.naming import CATALOG_DELIMITER
+
+
+if TYPE_CHECKING:
+    from annotator.state.store import AnnotatorStore
 
 
 logger = logging.getLogger(__name__)
@@ -81,25 +76,9 @@ class Publisher(Protocol):
         ...
 
 
-class ProjectHandle(Protocol):
-    """The project actor's surface, narrowed to what the saga uses."""
-
-    async def get(self) -> dict[str, Any] | None: ...
-    async def list_tasks(self) -> dict[str, Any]: ...
-    async def fire(self, payload: dict[str, Any]) -> dict[str, Any]: ...
-    async def record_publish(self, payload: dict[str, Any]) -> dict[str, Any]: ...
-    async def note_progress(self, payload: dict[str, Any]) -> dict[str, Any]: ...
-
-
-class TaskHandle(Protocol):
-    async def get(self) -> dict[str, Any] | None: ...
-    async def get_draft(self) -> dict[str, Any] | None: ...
-
-
 class PublishOutcome(BaseModel):
     """What the saga did. `already_published` distinguishes a converged retry from fresh work —
-    without it a caller cannot tell "I published this" from "this was already published", and a
-    notification would fire twice for one publish."""
+    without it a caller cannot tell "I published this" from "this was already published"."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -126,77 +105,42 @@ def table_id_for(project: AnnotationProject, publish_id: str, namespace: str) ->
     return f"{namespace}{CATALOG_DELIMITER}{project.slug}_{publish_id[:12]}"
 
 
-#: Bounded concurrency for the publish-path task reads — different actor ids, so this is real
-#: parallelism. Matches the send path's seed fan-out cap (`_ACTOR_FANOUT`).
-_COLLECT_FANOUT = 16
-
-
-async def collect(project_handle: ProjectHandle, task_handle: Callable[[str], TaskHandle], task_ids: list[str]) -> list[tuple[Task, Draft | None]]:
-    """Read every task and draft FROM ITS OWN ACTOR — the authoritative source, not the index.
-
-    This is the step that closes the index's one unsafe direction. `reopen` moves a task backwards
-    out of `accepted`; if the report of that failed, the index still says `accepted` and the
-    precondition would pass. Reading the actors makes the publish see the true state, so a stale
-    index can only delay a publish.
-    """
-
-    async def _one(task_id: str) -> tuple[Task, Draft | None] | None:
-        # `get` then `get_draft` stay chained — same actor, and the draft read is cheap after the
-        # state read. Different task ids are different actor ids, so the FAN-OUT below is real
-        # concurrency, not a turn-lock queue (which is why the send path needed SendMany instead).
-        handle = task_handle(task_id)
-        raw = await handle.get()
-        if raw is None:
-            return None  # decided by the caller, in index order — see below
-        task = Task.model_validate(raw)
-        draft_raw = await handle.get_draft()
-        return task, Draft.model_validate(draft_raw) if draft_raw else None
-
-    sem = asyncio.Semaphore(_COLLECT_FANOUT)
-
-    async def _bounded(task_id: str) -> tuple[Task, Draft | None] | None:
-        async with sem:
-            return await _one(task_id)
-
-    results = await asyncio.gather(*(_bounded(t) for t in task_ids))
-    # THE REFUSAL IS DECIDED AFTER THE GATHER, on the LOWEST-INDEX missing task — `gather` preserves
-    # input order in its RESULT list even though the coroutines finish out of order, so raising here
-    # (rather than from inside `_one`) makes the message name the same task on every run. Raising
-    # inside the fan-out would surface whichever get() completed first.
-    for task_id, result in zip(task_ids, results, strict=True):
-        if result is None:
-            raise PublishRefusal(f"task {task_id} is in the project index but its actor holds no state — refusing to publish an incomplete project")
-    return [r for r in results if r is not None]
+class LostLease(Exception):
+    """This run no longer holds its project's publish lease: another run drives the publish now, so this one stops
+    without recording anything."""
 
 
 async def run_publish(
     *,
-    project_handle: ProjectHandle,
-    task_handle: Callable[[str], TaskHandle],
+    store: AnnotatorStore,
+    project_id: str,
     publisher: Publisher,
     namespace: str,
     subject: str,
+    renew: Callable[[], Awaitable[None]] | None = None,
 ) -> PublishOutcome:
     """Run the saga to completion, or fire `publish_failed` and re-raise.
 
-    Safe to call again after any crash: every step converges on the same `pending_publish_id`.
+    Safe to call again after any crash, and safe beside a second run of the same publish: every step converges on the
+    same `pending_publish_id`. ``renew`` extends the run's lease before each step and raises `LostLease` when it holds
+    none any more, which ends the run with nothing recorded.
     """
-    raw = await project_handle.get()
-    if raw is None:
+
+    async def step(name: str) -> None:
+        if renew is not None:
+            await renew()
+        await _note(store, project_id, name)
+
+    project = await store.get_project(project_id)
+    if project is None:
         raise PublishRefusal("annotation project does not exist")
-    project = AnnotationProject.model_validate(raw)
 
     if project.published is not None:
-        # A retry that got all the way through last time. Converged — report it rather than
-        # republishing, which would create a second table for one logical publish.
-        #
-        # But CONVERGE THE STATE FIRST. A crash between `record_publish` and `publish_succeeded`
-        # leaves `published` set while the project is still `publishing`, and `PROJECT_EDGES` has no
-        # edge out of `publishing` except the two system ones — so returning here without firing
-        # would strand the project in `publishing` forever, on the exact crash this saga exists to
-        # survive. Returning early WITHOUT this was the bug.
+        # A retry that got all the way through last time. A crash between recording the publish and
+        # `publish_succeeded` leaves the record set while the project is still `publishing`, which has no principal
+        # edge out: converge the state first, or the project is stranded there.
         if project.state is ProjectState.PUBLISHING:
-            await _converge(project_handle, {"event": "publish_succeeded", "actor": subject})
+            await _converge(store, project_id, "publish_succeeded", subject)
         record = project.published
         return PublishOutcome(
             project_id=project.project_id,
@@ -214,29 +158,17 @@ async def run_publish(
     published_at = project.pending_publish_at
 
     try:
-        # INSIDE the try, unlike the two refusals above, and the difference is which state the
-        # project is left in. `publish_failed` is this saga's only exit and it is fired from this
-        # try's `except` arm. Raised outside it, this refusal left a project in PUBLISHING with no
-        # token, no recorded reason and no transition out — and every later watchdog tick re-entered,
-        # re-refused and re-stranded it. `publish_failed` is a RESTING state precisely so a project
-        # can be published again.
-        #
-        # The two siblings above stay outside on purpose: "does not exist" has no project to move,
-        # and "is <state>, not publishing" is a state from which `publish_failed` would itself be an
-        # illegal transition. Only THIS one describes a project that is genuinely publishing.
+        # Inside the try, unlike the two refusals above: this one describes a project that IS publishing, and
+        # `publish_failed` is its only exit and a resting state from which it can be published again.
         if not publish_id or published_at is None:
-            # The actor mints this at the `publish` transition. Its absence means the state machine
-            # and this saga disagree about what happened, and guessing a token would defeat the whole
-            # idempotency argument — so this stops rather than inventing one.
+            # The `publish` transition mints both. Guessing a token here would defeat the idempotency argument.
             raise PublishRefusal(f"project {project.project_id} is publishing but carries no publish token or instant — refusing to mint one here")
 
-        await _note(project_handle, "reading tasks")
-        listing = await project_handle.list_tasks()
-        pairs = await collect(project_handle, task_handle, sorted(listing["tasks"]))
-        _refuse_if_not_terminal(pairs)
+        await step("reading tasks")
+        material = await store.publish_material(project_id)
 
-        await _note(project_handle, "building plan")
-        plan = build_plan(project, pairs, publish_id=publish_id, published_at=published_at)
+        await step("building plan")
+        plan = build_plan(project, material, publish_id=publish_id, published_at=published_at)
         table_id = table_id_for(project, publish_id, namespace)
 
         # §7.2: every captured (table, version) is an input, and none is fabricated. Refused before anything is written
@@ -255,7 +187,7 @@ async def run_publish(
                 "that does not require a run"
             )
 
-        await _note(project_handle, f"creating table {table_id}")
+        await step(f"creating table {table_id}")
         version = await publisher.create_table(
             table_id,
             plan,
@@ -264,73 +196,60 @@ async def run_publish(
             # The publish token names the run: minted once per publish, so a retried create names the same one.
             run_id=publish_id,
         )
-        await _note(project_handle, "recording publish")
-        record = await project_handle.record_publish(
-            {
-                "table_id": table_id,
-                "namespace": namespace,
-                "version": version,
-                "publish_id": publish_id,
-                "published_at": published_at.isoformat(),
-                "published_by": subject,
-            }
+        await step("recording publish")
+        record = await store.record_publish(
+            project_id,
+            PublishRecord(
+                table_id=table_id,
+                namespace=namespace,
+                version=version,
+                publish_id=publish_id,
+                published_at=published_at,
+                published_by=subject,
+            ),
         )
-        await _converge(project_handle, {"event": "publish_succeeded", "actor": subject})
+        await _converge(store, project_id, "publish_succeeded", subject)
         return PublishOutcome(
             project_id=project.project_id,
             publish_id=publish_id,
-            table_id=str(record["table_id"]),
-            version=int(record["version"]),
+            table_id=record.table_id,
+            version=record.version,
             rows=len(plan.rows),
             shapes=plan.shape_count,
         )
+    except LostLease:
+        # Another run holds the publish: what is left is its to finish, and recording a failure would undo its work.
+        logger.info("publish of project %s (token %s) is driven by another run now; this one stops", project.project_id, publish_id)
+        raise
     except Exception as exc:
-        # `publish_failed` is a RESTING state, not a dead end: the project can be published again and
-        # the retry reuses the same token. Recording the reason is what makes that retry informed.
-        #
-        # The log comes FIRST and the recording is itself guarded, because a failure while recording
-        # the failure must not replace the original exception — the operator would then be shown the
-        # actor's error instead of the one that actually broke the publish, and the real cause would
-        # never be logged at all. That is precisely what an unguarded call here did.
+        # The log comes FIRST and the recording is itself guarded: a failure while recording the failure must not
+        # replace the original exception, or the operator is shown the second-order error and the cause is never logged.
         logger.exception("publish saga failed for project %s (token %s)", project.project_id, publish_id)
         try:
-            await _converge(project_handle, {"event": "publish_failed", "actor": subject, "error": str(exc)})
+            await _converge(store, project_id, "publish_failed", subject, error=str(exc))
         except Exception:
             logger.exception("could not record the publish failure for project %s — the original error stands", project.project_id)
         raise
 
 
-def _refuse_if_not_terminal(pairs: list[tuple[Task, Draft | None]]) -> None:
-    """The authoritative precondition, re-checked against the tasks' OWN state.
+async def _note(store: AnnotatorStore, project_id: str, step: str) -> None:
+    """Narrate the saga's current step onto the project — A4's "not just a spinner".
 
-    The actor already checked this against the index before allowing the transition. Checking it
-    again here is not redundancy — it is the only check that sees a task whose `reopen` never
-    reached the index.
-    """
-    stragglers = [t.task_id for t, _ in pairs if t.state not in {TaskState.ACCEPTED, TaskState.SKIPPED}]
-    if stragglers:
-        raise PublishRefusal(f"tasks {sorted(stragglers)} are not terminal — the project index was stale and the publish is refused")
-
-
-async def _note(handle: ProjectHandle, step: str) -> None:
-    """Narrate the saga's current step onto the project document — A4's "not just a spinner".
-
-    Best-effort by contract: progress is telemetry for a watching human, and a narration failure
-    must never fail a publish. The actor ignores notes once the project has left PUBLISHING, so a
-    stale run cannot scribble on a terminal state."""
+    Best-effort by contract: progress is telemetry for a watching human, and a narration failure must never fail a
+    publish. The store ignores a note once the project has left `publishing`."""
     try:
-        await handle.note_progress({"step": step})
+        await store.note_progress(project_id, step)
     except Exception:
         logger.debug("could not record publish progress %r", step, exc_info=True)
 
 
-async def _converge(handle: ProjectHandle, payload: dict[str, Any]) -> None:
+async def _converge(store: AnnotatorStore, project_id: str, event: str, subject: str, *, error: str | None = None) -> None:
     """Fire a terminal transition, tolerating the case where a previous attempt already fired it.
 
     `IllegalTransition` here means the project is ALREADY in the state we were driving it to, which
     is convergence, not failure. Anything else is a real problem and propagates.
     """
     try:
-        await handle.fire(payload)
+        await store.fire_project(project_id, event=event, actor=subject, error=error)
     except IllegalTransition:
-        logger.info("project already in the target state for %s — converged", payload["event"])
+        logger.info("project already in the target state for %s — converged", event)

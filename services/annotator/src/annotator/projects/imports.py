@@ -114,7 +114,7 @@ def shapes_from_ipc(
     # declared tool is `bbox` — a rejection caused by the importer's own vocabulary rather than by
     # anything wrong with the data.
     if ontology is not None:
-        # Through `ShapeLike`, the same bridge the actor's submit check uses: the validator reads
+        # Through `ShapeLike`, the same bridge the store's submit check uses: the validator reads
         # id/type/label/attributes, and speaking to it in its own vocabulary is what keeps import and
         # submit judging by one implementation rather than two that agree until they don't.
         lookalikes = [ShapeLike.model_validate(s.model_dump(mode="json")) for s in shapes]

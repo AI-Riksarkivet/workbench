@@ -1,8 +1,8 @@
 """A project's roles are grants in the workbench's own OpenFGA store, and an organisation's standing is too.
 
 The annotator's create and members doors over a store of the test's own on the pinned OpenFGA (root
-`conftest.py::openfga_store`), the organisations declared as the model writer converges them. The project and tenant
-actors are faked: the roles do not live in them. Every outbound HTTP call is refused by a strict respx router:
+`conftest.py::openfga_store`), the organisations declared as the model writer converges them. The projects and tasks
+live in a PostgreSQL database of the test's own (`state_settings`); the roles do not. Every outbound HTTP call is refused by a strict respx router:
 the annotator asks no lakehouse what a person may do in it.
 
 acme: olga administers it, alice belongs to it; mallory belongs nowhere.
@@ -24,8 +24,10 @@ from pydantic import SecretStr
 
 from annotator.annotations import save, tags, wire
 from annotator.api.security import authenticate, current_subject, get_authorizer
-from annotator.api.v1.endpoints import me, members, project_events, projects
-from annotator.api.v1.endpoints import tasks as tasks_ep
+from annotator.api.v1.endpoints import me, members, projects
+from annotator.core.config import AnnotatorSettings
+from annotator.projects.models import Task
+from annotator.state.store import AnnotatorStore
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.exceptions import ServiceUnavailableError, register_handlers
@@ -37,43 +39,17 @@ from tests.media_catalog import write_table
 from tests.openfga import OpenFgaStore
 
 
-class _Actor:
-    """The project and tenant actors, holding the one project a test creates."""
-
-    def __init__(self) -> None:
-        self.doc: dict[str, Any] | None = None
-
-    async def create(self, doc: dict[str, Any]) -> dict[str, Any]:
-        self.doc = doc
-        return doc
-
-    async def get(self) -> dict[str, Any] | None:
-        return self.doc
-
-    async def register(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.registered = [*getattr(self, "registered", []), str(payload["project_id"])]
-        return {}
-
-    async def list_projects(self) -> dict[str, Any]:
-        ids = getattr(self, "registered", [])
-        return {"project_ids": ids, "total": len(ids)}
-
-
-class _Task:
-    """One task's actor: the document a test seeds into the door's `tasks`."""
-
-    def __init__(self, doc: dict[str, Any] | None) -> None:
-        self.doc = doc
-
-    async def get(self) -> dict[str, Any] | None:
-        return self.doc
-
-
 class _Door:
     """The doors as one person after another calls them: `as_(person)` names who the next request is."""
 
-    def __init__(self, client: TestClient, who: list[str], tasks: dict[str, dict[str, Any]]) -> None:
-        self._client, self._who, self.tasks = client, who, tasks
+    def __init__(self, client: TestClient, app: FastAPI, who: list[str]) -> None:
+        self._client, self._app, self._who = client, app, who
+
+    def seed(self, task: Task) -> None:
+        """Write a task into the store as a send does, on the app's own loop."""
+        portal = self._client.portal
+        assert portal is not None, "the client is not running the app"
+        portal.call(self._app.state.store.send_tasks, task.project_id, [task])
 
     def as_(self, person: str) -> TestClient:
         self._who[0] = f"keycloak~{person}"
@@ -88,16 +64,10 @@ OTHER_UNIT = f"{DOC}/0/20"
 
 
 @pytest.fixture
-def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[_Door]:
+def door(openfga_store: OpenFgaStore, state_settings: AnnotatorSettings, tmp_path: Path) -> Iterator[_Door]:
     chunks = pa.table({"doc_id": [DOC], "speech_id": pa.array([0], pa.int64()), "chunk_id": pa.array([19], pa.int64())})
     write_table(tmp_path, ["acme", "media", "chunks"], chunks, descriptor={"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}})
     openfga_store.write(("user:keycloak~olga", "admin", "org:acme"), ("user:keycloak~alice", "member", "org:acme"))
-    actor = _Actor()
-    monkeypatch.setattr(projects, "_create_actor", lambda _p: actor)
-    monkeypatch.setattr(projects, "_tenant_actor", lambda _t: actor)
-    monkeypatch.setattr(project_events, "_project_proxy", lambda _p: actor)
-    tasks: dict[str, dict[str, Any]] = {}
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda task_id: _Task(tasks.get(task_id)))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -105,7 +75,9 @@ def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path:
         app.state.authz = fga.Authorizer(
             fga.make_client(openfga_store.url, credential_file=None, store_id=openfga_store.store_id, model_id=openfga_store.model_id)
         )
+        app.state.store = await AnnotatorStore.open(state_settings)
         yield
+        await app.state.store.close()
         await app.state.authz.close()
 
     who = ["anon"]
@@ -123,7 +95,7 @@ def door(openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     app.dependency_overrides[get_authorizer] = _authz_of
     with respx.mock(assert_all_mocked=True, assert_all_called=False), TestClient(app) as client:
-        yield _Door(client, who, tasks)
+        yield _Door(client, app, who)
 
 
 def _authz_of(request: Request) -> fga.Authorizer:
@@ -178,7 +150,7 @@ def test_a_revoke_that_cannot_read_the_project_leaves_its_owner(door: _Door, ope
 
 def _task(door: _Door, project: str, task_id: str = "t1", **over: Any) -> None:
     """Seed a task of `project` whose item is `UNIT`: claimed by fay unless `over` says otherwise."""
-    door.tasks[task_id] = {
+    document: dict[str, Any] = {
         "task_id": task_id,
         "project_id": project,
         "state": "claimed",
@@ -188,6 +160,7 @@ def _task(door: _Door, project: str, task_id: str = "t1", **over: Any) -> None:
         "media": {"kind": "image"},
         **over,
     }
+    door.seed(Task.model_validate(document))
 
 
 def _save(door: _Door, person: str, project: str, *, task: str = "t1", unit: str = UNIT, **body: Any) -> Any:

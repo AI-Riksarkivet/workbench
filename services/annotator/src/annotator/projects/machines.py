@@ -6,115 +6,32 @@ branches, so "everything not in the table is illegal" is structural. Each edge a
 layer ask the model rather than hardcode a ladder.
 
 Authorization is NOT performed here: this module says *which* permission an event requires, and the
-caller checks it (`annotator.api.authorization`). That split is what lets the domain core be tested without a
-store, a sidecar, or a catalog.
+caller checks it (`annotator.api.security`). That split is what lets the domain core be tested without a
+store or a catalog.
 """
 
 from __future__ import annotations
 
-import base64
-import json
-import re
 from collections.abc import Sequence
-from typing import Any, Final, NoReturn
+from datetime import datetime
+from typing import Final, NoReturn
 
 from pydantic import ValidationError as PydanticValidationError
 
-from annotator.projects.models import ProjectState, TaskState
+from annotator.projects.models import ProjectState, Task, TaskState, Transition
 from service_kit.exceptions import ConflictError
 
 
-#: The wire form of a domain refusal, and the reason it exists.
-#:
-#: Dapr gives an actor-side exception exactly ONE channel to this side of the sidecar: the actor
-#: HTTP surface answers 500 with ``repr(ex)`` inside a JSON envelope
-#: (``dapr/ext/fastapi/actor.py``) and the SDK nests that inside its own message. So whatever the
-#: caller is to rebuild has to survive as text — and the text is JSON-escaped twice on the way.
-#:
-#: Reconstructing the domain fields by PARSING THE PROSE cost three things, all on live paths: the
-#: estate's own refusal reasons contain an em dash and ``json.dumps`` renders it ``\u2014``, a
-#: backslash in a subject was eaten by the hand-rolled un-escaper, and any failure whose text merely
-#: mentioned the class was rewritten into a refused transition (a 409 for what is a 500 — and
-#: ``saga._converge`` reads this exception type as "already converged", i.e. as SUCCESS).
-#:
-#: So the fields ride as a base64 payload instead. The alphabet (``A-Za-z0-9_-=``) is exactly the set
-#: JSON never escapes, which is the whole point: no un-escaping step can exist to get it wrong.
-#:
-#: One marker per refusal TYPE, and the codec below is shared. A second refusal that crossed the
-#: sidecar with a second hand-rolled encoder would be a second chance to make the same three
-#: mistakes, on a path nothing exercises until something is already broken.
-_WIRE_MARKER: Final = "illegal-transition"
-_WIRE_RE: Final = re.compile(rf"\[{_WIRE_MARKER}:([A-Za-z0-9_-]+=*)\]")
-
-#: The same channel, for a stored document the running models cannot parse. See
-#: :class:`UnreadableOntology`.
-_UNREADABLE_MARKER: Final = "unreadable-ontology"
-_UNREADABLE_RE: Final = re.compile(rf"\[{_UNREADABLE_MARKER}:([A-Za-z0-9_-]+=*)\]")
-
-
-def _wire_token(marker: str, payload: dict[str, Any]) -> str:
-    """Encode `payload` in a form two layers of JSON escaping cannot touch."""
-    blob = json.dumps(payload, ensure_ascii=False)
-    return f"[{marker}:{base64.urlsafe_b64encode(blob.encode()).decode('ascii')}]"
-
-
-def _wire_payload(pattern: re.Pattern[str], text: str) -> dict[str, Any] | None:
-    """Decode the one token `pattern` matches in `text`, or `None` when `text` carries none.
-
-    `None` is a real answer and every caller must re-raise on it: a failure that is not the refusal
-    being looked for has to stay the failure it is. There is deliberately NO prose fallback — an
-    actor that answers without a token is not running this code, and guessing at its sentence is the
-    behaviour this replaces.
-    """
-    found = pattern.search(text)
-    if found is None:
-        return None
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(found.group(1).encode("ascii")).decode())
-    except ValueError:  # binascii.Error, UnicodeDecodeError and JSONDecodeError are all ValueError
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 class IllegalTransition(ValueError):
-    """Raised for an edge absent from the table — the closed-world guarantee of §5.
-
-    ``str()`` is the human sentence a 409 carries. ``repr()`` is the WIRE form: the same sentence
-    plus :meth:`wire_token`, because ``repr`` is what Dapr serialises and therefore the only place a
-    structured payload can ride. Keeping the two apart is what lets the endpoints go on handing
-    ``str(exc)`` to the client while the proxy rebuilds the exact fields.
-    """
+    """Raised for an edge absent from the table — the closed-world guarantee of §5 — and for a transition whose
+    preconditions the task's or project's own rows refuse. ``str()`` is the sentence a 409 carries."""
 
     def __init__(self, kind: str, state: str, event: str, *, message: str | None = None) -> None:
-        super().__init__(message if message is not None else f"illegal {kind} transition: {event!r} is not permitted from {state!r}")
-        # `str(...)`: `state` is handed in as an enum member at most call sites, and the wire payload
-        # has to be JSON. The rendered sentence above still uses the value as it was passed, so the
-        # text a locally-raised error carries is unchanged.
+        # The state's value, not an enum member's repr: the sentence reaches a person.
         self.kind = str(kind)
         self.state = str(state)
         self.event = str(event)
-
-    def wire_token(self) -> str:
-        """The structured payload, in a form two layers of JSON escaping cannot touch."""
-        return _wire_token(_WIRE_MARKER, {"kind": self.kind, "state": self.state, "event": self.event, "message": str(self)})
-
-    def __repr__(self) -> str:
-        """What crosses the sidecar — the sentence AND the token, in one ordinary exception repr."""
-        return f"{type(self).__name__}({str(self) + ' ' + self.wire_token()!r})"
-
-    @classmethod
-    def from_wire(cls, text: str) -> IllegalTransition | None:
-        """Rebuild the error from `text`, or `None` when `text` does not carry one — see `_wire_payload`."""
-        payload = _wire_payload(_WIRE_RE, text)
-        if payload is None:
-            return None
-        message = payload.get("message")
-        return cls(
-            str(payload.get("kind", "")),
-            str(payload.get("state", "")),
-            str(payload.get("event", "")),
-            message=str(message) if message else None,
-        )
+        super().__init__(message if message is not None else f"illegal {self.kind} transition: {self.event!r} is not permitted from {self.state!r}")
 
 
 class UnreadableOntology(ConflictError):
@@ -127,27 +44,17 @@ class UnreadableOntology(ConflictError):
     one click is hundreds of rows. So the request is refused instead, and the whole publish path
     keeps the closed-set property it is built on.
 
-    **Why it is named.** Refusing was already the behaviour (both actors validate the whole stored
-    document in `_load`, so an unreadable ontology raised a bare `pydantic.ValidationError`), but it
-    reached the annotator as an anonymous 500 that named neither the project nor the reason and
-    repeated on every subsequent call. Naming it is what turns "this project is bricked" into a
-    sentence an operator can act on, and `fields` says which part of the document to rewrite.
+    **Why it is named.** The store validates every document it reads (`annotator.state.store`), so an
+    unreadable ontology would otherwise surface as a bare `pydantic.ValidationError`: an anonymous 500 that
+    names neither the project nor the reason and repeats on every call. Naming it turns "this project is
+    bricked" into a sentence an operator can act on, and `fields` says which part of the document to rewrite.
 
     **Why 409 rather than 500.** The stored document conflicts with the code asked to read it —
     server state, not a server fault. A 5xx would tell the caller to retry, and a retry cannot fix
-    yesterday's schema; it would also bury the condition in the 500 counter every service already
-    has noise in.
+    yesterday's schema.
 
-    **The rolling-upgrade window is the case that makes this reachable end to end.** Within one
-    deployed version the actor's `_load` refuses first, so the endpoint-side parses can never see a
-    document their own models reject. During an upgrade that CHANGES `LabelOntology` they can: a call
-    can be routed to an actor pod still running the old code, which loads and dumps its document
-    happily, and hand that dump to a new-code endpoint that cannot parse it. This error is what makes
-    that window legible instead of a burst of unattributed 500s — which is why the endpoint-side
-    seams raise it too rather than being deleted outright.
-
-    It lives beside :class:`IllegalTransition` because the sidecar wire codec does: it is the second
-    domain refusal that has to cross Dapr's one text channel and be rebuilt on the far side.
+    **Reachable across a rolling upgrade that changes `LabelOntology`:** a replica on the old code writes a
+    document the new code's models reject, and every replica on the new code then refuses it by name.
     """
 
     problem_type = "about:blank#unreadable-ontology"
@@ -164,27 +71,6 @@ class UnreadableOntology(ConflictError):
             extensions={"kind": self.kind, "identifier": self.identifier, "fields": self.fields},
         )
 
-    def wire_token(self) -> str:
-        """The structured payload, in a form two layers of JSON escaping cannot touch."""
-        return _wire_token(_UNREADABLE_MARKER, {"kind": self.kind, "identifier": self.identifier, "fields": self.fields})
-
-    def __repr__(self) -> str:
-        """What crosses the sidecar — the sentence AND the token, in one ordinary exception repr."""
-        return f"{type(self).__name__}({str(self) + ' ' + self.wire_token()!r})"
-
-    @classmethod
-    def from_wire(cls, text: str) -> UnreadableOntology | None:
-        """Rebuild the error from `text`, or `None` when `text` does not carry one — see `_wire_payload`."""
-        payload = _wire_payload(_UNREADABLE_RE, text)
-        if payload is None:
-            return None
-        fields = payload.get("fields")
-        return cls(
-            str(payload.get("kind", "")),
-            str(payload.get("identifier", "")),
-            [str(f) for f in fields] if isinstance(fields, list) else [],
-        )
-
 
 #: Where the ontology sits inside a whole stored annotation document, and the prefix every seam
 #: reports its failing paths under. Held here rather than spelled at each call site so a rename of
@@ -192,37 +78,23 @@ class UnreadableOntology(ConflictError):
 ONTOLOGY_FIELD: Final = "ontology"
 
 
-def refuse_unreadable_ontology(exc: PydanticValidationError, kind: str, identifier: str, *, path: str = ONTOLOGY_FIELD) -> NoReturn:
+def refuse_unreadable_ontology(exc: PydanticValidationError, kind: str, identifier: str) -> NoReturn:
     """Re-raise `exc` as an :class:`UnreadableOntology`, or as ITSELF when the ontology is not why it failed.
 
-    `path` says where the ontology sat inside the object that was validated, and the two seams
-    differ: the ACTORS validate the whole stored document, so an ontology failure arrives located at
-    ``ontology.…``; the endpoint-side parses are handed the ontology sub-document directly, so the
-    same failure arrives located at ``required_labels`` with no prefix at all. Passing ``path=""``
-    says "the object validated IS the ontology", which is both what decides that every failure counts
-    and what lets the reported paths be identical whichever seam refused — an operator comparing a
-    409 from a bulk send against one from a task read must not have to translate between two
-    spellings of the same field.
-
-    SCOPED ON PURPOSE when a whole document was validated. It can fail for any of its fields, and
-    only the ontology has the closed-set contract this refusal is named for — so a failure elsewhere
-    stays the failure it is rather than being re-labelled as something an operator would then look
-    for in the wrong place. Widening it would mean widening the NAME too; the other fields' anonymous
-    refusal is a separate, still-open problem and not one this error may quietly absorb.
+    SCOPED ON PURPOSE: a whole stored document can fail for any of its fields, and only the ontology has the
+    closed-set contract this refusal is named for, so a failure elsewhere stays the failure it is.
 
     Every path that failed is reported, not just the ontology's: the document has to be rewritten as
     a whole, and hiding the other paths would send the operator back for a second round.
     """
     located = [".".join(str(part) for part in error["loc"]) for error in exc.errors()]
-    if not path:
-        raise UnreadableOntology(kind, identifier, [f"{ONTOLOGY_FIELD}.{field}" for field in located]) from exc
-    if not any(field == path or field.startswith(f"{path}.") for field in located):
+    if not any(field == ONTOLOGY_FIELD or field.startswith(f"{ONTOLOGY_FIELD}.") for field in located):
         raise exc
     raise UnreadableOntology(kind, identifier, located) from exc
 
 
-#: (from, event) -> (to, required permission). `None` = caused by the system (a workflow or an actor
-#: reminder), never by a principal, so there is no permission to check.
+#: (from, event) -> (to, required permission). `None` = caused by the system (the publish saga, or a
+#: lease running out), never by a principal, so there is no permission to check.
 PROJECT_EDGES: Final[dict[tuple[ProjectState, str], tuple[ProjectState, str | None]]] = {
     (ProjectState.DRAFT, "open"): (ProjectState.LABELING, "can_manage"),
     (ProjectState.LABELING, "freeze"): (ProjectState.FROZEN, "can_manage"),
@@ -261,7 +133,7 @@ TASK_EDGES: Final[dict[tuple[TaskState, str], tuple[TaskState, str | None]]] = {
 
 #: A reviewer may not accept their own submission (§5.2), checked against the task's `submitted_by`.
 #: Naming the events here keeps the rule discoverable from the machine — and gives
-#: :func:`identity_violation`, which both the API layer and the actor apply, one place to read it.
+#: :func:`identity_violation`, which both the API layer and the store apply, one place to read it.
 SELF_REVIEW_FORBIDDEN: Final[frozenset[str]] = frozenset({"accept", "fix_and_accept", "request_changes"})
 
 #: §5.2 rule 2 — "only the lease holder writes … even a manager". `skip` belongs here with
@@ -292,7 +164,7 @@ def edit_violation(*, state: TaskState, subject: str, assignee: str | None, subm
 
     The identity half of an edit, beside the relation `EDIT_PERMISSION` names: a claimed task is edited by its holder
     alone (§5.2 rule 2, "even a manager"), and a task in review by a reviewer who did not submit it (§5.2's self-review
-    rule). Pure, like `identity_violation`, so the HTTP layer and the actor apply the one rule.
+    rule). Pure, like `identity_violation`, so the HTTP layer and the store apply the one rule.
     """
     if state is TaskState.CLAIMED and assignee != subject:
         return f"the task is held by {assignee}"
@@ -312,15 +184,14 @@ def identity_violation(
     """The three IDENTITY-BOUND rules of §5.2, as a pure function of the task's own identity rows.
 
     They are not edges and cannot live in `TASK_EDGES`: they depend on WHO is firing and on columns
-    the table does not carry. They live here, next to the sets that name them, because both sides of
-    the sidecar have to apply them — the HTTP layer against its pre-turn snapshot (that is where a
-    clean 403 comes from) and the actor inside its own turn (that is where the answer is true). Two
+    the table does not carry. They live here, next to the sets that name them, because two layers apply
+    them: the HTTP layer against its snapshot of the task (that is where a clean 403 comes from) and the
+    store inside the transaction holding the task's row lock (that is where the answer is true). Two
     implementations would drift, and the one that drifted would be the one that decided.
 
     `subject_can_manage` is a VERIFIED INPUT, not a check performed here. `release` is "lease holder
     OR can_manage", and `can_manage` is the checker's answer: the caller resolves it and states it, which
-    is what keeps this module — and the actor that imports it — testable with no store, no sidecar
-    and no catalog.
+    is what keeps this module testable with no store and no catalog.
 
     Returns the reason the transition is refused, or `None` when nothing here objects.
     """
@@ -395,3 +266,22 @@ def submit_target(review_required: bool) -> TaskState:
 def may_publish(task_states: list[TaskState]) -> bool:
     """The publish precondition, mechanical (§5.1): EVERY task terminal. One `in_review` blocks it."""
     return all(s in {TaskState.ACCEPTED, TaskState.SKIPPED} for s in task_states)
+
+
+def lapse_expired_claim(task: Task, now: datetime) -> bool:
+    """Apply `lease_expired` to a claim whose lease ran out by `now`, and say whether it did.
+
+    A lease is a holder and an expiry, and nothing fires at the expiry: a claim past it is released wherever
+    the task is next read (`now` is the database's clock, the one every reader shares). The edge is recorded
+    AT the expiry rather than at the read, so the trail says when the lease lapsed whoever noticed it, and a
+    read that only shows it and the write that later persists it record the same transition. A pinned claim
+    (`assign`, `lease_expires_at is None`) never lapses. The draft is untouched: an annotator whose lease
+    lapsed has not lost work.
+    """
+    expires = task.lease_expires_at
+    if task.state is not TaskState.CLAIMED or expires is None or expires > now:
+        return False
+    target, _ = task_transition(task.state, "lease_expired")
+    task.transitions.append(Transition(at=expires, by="system", event="lease_expired", from_state=task.state, to_state=target))
+    task.state, task.assignee, task.lease_expires_at = target, None, None
+    return True

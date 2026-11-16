@@ -58,7 +58,7 @@ def build_media_app(
     * The media middleware stack (CORS with the Range headers exposed, the body ceiling, one request
       id) — see ``client_kit.media.middleware``.
     * The probes at the ROOT: a kubelet does not know a service's prefix. ``ready_check`` is the
-      optional half, for a service with a dependency worth reporting (an actor plane).
+      optional half, for a service with a dependency worth reporting (a state store).
 
     ``lifespan`` is optional so the test/composition seam can build the SAME app around state it
     opened itself, rather than a second, thinner app that maps fewer errors.

@@ -24,9 +24,9 @@ workbench's confidential client takes with the client-credentials grant, after t
 ``x-lance-originator`` names the person the publish is for, so the commit's run names them. The saga
 outlives the person's request, so it never acts on their token.
 
-`spawn_publish` is the seam the project actor's watchdog reminder calls: it schedules
-:func:`run_publish_for` on the event loop OUTSIDE the actor's turn, because the saga drives the
-actor through its own proxy surface and an in-turn await would deadlock on the actor's mailbox.
+:class:`PublishRunner` drives the saga: the `publish` door hands it the project once the transition commits, and each
+replica's re-drive claims any publishing project whose run stopped. A run holds a lease on its project's row, so one
+run at a time drives a publish across every replica.
 """
 
 from __future__ import annotations
@@ -34,20 +34,27 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import random
+import socket
 import time
-from collections.abc import Callable
-from typing import Any
+import uuid
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 from lance_namespace import DescribeNamespaceRequest, LanceNamespace
 
 from annotator.core.config import get_annotator_settings
-from annotator.projects.models import publish_warehouse_of
 from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, PublishRefusal, publish_namespace
-from annotator.projects.saga import PublishOutcome, run_publish
+from annotator.projects.saga import LostLease, Publisher, PublishOutcome, run_publish
 from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog, translate_catalog_errors
 from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseTokens
 from service_kit.naming import CATALOG_DELIMITER
+
+
+if TYPE_CHECKING:
+    from annotator.state.store import AnnotatorStore
 
 
 logger = logging.getLogger(__name__)
@@ -64,23 +71,12 @@ REQUIRES_RUN_PROPERTY = "rask.requires_run"
 PUBLISH_JOB = ("annotator", "annotate.publish")
 
 #: Attempts at the publish's create before it fails the saga run. A dropped connection or an unanswered call is retried
-#: here rather than left to the watchdog's next tick, and retrying is safe by construction, not by hope: `create` posts
+#: here rather than failing the publish, and retrying is safe by construction, not by hope: `create` posts
 #: `mode=exist_ok`, the property this module's retry-safety argument rests on. pylance 13.0.0's REST client retries
 #: nothing itself (measured 2026-11-02: one attempt against a reset connection, then an error).
 CREATE_ATTEMPTS = 3
 #: The pause before the second attempt, doubled before each later one.
 CREATE_BACKOFF_S = 0.5
-
-
-#: The process's token client for the lakehouse, which the lifespan built and closes (`service_kit.governed.auth_lifespan`)
-#: and hands here at startup (`use_publish_tokens`). A holder rather than an argument: the publish runs from the project
-#: actor's watchdog, which no request or app reaches.
-_PUBLISH_TOKENS: list[LakehouseTokens | None] = [None]
-
-
-def use_publish_tokens(tokens: LakehouseTokens | None) -> None:
-    """Hand the lifespan's token client to the publish saga; ``None`` publishes with no token (a local catalog)."""
-    _PUBLISH_TOKENS[0] = tokens
 
 
 def _arrow_stream_bytes(plan: PublishPlan) -> bytes:
@@ -191,29 +187,118 @@ def _create_with_retries(catalog: NamespaceCatalogWriteTransport, body: bytes, p
 
 
 # --------------------------------------------------------------------------------------------------
-# The runner — what the watchdog reminder actually drives
+# The runner
 # --------------------------------------------------------------------------------------------------
 
-#: Projects with a saga run live IN THIS PROCESS. Actors are single-placement, so the reminder for a
-#: given project only ever fires on the pod hosting its actor — a process-local guard is the whole
-#: story, and a 60 s tick racing a live run stands down here instead of double-driving the catalog.
-_RUNNING: set[str] = set()
+
+#: Makes the publisher a run posts through, for the person the publish is for; `None` when there is no catalog to post to.
+type PublisherFactory = Callable[[str], Publisher | None]
 
 
-#: Strong references to in-flight saga tasks. asyncio holds only a weak reference to a running task,
-#: so without this a publish could be collected mid-flight — losing the work and leaking `_RUNNING`.
-_TASKS: set[asyncio.Task[None]] = set()
+class PublishRunner:
+    """Drives publishes in this process, each under a lease on its project's row (`AnnotatorStore.claim_publish`).
 
+    A run starts when the publish door's transition commits (`spawn`), or when this replica's re-drive (`start`, every
+    `redrive_seconds` with jitter) finds a publishing project whose lease is absent or expired: one whose run finished
+    without ending the publish, was cancelled at a shutdown, or died with its process. A run renews its lease between
+    the saga's steps and releases it when it ends, and holds no connection between store calls. At most `concurrency`
+    runs go at once in one replica; a publish beyond that waits for the next sweep, here or in another replica.
 
-def spawn_publish(project_id: str) -> asyncio.Task[None] | None:
-    """Schedule the saga for one project, unless it is already running here."""
-    if project_id in _RUNNING:
-        logger.debug("publish for %s already running — the tick stands down", project_id)
-        return None
+    Two runs of one publish can overlap only when a lease lapsed under a step slower than the lease: the saga's
+    idempotency by publish token makes that safe (`annotator.projects.saga`).
+    """
 
-    async def _drive() -> None:
+    def __init__(
+        self,
+        store: AnnotatorStore,
+        tokens: LakehouseTokens | None,
+        *,
+        lease_seconds: int,
+        redrive_seconds: float,
+        concurrency: int,
+        publisher_for: PublisherFactory | None = None,
+    ) -> None:
+        self._store = store
+        self._tokens = tokens
+        self._lease_seconds = lease_seconds
+        self._redrive_seconds = redrive_seconds
+        self._concurrency = concurrency
+        self._publisher_for = publisher_for or self._catalog_publisher
+        #: The name this process's runs claim leases under.
+        self.owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        #: The runs in flight, by project: strong references (the event loop holds only a weak one) and the count the
+        #: concurrency bound reads.
+        self._runs: dict[str, asyncio.Task[None]] = {}
+        #: Slots a sweep has promised to the runs it is claiming.
+        self._reserved = 0
+        self._loop_task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        """Start this replica's re-drive: it sweeps at once, then every `redrive_seconds` with jitter."""
+        self._loop_task = asyncio.get_running_loop().create_task(self._redrive())
+
+    async def close(self) -> None:
+        """Stop the re-drive, cancel the runs in flight and wait for them. Each releases its lease on the way out, so
+        another replica claims its publish at its next sweep."""
+        tasks = [*self._runs.values(), *([self._loop_task] if self._loop_task else [])]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def spawn(self, project_id: str) -> asyncio.Task[None] | None:
+        """Start a run for the project the door just moved to `publishing`, if this replica has room; otherwise, or
+        when another run holds its lease, the publish is left to a sweep."""
+        if project_id in self._runs or self._busy() >= self._concurrency:
+            return None
+        return self._track(project_id, self._claim_and_drive(project_id))
+
+    async def sweep(self) -> list[str]:
+        """Claim and start runs for the publishing projects no live run holds, up to this replica's free room."""
+        free = self._concurrency - self._busy()
+        if free <= 0:
+            return []
+        self._reserved += free
         try:
-            outcome = await run_publish_for(project_id)
+            claimed = await self._store.claim_publish(self.owner, self._lease_seconds, limit=free)
+        finally:
+            self._reserved -= free
+        for project_id in claimed:
+            if project_id not in self._runs:
+                self._track(project_id, self._drive(project_id))
+        return claimed
+
+    def _busy(self) -> int:
+        return len(self._runs) + self._reserved
+
+    def _track(self, project_id: str, run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        task = asyncio.get_running_loop().create_task(run)
+        self._runs[project_id] = task
+        task.add_done_callback(lambda _done: self._runs.pop(project_id, None))
+        return task
+
+    async def _redrive(self) -> None:
+        while True:
+            try:
+                await self.sweep()
+            except Exception:
+                logger.exception("the publish re-drive could not sweep; it tries again at its next tick")
+            await asyncio.sleep(self._redrive_seconds * random.uniform(0.8, 1.2))  # noqa: S311 - jitter, not secrecy
+
+    async def _claim_and_drive(self, project_id: str) -> None:
+        if not await self._store.claim_publish(self.owner, self._lease_seconds, project_id=project_id):
+            logger.debug("a publish of %s is held by another run; this one stands down", project_id)
+            return
+        await self._drive(project_id)
+
+    async def _drive(self, project_id: str) -> None:
+        """Run one claimed publish to its end, then give its lease up, whatever ended it."""
+
+        async def renew() -> None:
+            if not await self._store.renew_publish(project_id, self.owner, self._lease_seconds):
+                raise LostLease(f"the publish lease on project {project_id} is no longer {self.owner}'s")
+
+        try:
+            outcome = await self.run(project_id, renew=renew)
             if outcome is not None:
                 logger.info(
                     "published project %s: table %s v%d (%d rows, %d shapes)%s",
@@ -224,82 +309,57 @@ def spawn_publish(project_id: str) -> asyncio.Task[None] | None:
                     outcome.shapes,
                     " [converged]" if outcome.already_published else "",
                 )
+        except LostLease:
+            logger.info("the publish of project %s moved to another run", project_id)
         except Exception:
-            # `run_publish` already fired `publish_failed` with the reason; the next watchdog tick
-            # (or an operator retry) re-drives. This log is the operator-facing trace.
+            # `run_publish` already fired `publish_failed` with the reason, a resting state the publish door retries
+            # from. This log is the operator-facing trace.
             logger.exception("publish saga failed for project %s", project_id)
         finally:
-            _RUNNING.discard(project_id)
+            try:
+                await self._store.release_publish(project_id, self.owner)
+            except Exception:
+                # The lease then lapses at its expiry instead; whatever ended the run above stays what is reported.
+                logger.warning("could not release the publish lease on project %s; it lapses at its expiry", project_id, exc_info=True)
 
-    task = asyncio.get_running_loop().create_task(_drive())
-    # Claimed only once the task EXISTS. Adding to `_RUNNING` first meant a `create_task` that raised
-    # pinned the id forever, and `spawn_publish` would then stand down on every later tick — a project
-    # that can never publish again, with nothing naming why.
-    _RUNNING.add(project_id)
-    # A STRONG REFERENCE, which asyncio requires and this did not hold: the event loop keeps only a
-    # weak one, so an unreferenced task can be garbage-collected mid-flight. That loses the publish
-    # AND leaks `_RUNNING`, because `_drive`'s `finally` never runs. The caller's returned handle is
-    # not enough — `run_watchdog` discards it.
-    _TASKS.add(task)
-    task.add_done_callback(_TASKS.discard)
-    return task
+    async def run(self, project_id: str, *, renew: Callable[[], Awaitable[None]] | None = None) -> PublishOutcome | None:
+        """Run the saga for one project.
 
+        Reads the pinned target namespace and the person the publish is for off the project — the door authorized THAT
+        namespace, so this never guesses one.
+        """
+        project = await self._store.get_project(project_id)
+        if project is None:
+            logger.warning("a publish of project %s was started, and the project does not exist", project_id)
+            return None
+        namespace = project.pending_target_namespace or publish_namespace(project.publish_warehouse, get_annotator_settings().publish_namespace)
+        subject = project.pending_publish_by or "system"
 
-async def run_publish_for(project_id: str) -> PublishOutcome | None:
-    """Run the saga for one project against the real actors and the real catalog.
+        publisher = self._publisher_for(subject)
+        if publisher is None:
+            # No transport is a CONFIGURATION failure, and it surfaces as one: `publish_failed` with a reason the UI can
+            # show, rather than a project left `publishing` against a catalog that was never named.
+            try:
+                await self._store.fire_project(
+                    project_id,
+                    event="publish_failed",
+                    actor=subject,
+                    error="MEDIA_CATALOG_URI is not configured — the publish transport has no catalog to post to",
+                )
+            except Exception:
+                logger.exception("could not record the missing-catalog failure for project %s", project_id)
+            return None
+        return await run_publish(store=self._store, project_id=project_id, publisher=publisher, namespace=namespace, subject=subject, renew=renew)
 
-    Reads the pinned target namespace and trigger off the project document — the endpoint
-    authorized THAT namespace, so this never guesses one.
-    """
-    from annotator.projects.actor import AnnotationTaskActorInterface  # noqa: PLC0415 - avoids an import cycle
-    from annotator.projects.project_actor import AnnotationProjectActorInterface  # noqa: PLC0415
-    from annotator.projects.proxies import typed_proxy  # noqa: PLC0415 - opens a sidecar channel
-
-    project_handle: Any = typed_proxy("AnnotationProjectActor", project_id, AnnotationProjectActorInterface)
-
-    def task_handle(task_id: str) -> Any:
-        return typed_proxy("AnnotationTaskActor", task_id, AnnotationTaskActorInterface)
-
-    raw = await project_handle.get()
-    if raw is None:
-        logger.warning("publish watchdog fired for project %s but its actor holds no state", project_id)
-        return None
-    # The project's own warehouse: this is the crash-resume path, so the namespace it picks is the one a
-    # publish lands in with no request left to correct it.
-    namespace = str(raw.get("pending_target_namespace") or publish_namespace(publish_warehouse_of(raw), get_annotator_settings().publish_namespace))
-    subject = str(raw.get("pending_publish_by") or "system")
-
-    settings = get_annotator_settings()
-    if not settings.catalog_uri:
-        # No transport is a CONFIGURATION failure, and it must surface as one — `publish_failed`
-        # with a reason the UI can show — rather than stranding the project in `publishing` while
-        # the watchdog ticks forever against a catalog that was never named.
-        try:
-            await project_handle.fire(
-                {
-                    "event": "publish_failed",
-                    "actor": subject,
-                    "error": "MEDIA_CATALOG_URI is not configured — the publish transport has no catalog to post to",
-                }
-            )
-        except Exception:
-            logger.exception("could not record the missing-catalog failure for project %s", project_id)
-        return None
-
-    # The saga's identity is the workbench's own confidential client, its token asked per call. A token that cannot be
-    # had fails the call it was for, which surfaces as publish_failed with the reason, and the watchdog's next tick asks
-    # again.
-    tokens = _PUBLISH_TOKENS[0]
-    publisher = CatalogPublisher(
-        settings.catalog_uri,
-        delimiter=settings.catalog_delimiter,
-        token=tokens.for_service if tokens is not None else None,
-        originator=subject,
-    )
-    return await run_publish(
-        project_handle=project_handle,
-        task_handle=task_handle,
-        publisher=publisher,
-        namespace=namespace,
-        subject=subject,
-    )
+    def _catalog_publisher(self, subject: str) -> Publisher | None:
+        """The publisher over the catalog's REST door, as the workbench's own confidential client (its token asked per
+        call; one that cannot be had fails the call it was for, which surfaces as `publish_failed` with the reason)."""
+        settings = get_annotator_settings()
+        if not settings.catalog_uri:
+            return None
+        return CatalogPublisher(
+            settings.catalog_uri,
+            delimiter=settings.catalog_delimiter,
+            token=self._tokens.for_service if self._tokens is not None else None,
+            originator=subject,
+        )

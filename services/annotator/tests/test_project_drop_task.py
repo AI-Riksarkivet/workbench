@@ -7,11 +7,12 @@ one unfinishable item wedges the project permanently — and the only way past i
 project and re-send everything.
 
 The same shape as the adjudication clear beside it, and for the same audit-found reason: a state
-with no exit is a state that eventually traps someone.
+with no exit is a state that eventually traps someone. Driven over the real state store.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -19,114 +20,127 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
-from annotator.api.v1.endpoints import project_events as events_ep
 from annotator.api.v1.endpoints.project_events import router
-from service_kit.exceptions import register_handlers
+from annotator.projects.models import AnnotationProject, ProjectState, Task
+from annotator.state.store import AnnotatorStore
 
 
-class _FakeProjectActor:
-    """Holds an index the way the real actor does, so removal is observable."""
-
-    def __init__(self, state: str = "labeling", index: dict[str, str] | None = None) -> None:
-        self._state = state
-        self.index = index if index is not None else {"t1": "unassigned", "t2": "accepted"}
-        self.dropped: list[str] = []
-
-    async def get(self) -> dict[str, Any] | None:
-        return {"project_id": "p1", "tenant": "acme", "slug": "vasa", "state": self._state}
-
-    async def drop_task(self, payload: dict[str, Any]) -> dict[str, Any]:
-        task_id = str(payload["task_id"])
-        self.dropped.append(task_id)
-        if task_id not in self.index:
-            return {"task_id": task_id, "removed": False, "total": len(self.index)}
-        del self.index[task_id]
-        return {"task_id": task_id, "removed": True, "total": len(self.index)}
-
-
-def _app(actor: _FakeProjectActor, monkeypatch: pytest.MonkeyPatch, *, allow: bool = True, seen: list | None = None) -> FastAPI:
-    monkeypatch.setattr(events_ep, "_project_proxy", lambda _p: actor)
-
+def _client(state_app: Callable[..., FastAPI], *, allow: bool = True, seen: list[dict[str, Any]] | None = None) -> tuple[TestClient, FastAPI]:
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         if seen is not None:
             seen.append({"user": user, "relation": relation, "obj": obj})
         return allow
 
-    app = FastAPI()
-    app.include_router(router)
-    register_handlers(app)
+    app = state_app(router)
     app.dependency_overrides[get_checker] = lambda: checker
     app.dependency_overrides[get_authorizer] = lambda: None
     app.dependency_overrides[current_subject] = lambda: "gina"
-    return app
+    return TestClient(app), app
 
 
-def test_a_manager_drops_an_unfinishable_item(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeProjectActor()
-    client = TestClient(_app(actor, monkeypatch))
+def _call(client: TestClient, app: FastAPI, call: Callable[[AnnotatorStore], Any]) -> Any:
+    store: AnnotatorStore = app.state.store
 
-    r = client.delete("/projects/p1/tasks/t1")
+    async def run() -> Any:
+        return await call(store)
 
-    assert r.status_code == 200, r.text
-    assert r.json()["removed"] is True
-    assert "t1" not in actor.index, "the route answered 200 without removing anything"
-    assert "t2" in actor.index, "dropping one item took another with it"
+    portal = client.portal
+    assert portal is not None, "the client runs no app"
+    return portal.call(run)
 
 
-def test_the_gate_is_can_manage(monkeypatch: pytest.MonkeyPatch) -> None:
+def _seed(client: TestClient, app: FastAPI, state: ProjectState = ProjectState.LABELING) -> None:
+    """Project p1 holding t1 and t2, in ``state``."""
+
+    async def seed(store: AnnotatorStore) -> None:
+        await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="vasa", state=ProjectState.LABELING))
+        await store.send_tasks(
+            "p1",
+            [
+                Task.model_validate({"task_id": t, "project_id": "p1", "source": {"kind": "chunks", "keys": [t]}, "media": {"kind": "image"}})
+                for t in ("t1", "t2")
+            ],
+        )
+        if state is ProjectState.PUBLISHING:
+            # Every task terminal first: the `publish` transition requires it.
+            for task_id in ("t1", "t2"):
+                await store.fire_task(task_id, event="claim", actor="gina")
+                await store.fire_task(task_id, event="skip", actor="gina")
+        if state is not ProjectState.LABELING:
+            await store.fire_project("p1", event="freeze", actor="meg")
+        if state is ProjectState.PUBLISHING:
+            await store.fire_project("p1", event="publish", actor="meg", target_namespace="acme$published")
+
+    _call(client, app, seed)
+
+
+def _held(client: TestClient, app: FastAPI) -> list[str]:
+    return sorted(_call(client, app, lambda s: s.task_index("p1")).tasks)
+
+
+def test_a_manager_drops_an_unfinishable_item(state_app: Callable[..., FastAPI]) -> None:
+    client, app = _client(state_app)
+    with client:
+        _seed(client, app)
+
+        r = client.delete("/projects/p1/tasks/t1")
+
+        assert r.status_code == 200, r.text
+        assert r.json() == {"task_id": "t1", "removed": True, "total": 1}
+        assert _held(client, app) == ["t2"], "dropping one item must remove it and no other"
+
+
+def test_the_gate_is_can_manage(state_app: Callable[..., FastAPI]) -> None:
     """Discarding someone's queued work is a manager act, not an annotator's."""
     seen: list[dict[str, Any]] = []
-    client = TestClient(_app(_FakeProjectActor(), monkeypatch, seen=seen))
+    client, app = _client(state_app, seen=seen)
+    with client:
+        _seed(client, app)
 
-    client.delete("/projects/p1/tasks/t1")
+        client.delete("/projects/p1/tasks/t1")
 
-    assert [c["relation"] for c in seen] == ["can_manage"]
-    assert seen[0]["obj"] == "project:p1"
-
-
-def test_a_denied_caller_gets_403_and_removes_NOTHING(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeProjectActor()
-    client = TestClient(_app(actor, monkeypatch, allow=False))
-
-    r = client.delete("/projects/p1/tasks/t1")
-
-    assert r.status_code == 403, r.text
-    assert actor.dropped == [], "a refused caller still reached the actor"
-    assert "t1" in actor.index
+    assert [(c["relation"], c["obj"]) for c in seen] == [("can_manage", "project:p1")]
 
 
-def test_dropping_an_ABSENT_task_is_a_no_op_not_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_denied_caller_gets_403_and_removes_nothing(state_app: Callable[..., FastAPI]) -> None:
+    client, app = _client(state_app, allow=False)
+    with client:
+        _seed(client, app)
+
+        r = client.delete("/projects/p1/tasks/t1")
+
+        assert r.status_code == 403, r.text
+        assert _held(client, app) == ["t1", "t2"]
+
+
+def test_dropping_an_absent_task_is_a_no_op_not_a_404(state_app: Callable[..., FastAPI]) -> None:
     """Idempotent, so a retry cannot fail against a project that is already how the caller wants it."""
-    actor = _FakeProjectActor()
-    client = TestClient(_app(actor, monkeypatch))
+    client, app = _client(state_app)
+    with client:
+        _seed(client, app)
 
-    r = client.delete("/projects/p1/tasks/never-existed")
+        r = client.delete("/projects/p1/tasks/never-existed")
 
-    assert r.status_code == 200, r.text
-    assert r.json()["removed"] is False
+        assert r.status_code == 200, r.text
+        assert r.json() == {"task_id": "never-existed", "removed": False, "total": 2}
 
 
-@pytest.mark.parametrize("state", ["frozen", "publishing"])
-def test_refused_once_provenance_is_being_prepared(state: str, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("state", [ProjectState.FROZEN, ProjectState.PUBLISHING])
+def test_refused_once_provenance_is_being_prepared(state_app: Callable[..., FastAPI], state: ProjectState) -> None:
     """Past `frozen` the answer set is closed and a publish is being prepared against it. Removing an
     item then would change what the run facet describes after the description was fixed."""
-    actor = _FakeProjectActor(state)
-    client = TestClient(_app(actor, monkeypatch))
+    client, app = _client(state_app)
+    with client:
+        _seed(client, app, state)
 
-    r = client.delete("/projects/p1/tasks/t1")
+        r = client.delete("/projects/p1/tasks/t1")
 
-    assert r.status_code == 409, r.text
-    assert state in r.text, "the refusal must name the state that caused it"
-    assert actor.dropped == []
+        assert r.status_code == 409, r.text
+        assert state.value in r.json()["detail"], "the refusal must name the state that caused it"
+        assert _held(client, app) == ["t1", "t2"]
 
 
-def test_an_unknown_project_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Missing(_FakeProjectActor):
-        async def get(self) -> dict[str, Any] | None:
-            return None
-
-    actor = _Missing()
-    client = TestClient(_app(actor, monkeypatch))
-
-    assert client.delete("/projects/p1/tasks/t1").status_code == 404
-    assert actor.dropped == []
+def test_an_unknown_project_is_404(state_app: Callable[..., FastAPI]) -> None:
+    client, _app = _client(state_app)
+    with client:
+        assert client.delete("/projects/p1/tasks/t1").status_code == 404

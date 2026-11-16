@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from annotator.api.security import CallerDep, CheckerDep, CurrentSubject, ProjectParam
@@ -25,8 +25,9 @@ from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AssistBackend
 from annotator.corpus import Corpus, resolve
 from annotator.projects.generation_schema import generation_schema
-from annotator.projects.machines import UnreadableOntology, refuse_unreadable_ontology
+from annotator.projects.machines import UnreadableOntology
 from annotator.projects.ontology import LabelOntology
+from annotator.state.store import AnnotatorStore
 from client_kit.lancekit.keys import validate_doc_key
 from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState
@@ -146,8 +147,8 @@ _RETURNS: dict[str, tuple[str, ...]] = {
     "sam": ("polygon",),
     # The BATCH families. Absent from this map, the service's registry and the frontend's diverged
     # into two truths: `/assist/producers` never listed htr/insid3/vlm-judge/embed-propagate, so
-    # their compatibility rendered "unknown" forever and the settings surface denied producers the
-    # jobs seam happily accepts. Listed ⇒ compatibility computes; batch-ness rides `interactive`.
+    # their compatibility rendered "unknown" forever and the settings surface denied producers a
+    # batch deriver runs. Listed ⇒ compatibility computes; batch-ness rides `interactive`.
     "htr": ("text",),
     "insid3": ("mask",),
     # The RECIPE family (open-bulk): an LLM/VLM answering an item-level question. Its answer is a
@@ -160,7 +161,7 @@ _RETURNS: dict[str, tuple[str, ...]] = {
     "embed-propagate": (),
 }
 
-#: Families that only run through the JOBS seam (`/api/jobs/apply`) — the interactive assist POST
+#: Families that only run as a batch deriver, the caller's own job outside the annotator — the interactive assist POST
 #: has no transport for them. The registry says so instead of letting the bar offer a mode that
 #: could only ever answer from the mock.
 _BATCH_ONLY: frozenset[str] = frozenset({"htr", "vlm-judge", "embed-propagate"})
@@ -194,7 +195,7 @@ class ProducerInfo(BaseModel):
     #: its ontology constrains nothing, or when `returns` is unknown — three genuinely different
     #: reasons not to make a claim, all of which the UI renders as "unknown" rather than as a pass.
     compatible: bool | None = None
-    #: False ⇒ this family runs only through the jobs seam; the interactive assist POST cannot
+    #: False ⇒ this family runs only as a batch deriver; the interactive assist POST cannot
     #: reach it, and the bar must not offer it as a mode.
     interactive: bool = True
 
@@ -252,8 +253,13 @@ class AssistResult(BaseModel):
     dropped: list[str] = Field(default_factory=list)
 
 
+def _store(request: Request) -> AnnotatorStore | None:
+    """The state store, when the lifespan opened one: assist answers without it, unconstrained."""
+    return getattr(request.app.state, "store", None)
+
+
 @router.get("/assist/producers")
-async def producers(state: StateDep, task_id: str | None = None) -> ProducerListing:
+async def producers(request: Request, state: StateDep, project: ProjectParam, task_id: str | None = None) -> ProducerListing:
     """Which producers exist, whether each is real or mocked, and what it returns.
 
     The owner's question, verbatim: "why is there no settings menu for which endpoints or runner is
@@ -263,12 +269,13 @@ async def producers(state: StateDep, task_id: str | None = None) -> ProducerList
 
     With `?task_id=`, each row also carries whether its output can satisfy that task. That is the
     other half of "schemas must align from the ml backend": a producer emitting polygons for a
-    bbox-only task is answerable BEFORE anyone runs it, and this is where you can see it.
+    bbox-only task is answerable BEFORE anyone runs it, and this is where you can see it. The task is read in the
+    project the gate checked (`?project=`), so another project's task answers as an unknown one.
     """
-    return producer_listing(state.settings, await enforced_shape_types(task_id), await _discovered(state))
+    return producer_listing(state.settings, await enforced_shape_types(_store(request), project, task_id), await _discovered(state))
 
 
-async def enforced_shape_types(task_id: str | None) -> set[str] | None:
+async def enforced_shape_types(store: AnnotatorStore | None, project_id: str, task_id: str | None) -> set[str] | None:
     """The shape types a task will ACCEPT, canonicalised. `None` = no constraint to speak of.
 
     TWO ways to get `None`, and they are deliberately indistinguishable to callers: no task, or an
@@ -283,7 +290,7 @@ async def enforced_shape_types(task_id: str | None) -> set[str] | None:
     """
     if not task_id:
         return None
-    ontology = await _task_ontology(task_id)
+    ontology = await _task_ontology(store, project_id, task_id)
     if ontology is None:
         return None
     # DERIVED from the taxonomy, never declared beside it: `LabelOntology.tools` is the union of
@@ -337,16 +344,17 @@ class GenerationContract(BaseModel):
 
 
 @router.get("/assist/generation-schema")
-async def generation_contract(task_id: str) -> GenerationContract:
-    """The decode-time contract for `task_id` — also useful standalone: a batch deriver or an
-    external labeling script can fetch it and constrain its own generation the same way."""
-    return GenerationContract(output_schema=generation_schema(await _task_ontology(task_id)))
+async def generation_contract(request: Request, project: ProjectParam, task_id: str) -> GenerationContract:
+    """The decode-time contract for `task_id` in the project the gate checked — also useful standalone: a batch deriver
+    or an external labeling script can fetch it and constrain its own generation the same way."""
+    return GenerationContract(output_schema=generation_schema(await _task_ontology(_store(request), project, task_id)))
 
 
 @router.post("/assist/{doc_id}/{speech_id}/{chunk_id}")
 async def assist(
     request: Request,
     state: StateDep,
+    project: ProjectParam,
     doc_id: str,
     speech_id: int,
     chunk_id: int,
@@ -363,7 +371,7 @@ async def assist(
     url = backend_for(state.settings, body.producer, await _discovered(state))
     # ONE task read serves both halves of the contract: the schema a constrained decoder
     # enforces at GENERATION time, and the filter that checks whatever came back.
-    ontology = await _task_ontology(body.task_id) if body.task_id else None
+    ontology = await _task_ontology(_store(request), project, body.task_id) if body.task_id else None
     # The producer call uses a SYNC httpx client, so it rides the threadpool rather than blocking
     # the event loop — the endpoint is async only because reading the task's template is.
     shapes = await run_in_threadpool(_remote, state, url, (doc_id, speech_id, chunk_id), body, generation_schema(ontology)) if url else _mock(body)
@@ -410,8 +418,11 @@ def _within_contract(shapes: list[AssistShape], ontology: LabelOntology | None) 
     return kept, dropped
 
 
-async def _task_ontology(task_id: str) -> LabelOntology | None:
-    """The ontology CAPTURED onto a task, read server-side. `None` when there is no rule to apply.
+async def _task_ontology(store: AnnotatorStore | None, project_id: str, task_id: str) -> LabelOntology | None:
+    """The ontology CAPTURED onto a task of ``project_id``, read server-side. `None` when there is no rule to apply.
+
+    The task is held to the project the gate checked (`?project=`): a task id of another project reads as one that does
+    not exist, so the answer neither carries its ontology nor tells that the id exists elsewhere.
 
     Read here rather than accepted from the caller on purpose: the client would otherwise be
     supplying the rules it is judged by. `None` means "no claim" everywhere it is used — nothing
@@ -419,34 +430,28 @@ async def _task_ontology(task_id: str) -> LabelOntology | None:
     which is the same statement: there is no rule to judge anyone against.
 
     **A TRANSPORT failure and an UNREADABLE ontology are not the same answer**, though they arrive
-    at this call site identically. A sidecar that did not answer says nothing about the rules, so it
+    at this call site identically. A store that did not answer says nothing about the rules, so it
     degrades to unconstrained rather than to a wrong answer — losing a real prediction because a
     rule could not be fetched is the worse failure. A stored ontology that will not PARSE says the
     opposite: the rules exist and this build cannot read them, so returning `None` would hand the
     annotator unfiltered suggestions that look exactly like filtered ones. That one is refused, by
     name, and is the only exception this function lets past.
     """
+    if store is None:
+        logger.warning("assist cannot read task %s: the annotator names no state database; proceeding without its contract", task_id)
+        return None
     try:
-        from annotator.api.v1.endpoints.tasks import _proxy  # noqa: PLC0415 - import cycle
-
-        task = await _proxy(task_id).get()
+        task = await store.get_project_task(project_id, task_id)
     except UnreadableOntology:
-        # The task actor's `_load` already refused this document by name — and it crosses the
-        # sidecar as itself (`projects.proxies._translating`). Swallowing it here as a transport
-        # failure would put the ONE case that must fail closed back on the fail-open path.
+        # The store refused the stored document by name. Swallowing it as a fetch failure would put the ONE case that
+        # must fail closed on the fail-open path.
         raise
     except Exception:  # noqa: BLE001 - a rule we could not FETCH must not lose a prediction; see above
         logger.warning("assist could not read task %s; proceeding without its contract", task_id)
         return None
-    try:
-        ontology = LabelOntology.model_validate((task or {}).get("ontology") or {})
-    except ValidationError as exc:
-        # Reachable only across a ROLLING UPGRADE that changes `LabelOntology`: within one deployed
-        # version the actor's `_load` refuses first, so this parse cannot fail. During an upgrade the
-        # read can be served by an actor pod still on the old code, whose `model_dump` this newer
-        # model rejects — and the named refusal is what makes that window diagnosable.
-        refuse_unreadable_ontology(exc, "task", task_id, path="")
-    return ontology if ontology.constrains else None
+    if task is None or not task.ontology.constrains:
+        return None
+    return task.ontology
 
 
 async def _discovered(state: AppState) -> dict[str, AssistBackend]:

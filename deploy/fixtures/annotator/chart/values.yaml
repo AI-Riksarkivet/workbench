@@ -10,8 +10,7 @@ image:
   tag: dev
   pullPolicy: IfNotPresent
 
-# One replica: the Dapr actors place each project and task on one host, and a second replica is a second host the
-# placement service shards across, not a second copy of the state.
+# Replicas share the state in the Cluster below: a transition locks its rows there, so any replica may serve any request.
 replicas: 1
 port: 8103
 
@@ -21,7 +20,7 @@ route:
   enabled: true
   # The annotator's public base: each door below is published at `<prefix><door>` and rewritten to the service's own
   # `<door>`, so the base is what the browser's DPoP proofs name (`auth.oidc.publicUrl` is the origin and this prefix)
-  # and what the app's `/config.json` names as the annotator. Only these doors are published: the job and actor
+  # and what the app's `/config.json` names as the annotator. Only these doors are published: the job door
   # callbacks stay inside the cluster. Every route under them verifies the person's DPoP-bound token and proof
   # (`services/annotator/tests/test_every_browser_route_verifies_the_person.py`) and asks the project's role for its
   # action in the workbench's own store.
@@ -40,13 +39,30 @@ route:
   # rask's `route.hostnames`.
   hostnames: []
 
-# rask's `networkPolicy.enabled`: on, rask renders a default-deny that selects every pod in the namespace, so this
-# release admits the Gateway's traffic on `port` alone. Off, it renders no policy.
+# rask's `networkPolicy.enabled`: on, this release renders two policies (`templates/route.yaml`). The app's admits the
+# app port (from `edgeFrom` when named, else from any source: the Gateway's pods are the platform's). The state Cluster's
+# selects its instances by `cnpg.io/cluster` and admits only the annotator's pods and its own instances on 5432 and the
+# operator's pods on the status port; its instances may reach each other, DNS and the API server. NetworkPolicies are
+# additive, so that is all that reaches the database only where no other policy in the namespace admits its instances:
+# rask's own `allow-ingress-intra-namespace` admits every pod of a namespace it shares, so give this release a namespace
+# of its own, or have the platform's policies leave pods labelled `cnpg.io/cluster` out. Off, it renders no policy.
 networkPolicy:
   enabled: false
+  # The Gateway data plane's pods, as NetworkPolicy peers; empty admits any source to the app port.
+  edgeFrom: []
   # rask's `networkPolicy.apiServerEgress`: the egress rules reaching the Kubernetes API server, which the state
   # Cluster's instance managers watch it through. Required while `enabled`.
   apiServerEgress: []
+  # Name resolution for the state Cluster's instances (a standby dials its primary by the Cluster's Service name).
+  dnsEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
 # Interactive API docs (MEDIA_DOCS).
 docs: false
 # Peers whose x-forwarded-* headers uvicorn trusts (rask's `forwardedAllowIps`); `*` is refused.
@@ -59,38 +75,25 @@ catalog:
   # Empty derives `http://<rask>-catalog:2333`.
   url: ""
 
-# The annotator's own state: its projects, tasks, drafts, leases and roles are Dapr actors on a state store scoped to it
-# alone, on a CloudNativePG Postgres this release renders (the CloudNativePG operator is a prerequisite: in development
-# the `cloudnative-pg` fixture). The connection credential is the Cluster's generated `<cluster>-app` Secret, which only
-# this release's ServiceAccount may read, through a Kubernetes secret store scoped to this app, and the sidecar verifies
-# the server against the Cluster's own CA.
+# The annotator's own state: its projects, tasks, drafts and claims are rows in a CloudNativePG Postgres this release
+# renders (the CloudNativePG operator is a prerequisite: in development the `cloudnative-pg` fixture); which pods may
+# reach it is `networkPolicy`'s, with what that needs of the namespace. The pod mounts the Cluster's generated `<cluster>-app` password and its CA as files,
+# and verifies the server's certificate against that CA on every connection.
 state:
   instances: 1
   storage: 2Gi
   # The Postgres image the Cluster runs; empty takes the operator's default for its version.
   imageName: ""
-  # The CloudNativePG operator's namespace, admitted to each instance's status port while `networkPolicy.enabled`.
+  # The CloudNativePG operator's namespace and its pods' labels, admitted to each instance's status port while
+  # `networkPolicy.enabled`.
   operatorNamespace: cnpg-system
+  operatorPodLabels: { app.kubernetes.io/name: cloudnative-pg }
 
-dapr:
-  # The sidecar the actors and the state store need. Rendered only on a cluster that serves dapr.io/v1alpha1.
-  enabled: true
-  appId: annotator
-  logLevel: info
-  maxBodySize: 32Mi
-  sidecarResources:
-    cpuRequest: 50m
-    cpuLimit: 300m
-    memoryRequest: 64Mi
-    memoryLimit: 256Mi
-
-# rask's `lifecycle`: the pod's grace period, the preStop drain, the lifespan teardown after uvicorn's drain, and how
-# long the sidecar outlives the app.
+# rask's `lifecycle`: the pod's grace period, the preStop drain, and the lifespan teardown after uvicorn's drain.
 lifecycle:
   terminationGracePeriodSeconds: 40
   preStopSeconds: 5
   teardownSeconds: 10
-  sidecarBlockShutdownSeconds: 20
 
 # Telemetry to an OTLP/HTTP endpoint; empty `endpoint` derives rask's Collector (`<rask>-otel-collector:4318`). Off sends
 # nothing. `environment` is rask's `observability.environment`.
@@ -98,8 +101,6 @@ otel:
   enabled: true
   endpoint: ""
   environment: rask
-  # The sidecar's trace sampling (rask's `observability.samplingRate`).
-  samplingRate: "1"
 
 # Sign-in and authorization, the workbench's own. Every request names a person the platform's OIDC provider vouched for,
 # in a DPoP-bound token addressed to the workbench's own audience; what they may do is the workbench's own OpenFGA store.
@@ -175,9 +176,6 @@ assist:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "8", memory: 6Gi }
-
-# A RayJob submit endpoint for batch labeling (ANNOTATOR_JOBS_URL); empty keeps the annotator's submit/poll mock.
-jobsUrl: ""
 
 resources:
   requests: { cpu: 100m, memory: 512Mi }

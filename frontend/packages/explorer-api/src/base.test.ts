@@ -15,7 +15,7 @@ describe('apiUrl carries the zone base', () => {
 
 	it('normalizes a trailing slash rather than doubling it', () => {
 		setApiBase('/annotator/');
-		expect(apiUrl('/api/jobs')).toBe('/annotator/api/jobs');
+		expect(apiUrl('/api/annotations')).toBe('/annotator/api/annotations');
 	});
 });
 

@@ -1,12 +1,13 @@
-"""S4 — the create pin: creating an annotation project is authorized on the PARENT tenant.
+"""S4 — the create pin: creating an annotation project is authorized on the PARENT organisation.
 
-The door is `member` of `project:<tenant>`, which the annotator's checker asks the catalog on the person's own
-token (`annotator.api.authorization`): the child does not exist yet, so nobody holds a role on it. The checker is
-injected, so this needs no catalog, no store and no network.
+The door is `can_create_project` on `org:<tenant>`: the child does not exist yet, so nobody holds a role on it. The
+checker is injected; the project is written to a PostgreSQL database of the test's own (`state_app`) and read back
+from it, so a create that answers 201 without writing anything cannot pass.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -14,51 +15,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
-from annotator.api.v1.endpoints import projects as projects_ep
 from annotator.api.v1.endpoints.projects import CREATE_RELATION, router
-from service_kit.exceptions import register_handlers
 
 
-class _FakeProjectActor:
-    """The project actor. Records what was persisted so a create that returns 201 without writing
-    anything — which is what this endpoint did until 2026-07-28 — cannot pass again."""
-
-    def __init__(self) -> None:
-        self.created: list[dict[str, Any]] = []
-
-    async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.created.append(payload)
-        return payload
-
-
-class _FakeTenantActor:
-    def __init__(self) -> None:
-        self.registered: list[str] = []
-
-    async def register(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.registered.append(str(payload["project_id"]))
-        return {"project_id": payload["project_id"], "created": True, "total": len(self.registered)}
-
-
-@pytest.fixture(autouse=True)
-def _actor(monkeypatch: pytest.MonkeyPatch) -> _FakeProjectActor:
-    actor = _FakeProjectActor()
-    monkeypatch.setattr(projects_ep, "_create_actor", lambda _p: actor)
-    monkeypatch.setattr(projects_ep, "_tenant_actor", lambda _t: _FakeTenantActor())
-    return actor
-
-
-def _app(*, allow: bool, record: list[dict[str, Any]] | None = None) -> FastAPI:
-    """An app whose FGA checker answers `allow` and records what it was asked."""
+def _app(state_app: Callable[..., FastAPI], *, allow: bool) -> FastAPI:
+    """An app whose FGA checker answers `allow`."""
 
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
-        if record is not None:
-            record.append({"user": user, "relation": relation, "obj": obj})
         return allow
 
-    app = FastAPI()
-    app.include_router(router)
-    register_handlers(app)  # ForbiddenError -> problem+json 403, as in the real service
+    app = state_app(router)
     app.dependency_overrides[get_checker] = lambda: checker
     app.dependency_overrides[get_authorizer] = lambda: None
     # The VERIFIED subject. Overriding current_subject (not a header) is the point: with OIDC on
@@ -67,68 +33,59 @@ def _app(*, allow: bool, record: list[dict[str, Any]] | None = None) -> FastAPI:
     return app
 
 
+@pytest.fixture
+def client(state_app: Callable[..., FastAPI]) -> Iterator[TestClient]:
+    with TestClient(_app(state_app, allow=True)) as c:
+        yield c
+
+
+def _stored(client: TestClient) -> list[dict[str, Any]]:
+    """Every project of the tenant, as the store lists them."""
+    return client.get("/projects", params={"tenant": "acme"}).json()["projects"]
+
+
 PAYLOAD = {"tenant": "acme", "slug": "labels-2026", "title": "Labels 2026"}
 
 
-def test_a_tenant_member_creates_the_project_201() -> None:
-    client = TestClient(_app(allow=True))
+def test_a_tenant_member_creates_the_project_201(client: TestClient) -> None:
     r = client.post("/projects", json=PAYLOAD)
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["tenant"] == "acme"
-    assert body["slug"] == "labels-2026"
+    assert (body["tenant"], body["slug"], body["created_by"]) == ("acme", "labels-2026", "gina")
     # Born in draft: `open` is a separate can_manage transition, so creating never implies ready.
     assert body["state"] == "draft"
-    assert body["created_by"] == "gina"
-    assert body["project_id"]
+    assert [p["project_id"] for p in _stored(client)] == [body["project_id"]]
 
 
-def test_a_non_member_is_denied_403() -> None:
-    client = TestClient(_app(allow=False))
-    r = client.post("/projects", json=PAYLOAD)
+def test_a_non_member_is_denied_403(state_app: Callable[..., FastAPI]) -> None:
+    with TestClient(_app(state_app, allow=False)) as client:
+        r = client.post("/projects", json=PAYLOAD)
     assert r.status_code == 403, r.text
     assert CREATE_RELATION in r.json()["detail"]
 
 
-@pytest.mark.parametrize("missing", ["tenant"])
-def test_tenant_and_slug_are_required_so_the_door_can_never_be_inferred(missing: str) -> None:
+def test_tenant_is_required_so_the_door_can_never_be_inferred(client: TestClient) -> None:
     """`tenant` IS the authz parent — a request that omits it must be rejected, never guessed."""
-    payload = {k: v for k, v in PAYLOAD.items() if k != missing}
-    client = TestClient(_app(allow=True))
+    payload = {k: v for k, v in PAYLOAD.items() if k != "tenant"}
     assert client.post("/projects", json=payload).status_code == 422
 
 
-# --------------------------------------------------------------------------------------------------
-# Consensus v1 — the create surface carries `consensus_n` (the audit's B-1: the field existed
-# everywhere EXCEPT this request model, so Pydantic silently dropped it and every project persisted
-# consensus_n=1 — the whole replica plane was unreachable end-to-end)
-# --------------------------------------------------------------------------------------------------
-
-
-def test_consensus_n_travels_from_the_create_payload_to_the_persisted_doc(_actor: _FakeProjectActor) -> None:
-    client = TestClient(_app(allow=True))
+def test_consensus_n_travels_from_the_create_payload_to_the_stored_project(client: TestClient) -> None:
     r = client.post("/projects", json={**PAYLOAD, "consensus_n": 3})
     assert r.status_code == 201, r.text
-    assert r.json()["consensus_n"] == 3
-    assert _actor.created[0]["consensus_n"] == 3, "the field must PERSIST, not merely echo"
+    assert [p["consensus_n"] for p in _stored(client)] == [3], "the field must PERSIST, not merely echo"
 
 
-def test_consensus_n_defaults_to_one_and_out_of_range_is_422(_actor: _FakeProjectActor) -> None:
-    client = TestClient(_app(allow=True))
+def test_consensus_n_defaults_to_one_and_out_of_range_is_422(client: TestClient) -> None:
     assert client.post("/projects", json=PAYLOAD).json()["consensus_n"] == 1
     assert client.post("/projects", json={**PAYLOAD, "consensus_n": 6}).status_code == 422
     assert client.post("/projects", json={**PAYLOAD, "consensus_n": 0}).status_code == 422
-    assert _actor.created and all(doc["consensus_n"] == 1 for doc in _actor.created), "a rejected value must never persist"
+    assert [p["consensus_n"] for p in _stored(client)] == [1], "a rejected value must never persist"
 
 
-def test_an_ontology_that_CONTRADICTS_ITSELF_is_refused_at_create(_actor: _FakeProjectActor) -> None:
-    """The cross-check the two-object model had nowhere to run.
-
-    `label_schema` and `template` were separate fields, so no validator ever saw both — a project
-    could declare a taxonomy and an enforcement contract that disagreed and still answer 201. One
-    document means the model validates itself, and the create endpoint gets that for free.
-    """
-    client = TestClient(_app(allow=True))
+def test_an_ontology_that_contradicts_itself_is_refused_at_create(client: TestClient) -> None:
+    """One document means the ontology validates itself, and the create endpoint gets that for free: a relation naming
+    an undeclared class is refused, and nothing is stored."""
     r = client.post(
         "/projects",
         json={
@@ -141,4 +98,4 @@ def test_an_ontology_that_CONTRADICTS_ITSELF_is_refused_at_create(_actor: _FakeP
     )
     assert r.status_code == 422, r.text
     assert "value" in r.text, "the refusal must name the undeclared class"
-    assert _actor.created == [], "a project was persisted despite a contradictory ontology"
+    assert _stored(client) == [], "a project was persisted despite a contradictory ontology"

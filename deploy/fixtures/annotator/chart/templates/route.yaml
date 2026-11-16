@@ -43,8 +43,14 @@ spec:
       {{- include "annotator.selector" . | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
+    {{- /* The Gateway's data plane is the platform's, so this chart cannot know its pods: unnamed, every source may reach
+    the app port, and each request still proves its person. `networkPolicy.edgeFrom` names those pods instead. */}}
     - ports:
         - { protocol: TCP, port: {{ .Values.port }} }
+      {{- with .Values.networkPolicy.edgeFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -69,6 +75,9 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: {{ .Values.state.operatorNamespace | quote }} }
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.state.operatorPodLabels | nindent 14 }}
       ports:
         - { protocol: TCP, port: 8000 }
   egress:
@@ -77,6 +86,8 @@ spec:
             matchLabels: { cnpg.io/cluster: {{ include "annotator.stateCluster" . }} }
       ports:
         - { protocol: TCP, port: 5432 }
+    {{- /* A standby reaches its primary by the Cluster's Service name, so the instances resolve names. */}}
+    {{- toYaml .Values.networkPolicy.dnsEgress | nindent 4 }}
     {{- if not .Values.networkPolicy.apiServerEgress }}{{ fail "networkPolicy.apiServerEgress must name the Kubernetes API server's endpoints (rask's `networkPolicy.apiServerEgress`): each instance manager watches its Cluster" }}{{ end }}
     {{- toYaml .Values.networkPolicy.apiServerEgress | nindent 4 }}
 {{- end }}

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -84,9 +86,49 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     # Serve's http_options port) reaches only the HEAD's proxy. The registry entries above win on a name conflict.
     serve_discovery_url: str | None = Field(default=None, alias="ANNOTATOR_SERVE_DISCOVERY_URL")
     serve_proxy_url: str | None = Field(default=None, alias="ANNOTATOR_SERVE_PROXY_URL")
-    # A batch-labeling job's submit endpoint. Unset ⇒ a deterministic in-repo mock, so the submit/poll round-trip is
-    # wired and testable. The annotator only enqueues; the deriver is the caller's own job.
-    jobs_url: str | None = Field(default=None, alias="ANNOTATOR_JOBS_URL")
+
+    #: The annotator's own Postgres, which holds its projects, tasks, drafts and claims (`annotator.state`). Unset, the
+    #: project and task plane answers 503 naming it, and the read plane still serves. Every value here is a name, never
+    #: a credential: the password is a mounted file, read on every new connection so a rotated one takes effect.
+    state_host: str | None = Field(default=None, alias="ANNOTATOR_STATE_HOST")
+    state_port: int = Field(default=5432, ge=1, le=65535, alias="ANNOTATOR_STATE_PORT")
+    state_database: str = Field(default="annotator", min_length=1, alias="ANNOTATOR_STATE_DATABASE")
+    state_user: str = Field(default="annotator", min_length=1, alias="ANNOTATOR_STATE_USER")
+    state_password_file: Path | None = Field(default=None, alias="ANNOTATOR_STATE_PASSWORD_FILE")
+    #: How the server is verified. `verify-full` by default, against `state_ca_file`: the annotator trusts a database
+    #: by its certificate, never by its address. `disable` is for a server on the loopback only (the local stack).
+    state_sslmode: Literal["disable", "verify-full"] = Field(default="verify-full", alias="ANNOTATOR_STATE_SSLMODE")
+    state_ca_file: Path | None = Field(default=None, alias="ANNOTATOR_STATE_CA_FILE")
+    #: The most connections one process holds.
+    state_pool_size: int = Field(default=10, ge=2, le=100, alias="ANNOTATOR_STATE_POOL_SIZE")
+
+    #: How long a publish run's lease on its project lasts past each renewal. Renewed between the saga's steps, so it is
+    #: set to outlast the longest single step, the catalog create (up to `CREATE_ATTEMPTS` calls of pylance's REST client,
+    #: whose own request timeout is not measured here). A step that outlasts it anyway lets a second run start beside
+    #: the first, which the saga's idempotency by publish token makes safe (`annotator.projects.saga`).
+    publish_lease_seconds: int = Field(default=300, ge=30, le=3600, alias="ANNOTATOR_PUBLISH_LEASE_SECONDS")
+    #: How often each replica looks for publishes no live run holds, with jitter of up to a fifth either way.
+    publish_redrive_seconds: float = Field(default=30.0, gt=0, le=600, alias="ANNOTATOR_PUBLISH_REDRIVE_SECONDS")
+    #: The most publish runs one replica drives at once. Each run takes a pooled connection only for one store call at a
+    #: time, and this keeps runs from crowding the pool requests are served from.
+    publish_concurrency: int = Field(default=2, ge=1, le=20, alias="ANNOTATOR_PUBLISH_CONCURRENCY")
+
+    @model_validator(mode="after")
+    def _validate_state(self) -> Self:
+        """A state connection that could not verify its server, or that would cross the network unencrypted, fails here,
+        and so do publish runs that could take every pooled connection."""
+        if self.publish_concurrency >= self.state_pool_size:
+            raise ValueError(
+                f"ANNOTATOR_PUBLISH_CONCURRENCY ({self.publish_concurrency}) must stay below ANNOTATOR_STATE_POOL_SIZE ({self.state_pool_size}), "
+                "so publish runs never hold every connection requests are served from"
+            )
+        if self.state_host is None:
+            return self
+        if self.state_sslmode == "verify-full" and self.state_ca_file is None:
+            raise ValueError("ANNOTATOR_STATE_SSLMODE=verify-full needs ANNOTATOR_STATE_CA_FILE: the CA the database's certificate is checked against")
+        if self.state_sslmode == "disable" and self.state_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise ValueError(f"ANNOTATOR_STATE_SSLMODE=disable is for a database on the loopback; {self.state_host} is not")
+        return self
 
     @property
     def effective_lineage_sink(self) -> LineageSink:

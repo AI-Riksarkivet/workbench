@@ -1,42 +1,64 @@
-"""Offline annotator tests never open a Dapr sidecar channel.
+"""The annotator's state for its offline tests: a real PostgreSQL database of the test's own.
 
-[[XC-071]]. Three source paths reach `typed_proxy` — `actor.py:350` and `lakehouse.py:415,420` — each
-behind a function-local import that re-reads `annotator.projects.proxies` on every call. Two of them
-sit under an `except Exception` that is deliberately non-fatal ("an annotator's submit must not fail
-because the project actor is briefly unreachable"), so a test that reaches one does not FAIL on it: it
-WAITS, the exception is swallowed, and the only symptom is time.
-
-MEASURED 2026-09-23. With `DAPR_HTTP_PORT` pointed at a dead port — which is what CI has —
-`test_task_history_is_bounded.py` runs past 300s and is killed. On a developer box it completes, because something answers
-on 127.0.0.1:3500; on this host that was a `fake_sidecar.py` left running for 57 days. A suite whose
-result depends on a stray local process is not measuring what it claims to, and `ms-test` had been red
-on exactly that difference.
-
-REFUSING RATHER THAN STUBBING A RETURN VALUE, because the two are different claims. A stub that
-returns a mock says "the sidecar answered"; this says "an offline test must not ask". Every source
-call site already tolerates the proxy being unreachable, so nothing under test depends on it —
-`typed_proxy`'s own module docstring notes that unit-test fakes implement the wire contract without
-dapr. A test that genuinely needs the proxy asks for it explicitly by overriding this fixture, which
-is visible in the diff rather than inherited by accident.
-
-AUTOUSE AND SUITE-WIDE, not per file: the offenders were in two files, the row that found it named
-one, and a third would inherit the hole. Patched on the MODULE the function-local import resolves to —
-patching the caller is looked straight past.
+`state_settings` names the test's database (root `conftest.py::state_database`) in the annotator's settings, the way a
+deployment's environment does, so the service's own lifespan (`annotator.main`) opens its store on it. `state_app`
+composes a test app from routers with the same store and publish runner, opened in the app's own lifespan: psycopg's
+async pool lives on the event loop that opened it, so a test seeds rows through that loop
+(`client.portal.call(client.app.state.store.<method>, ...)`), never through one of its own.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import asynccontextmanager
+
 import pytest
+from fastapi import APIRouter, FastAPI
+
+from annotator.core.config import AnnotatorSettings, get_annotator_settings
+from annotator.projects.lakehouse import PublishRunner
+from annotator.state.store import AnnotatorStore
+from service_kit.exceptions import register_handlers
+from tests.postgres import StateDatabase
 
 
-@pytest.fixture(autouse=True)
-def refuse_sidecar_channels(monkeypatch: pytest.MonkeyPatch) -> None:
-    import annotator.projects.proxies as proxies
+@pytest.fixture
+def state_settings(state_database: StateDatabase, monkeypatch: pytest.MonkeyPatch) -> Iterator[AnnotatorSettings]:
+    """The annotator's settings naming this test's database, as the environment a deployment renders."""
+    for name, value in state_database.env().items():
+        monkeypatch.setenv(name, value)
+    get_annotator_settings.cache_clear()
+    yield get_annotator_settings()
+    get_annotator_settings.cache_clear()
 
-    def _refuse(actor_type: str, actor_id: str, interface: type) -> object:
-        raise AssertionError(
-            f"an offline test opened a sidecar channel to {actor_type}/{actor_id} — stub the collaborator, "
-            "or override `refuse_sidecar_channels` in a test that genuinely needs the proxy"
-        )
 
-    monkeypatch.setattr(proxies, "typed_proxy", _refuse)
+@pytest.fixture
+def state_app(state_settings: AnnotatorSettings) -> Callable[..., FastAPI]:
+    """Build a test app of the given routers whose lifespan opens the state store and the publish runner."""
+
+    def build(*routers: APIRouter) -> FastAPI:
+        @asynccontextmanager
+        async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+            store = await AnnotatorStore.open(state_settings)
+            # No re-drive started: a test's publish runs only when its door starts it.
+            runner = PublishRunner(
+                store,
+                None,
+                lease_seconds=state_settings.publish_lease_seconds,
+                redrive_seconds=state_settings.publish_redrive_seconds,
+                concurrency=state_settings.publish_concurrency,
+            )
+            app.state.store, app.state.publish_runner = store, runner
+            try:
+                yield
+            finally:
+                await runner.close()
+                await store.close()
+
+        app = FastAPI(lifespan=lifespan)
+        register_handlers(app)
+        for router in routers:
+            app.include_router(router)
+        return app
+
+    return build

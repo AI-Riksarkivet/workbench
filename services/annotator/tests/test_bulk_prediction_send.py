@@ -6,19 +6,20 @@ opened and drawn on — the bulk surface was bulk in selection only.
 
 The shape this pins is Label Studio's, deliberately: a PREDICTION is a pre-annotation attached to the
 task, NOT the annotator's own work. It rides the task document (one write, at send), it is stamped
-server-side, and it is checked against the project's taxonomy before a single actor is seeded. A
+server-side, and it is checked against the project's taxonomy before a single task is written. A
 human still claims, corrects and submits — nothing here reaches the lakehouse unreviewed, because
 nothing can.
 
 Four properties carry the whole design, and a wrong implementation still looks right for all four:
 the field must actually SURVIVE the wire (pydantic drops what it does not declare, in silence); the
 sender must not be able to forge `source`; an invented label must be refused BEFORE anything is
-seeded; and a prediction must never be a draft, because a draft is submittable and a prediction is
-a suggestion.
+written; and a prediction must never be a draft, because a draft is submittable and a prediction is
+a suggestion. Driven over the real state store, on a dataset in a directory catalog.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +30,11 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as ev
-from annotator.projects.models import ProjectState
+from annotator.projects.models import AnnotationProject, Draft, ProjectState, Task
+from annotator.state.store import AnnotatorStore
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
-from service_kit.exceptions import register_handlers
 from tests.media_catalog import write_table
 
 
@@ -49,174 +50,141 @@ ONTOLOGY: dict[str, Any] = {
 }
 
 
-class _FakeProject:
-    def __init__(self, state: ProjectState = ProjectState.LABELING, *, ontology: dict[str, Any] | None = None, consensus_n: int = 1) -> None:
-        self.state = state
-        self.ontology = ONTOLOGY if ontology is None else ontology
-        self.consensus_n = consensus_n
-        self.sent: list[dict[str, Any]] = []
+class _Door:
+    def __init__(self, client: TestClient, app: FastAPI) -> None:
+        self.client, self._app = client, app
 
-    async def get(self) -> dict[str, Any]:
-        return {
-            "state": str(self.state),
-            "project_id": "p1",
-            "review_required": True,
-            "lease_seconds": 900,
-            "ontology": self.ontology,
-            "consensus_n": self.consensus_n,
-        }
+    def call(self, call: Callable[[AnnotatorStore], Any]) -> Any:
+        """Run ``call`` against the app's store, on the app's own event loop."""
+        store: AnnotatorStore = self._app.state.store
+        portal = self.client.portal
+        assert portal is not None, "the client runs no app"
 
-    async def send(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.sent.append(payload)
-        return {"task_id": payload["task_id"], "created": True, "counts": {}}
+        async def run() -> Any:
+            return await call(store)
 
-    async def send_many(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.sent.extend(payload["tasks"])  # ANN-03: the batch door replaces per-task Send
-        return {"results": [{"task_id": t["task_id"], "created": True} for t in payload["tasks"]], "counts": {}}
+        return portal.call(run)
 
+    def tasks(self) -> list[Task]:
+        async def held(store: AnnotatorStore) -> list[Task]:
+            return await store.get_tasks("p1", sorted((await store.task_index("p1")).tasks))
 
-class _FakeTask:
-    """Records what was seeded. `save_draft` exists ONLY so a test can prove it is never reached."""
+        return self.call(held)
 
-    def __init__(self) -> None:
-        self.seeded: list[dict[str, Any]] = []
-        self.drafts: list[dict[str, Any]] = []
-
-    async def seed(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.seeded.append(payload)
-        return dict(payload)
-
-    async def save_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.drafts.append(payload)
-        return dict(payload)
+    def draft(self, task_id: str) -> Draft | None:
+        return self.call(lambda s: s.get_draft(task_id))
 
 
-def _client(project: _FakeProject, task: _FakeTask, monkeypatch: pytest.MonkeyPatch, catalog: Path) -> TestClient:
-    async def checker(**_call: Any) -> bool:
-        """Every relation granted — authorization is `test_project_event_endpoints`'s subject."""
-        return True
+@pytest.fixture
+def wired(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Callable[..., _Door]]:
+    """The project and the dataset its items name (``acme$vasa``, in a directory catalog)."""
+    write_table(tmp_path, ["acme", "vasa", "chunks"], pa.table({"doc_id": ["page-1"]}), descriptor={"identity": {"key_fields": ["doc_id"]}})
+    clients: list[TestClient] = []
 
-    monkeypatch.setattr(ev, "_project_proxy", lambda _p: project)
-    monkeypatch.setattr(ev, "_task_proxy", lambda _t: task)
+    def build(*, ontology: dict[str, Any] | None = None, consensus_n: int = 1) -> _Door:
+        async def checker(**_call: Any) -> bool:
+            """Every relation granted — authorization is `test_project_event_endpoints`'s subject."""
+            return True
 
-    app = FastAPI()
-    register_handlers(app)
-    app.include_router(ev.router)
-    app.dependency_overrides[get_checker] = lambda: checker
-    app.dependency_overrides[get_authorizer] = lambda: None
-    app.dependency_overrides[current_subject] = lambda: SUBJECT
-    state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(catalog)}))
-    app.dependency_overrides[get_state] = lambda: state
-    return TestClient(app)
+        app = state_app(ev.router)
+        app.dependency_overrides[get_checker] = lambda: checker
+        app.dependency_overrides[get_authorizer] = lambda: None
+        app.dependency_overrides[current_subject] = lambda: SUBJECT
+        state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
+        app.dependency_overrides[get_state] = lambda: state
+        client = TestClient(app)
+        client.__enter__()
+        clients.append(client)
+        door = _Door(client, app)
+        project = AnnotationProject.model_validate(
+            {
+                "project_id": "p1",
+                "tenant": "acme",
+                "slug": "vasa",
+                "state": ProjectState.LABELING,
+                "ontology": ONTOLOGY if ontology is None else ontology,
+                "consensus_n": consensus_n,
+            }
+        )
+        door.call(lambda s: s.create_project(project))
+        return door
+
+    yield build
+    for client in clients:
+        client.__exit__(None, None, None)
 
 
 def _item(prediction: list[dict[str, Any]] | None = None, *, task_id: str = "t1") -> dict[str, Any]:
-    item: dict[str, Any] = {
-        "task_id": task_id,
-        "source": {"kind": "chunks", "keys": ["page-1"], "where": "acme$vasa"},
-        "media": {"kind": "image"},
-    }
+    item: dict[str, Any] = {"task_id": task_id, "source": {"kind": "chunks", "keys": ["page-1"], "where": "acme$vasa"}, "media": {"kind": "image"}}
     if prediction is not None:
         item["prediction"] = prediction
     return item
 
 
-@pytest.fixture
-def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
-    """The project, its task and the dataset its items name (``acme$vasa``, in a directory catalog)."""
-    write_table(tmp_path, ["acme", "vasa", "chunks"], pa.table({"doc_id": ["page-1"]}), descriptor={"identity": {"key_fields": ["doc_id"]}})
+def test_a_prediction_reaches_the_task_stamped_by_the_server_and_is_no_draft(wired: Any) -> None:
+    """`SendItem` must declare `prediction`: pydantic drops an undeclared key without erroring, so a bulk label would
+    post 201 and carry nothing. The sender's `source` never lands: the server stamps it. And a prediction is a
+    suggestion on the task, never a draft, which is submittable."""
+    door = wired()
 
-    def build(*, ontology: dict[str, Any] | None = None, consensus_n: int = 1) -> tuple[TestClient, _FakeProject, _FakeTask]:
-        project = _FakeProject(ontology=ontology, consensus_n=consensus_n)
-        task = _FakeTask()
-        return _client(project, task, monkeypatch, tmp_path), project, task
-
-    return build
-
-
-# --------------------------------------------------------------------------------------------------
-# It has to survive the wire at all
-# --------------------------------------------------------------------------------------------------
-
-
-def test_a_prediction_reaches_the_task_actor(wired: Any) -> None:
-    """The defect this exists for. `SendItem` did not declare `prediction`, and pydantic drops an
-    undeclared key WITHOUT erroring — so a bulk label would post 200, seed the tasks, and carry
-    nothing. The send looked like it worked. Every queued item was still blank."""
-    client, _project, task = wired()
-
-    r = client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "tag", "label": "letter"}])]})
+    r = door.client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "tag", "label": "letter", "source": "human"}])]})
 
     assert r.status_code == 201, r.text
-    assert task.seeded, "no task was seeded at all"
-    shapes = task.seeded[0].get("prediction") or []
-    assert [s["label"] for s in shapes] == ["letter"], "the prediction did not survive onto the task"
+    [task] = door.tasks()
+    assert [(s.label, s.source) for s in task.prediction] == [("letter", "bulk")]
+    assert door.draft("t1") is None
 
 
 def test_an_item_with_no_prediction_carries_none(wired: Any) -> None:
     """The ordinary send is unchanged — an empty list, never a fabricated shape."""
-    client, _project, task = wired()
+    door = wired()
 
-    r = client.post("/projects/p1/items", json={"items": [_item()]})
+    r = door.client.post("/projects/p1/items", json={"items": [_item()]})
 
     assert r.status_code == 201, r.text
-    assert (task.seeded[0].get("prediction") or []) == []
-
-
-# --------------------------------------------------------------------------------------------------
-# The taxonomy is closed, and it closes BEFORE anything is written
-# --------------------------------------------------------------------------------------------------
+    assert [t.prediction for t in door.tasks()] == [[]]
 
 
 def test_a_tool_the_class_forbids_is_refused(wired: Any) -> None:
     """`letter` declares `tag` only. Membership is not just the label — it is the label WITH the
     primitive it was drawn with."""
-    client, _project, task = wired()
+    door = wired()
 
-    r = client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "bbox", "label": "letter"}])]})
+    r = door.client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "bbox", "label": "letter"}])]})
 
     assert r.status_code == 409, r.text
-    assert task.seeded == []
+    assert door.tasks() == []
 
 
-def test_the_refusal_happens_before_ANY_item_is_seeded(wired: Any) -> None:
-    """A per-item check inside the seed loop would leave the good items queued and the bad ones not
-    — a half-applied bulk action, which is worse than a refused one because nobody can tell which
-    half landed. The whole send is validated first."""
-    client, _project, task = wired()
-
+def test_the_refusal_happens_before_any_item_is_written(wired: Any) -> None:
+    """The whole send is validated first: a half-applied bulk action is worse than a refused one, because nobody can
+    tell which half landed."""
+    door = wired()
     good = _item([{"shape_type": "tag", "label": "letter"}], task_id="t1")
     bad = _item([{"shape_type": "tag", "label": "nope"}], task_id="t2")
 
-    r = client.post("/projects/p1/items", json={"items": [good, bad]})
+    r = door.client.post("/projects/p1/items", json={"items": [good, bad]})
 
     assert r.status_code == 409, r.text
-    assert task.seeded == [], "the first item was seeded before the second was validated"
+    assert door.tasks() == [], "the first item was written before the second was validated"
 
 
 def test_an_unconstrained_project_accepts_any_label(wired: Any) -> None:
-    """An empty taxonomy constrains nothing — the same posture every other surface takes, rather
-    than a bulk-only rule that would surprise."""
-    client, _project, task = wired(ontology={})
+    """An empty taxonomy constrains nothing — the same posture every other surface takes."""
+    door = wired(ontology={})
 
-    r = client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "tag", "label": "anything"}])]})
+    r = door.client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "tag", "label": "anything"}])]})
 
     assert r.status_code == 201, r.text
-    assert task.seeded[0]["prediction"][0]["label"] == "anything"
-
-
-# --------------------------------------------------------------------------------------------------
-# Consensus
-# --------------------------------------------------------------------------------------------------
+    assert [s.label for t in door.tasks() for s in t.prediction] == ["anything"]
 
 
 def test_every_replica_carries_the_same_prediction(wired: Any) -> None:
     """Consensus asks several people the same question. Handing some of them a suggestion and not
     others would make their disagreement an artefact of the send rather than of the images."""
-    client, _project, task = wired(consensus_n=3)
+    door = wired(consensus_n=3)
 
-    r = client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "tag", "label": "letter"}])]})
+    r = door.client.post("/projects/p1/items", json={"items": [_item([{"shape_type": "tag", "label": "letter"}])]})
 
     assert r.status_code == 201, r.text
-    assert len(task.seeded) == 3, "consensus_n=3 did not seed three replicas"
-    assert all((t.get("prediction") or [{}])[0].get("label") == "letter" for t in task.seeded)
+    assert [(t.task_id, [s.label for s in t.prediction]) for t in door.tasks()] == [(f"t1-r{k}", ["letter"]) for k in (1, 2, 3)]

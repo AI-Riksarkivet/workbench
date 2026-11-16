@@ -1,15 +1,16 @@
 """Task endpoints — the authorization surface of the CVAT/Label-Studio loop.
 
-The actor is faked so these prove the HTTP contract without a sidecar: which `can_*` each event
-demands, on WHICH object, and the rules the transition table cannot express because they depend on
-the task's own rows.
+The task router over the real state store, on a PostgreSQL database of the test's own (`state_app`): which `can_*`
+each event demands, on WHICH object, and the rules the transition table cannot express because they depend on the
+task's own rows. The checker is the one stand-in, so each test names exactly the relations its caller holds; what a
+refused request did NOT do is read back from the store.
 
 The permission is not asserted per-route by hand. `TASK_EDGES` carries it on the edge, so these read
 the expectation from the machine — a new edge is gated automatically and a route cannot quietly drift
 from the model.
 
 Three of these exist because an adversarial review found the corresponding defect in the first
-version of this file's subject, and the ORIGINAL tests asserted the buggy behaviour as correct:
+version of this file's subject:
 
 - the check ran on `project:<tenant>`, a type on which `model.fga` defines none of these relations;
 - `review_required` was a request field, so an annotator could submit with review waived;
@@ -21,119 +22,108 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Callable, Iterator
 from typing import Any
 
+import psycopg
 import pyarrow as pa
 import pytest
+from anyio.from_thread import BlockingPortal
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import tasks as tasks_ep
 from annotator.projects.machines import TASK_EDGES
-from annotator.projects.models import ProjectState, TaskState
-from service_kit.exceptions import register_handlers
+from annotator.projects.models import AnnotationProject, Draft, ItemSource, MediaRef, ProjectState, Shape, Task, TaskState
+from annotator.projects.ontology import LabelOntology
+from annotator.state.store import AnnotatorStore
+from tests.postgres import StateDatabase
 
 
 SUBJECT = "gina"
 PROJECT_ID = "proj-1"
 
 
-class _FakeActor:
-    """Stands in for the Dapr actor proxy: records what it was asked, returns canned state."""
+class _Door:
+    """The task router as one caller holding a set of relations, over the real store."""
 
-    def __init__(self, state: dict[str, Any] | None, draft: dict[str, Any] | None = None) -> None:
-        self.state = state
-        self.fired: list[dict[str, Any]] = []
-        self.drafts: list[dict[str, Any]] = []
-        #: What `get_draft` answers. Overridable so the import tests can put existing work in the
-        #: draft — appending onto an EMPTY draft would prove nothing about not destroying anything.
-        self.draft: dict[str, Any] = draft if draft is not None else {"revision": 1, "shapes": []}
+    def __init__(self, client: TestClient, app: FastAPI, seen: list[dict[str, Any]], database: StateDatabase) -> None:
+        self.client, self._app, self.seen, self._database = client, app, seen, database
 
-    async def get(self) -> dict[str, Any] | None:
-        return self.state
+    @property
+    def store(self) -> AnnotatorStore:
+        return self._app.state.store
 
-    async def fire(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.fired.append(payload)
-        return {**(self.state or {}), "state": "claimed"}
+    @property
+    def portal(self) -> BlockingPortal:
+        """The app's own event loop, where the store's pool lives; open while the client is."""
+        portal = self.client.portal
+        assert portal is not None, "the client is not open"
+        return portal
 
-    async def save_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.drafts.append(payload)
-        # A `Draft` as the actor stores one — `task_id`/`project_id`/`author` are required on the
-        # model and were missing here, so this double answered a document the actor cannot produce.
-        return {
-            "revision": 1,
-            "shapes": payload.get("shapes", []),
-            "links": payload.get("links", []),
-            "task_id": str(payload.get("task_id", "t1")),
-            "project_id": str(payload.get("project_id", PROJECT_ID)),
-            "author": str(payload.get("author", SUBJECT)),
-            "origin": payload.get("origin", "human"),
-        }
+    def seed(self, *tasks: Task, consensus_n: int = 1) -> None:
+        """A labeling project holding ``tasks`` exactly as given: the store writes a task in the state it is handed."""
+        project = AnnotationProject(project_id=PROJECT_ID, tenant="acme", slug="charters", state=ProjectState.LABELING, consensus_n=consensus_n)
+        self.portal.call(self.store.create_project, project)
+        self.portal.call(self.store.send_tasks, PROJECT_ID, list(tasks))
 
-    async def get_draft(self) -> dict[str, Any] | None:
-        return self.draft
+    def freeze_project_as(self, state: ProjectState) -> None:
+        """Plant a frozen project under a task that is not terminal: no edge reaches that, which is the rule under test."""
+        with psycopg.connect(host=self._database.host, port=self._database.port, user=self._database.user, dbname=self._database.database) as conn:
+            conn.execute(
+                "UPDATE projects SET state = %s, document = jsonb_set(document, '{state}', to_jsonb(%s::text)) WHERE project_id = %s",
+                (str(state), str(state), PROJECT_ID),
+            )
+
+    def task(self, task_id: str = "t1") -> Task:
+        found = self.portal.call(self.store.get_task, task_id)
+        assert found is not None, f"task {task_id} is gone"
+        return found
+
+    def draft(self, task_id: str = "t1") -> Draft | None:
+        return self.portal.call(self.store.get_draft, task_id)
+
+    def save_draft(self, shapes: list[Shape], task_id: str = "t1") -> Draft:
+        return self.portal.call(lambda: self.store.save_draft(task_id, author=SUBJECT, shapes=shapes, links=[], base_revision=None))
 
 
-def _app(*, allow: bool | set[str], seen: list[dict[str, Any]] | None = None) -> FastAPI:
-    """`allow` is every relation (True), none (False: a stranger), or the relations the caller holds."""
+@pytest.fixture
+def door(state_app: Callable[..., FastAPI], state_database: StateDatabase) -> Iterator[Callable[..., _Door]]:
+    """`door(allow=...)`: every relation (True), none (False: a stranger), or the relations the caller holds."""
+    opened: list[TestClient] = []
 
-    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
-        if seen is not None:
+    def build(*, allow: bool | set[str], raise_server_exceptions: bool = True) -> _Door:
+        seen: list[dict[str, Any]] = []
+
+        async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
             seen.append({"user": user, "relation": relation, "obj": obj})
-        return allow if isinstance(allow, bool) else relation in allow
+            return allow if isinstance(allow, bool) else relation in allow
 
-    app = FastAPI()
-    register_handlers(app)
-    app.include_router(tasks_ep.router)
-    app.dependency_overrides[get_checker] = lambda: checker
-    app.dependency_overrides[get_authorizer] = lambda: None
-    app.dependency_overrides[current_subject] = lambda: SUBJECT
-    return app
+        app = state_app(tasks_ep.router)
+        app.dependency_overrides[get_checker] = lambda: checker
+        app.dependency_overrides[get_authorizer] = lambda: None
+        app.dependency_overrides[current_subject] = lambda: SUBJECT
+        client = TestClient(app, raise_server_exceptions=raise_server_exceptions)
+        client.__enter__()
+        opened.append(client)
+        return _Door(client, app, seen, state_database)
+
+    yield build
+    for client in opened:
+        client.__exit__(None, None, None)
 
 
-def _task(**kw: Any) -> dict[str, Any]:
-    """A task document as the ACTOR produces one.
-
-    `source` and `media` are required on `Task` and were absent here: the double described a
-    document the actor cannot store, which is exactly the shape of double that lets a route break
-    with the suite green (`test_publish_token_after_credential_removal.py` has the same lesson).
-    The routes now publish the `Task` model (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-07), so a document that could
-    not exist no longer passes through them either.
-    """
+def _task(**kw: Any) -> Task:
+    """A task as the send door writes one: its item and media, the project's captures, then the state under test."""
     base: dict[str, Any] = {
-        "state": TaskState.UNASSIGNED,
-        "assignee": None,
-        "submitted_by": None,
         "task_id": "t1",
         "project_id": PROJECT_ID,
-        "source": {"kind": "chunks", "keys": ["t1"]},
-        "media": {"kind": "image", "image_url": "s3://bucket/t1.jpg"},
+        "source": ItemSource(kind="chunks", keys=["t1"]),
+        "media": MediaRef(kind="image"),
     }
     base.update(kw)
-    return base
-
-
-class _FakeProjectActor:
-    """The project the task belongs to. Read on every task event to enforce §5.2 rule 5."""
-
-    def __init__(self, state: ProjectState = ProjectState.LABELING) -> None:
-        self.state = state
-        self.consensus_n = 1
-
-    async def get(self) -> dict[str, Any]:
-        return {"state": str(self.state), "project_id": PROJECT_ID, "consensus_n": self.consensus_n}
-
-
-@pytest.fixture(autouse=True)
-def _live_project(monkeypatch: pytest.MonkeyPatch) -> _FakeProjectActor:
-    """Every task event now reads its project's state (§5.2 rule 5 — nothing escapes a published
-    project). Autouse so each test gets a LABELING project by default; the freeze tests mutate it."""
-    from annotator.api.v1.endpoints import project_events as pe
-
-    project = _FakeProjectActor()
-    monkeypatch.setattr(pe, "_project_proxy", lambda _p: project)
-    return project
+    return Task(**base)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -141,19 +131,21 @@ def _live_project(monkeypatch: pytest.MonkeyPatch) -> _FakeProjectActor:
 # --------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("state", "event"), [(TaskState.UNASSIGNED, "claim"), (TaskState.UNASSIGNED, "assign"), (TaskState.CLAIMED, "release")])
-def test_every_edge_checks_the_permission_the_table_declares(state: TaskState, event: str, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("state", "event", "assignee"),
+    [(TaskState.UNASSIGNED, "claim", None), (TaskState.UNASSIGNED, "assign", None), (TaskState.CLAIMED, "release", SUBJECT)],
+)
+def test_every_edge_checks_the_permission_the_table_declares(state: TaskState, event: str, assignee: str | None, door: Callable[..., _Door]) -> None:
     expected = TASK_EDGES[(state, event)][1]
-    actor = _FakeActor(_task(state=state))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow=True, seen=seen))
+    d = door(allow=True)
+    d.seed(_task(state=state, assignee=assignee))
 
-    r = client.post("/tasks/t1/events", json={"event": event})
+    r = d.client.post("/tasks/t1/events", json={"event": event})
 
     assert r.status_code == 200, r.text
-    assert [c["relation"] for c in seen[:2]] == ["can_view", expected], f"{event} from {state} was not authorized as the table says"
-    assert seen[1]["user"] == SUBJECT, "the check must use the VERIFIED subject"
+    assert [c["relation"] for c in d.seen[:2]] == ["can_view", expected], f"{event} from {state} was not authorized as the table says"
+    assert d.seen[1]["user"] == SUBJECT, "the check must use the VERIFIED subject"
+    assert d.seen[1]["obj"] == "task:t1"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -161,19 +153,16 @@ def test_every_edge_checks_the_permission_the_table_declares(state: TaskState, e
 # --------------------------------------------------------------------------------------------------
 
 
-def test_a_system_only_edge_is_refused_over_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`lease_expired` has permission `None` because no PRINCIPAL fires it — the actor's reminder
-    does. Treating "no permission required" as "no permission checked" exposed it unauthenticated,
-    letting anyone strip another annotator's claim. It is refused outright."""
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow=True, seen=seen))
+def test_a_system_only_edge_is_refused_over_http(door: Callable[..., _Door]) -> None:
+    """`lease_expired` has permission `None` because no PRINCIPAL fires it — a lease running out does.
+    Treating "no permission required" as "no permission checked" would let anyone strip another annotator's claim."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee="dave"))
 
-    r = client.post("/tasks/t1/events", json={"event": "lease_expired"})
+    r = d.client.post("/tasks/t1/events", json={"event": "lease_expired"})
 
     assert r.status_code == 403
-    assert actor.fired == [], "a system-only edge reached the actor over HTTP"
+    assert (d.task().state, d.task().assignee) == (TaskState.CLAIMED, "dave"), "a system-only edge moved the task over HTTP"
 
 
 def test_every_permissionless_edge_is_in_the_refused_set() -> None:
@@ -189,56 +178,53 @@ def test_every_permissionless_edge_is_in_the_refused_set() -> None:
 # --------------------------------------------------------------------------------------------------
 
 
-def test_an_annotator_cannot_waive_review_from_the_request_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The defect this replaces: `review_required` was a `FireRequest` field, so a submitter could
-    pass `false` and land straight in `accepted` — self-approving past the one guarantee the whole
-    plane exists to provide. It is captured on the task at send time and ignored here."""
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_an_annotator_cannot_waive_review_from_the_request_body(door: Callable[..., _Door]) -> None:
+    """`review_required` is captured on the task at send time, so a submitter passing `false` still lands in review
+    rather than self-approving past the one guarantee the whole plane exists to provide."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT, review_required=True))
 
-    r = client.post("/tasks/t1/events", json={"event": "submit", "review_required": False})
+    r = d.client.post("/tasks/t1/events", json={"event": "submit", "review_required": False})
 
     assert r.status_code == 200, r.text
-    assert "review_required" not in actor.fired[0], "the request body reached the actor's submit decision"
+    assert d.task().state is TaskState.IN_REVIEW, "the request body waived the review the task captured"
 
 
-def test_a_viewer_without_the_edges_relation_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task())
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow={"can_view"}))
-    r = client.post("/tasks/t1/events", json={"event": "claim"})
+def test_a_viewer_without_the_edges_relation_is_403(door: Callable[..., _Door]) -> None:
+    d = door(allow={"can_view"})
+    d.seed(_task())
+
+    r = d.client.post("/tasks/t1/events", json={"event": "claim"})
+
     assert r.status_code == 403
-    assert actor.fired == [], "the actor was invoked despite the check failing"
+    assert d.task().state is TaskState.UNASSIGNED, "the task moved despite the check failing"
 
 
-def test_an_edge_absent_from_the_table_is_409_to_a_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task(state=TaskState.UNASSIGNED))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow={"can_view"}))
+def test_an_edge_absent_from_the_table_is_409_to_a_viewer(door: Callable[..., _Door]) -> None:
+    d = door(allow={"can_view"})
+    d.seed(_task(state=TaskState.UNASSIGNED))
 
-    assert client.post("/tasks/t1/events", json={"event": "accept"}).status_code == 409
+    assert d.client.post("/tasks/t1/events", json={"event": "accept"}).status_code == 409
 
 
-def test_a_stranger_learns_nothing_of_a_task_whether_it_exists_or_which_state_it_is_in(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_stranger_learns_nothing_of_a_task_whether_it_exists_or_which_state_it_is_in(door: Callable[..., _Door]) -> None:
     """Task ids are guessable (`{group}-r{k}`): to someone who may not view a task, an absent one and a real one in any
     state answer the same bytes, on the read and on an event alike, and no relation or state is named."""
-    tasks = {
-        "t1": _FakeActor(_task(state=TaskState.UNASSIGNED)),
-        "t2": _FakeActor(_task(task_id="t2", state=TaskState.CLAIMED, assignee="dave")),
-        "t3": _FakeActor(_task(task_id="t3", state=TaskState.IN_REVIEW, submitted_by="dave")),
-        "nope": _FakeActor(None),
-    }
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda t: tasks[t])
-    client = TestClient(_app(allow=False))
+    d = door(allow=False)
+    d.seed(
+        _task(state=TaskState.UNASSIGNED),
+        _task(task_id="t2", state=TaskState.CLAIMED, assignee="dave"),
+        _task(task_id="t3", state=TaskState.IN_REVIEW, submitted_by="dave"),
+    )
+    ids = ["t1", "t2", "t3", "nope"]
 
-    reads = {client.get(f"/tasks/{t}").content.replace(t.encode(), b"<id>") for t in tasks}
-    claims = {client.post(f"/tasks/{t}/events", json={"event": "claim"}).content.replace(t.encode(), b"<id>") for t in tasks}
-    statuses = {client.get(f"/tasks/{t}").status_code for t in tasks} | {client.post(f"/tasks/{t}/events", json={"event": "claim"}).status_code for t in tasks}
+    reads = {d.client.get(f"/tasks/{t}").content.replace(t.encode(), b"<id>") for t in ids}
+    claims = {d.client.post(f"/tasks/{t}/events", json={"event": "claim"}).content.replace(t.encode(), b"<id>") for t in ids}
+    statuses = {d.client.get(f"/tasks/{t}").status_code for t in ids} | {d.client.post(f"/tasks/{t}/events", json={"event": "claim"}).status_code for t in ids}
 
     assert len(reads | claims) == 1 and statuses == {404}
     assert json.loads(next(iter(reads)))["detail"] == "No task <id> that you can see"
-    assert all(actor.fired == [] for actor in tasks.values())
+    assert [d.task(t).state for t in ("t1", "t2", "t3")] == [TaskState.UNASSIGNED, TaskState.CLAIMED, TaskState.IN_REVIEW]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -247,24 +233,26 @@ def test_a_stranger_learns_nothing_of_a_task_whether_it_exists_or_which_state_it
 
 
 @pytest.mark.parametrize("event", ["accept", "fix_and_accept", "request_changes"])
-def test_a_reviewer_may_not_review_their_own_submission(event: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_reviewer_may_not_review_their_own_submission(event: str, door: Callable[..., _Door]) -> None:
     """§5.2. `can_review` is not enough — the submitter is excluded even when they hold it."""
-    actor = _FakeActor(_task(state=TaskState.IN_REVIEW, submitted_by=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.IN_REVIEW, submitted_by=SUBJECT))
 
-    r = client.post("/tasks/t1/events", json={"event": event})
+    r = d.client.post("/tasks/t1/events", json={"event": event})
 
     assert r.status_code == 403
     assert "own submission" in r.text
-    assert actor.fired == []
+    assert d.task().state is TaskState.IN_REVIEW
 
 
-def test_someone_elses_submission_can_be_reviewed(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
-    assert client.post("/tasks/t1/events", json={"event": "accept"}).status_code == 200
+def test_someone_elses_submission_can_be_reviewed(door: Callable[..., _Door]) -> None:
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
+
+    r = d.client.post("/tasks/t1/events", json={"event": "accept"})
+
+    assert r.status_code == 200, r.text
+    assert (d.task().state, d.task().reviewed_by) == (TaskState.ACCEPTED, SUBJECT)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -272,55 +260,54 @@ def test_someone_elses_submission_can_be_reviewed(monkeypatch: pytest.MonkeyPatc
 # --------------------------------------------------------------------------------------------------
 
 
-def test_the_draft_save_records_the_verified_subject_as_author(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Provenance: who annotated is the VERIFIED subject, never a field the client supplied."""
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_the_draft_save_records_the_verified_subject_as_author(door: Callable[..., _Door]) -> None:
+    """Provenance: who annotated is the VERIFIED subject, never a field the client supplied; the project is the task's."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
 
-    r = client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
+    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}], "author": "mallory", "project_id": "elsewhere"})
 
     assert r.status_code == 200, r.text
-    assert actor.drafts[0]["author"] == SUBJECT
-    assert actor.drafts[0]["project_id"] == PROJECT_ID, "the project id must come from the task, not the body"
+    stored = d.draft()
+    assert stored is not None
+    assert (stored.author, stored.project_id) == (SUBJECT, PROJECT_ID)
 
 
 @pytest.mark.parametrize("state", [TaskState.ACCEPTED])
-def test_a_draft_is_only_writable_while_the_task_is_claimed_or_in_review(state: TaskState, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_draft_is_only_writable_while_the_task_is_claimed_or_in_review(state: TaskState, door: Callable[..., _Door]) -> None:
     """An ACCEPTED task's shapes are never rewritten after review, and never during a publish: the shapes take edits
     only while the task is claimed or in review (`EDIT_PERMISSION`)."""
-    actor = _FakeActor(_task(state=state, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+    d = door(allow=True)
+    d.seed(_task(state=state, assignee=SUBJECT))
 
-    r = client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
+    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
 
     assert r.status_code == 409, r.text
-    assert actor.drafts == [], f"a draft was written to a {state} task"
+    assert d.draft() is None, f"a draft was written to a {state} task"
 
 
-def test_a_reviewer_saves_a_fix_into_work_in_review_and_the_actor_is_told_it_was_verified(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`fix_and_accept` records a fix: a reviewer who did not submit the work saves it into the draft under `can_review`,
-    and the actor is handed that verification (`reviewing`) to re-assert in its own turn."""
-    actor = _FakeActor(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow={"can_view", "can_review"}, seen=seen))
+def test_a_reviewer_saves_a_fix_into_work_in_review(door: Callable[..., _Door]) -> None:
+    """`fix_and_accept` records a fix: a reviewer who did not submit the work saves it into the draft under
+    `can_review`, which the store takes only as a verified reviewer's write."""
+    d = door(allow={"can_view", "can_review"})
+    d.seed(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
 
-    r = client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
+    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
 
     assert r.status_code == 200, r.text
-    assert actor.drafts[0]["reviewing"] is True
-    assert {"user": SUBJECT, "relation": "can_review", "obj": "task:t1"} in seen
+    stored = d.draft()
+    assert stored is not None and (stored.author, [s.shape_type for s in stored.shapes]) == (SUBJECT, ["bbox"])
+    assert {"user": SUBJECT, "relation": "can_review", "obj": "task:t1"} in d.seen
 
 
-def test_a_draft_save_by_a_non_holder_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
-    r = client.put("/tasks/t1/draft", json={"shapes": []})
+def test_a_draft_save_by_a_non_holder_is_403(door: Callable[..., _Door]) -> None:
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee="dave"))
+
+    r = d.client.put("/tasks/t1/draft", json={"shapes": []})
+
     assert r.status_code == 403
-    assert actor.drafts == []
+    assert d.draft() is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -329,33 +316,31 @@ def test_a_draft_save_by_a_non_holder_is_403(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.parametrize("frozen", [ProjectState.PUBLISHING, ProjectState.PUBLISHED, ProjectState.ARCHIVED])
-def test_no_task_transition_survives_a_published_project(frozen: ProjectState, _live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_task_transition_survives_a_published_project(frozen: ProjectState, door: Callable[..., _Door]) -> None:
     """Provenance is frozen with the artifact. A task that moved after the publish would describe a
-    dataset that no longer matches it — and during `publishing` it could change the very rows the
-    saga is mid-way through reading. The rule was documented and enforced nowhere."""
-    _live_project.state = frozen
-    actor = _FakeActor(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+    dataset that does not match it — and during `publishing` it could change the very rows the
+    saga is reading."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
+    d.freeze_project_as(frozen)
 
-    r = client.post("/tasks/t1/events", json={"event": "accept"})
+    r = d.client.post("/tasks/t1/events", json={"event": "accept"})
 
     assert r.status_code == 409, r.text
     assert "frozen with the published artifact" in r.text
-    assert actor.fired == []
+    assert d.task().state is TaskState.IN_REVIEW
 
 
-def test_a_draft_cannot_be_saved_into_a_publishing_project(_live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_draft_cannot_be_saved_into_a_publishing_project(door: Callable[..., _Door]) -> None:
     """The sharpest case: the saga is reading drafts right now to build the plan."""
-    _live_project.state = ProjectState.PUBLISHING
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
+    d.freeze_project_as(ProjectState.PUBLISHING)
 
-    r = client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
+    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
 
     assert r.status_code == 409
-    assert actor.drafts == []
+    assert d.draft() is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -364,54 +349,40 @@ def test_a_draft_cannot_be_saved_into_a_publishing_project(_live_project: Any, m
 
 
 @pytest.mark.parametrize("event", ["submit", "skip"])
-def test_skip_and_submit_are_lease_holder_only(event: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`skip` was missing from this check, so any annotator could discard work someone else was
-    holding — and with `requeue_for_others`, consume their turn at it."""
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_skip_and_submit_are_lease_holder_only(event: str, door: Callable[..., _Door]) -> None:
+    """A passer-by skipping would discard work someone else is holding."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee="dave"))
 
-    r = client.post("/tasks/t1/events", json={"event": event})
+    r = d.client.post("/tasks/t1/events", json={"event": event})
 
     assert r.status_code == 403
     assert "held by dave" in r.text
-    assert actor.fired == []
+    assert (d.task().state, d.task().assignee) == (TaskState.CLAIMED, "dave")
 
 
-def test_release_is_refused_to_a_non_holder_without_can_manage(monkeypatch: pytest.MonkeyPatch) -> None:
-    """§5.2: `release` is "lease holder OR can_manage". Gating it on plain `can_annotate` let any
-    annotator break another's claim."""
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    seen: list[dict[str, Any]] = []
+def test_release_is_refused_to_a_non_holder_without_can_manage(door: Callable[..., _Door]) -> None:
+    """§5.2: `release` is "lease holder OR can_manage"; plain `can_annotate` breaks no other annotator's claim."""
+    d = door(allow={"can_view", "can_annotate"})
+    d.seed(_task(state=TaskState.CLAIMED, assignee="dave"))
 
-    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
-        seen.append({"relation": relation})
-        return relation in {"can_view", "can_annotate"}  # holds the rung, but is not a manager
-
-    app = FastAPI()
-    register_handlers(app)
-    app.include_router(tasks_ep.router)
-    app.dependency_overrides[get_checker] = lambda: checker
-    app.dependency_overrides[get_authorizer] = lambda: None
-    app.dependency_overrides[current_subject] = lambda: SUBJECT
-    r = TestClient(app).post("/tasks/t1/events", json={"event": "release"})
+    r = d.client.post("/tasks/t1/events", json={"event": "release"})
 
     assert r.status_code == 403
     assert "needs can_manage" in r.text
-    assert {"relation": "can_manage"} in seen, "the manager escape hatch was never consulted"
+    assert any(c["relation"] == "can_manage" for c in d.seen), "the manager escape hatch was never consulted"
+    assert d.task().assignee == "dave"
 
 
-def test_a_manager_may_release_a_task_held_by_someone_else(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_manager_may_release_a_task_held_by_someone_else(door: Callable[..., _Door]) -> None:
     """The documented escape hatch for a task pinned to someone unavailable."""
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee="dave"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))  # holds everything, including can_manage
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee="dave"))
 
-    r = client.post("/tasks/t1/events", json={"event": "release"})
+    r = d.client.post("/tasks/t1/events", json={"event": "release"})
 
     assert r.status_code == 200, r.text
-    assert actor.fired[0]["event"] == "release"
+    assert (d.task().state, d.task().assignee) == (TaskState.UNASSIGNED, None)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -419,19 +390,16 @@ def test_a_manager_may_release_a_task_held_by_someone_else(monkeypatch: pytest.M
 # --------------------------------------------------------------------------------------------------
 
 
-def test_a_manager_assigns_to_a_NAMED_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The bug this replaces made `assign` set the assignee to the manager who fired it, so a manager
-    could only ever assign to themselves — silently turning the one manager-driven distribution
-    mechanism in the whole plane into a self-claim."""
-    actor = _FakeActor(_task(state=TaskState.UNASSIGNED))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_a_manager_assigns_to_a_named_user(door: Callable[..., _Door]) -> None:
+    """`assign` is the manager-driven distribution mechanism: the recipient holds the task, the manager is the actor."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.UNASSIGNED))
 
-    r = client.post("/tasks/t1/events", json={"event": "assign", "assignee": "dave"})
+    r = d.client.post("/tasks/t1/events", json={"event": "assign", "assignee": "dave"})
 
     assert r.status_code == 200, r.text
-    assert actor.fired[0]["assignee"] == "dave"
-    assert actor.fired[0]["actor"] == SUBJECT, "the manager is still recorded as the actor"
+    task = d.task()
+    assert (task.assignee, task.transitions[-1].by) == ("dave", SUBJECT)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -439,59 +407,40 @@ def test_a_manager_assigns_to_a_NAMED_user(monkeypatch: pytest.MonkeyPatch) -> N
 # --------------------------------------------------------------------------------------------------
 
 
-def test_claiming_a_second_replica_of_the_same_group_is_409(monkeypatch: pytest.MonkeyPatch, _live_project: _FakeProjectActor) -> None:
+def test_claiming_a_second_replica_of_the_same_group_is_409(door: Callable[..., _Door]) -> None:
     """Independence is the point of consensus: the same person labeling two replicas of one item is
-    one opinion counted twice. Enforced server-side at claim — sibling ids are deterministic
-    (`{gid}-r{k}`), so the guard reads the siblings' own actors and refuses with the rule NAMED."""
-    _live_project.consensus_n = 2
-    docs = {
-        "g1-r1": _task(task_id="g1-r1", state=TaskState.CLAIMED, assignee=SUBJECT, replica_of="g1"),
-        "g1-r2": _task(task_id="g1-r2", replica_of="g1"),
-    }
+    one opinion counted twice. Refused with the rule and the replica already held NAMED."""
+    d = door(allow=True)
+    d.seed(
+        _task(task_id="g1-r1", state=TaskState.CLAIMED, assignee=SUBJECT, replica_of="g1"),
+        _task(task_id="g1-r2", replica_of="g1"),
+        consensus_n=2,
+    )
 
-    class _PerTask(_FakeActor):
-        def __init__(self, task_id: str) -> None:
-            super().__init__(docs.get(task_id))
-
-        async def fire(self, payload: dict[str, Any]) -> dict[str, Any]:
-            raise AssertionError("the guard must refuse BEFORE the actor fires")
-
-    monkeypatch.setattr(tasks_ep, "_proxy", _PerTask)
-
-    client = TestClient(_app(allow=True))
-    r = client.post("/tasks/g1-r2/events", json={"event": "claim"})
+    r = d.client.post("/tasks/g1-r2/events", json={"event": "claim"})
 
     assert r.status_code == 409, r.text
     assert "one replica per annotator" in r.json()["detail"]
     assert "g1-r1" in r.json()["detail"], "the refusal must name the replica already held"
+    assert d.task("g1-r2").state is TaskState.UNASSIGNED
 
 
-def test_assigning_a_second_replica_to_the_same_recipient_is_409(monkeypatch: pytest.MonkeyPatch, _live_project: _FakeProjectActor) -> None:
-    """The assign edge is guarded on the RECIPIENT (payload.assignee), not the manager firing it —
-    a manager distributing two replicas of one item to the same annotator defeats independence
-    exactly like a double claim. The sibling here was already WORKED (submitted_by) with the lease
-    long released, which is precisely the state a naive assignee-only check would miss."""
-    _live_project.consensus_n = 2
-    docs = {
-        "g1-r1": _task(task_id="g1-r1", state=TaskState.IN_REVIEW, submitted_by="dave", replica_of="g1"),
-        "g1-r2": _task(task_id="g1-r2", replica_of="g1"),
-    }
+def test_assigning_a_second_replica_to_the_same_recipient_is_409(door: Callable[..., _Door]) -> None:
+    """The assign edge is guarded on the RECIPIENT, and a sibling already WORKED (submitted, lease long released)
+    counts as much as one held."""
+    d = door(allow=True)
+    d.seed(
+        _task(task_id="g1-r1", state=TaskState.IN_REVIEW, submitted_by="dave", replica_of="g1"),
+        _task(task_id="g1-r2", replica_of="g1"),
+        consensus_n=2,
+    )
 
-    class _PerTask(_FakeActor):
-        def __init__(self, task_id: str) -> None:
-            super().__init__(docs.get(task_id))
-
-        async def fire(self, payload: dict[str, Any]) -> dict[str, Any]:
-            raise AssertionError("the guard must refuse BEFORE the actor fires")
-
-    monkeypatch.setattr(tasks_ep, "_proxy", _PerTask)
-
-    client = TestClient(_app(allow=True))
-    r = client.post("/tasks/g1-r2/events", json={"event": "assign", "assignee": "dave"})
+    r = d.client.post("/tasks/g1-r2/events", json={"event": "assign", "assignee": "dave"})
 
     assert r.status_code == 409, r.text
     assert "one replica per annotator" in r.json()["detail"]
     assert "g1-r1" in r.json()["detail"], "the refusal must name the replica already worked"
+    assert d.task("g1-r2").assignee is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -502,8 +451,6 @@ def test_assigning_a_second_replica_to_the_same_recipient_is_409(monkeypatch: py
 def _ipc(rows: list[dict[str, Any]]) -> bytes:
     import io
 
-    import pyarrow as pa
-
     table = pa.Table.from_pylist(rows)
     sink = io.BytesIO()
     with pa.ipc.new_stream(sink, table.schema) as writer:
@@ -511,89 +458,67 @@ def _ipc(rows: list[dict[str, Any]]) -> bytes:
     return sink.getvalue()
 
 
-def test_an_import_APPENDS_to_the_draft_rather_than_replacing_it(_live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The design decision, pinned.
+def test_an_import_appends_to_the_draft_rather_than_replacing_it(door: Callable[..., _Door]) -> None:
+    """An import onto a task somebody had already worked must not destroy that work: appending is never destructive,
+    and a duplicate is removable on the canvas."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
+    d.save_draft([Shape(shape_id="drawn-1", shape_type="bbox")])
 
-    A whole-draft replace matches how `save_draft` STORES — one keyed write — and was rejected: an
-    import onto a task somebody had already worked would silently destroy that work, and there is no
-    undo anywhere in the actor. Appending is never destructive; a duplicate is removable on the
-    canvas, which is a recoverable annoyance instead of an unrecoverable loss.
-    """
-    actor = _FakeActor(
-        _task(state=TaskState.CLAIMED, assignee=SUBJECT),
-        draft={"revision": 4, "shapes": [{"shape_id": "drawn-1", "shape_type": "bbox"}], "links": []},
-    )
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
-
-    r = client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox", "label": "figure"}]))
+    r = d.client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox", "label": "figure"}]))
 
     assert r.status_code == 200, r.text
-    saved = actor.drafts[0]["shapes"]
-    assert [s["shape_id"] for s in saved] == ["drawn-1", "a1"], "the hand-drawn shape was destroyed by the import"
-    assert r.json()["imported"] == 1
+    stored = d.draft()
+    assert stored is not None and [s.shape_id for s in stored.shapes] == ["drawn-1", "a1"], "the hand-drawn shape was destroyed by the import"
+    assert (r.json()["imported"], stored.revision, stored.origin) == (1, 2, "import")
 
 
-def test_the_TASKS_OWN_ontology_refuses_a_foreign_label(_live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The rules come from the task, never from the request — a caller must not be able to supply the
-    contract it is judged by."""
-    actor = _FakeActor(
-        _task(
-            state=TaskState.CLAIMED,
-            assignee=SUBJECT,
-            ontology={"kind": "detection", "classes": [{"name": "figure"}], "allow_empty": True},
-        ),
-        draft={"revision": 1, "shapes": [], "links": []},
-    )
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_the_tasks_own_ontology_refuses_a_foreign_label(door: Callable[..., _Door]) -> None:
+    """The rules come from the task, never from the request — a caller must not supply the contract it is judged by."""
+    d = door(allow=True)
+    ontology = LabelOntology.model_validate({"kind": "detection", "classes": [{"name": "figure"}], "allow_empty": True})
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT, ontology=ontology))
 
-    r = client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox", "label": "spaceship"}]))
+    r = d.client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox", "label": "spaceship"}]))
 
-    # 400, not 422: every refusal here — malformed Arrow, a foreign label, a dangling relation — means
-    # the same thing to the caller ("fix the file and retry") and each one names its offender in
-    # words. Two status codes for one user action would be precision with no consumer.
+    # 400, not 422: every refusal here means the same thing to the caller ("fix the file and retry") and names its
+    # offender in words.
     assert r.status_code == 400, r.text
     assert "spaceship" in r.text
-    assert actor.drafts == [], "a refused import still wrote to the draft"
+    assert d.draft() is None, "a refused import still wrote to the draft"
 
 
 @pytest.mark.parametrize("state", [TaskState.ACCEPTED])
-def test_annotations_can_only_be_imported_into_a_CLAIMED_task(state: TaskState, _live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Importing is annotating. Without this an accepted task could be rewritten after review — the
-    same hole `save_draft` had, and it would be no less a hole for arriving as Arrow."""
-    actor = _FakeActor(_task(state=state, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_annotations_can_only_be_imported_into_a_claimed_task(state: TaskState, door: Callable[..., _Door]) -> None:
+    """Importing is annotating: an accepted task is never rewritten after review, as Arrow or otherwise."""
+    d = door(allow=True)
+    d.seed(_task(state=state, assignee=SUBJECT))
 
-    r = client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
+    r = d.client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
 
     assert r.status_code == 409, r.text
-    assert actor.drafts == []
+    assert d.draft() is None
 
 
-def test_an_import_by_a_non_holder_is_403(_live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee="omar"))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_an_import_by_a_non_holder_is_403(door: Callable[..., _Door]) -> None:
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee="omar"))
 
-    r = client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
-
-    assert r.status_code == 403, r.text
-    assert actor.drafts == []
-
-
-def test_an_import_requires_can_annotate(_live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    seen: list[dict[str, Any]] = []
-    client = TestClient(_app(allow={"can_view"}, seen=seen))
-
-    r = client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
+    r = d.client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
 
     assert r.status_code == 403, r.text
-    assert seen[1]["relation"] == "can_annotate"
-    assert actor.drafts == []
+    assert d.draft() is None
+
+
+def test_an_import_requires_can_annotate(door: Callable[..., _Door]) -> None:
+    d = door(allow={"can_view"})
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
+
+    r = d.client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox"}]))
+
+    assert r.status_code == 403, r.text
+    assert d.seen[1]["relation"] == "can_annotate"
+    assert d.draft() is None
 
 
 def _rewritten(table: pa.Table, good: bytes, bad: bytes, *, framing: str = "stream") -> bytes:
@@ -687,30 +612,30 @@ TAMPERED_BODIES = [
 
 
 @pytest.mark.parametrize("body", TAMPERED_BODIES)
-def test_a_tampered_arrow_body_is_refused_and_nothing_is_imported(body: bytes, _live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_tampered_arrow_body_is_refused_and_nothing_is_imported(body: bytes, door: Callable[..., _Door]) -> None:
     """Framing that parses says nothing about the buffers or names inside it.
 
     `to_pylist` follows the body's own offsets: one past its values buffer becomes a shape's text
     holding process memory, which the draft stores and the route returns, and one that decreases
     aborts the process. Every such body answers the import's 400, and the draft is never written.
     """
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True), raise_server_exceptions=False)
+    d = door(allow=True, raise_server_exceptions=False)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
 
-    r = client.post("/tasks/t1/import", content=body)
+    r = d.client.post("/tasks/t1/import", content=body)
 
     assert r.status_code == 400, r.text
     assert "not valid Arrow IPC" in r.text, f"refused by something other than the decoder: {r.text}"
-    assert actor.drafts == [], "a refused import still wrote to the draft"
+    assert d.draft() is None, "a refused import still wrote to the draft"
 
 
-def test_every_batch_of_an_import_is_imported(_live_project: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    actor = _FakeActor(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _t: actor)
-    client = TestClient(_app(allow=True))
+def test_every_batch_of_an_import_is_imported(door: Callable[..., _Door]) -> None:
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
 
-    r = client.post("/tasks/t1/import", content=_stream(_TWO_BATCHES))
+    r = d.client.post("/tasks/t1/import", content=_stream(_TWO_BATCHES))
 
     assert r.status_code == 200, r.text
-    assert [(s["shape_id"], s["text"]) for s in actor.drafts[0]["shapes"]] == [("a1", "hello"), ("a2", "world"), ("a3", "abc"), ("a4", "defghij")]
+    stored = d.draft()
+    assert stored is not None
+    assert [(s.shape_id, s.text) for s in stored.shapes] == [("a1", "hello"), ("a2", "world"), ("a3", "abc"), ("a4", "defghij")]

@@ -18,6 +18,7 @@ import pytest
 
 from tests.identity import Provider
 from tests.openfga import OpenFgaServer, OpenFgaStore, openfga_binary
+from tests.postgres import PostgresServer, StateDatabase, postgres_tree
 
 
 os.environ.setdefault("MEDIA_CATALOG_DIR", tempfile.mkdtemp(prefix="workbench-media-catalog-"))
@@ -39,6 +40,20 @@ def openfga(tmp_path_factory: pytest.TempPathFactory) -> Iterator[OpenFgaServer]
 def openfga_store(openfga: OpenFgaServer) -> OpenFgaStore:
     """A store of this test's own holding the workbench model, so no test reads another's tuples."""
     return OpenFgaStore(openfga.url)
+
+
+@pytest.fixture(scope="session")
+def postgres(tmp_path_factory: pytest.TempPathFactory) -> Iterator[PostgresServer]:
+    """One pinned PostgreSQL per worker; every test takes its own database on it (`state_database`)."""
+    server = PostgresServer(postgres_tree(), tmp_path_factory.mktemp("postgres"))
+    yield server
+    server.close()
+
+
+@pytest.fixture
+def state_database(postgres: PostgresServer) -> StateDatabase:
+    """A database of this test's own, so no test reads another's rows."""
+    return StateDatabase(postgres)
 
 
 @pytest.fixture

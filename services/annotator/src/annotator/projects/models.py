@@ -7,11 +7,10 @@ Deliberately store-free and corpus-free. This module imports nothing from the la
 `lancekit`, no registry, no dataset handle — because an annotation project's state (tasks, claims,
 drafts, reviews) is the annotator's own and never enters the governed plane until a publish. The
 import guard in `services/annotator/tests/test_annotation_projects_machine.py` makes that mechanical rather than a
-promise, so slices S1/S3 are buildable before any actor store exists.
+promise; the documents are stored by `annotator.state.store`.
 
 Ids are `uuid4().hex`, not UUID7: the deployed interpreter is CPython 3.13 (`uuid.uuid7` is absent)
-and ordering comes from `created_at` plus the index the project actor maintains, so a ULID dependency
-would buy nothing.
+and ordering comes from `created_at` and the task id, so a ULID dependency would buy nothing.
 """
 
 from __future__ import annotations
@@ -268,7 +267,7 @@ class Task(BaseModel):
     #: stored and never read, and every claim ran on the client's default.
     lease_seconds: int = 1800
     #: Captured from the project at send (like `review_required`/`lease_seconds`): the ontology the
-    #: SUBMIT is validated against, in the actor, for any caller. Capturing it is what makes the
+    #: SUBMIT is validated against, in the store's transition, for any caller. Capturing it is what makes the
     #: closed-set label check possible at all — enforcement happens here, so the taxonomy has to be
     #: HERE. It used to capture the `template` and leave the taxonomy on the project, which is why
     #: `label="asdf"` submitted and published.
@@ -306,9 +305,8 @@ class Task(BaseModel):
     def trim_history(self) -> None:
         """Shed the oldest history past the caps, counting what went.
 
-        Called from the actor's single `_store` seam rather than at each `append`, so a future
-        append site inherits the bound instead of having to remember it — the same reason the
-        project actor's `_store` derives its counts rather than letting callers increment them.
+        Called from the store's single task-write seam rather than at each `append`, so a future
+        append site inherits the bound instead of having to remember it.
         """
         if len(self.transitions) > MAX_TRANSITIONS:
             self.transitions_dropped += len(self.transitions) - MAX_TRANSITIONS

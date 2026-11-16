@@ -39,9 +39,8 @@ def check_base_version_value(current: int, base_version: int | None, *, required
       required: an optional precondition is not a precondition, and while ``None`` was
       accepted any caller could opt out of concurrency control by simply omitting the field.
       Two people on one page, or one person in two tabs, then silently overwrite each other —
-      the exact outcome this check exists to prevent. The project actor answered the identical
-      question the same way for drafts (``projects/actor.py``: "An OPTIONAL precondition is
-      not a precondition").
+      the exact outcome this check exists to prevent. A draft save answers the identical
+      question the same way (``annotator.state.store.AnnotatorStore.save_draft``).
     * The tag batch (``tags.py``) commits ``merge_insert_only`` — matched rows are left AS-IS,
       so an add cannot clobber anything by construction. Its OCC is also table-GLOBAL across a
       cross-unit batch, so requiring it would make any unrelated save anywhere in the table

@@ -1,15 +1,15 @@
 """Publish → the lakehouse: which annotations land, in what shape, and whose names travel with them.
 
 The publish DECISION, implementing `OPEN-WORK.md#design--annotation-projects` §7. Deliberately pure — no
-Dapr, no Lance, no catalog client — so the rules that would be expensive to get wrong in a cluster
-are testable exhaustively here. **The annotator never writes Lance directly** (§7.1); a workflow
+store, no Lance, no catalog client — so the rules that would be expensive to get wrong in a cluster
+are testable exhaustively here. **The annotator never writes Lance directly** (§7.1); the publish saga
 takes this plan and posts it through the catalog, which is what seeds FGA ownership and emits the
 `CREATE` RunEvent.
 
 Three rules carry the weight:
 
 1. **Only an `accepted` task contributes SHAPES.** `skipped` is terminal, so it satisfies the publish
-   precondition and the project actor correctly allows the publish — but a skipped task can still
+   precondition and the `publish` transition correctly allows it — but a skipped task can still
    hold a draft, because the annotator drew shapes and only then decided the item did not belong.
    Terminal-therefore-publishable is the trap.
 2. **A skipped task still contributes ONE SENTINEL ROW** (`shape_type="none"`,
@@ -17,7 +17,7 @@ Three rules carry the weight:
    *decisions* would be incomplete on the record and a consumer could not build an exclusion set.
    "No shapes" and "no row" are different claims, and only one of them is true.
 3. **Attribution comes from the task, never from the payload.** `submitted_by` / `reviewed_by` are
-   written by the actor from the OIDC-verified subject. The draft's `author` records who last SAVED
+   written by the store's transition from the OIDC-verified subject. The draft's `author` records who last SAVED
    — under `fix_and_accept` that is the reviewer — so the two are carried separately rather than
    collapsed into one "who did this", which would credit the wrong person in either direction.
 
@@ -303,7 +303,7 @@ def build_plan(
     """Decide the whole publish in one pass.
 
     `pairs` is every task in the project with its draft (or `None`). A non-terminal task is a
-    programming error at this point — the project actor's precondition already refused the publish —
+    programming error at this point — the `publish` transition's precondition already refused it —
     so it is refused loudly rather than skipped quietly.
     """
     plan = PublishPlan(project_id=project.project_id, publish_id=publish_id)
@@ -415,7 +415,7 @@ def publish_namespace(warehouse: str, leaf: str) -> str:
 
     A name's first segment is its warehouse (`docs/rask/COMMIT-EVENTS.md`), so the target is a namespace inside the
     project's warehouse; one with no warehouse names nothing rask serves. The door authorizes this same string and the
-    actor pins the table id from it, so it is composed here and nowhere else.
+    `publish` transition pins the table id from it, so it is composed here and nowhere else.
 
     Raises:
         ValueError: ``warehouse`` is not an id rask could have issued.

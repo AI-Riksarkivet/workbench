@@ -13,9 +13,9 @@ nothing compared them. One implementation makes the order a decision instead of 
 
 WHAT IS GENUINELY PER-SERVICE stays per-service, and is passed in rather than branched on here:
 which resources this service opened and must therefore close (``closes``), and any extra startup a
-service needs before it announces readiness (``setup``) with its matching teardown. An actor plane is
-the case that hook serves, and it must run BEFORE ``startup_complete`` — a pod that reports ready while
-its actors are unregistered is a pod answering 503 to every route that needs them.
+service needs before it announces readiness (``setup``) with its matching teardown. The annotator's state
+store is the case that hook serves, and it must run BEFORE ``startup_complete`` — a pod that reports ready
+before its store is open is a pod answering 503 to every route that needs it.
 """
 
 from __future__ import annotations

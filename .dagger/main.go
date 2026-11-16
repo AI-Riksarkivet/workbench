@@ -34,6 +34,10 @@ const (
 	// model's own tests. `make openfga` exports the server binary from the same image for a developer box.
 	OpenfgaImage = "openfga/openfga:v1.18.3"
 	FgaCliImage  = "openfga/cli:v0.6.4"
+	// The PostgreSQL the annotator's state runs on in the offline suite (tests/postgres.py) and the local stack: its
+	// server tree, assembled in the image by scripts/postgres-server.sh. `make postgres` exports the same tree for a
+	// developer box. The major matches the CloudNativePG Cluster the annotator's chart renders.
+	PostgresImage = "postgres:17.6-bookworm"
 	// Where the workbench's authorization model lives in the source tree.
 	authModelDir = "packages/service-kit/src/service_kit/governed/auth"
 )
@@ -103,18 +107,33 @@ func (m *Workbench) Lint(
 // Test runs the offline Python suite: every member's tests/, live suites deselected.
 func (m *Workbench) Test(
 	ctx context.Context,
-	// +ignore=["**/.venv", ".git", "**/node_modules", "**/.svelte-kit", "**/__pycache__", "**/.pytest_cache"]
+	// +ignore=["**/.venv", ".git", "**/node_modules", "**/.svelte-kit", "**/__pycache__", "**/.pytest_cache", ".localbin"]
 	// +defaultPath="/"
 	src *dagger.Directory,
 	// +optional
 	// +default="8"
 	workers string,
 ) (string, error) {
+	// PostgreSQL refuses to run as root, so the suite runs as a user of its own, on the synced environment.
 	return m.python(src).
 		WithFile("/usr/local/bin/openfga", dag.Container().From(OpenfgaImage).File("/openfga")).
-		WithExec([]string{"uv", "run", "--frozen", "pytest", "-m", "not e2e", "-n", workers, "-q",
-			"--timeout=300", "--timeout-method=thread"}).
+		WithDirectory("/opt/postgres", m.postgresServer(src.File("scripts/postgres-server.sh"))).
+		WithEnvVariable("WORKBENCH_POSTGRES_DIR", "/opt/postgres").
+		WithExec([]string{"useradd", "--create-home", "tester"}).
+		WithExec([]string{"chown", "-R", "tester", "/src"}).
+		WithUser("tester").
+		WithEnvVariable("PYTHONDONTWRITEBYTECODE", "1").
+		WithExec([]string{"/opt/venv/bin/python", "-m", "pytest", "-m", "not e2e", "-n", workers, "-q",
+			"-p", "no:cacheprovider", "--timeout=300", "--timeout-method=thread"}).
 		Stdout(ctx)
+}
+
+// postgresServer is the relocatable PostgreSQL server tree the pinned image yields (scripts/postgres-server.sh).
+func (m *Workbench) postgresServer(script *dagger.File) *dagger.Directory {
+	return dag.Container().From(PostgresImage).
+		WithFile("/postgres-server.sh", script).
+		WithExec([]string{"sh", "/postgres-server.sh"}).
+		Directory("/out")
 }
 
 // FrontendCheck runs the frontend workspace's check, lint, fmt:check, vitest (every member's, the app's included) and

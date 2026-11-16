@@ -1,153 +1,113 @@
-"""The details fan-out must be paged, and `include` must be a closed set.
+"""The task listing's details are paged, and `include` is a closed set.
 
-open_fastapi-audit — "`GET /projects/{project_id}/tasks?include=details` fans out one Dapr actor
-round trip per task with no page parameter and no project-level task ceiling".
-
-The route takes `project_id`, `checker`, `subject` and `include` — no `limit`, no `cursor`, no
-`offset`. The project actor's `list_tasks` returns the ENTIRE index, and `include=details` then does
-one `_task_proxy(tid).get()` per task id.
-
-THE SEMAPHORE IS NOT THE BOUND, and this is the distinction the finding turns on. `Semaphore(16)`
-bounds CONCURRENCY, not COUNT — this route is the exemplar ANN-03 tells other routes to copy, so that
-finding explicitly does not cover it and its fix is already applied here. Sixteen at a time, ten
-thousand times, is still ten thousand round trips.
-
-NOTHING CAPS THE COLLECTION EITHER. The send door caps one call at 1000 items, but that is PER SEND;
-tasks accumulate one per sent item per consensus replica, forever, for the life of an annotation
-project — and `consensus_n` multiplies each item into several. So the growth is unbounded in exactly
-the way `pagination.md` says a list endpoint over a growing collection must not be.
-
-`include: str | None` is also an open string where a closed set belongs: `?include=detials` silently
-returns the bare index instead of 422, and the caller sees an answer with no `details` key and no
-error to explain it.
-
-WHAT MUST NOT CHANGE: `may_publish` is computed inside the actor from the FULL index, so slicing the
-details fan-out cannot affect it. The test pins that, because a page that quietly changed the publish
-precondition would be a far worse bug than the one being fixed.
+Tasks accumulate one per sent item per consensus replica for the life of a project, so the details listing (each
+task's whole document) is a page of at most 200, keyed on the task id so the tail stays reachable. The plain index and
+the publish precondition are read over EVERY task whatever page the UI reads: a page that changed `may_publish` would
+be a far worse bug than an unpaged listing. Driven over the real state store.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from typing import Any
+
 import pytest
-from fastapi.routing import APIRoute
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from annotator.api.v1.endpoints import project_events as ep
-
-
-def _param(name: str):
-    for route in ep.router.routes:
-        if isinstance(route, APIRoute) and route.path.endswith("/tasks") and "GET" in (route.methods or set()):
-            for field in route.dependant.query_params:
-                if field.name == name:
-                    return field
-            return None
-    pytest.fail("no GET .../tasks route on the project_events router")
+from annotator.api.security import current_subject, get_authorizer, get_checker
+from annotator.api.v1.endpoints.project_events import router
+from annotator.projects.models import AnnotationProject, ProjectState, Task
+from annotator.state.store import AnnotatorStore
 
 
-def test_the_details_fanout_takes_a_page_limit() -> None:
-    field = _param("limit")
-    assert field is not None, (
-        "the tasks route declares no `limit`, so `include=details` does one actor round trip per task "
-        "for a collection that grows one row per sent item per consensus replica, forever"
-    )
-    limits = {type(c).__name__: c for c in field.field_info.metadata}
-    assert "Ge" in limits and limits["Ge"].ge >= 1
-    assert "Le" in limits and limits["Le"].le <= 200
+def _seed(total: int) -> Callable[[AnnotatorStore], Any]:
+    async def seed(store: AnnotatorStore) -> None:
+        await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="vasa", state=ProjectState.LABELING))
+        await store.send_tasks(
+            "p1",
+            [
+                Task.model_validate(
+                    {"task_id": f"t{i:04d}", "project_id": "p1", "source": {"kind": "chunks", "keys": [f"t{i:04d}"]}, "media": {"kind": "image"}}
+                )
+                for i in range(total)
+            ],
+        )
+        # One terminal task, so the precondition is false over the whole project while the first page alone holds none.
+        await store.fire_task(f"t{total - 1:04d}", event="claim", actor="gina")
+        await store.fire_task(f"t{total - 1:04d}", event="skip", actor="gina")
+
+    return seed
 
 
-@pytest.mark.asyncio
-async def test_the_page_bounds_the_ACTOR_ROUND_TRIPS_not_just_the_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Slicing after the gather would still make every call. This is the assertion that catches that.
+@pytest.fixture
+def listing(state_app: Callable[..., FastAPI]) -> Iterator[Callable[[int], TestClient]]:
+    clients: list[TestClient] = []
 
-    A response trimmed to `limit` while the handler still asked every actor would look identical to a
-    correct fix from the outside — same body, same page — and would have fixed nothing at all.
-    """
-    calls: list[str] = []
-    total = 500
+    def build(total: int) -> TestClient:
+        async def allow(**_kw: object) -> bool:
+            return True
 
-    class _ProjectActor:
-        async def list_tasks(self) -> dict[str, object]:
-            # As the actor answers: `counts` and `terminal` ride with the index (the publish
-            # precondition is computed from ONE snapshot), and the route publishes that shape now.
-            index = {f"t{i:04d}": "claimed" for i in range(total)}
-            return {"tasks": index, "counts": {"claimed": total}, "total": total, "terminal": 0, "may_publish": True}
+        app = state_app(router)
+        app.dependency_overrides[get_checker] = lambda: allow
+        app.dependency_overrides[get_authorizer] = lambda: None
+        app.dependency_overrides[current_subject] = lambda: "gina"
+        client = TestClient(app)
+        client.__enter__()
+        clients.append(client)
+        seed = _seed(total)
+        store: AnnotatorStore = app.state.store
 
-        async def get(self) -> dict[str, object]:
-            return {"state": "labeling"}
+        async def run() -> None:
+            await seed(store)
 
-    class _TaskActor:
-        def __init__(self, task_id: str) -> None:
-            self._id = task_id
+        portal = client.portal
+        assert portal is not None, "the client runs no app"
+        portal.call(run)
+        return client
 
-        async def get(self) -> dict[str, object]:
-            calls.append(self._id)
-            # `source`/`media` are required on `Task`, which the details listing publishes.
-            return {
-                "task_id": self._id,
-                "project_id": "p1",
-                "state": "claimed",
-                "source": {"kind": "chunks", "keys": [self._id]},
-                "media": {"kind": "image", "image_url": f"s3://bucket/{self._id}.jpg"},
-            }
-
-    monkeypatch.setattr(ep, "_project_proxy", lambda _p: _ProjectActor())
-    monkeypatch.setattr(ep, "_task_proxy", _TaskActor)
-
-    async def _allow(**_kw: object) -> bool:
-        return True
-
-    # The MEMBER, not the string: a direct call bypasses FastAPI's coercion, so passing a raw
-    # string would test a value the route never actually receives.
-    result = await ep.list_project_tasks(project_id="p1", checker=_allow, subject="gina", include=ep.TaskInclude.DETAILS, limit=100, cursor=None)
-
-    assert len(calls) == 100, f"the handler made {len(calls)} actor round trips for a 100-row page"
-    assert len(result.details) == 100
-    assert result.next_cursor == "t0099"
-
-    # THE PRECONDITION MUST NOT MOVE WITH THE PAGE. `may_publish` is computed by the actor from the
-    # full index; a page that changed it would be a far worse bug than the one being fixed.
-    assert result.may_publish is True
-    assert result.total == total
+    yield build
+    for client in clients:
+        client.__exit__(None, None, None)
 
 
-@pytest.mark.asyncio
-async def test_the_cursor_reaches_the_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("params", "status"),
+    [
+        pytest.param({"include": "details", "limit": 200}, 200, id="the-largest-page"),
+        pytest.param({"include": "details", "limit": 201}, 422, id="past-the-largest-page"),
+        pytest.param({"include": "details", "limit": 0}, 422, id="no-page"),
+        pytest.param({"include": "detials"}, 422, id="a-misspelled-include"),
+    ],
+)
+def test_the_page_and_the_include_are_closed_sets(listing: Callable[[int], TestClient], params: dict[str, Any], status: int) -> None:
+    """A misspelled `include` is a 422 naming the legal values, never a 200 carrying the plain index."""
+    client = listing(3)
+
+    assert client.get("/projects/p1/tasks", params=params).status_code == status
+
+
+def test_a_page_holds_limit_tasks_and_the_precondition_reads_the_whole_project(listing: Callable[[int], TestClient]) -> None:
+    client = listing(250)
+
+    body = client.get("/projects/p1/tasks", params={"include": "details", "limit": 100}).json()
+
+    assert [d["task_id"] for d in body["details"]] == [f"t{i:04d}" for i in range(100)]
+    assert body["next_cursor"] == "t0099"
+    assert (body["total"], body["terminal"], len(body["tasks"]), body["may_publish"]) == (250, 1, 250, False)
+
+
+def test_the_cursor_reaches_the_tail(listing: Callable[[int], TestClient]) -> None:
     """A limit with no working cursor hides the rest of the project behind the first page."""
+    client = listing(5)
+    pages: list[list[str]] = []
+    cursor: str | None = None
+    while True:
+        params: dict[str, Any] = {"include": "details", "limit": 2, **({"cursor": cursor} if cursor else {})}
+        body = client.get("/projects/p1/tasks", params=params).json()
+        pages.append([d["task_id"] for d in body["details"]])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
 
-    class _ProjectActor:
-        async def list_tasks(self) -> dict[str, object]:
-            index = {f"t{i:04d}": "claimed" for i in range(5)}
-            return {"tasks": index, "counts": {"claimed": 5}, "total": 5, "terminal": 0, "may_publish": False}
-
-        async def get(self) -> dict[str, object]:
-            return {"state": "labeling"}
-
-    class _TaskActor:
-        def __init__(self, task_id: str) -> None:
-            self._id = task_id
-
-        async def get(self) -> dict[str, object]:
-            # `source`/`media` are required on `Task`, which the details listing publishes.
-            return {
-                "task_id": self._id,
-                "project_id": "p1",
-                "state": "claimed",
-                "source": {"kind": "chunks", "keys": [self._id]},
-                "media": {"kind": "image", "image_url": f"s3://bucket/{self._id}.jpg"},
-            }
-
-    monkeypatch.setattr(ep, "_project_proxy", lambda _p: _ProjectActor())
-    monkeypatch.setattr(ep, "_task_proxy", _TaskActor)
-
-    async def _allow(**_kw: object) -> bool:
-        return True
-
-    first = await ep.list_project_tasks(project_id="p", checker=_allow, subject="g", include=ep.TaskInclude.DETAILS, limit=2, cursor=None)
-    assert [d.task_id for d in first.details] == ["t0000", "t0001"]
-
-    second = await ep.list_project_tasks(project_id="p", checker=_allow, subject="g", include=ep.TaskInclude.DETAILS, limit=2, cursor=first.next_cursor)
-    assert [d.task_id for d in second.details] == ["t0002", "t0003"]
-
-    last = await ep.list_project_tasks(project_id="p", checker=_allow, subject="g", include=ep.TaskInclude.DETAILS, limit=2, cursor=second.next_cursor)
-    assert [d.task_id for d in last.details] == ["t0004"]
-    assert last.next_cursor is None, "the final page must not advertise another"
+    assert pages == [["t0000", "t0001"], ["t0002", "t0003"], ["t0004"]]

@@ -1,11 +1,11 @@
 """The annotator's WIRE shapes — what each route publishes, declared.
 
 Thirteen handlers were annotated `-> dict[str, Any]` with no `response_model` between them, so
-`/openapi.json` described their answers as "an object" and whatever the actor document happened to
+`/openapi.json` described their answers as "an object" and whatever the stored document happened to
 hold is what shipped (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-07). Two things follow from that, and the second is the
 one that bites: the frontend's valibot schemas became the only statement of these shapes, on the far
 side of the wire and maintained by hand; and a field added to `Task` or `AnnotationProject` for the
-actor's own bookkeeping is published to every client the moment it is stored.
+store's own bookkeeping is published to every client the moment it is stored.
 
 **The envelopes live here; the documents do not.** Where a domain model already describes the
 payload — `Task`, `Draft`, `AnnotationProject` — the route publishes THAT model rather than a
@@ -34,7 +34,7 @@ class LegalEvent(BaseModel):
 
 
 class ProjectListing(BaseModel):
-    """`GET /projects?tenant=` — the tenant's projects, fanned out from its index actor."""
+    """`GET /projects?tenant=` — the tenant's projects, oldest first."""
 
     projects: list[AnnotationProject]
     total: int

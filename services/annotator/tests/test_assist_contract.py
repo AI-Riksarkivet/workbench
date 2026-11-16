@@ -19,7 +19,9 @@ from __future__ import annotations
 import pytest
 
 from annotator.api.v1.endpoints.assist import _CANONICAL_SHAPE, AssistShape, _task_ontology, _within_contract
+from annotator.core.config import AnnotatorSettings
 from annotator.projects.ontology import LabelClass, LabelOntology
+from annotator.state.store import AnnotatorStore
 
 
 def _shape(shape_type: str) -> AssistShape:
@@ -48,33 +50,20 @@ def test_an_ontology_that_CONSTRAINS_NOTHING_filters_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_TRANSPORT_failure_reaching_the_task_still_returns_the_predictions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An UNREACHABLE actor is not an unreadable rule, and only the first one is tolerated here.
+async def test_a_TRANSPORT_failure_reaching_the_task_still_returns_the_predictions(state_settings: AnnotatorSettings) -> None:
+    """An UNREACHABLE store is not an unreadable rule, and only the first one is tolerated here.
 
-    The distinction is the whole point, and this test used to blur it: it was called
-    `test_an_unreadable_task_returns_the_predictions_unfiltered` and its docstring claimed "fail OPEN,
-    deliberately" as the assist plane's policy. ANN-05 ended that — an ontology the current model
-    cannot PARSE now raises 409 out of `enforced_shape_types`, because an unreadable rule is not the
-    absence of a rule and flattening it to "no constraint" silently un-enforced the taxonomy. The
-    name and the docstring survived the change and read as pinning the behaviour that was removed.
-
-    What this actually exercises, and what remains correct, is the TRANSPORT path: the actor is
-    unreachable (`RuntimeError`), so there is no ontology to have an opinion about. This is not a
-    gate — submit still refuses a violating shape, so the contract holds regardless — and losing a
-    real prediction to a momentary actor outage would be invisible to the annotator, who would simply
-    see fewer suggestions.
+    An ontology the current model cannot PARSE raises 409 out of `enforced_shape_types`: an unreadable rule is not the
+    absence of a rule. What this exercises is the TRANSPORT path: the store does not answer (its pool is closed), so
+    there is no ontology to have an opinion about. This is not a gate — submit still refuses a violating shape — and
+    losing a real prediction to a momentary outage would be invisible to the annotator, who would simply see fewer
+    suggestions.
     """
+    store = await AnnotatorStore.open(state_settings)
+    await store.close()
 
-    class _Boom:
-        async def get(self) -> dict:
-            raise RuntimeError("actor unreachable")
-
-    import annotator.api.v1.endpoints.tasks as tasks_mod
-
-    monkeypatch.setattr(tasks_mod, "_proxy", lambda _tid: _Boom())
-
-    ontology = await _task_ontology("t1")
+    ontology = await _task_ontology(store, "p1", "t1")
     kept, dropped = _within_contract([_shape("polygon")], ontology)
 
-    assert len(kept) == 1, "a prediction was lost to a momentary actor outage"
+    assert len(kept) == 1, "a prediction was lost to a momentary store outage"
     assert dropped == []

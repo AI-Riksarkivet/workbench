@@ -13,10 +13,15 @@ be wrong. These tests pin what it reports and — more importantly — what it r
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from annotator.api.v1.endpoints.assist import enforced_shape_types, producer_listing, returns_for
+from annotator.core.config import AnnotatorSettings
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Task
+from annotator.projects.ontology import LabelOntology
+from annotator.state.store import AnnotatorStore
 
 
 def _settings(backends: dict[str, str] | None = None, default: str | None = None) -> SimpleNamespace:
@@ -72,43 +77,58 @@ async def test_a_registered_producer_nobody_knows_reports_UNKNOWN_returns() -> N
 
 
 @pytest.mark.asyncio
-async def test_compatibility_against_a_task_is_answered_BEFORE_anyone_runs_the_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_compatibility_against_a_task_is_answered_BEFORE_anyone_runs_the_model(state_settings: AnnotatorSettings) -> None:
     """The other half of "schemas must align from the ml backend".
 
     A producer emitting polygons for a bbox-only task is answerable from config alone. Discovering
     it by running the model, reviewing the output and being refused at submit is the long way round.
     """
-    _stub_ontology(monkeypatch, {"kind": "object-detection", "classes": [{"name": "region", "tools": ["bbox"]}]})
-
-    rows = _by_name(producer_listing(_settings(), await enforced_shape_types("t1")))
+    store = await _store_with_task(state_settings, {"kind": "object-detection", "classes": [{"name": "region", "tools": ["bbox"]}]})
+    try:
+        rows = _by_name(producer_listing(_settings(), await enforced_shape_types(store, "p1", "t1")))
+    finally:
+        await store.close()
 
     assert rows["grounding-dino"].compatible is True, "a detector is compatible with a bbox task"
     assert rows["sam"].compatible is False, "a segmenter was reported fit for a bbox-only task"
 
 
 @pytest.mark.asyncio
-async def test_a_task_that_CONSTRAINS_NOTHING_makes_no_claim_either(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An ontology with no classes declares no rule. Marking a producer "incompatible" against one
-    would warn about a submission the server would have accepted."""
-    _stub_ontology(monkeypatch, {"kind": "object-detection", "classes": []})
+async def test_a_task_of_another_project_answers_as_an_unknown_task(state_settings: AnnotatorSettings) -> None:
+    """The gate checked the project the request names (`?project=`), so a task is read in that project only: someone who
+    may annotate p2 and names p1's t1 gets the answer an unknown id gets, which carries no part of t1's ontology and does
+    not tell that t1 exists."""
+    store = await _store_with_task(state_settings, {"kind": "object-detection", "classes": [{"name": "region", "tools": ["bbox"]}]})
+    try:
+        await store.create_project(AnnotationProject(project_id="p2", tenant="acme", slug="p2"))
+        foreign = producer_listing(_settings(), await enforced_shape_types(store, "p2", "t1"))
+        unknown = producer_listing(_settings(), await enforced_shape_types(store, "p2", "no-such-task"))
+    finally:
+        await store.close()
 
-    for row in (producer_listing(_settings(), await enforced_shape_types("t1"))).producers:
-        assert row.compatible is None
+    assert foreign == unknown
+    assert all(row.compatible is None for row in foreign.producers)
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_task_makes_no_claim_rather_than_a_wrong_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Boom:
-        async def get(self) -> dict:
-            raise RuntimeError("actor unreachable")
+async def test_a_task_that_CONSTRAINS_NOTHING_makes_no_claim_either(state_settings: AnnotatorSettings) -> None:
+    """An ontology with no classes declares no rule. Marking a producer "incompatible" against one
+    would warn about a submission the server would have accepted."""
+    store = await _store_with_task(state_settings, {"kind": "object-detection", "classes": []})
+    try:
+        listing = producer_listing(_settings(), await enforced_shape_types(store, "p1", "t1"))
+    finally:
+        await store.close()
 
-    import annotator.api.v1.endpoints.tasks as tasks_mod
+    assert all(row.compatible is None for row in listing.producers)
 
-    monkeypatch.setattr(tasks_mod, "_proxy", lambda _tid: _Boom())
 
-    listing = producer_listing(_settings(), await enforced_shape_types("t1"))
+@pytest.mark.asyncio
+async def test_an_unreachable_store_makes_no_claim_rather_than_a_wrong_one(state_settings: AnnotatorSettings) -> None:
+    store = await AnnotatorStore.open(state_settings)
+    await store.close()
+
+    listing = producer_listing(_settings(), await enforced_shape_types(store, "p1", "t1"))
 
     assert all(p.compatible is None for p in listing.producers)
     assert len(listing.producers) >= 2, "a transport failure emptied the settings surface"
@@ -122,11 +142,10 @@ def test_the_returns_table_uses_the_SAME_longest_prefix_rule_as_the_registry() -
     assert returns_for("something-else") == ()
 
 
-def _stub_ontology(monkeypatch: pytest.MonkeyPatch, ontology: dict) -> None:
-    class _Task:
-        async def get(self) -> dict:
-            return {"ontology": ontology}
-
-    import annotator.api.v1.endpoints.tasks as tasks_mod
-
-    monkeypatch.setattr(tasks_mod, "_proxy", lambda _tid: _Task())
+async def _store_with_task(settings: AnnotatorSettings, ontology: dict[str, Any]) -> AnnotatorStore:
+    """A store holding task t1, whose captured ontology is ``ontology``; the caller closes it."""
+    store = await AnnotatorStore.open(settings)
+    await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="p1"))
+    task = Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks"), media=MediaRef(kind="image"), ontology=LabelOntology.model_validate(ontology))
+    await store.send_tasks("p1", [task])
+    return store

@@ -1,50 +1,47 @@
-"""ANN-07 — half the routes returned `dict[str, Any]`, so raw actor documents reached clients.
+"""ANN-07 — the task and project routes publish their declared models, never a stored document as it lies.
 
-Thirteen of this service's handlers were annotated `-> dict[str, Any]` and none declared a
-`response_model`. Two consequences, and the second is the one that bites:
-
-* `/openapi.json` described those responses as "an object", so the generated schema said nothing —
-  the frontend's valibot schemas are the ONLY statement of these shapes, on the far side of the
-  wire, maintained by hand.
-* whatever the actor document happens to hold is what ships. A field added to `Task` for the
-  actor's own bookkeeping is published to every client the moment it is stored, and a document that
-  has drifted from the model is forwarded unexamined rather than refused.
-
-The response models are the fix, and they are the DOMAIN models where a domain model already
-describes the payload — `Task`, `Draft`, `AnnotationProject` — so the declaration cannot drift from
-what the actor stores. The tests below pin both halves: the schema is declared, and it publishes
-exactly what it published before.
+With no response model, `/openapi.json` describes a response as "an object", and whatever the stored document holds is
+what ships: a field added to a document for the store's own bookkeeping, or one that drifted, reaches every client.
+The response models are the DOMAIN models where one describes the payload — `Task`, `Draft`, `AnnotationProject` — so
+the declaration cannot drift from what the store holds. Driven over a real state store (`state_app`).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, cast
 
+import psycopg
 import pytest
+from anyio.from_thread import BlockingPortal
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from annotator.api.security import current_subject, get_checker
 from annotator.api.v1.endpoints import project_events as events_ep
 from annotator.api.v1.endpoints import tasks as tasks_ep
-from annotator.projects.models import AnnotationProject, Draft, ProjectState, Shape, Task, TaskState, Transition
-from service_kit.exceptions import register_handlers
+from annotator.projects.models import AnnotationProject, ProjectState, Shape, Task, TaskState, Transition
+from tests.postgres import StateDatabase
 
 
+#: Far enough ahead that the claim is held whenever the test runs: a lapsed claim reads as released.
+LEASE = datetime(2100, 1, 1, tzinfo=UTC)
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 
 
-def _full_task() -> dict[str, Any]:
+def _full_task() -> Task:
     """A task with EVERY optional field populated — an empty document proves nothing about filtering."""
     return Task(
-        task_id="t1",
+        task_id="g1-r1",
         project_id="p1",
         state=TaskState.CLAIMED,
         assignee="dana",
-        lease_expires_at=NOW,
+        lease_expires_at=LEASE,
         source=cast(Any, {"kind": "chunks", "keys": ["t1"]}),
-        media=cast(Any, {"kind": "image", "image_url": "s3://b/t1.jpg"}),
+        media=cast(Any, {"kind": "image"}),
         submitted_by="dana",
         submitted_at=NOW,
         reviewed_by="rae",
@@ -55,131 +52,66 @@ def _full_task() -> dict[str, Any]:
         lead_time_seconds=12.5,
         prediction=[Shape(shape_id="s1", shape_type=cast(Any, "bbox"), label="letter", source="model")],
         transitions=[Transition(at=NOW, by="dana", event="claim", from_state=TaskState.UNASSIGNED, to_state=TaskState.CLAIMED)],
-    ).model_dump(mode="json")
+    )
 
 
-def _full_draft() -> dict[str, Any]:
-    return Draft(
-        task_id="t1",
-        project_id="p1",
-        author="dana",
-        shapes=[Shape(shape_id="s1", shape_type=cast(Any, "bbox"), label="letter", source="human")],
-        revision=4,
-        updated_at=NOW,
-        origin="human",
-    ).model_dump(mode="json")
-
-
-def _full_project() -> dict[str, Any]:
-    return AnnotationProject(
-        project_id="p1",
-        tenant="acme",
-        slug="charters",
-        title="Charters",
-        description="why",
-        instructions="how",
-        state=ProjectState.FROZEN,
-        created_at=NOW,
-        created_by="gina",
-        updated_at=NOW,
-        publish_error="the catalog said no",
-        pending_publish_id="0123456789abcdef",
-        pending_publish_at=NOW,
-        pending_target_namespace="acme$published",
-        pending_publish_by="gina",
-        publish_progress="collecting",
-    ).model_dump(mode="json")
-
-
-class _TaskActor:
-    def __init__(self, task: dict[str, Any], draft: dict[str, Any] | None) -> None:
-        self.task, self.draft = task, draft
-
-    async def get(self) -> dict[str, Any]:
-        return dict(self.task)
-
-    async def get_draft(self) -> dict[str, Any] | None:
-        return None if self.draft is None else dict(self.draft)
-
-
-class _ProjectActor:
-    def __init__(self, doc: dict[str, Any]) -> None:
-        self.doc = doc
-
-    async def get(self) -> dict[str, Any]:
-        return dict(self.doc)
-
-
-def _client(monkeypatch: pytest.MonkeyPatch, router: Any, draft: dict[str, Any] | None = None) -> TestClient:
-    task, project = _full_task(), _full_project()
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _tid: _TaskActor(task, draft))
-    monkeypatch.setattr(events_ep, "_project_proxy", lambda _pid: _ProjectActor(project))
+@pytest.fixture
+def client(state_app: Callable[..., FastAPI]) -> Iterator[TestClient]:
+    """The task and project routers over a store holding project p1 and its full task g1-r1, as dana."""
 
     async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
         return True
 
-    api = FastAPI()
-    api.include_router(router)
-    register_handlers(api)
-    api.dependency_overrides[get_checker] = lambda: checker
-    api.dependency_overrides[current_subject] = lambda: "gina"
-    api.dependency_overrides[tasks_ep.require_actor_plane] = lambda: None
-    return TestClient(api)
+    app = state_app(tasks_ep.router, events_ep.router)
+    app.dependency_overrides[get_checker] = lambda: checker
+    app.dependency_overrides[current_subject] = lambda: "dana"
+    with TestClient(app) as c:
+        store = app.state.store
+        _portal(c).call(store.create_project, AnnotationProject(project_id="p1", tenant="acme", slug="charters", state=ProjectState.LABELING))
+        _portal(c).call(store.send_tasks, "p1", [_full_task()])
+        yield c
 
 
-@pytest.mark.parametrize("written", [True, False], ids=["a-draft", "no-draft-yet"])
-def test_a_draft_read_publishes_the_draft_model_or_null_before_the_first(written: bool, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _client(monkeypatch, tasks_ep.router, _full_draft() if written else None)
-
-    body = client.get("/tasks/t1/draft")
-
-    assert body.status_code == 200, body.text
-    assert body.json() == (_full_draft() if written else None)
+def _portal(client: TestClient) -> BlockingPortal:
+    """The running app's loop, through which the store is reached."""
+    assert client.portal is not None, "the client is not running the app"
+    return client.portal
 
 
-def test_an_actor_document_that_has_drifted_does_not_reach_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The finding itself: whatever the document holds is what shipped."""
-    drifted = _full_task() | {"internal_scratch": {"sidecar": "bookkeeping"}, "operator_note": "do not ship"}
-    monkeypatch.setattr(tasks_ep, "_proxy", lambda _tid: _TaskActor(drifted, _full_draft()))
+def test_a_draft_read_publishes_the_draft_model_or_null_before_the_first(client: TestClient) -> None:
+    before = client.get("/tasks/g1-r1/draft")
+    app: Any = client.app
+    shape = Shape(shape_id="s1", shape_type=cast(Any, "bbox"), label="letter", source="human")
+    saved = _portal(client).call(partial(app.state.store.save_draft, "g1-r1", author="dana", shapes=[shape], links=[], base_revision=None))
 
-    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
-        return True
+    after = client.get("/tasks/g1-r1/draft")
 
-    api = FastAPI()
-    api.include_router(tasks_ep.router)
-    register_handlers(api)
-    api.dependency_overrides[get_checker] = lambda: checker
-    api.dependency_overrides[current_subject] = lambda: "gina"
-    api.dependency_overrides[tasks_ep.require_actor_plane] = lambda: None
-
-    body = TestClient(api).get("/tasks/t1").json()
-
-    assert "internal_scratch" not in body
-    assert "operator_note" not in body
-    assert body == _full_task()
+    assert (before.status_code, before.json()) == (200, None)
+    assert (after.status_code, after.json()) == (200, saved.model_dump(mode="json"))
 
 
-def test_the_plain_task_listing_still_omits_the_details_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`details`/`missing` are `v.optional(...)` on the far side of the wire — valibot's optional
-    accepts UNDEFINED, not null. Publishing them as `null` on the plain listing (which a declared
-    response model does by default) would fail the zone's boundary parse for every queue read."""
-    listing = {"tasks": {"t1": "claimed"}, "counts": {"claimed": 1}, "total": 1, "terminal": 0, "may_publish": False}
+def test_a_stored_document_that_has_drifted_does_not_reach_the_client(client: TestClient, state_database: StateDatabase) -> None:
+    """The finding itself: whatever the document holds is what shipped. The drift is written past the store, into the
+    row, as a replica on other code would leave it."""
+    drift = {"internal_scratch": {"bookkeeping": True}, "operator_note": "do not ship"}
+    with psycopg.connect(host=state_database.host, port=state_database.port, user=state_database.user, dbname=state_database.database) as conn:
+        conn.execute("UPDATE tasks SET document = document || %s WHERE task_id = 'g1-r1'", (Jsonb(drift),))
 
-    class _Project:
-        async def list_tasks(self) -> dict[str, Any]:
-            return dict(listing)
+    body = client.get("/tasks/g1-r1").json()
 
-    monkeypatch.setattr(events_ep, "_project_proxy", lambda _pid: _Project())
+    assert body == _full_task().model_dump(mode="json")
 
-    async def checker(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
-        return True
 
-    api = FastAPI()
-    api.include_router(events_ep.router)
-    register_handlers(api)
-    api.dependency_overrides[get_checker] = lambda: checker
-    api.dependency_overrides[current_subject] = lambda: "gina"
+def test_the_plain_task_listing_publishes_its_five_keys_and_no_details(client: TestClient) -> None:
+    """`details`/`missing` are `v.optional(...)` on the far side of the wire — valibot's optional accepts UNDEFINED, not
+    null. Publishing them as `null` on the plain listing (which a declared response model does by default) would fail
+    the app's boundary parse for every queue read."""
+    body = client.get("/projects/p1/tasks").json()
 
-    body = TestClient(api).get("/projects/p1/tasks").json()
-
-    assert body == listing, f"the plain listing gained or lost a key: {sorted(body)}"
+    assert body == {
+        "tasks": {"g1-r1": "claimed"},
+        "counts": {**dict.fromkeys((s.value for s in TaskState), 0), "claimed": 1},
+        "total": 1,
+        "terminal": 0,
+        "may_publish": False,
+    }

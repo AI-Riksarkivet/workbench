@@ -346,7 +346,7 @@ def validate_against_ontology(
 ) -> str | None:
     """The output contract as ONE pure function: the first violation, or None.
 
-    Pure and shared so the actor's refusal and any test speak the same words. Violations NAME the
+    Pure and shared so the store's refusal and any test speak the same words. Violations NAME the
     rule and the offender — a 409 nobody can act on is not enforcement.
 
     Order matters: the emptiness rule runs first because every rule after it is a per-shape or

@@ -45,6 +45,8 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_PUBLIC_URL`, `WORKBENCH_PUBLIC_MOUNT`, `WORKBENCH_DPOP_WINDOW_SECONDS` | the URL a DPoP proof's `htu` names (and the path a gateway rewrites it to), and the proof's `iat` and replay window |
 | `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse |
 | `ANNOTATOR_ANNOTATIONS_NAMESPACE` | the lakehouse namespace that holds every project's annotation tables (`workbench$annotations`) |
+| `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
+| `ANNOTATOR_PUBLISH_LEASE_SECONDS`, `_REDRIVE_SECONDS`, `_CONCURRENCY` | a publish run's lease on its project (default 300 s), how often each replica sweeps for publishes no live run holds (30 s, jittered), and how many runs one replica drives at once (2, below the pool size) |
 | `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned |
 | `VIEWER_MEDIA_URL_KEY_FILE` | a credential: the mounted file holding the viewer's media-URL signing key, base64 of at least 32 random bytes (`openssl rand -base64 32`), read on every use; unset or short, the signing door answers 503 |
 | `VIEWER_MEDIA_URL_TTL_SECONDS` | how long a signed media URL serves its cell: default 300, from 10 to 3600 |
@@ -127,12 +129,13 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | Goal | Command |
 | --- | --- |
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
-| Run it locally with real data | `make local`: installs, seeds a demo page corpus and an audio dataset into a local directory catalog (`scripts/seed_demo_corpus.py`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); no Dapr sidecar runs, so the annotator's task plane answers 503. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
+| Run it locally with real data | `make local`: installs, seeds a demo page corpus and an audio dataset into a local directory catalog (`scripts/seed_demo_corpus.py`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
 | Tests (no live stack) | `make test` (= `uv run pytest -m "not e2e" -n 8`) |
 | One test | `uv run pytest services/<svc>/tests/<file>.py::<test>` |
 | Lint, format, type-check | `make check` |
 | The authorization model's tests | `make fga-test` (= `dagger call fga-test`); after editing `model.fga`, `make fga-model` |
 | The pinned OpenFGA server for the suite | `make openfga` (exported through Dagger to `.localbin/openfga`) |
+| The pinned PostgreSQL for the suite and the local stack | `make postgres` (the server tree exported through Dagger to `.localbin/postgres`, `scripts/postgres-server.sh`) |
 | Frontend gates | `make frontend-check` (check, lint, fmt:check, vitest, knip); the app's Playwright suite `make app-e2e`, or `dagger call app-end-to-end` |
 | The app with hot reload | `make app-dev` (vite on :5173, `/api` proxied to `WORKBENCH_EDGE_URL`, the local stack's edge on :8700 by default) |
 | Build an image | `make image NAME=<stem>` (= `dagger call image --name=<stem>`) |
@@ -147,6 +150,16 @@ Two language-pure planes, as in rask; never blur them.
   share). Every dataset is a catalog namespace opened through lance-namespace as the caller, on the credentials the
   catalog vends: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
+  - The annotator keeps its projects, tasks, drafts and claims in its own PostgreSQL (`annotator.state.store`, psycopg 3
+    with its pool, plain SQL over `state/schema.sql`, applied at start under an advisory lock): each row holds its Pydantic
+    document as JSONB beside the columns a query locks or filters on. A transition is one transaction that locks the
+    project row, then the task row, and applies the pure machine (`annotator.projects.machines`); counts, the task index and
+    `may_publish` are queries; a lease is a holder and an expiry, read as released once past it against the database
+    clock, with no timer. A publish runs in-process under a lease on its project's row
+    (`annotator.projects.lakehouse.PublishRunner`): started by the `publish` door, renewed between the saga's steps,
+    and claimed by any replica's re-drive (about every 30 s) once its run stopped renewing; a run holds no connection
+    between store calls, and a replica drives at most `ANNOTATOR_PUBLISH_CONCURRENCY` at once. Its tests run
+    on a real PostgreSQL (`tests/postgres.py`, `state_database`; `services/annotator/tests/conftest.py`'s `state_app`).
   - The viewer serves media to `<img>` and `<video>`, which send no token, through short signed URLs
     (`viewer.api.v1.endpoints.signed_media`): `POST /api/signed-media` (DPoP) resolves each cell by the person's own
     read and signs it with the key in `VIEWER_MEDIA_URL_KEY_FILE`; `GET /api/signed-media/{token}` reads exactly that

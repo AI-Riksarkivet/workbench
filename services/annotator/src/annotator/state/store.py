@@ -1,0 +1,804 @@
+"""The annotator's state store: its projects, tasks, drafts and claims, as rows in its own Postgres.
+
+Workflow state with claims and leases is transactional row state, so it lives in a relational database the annotator
+owns (the chart's CloudNativePG `Cluster`), reached directly with psycopg. It is not lakehouse data: annotations and
+publishes go to the lakehouse through its doors (`annotator.annotations`, `annotator.projects.lakehouse`).
+
+**A transition is one transaction.** It locks the project row, then the task row (`SELECT … FOR UPDATE`), applies the
+pure machine (`annotator.projects.machines`), writes and commits. The row lock is what serialises two people acting
+on one task: of two concurrent claims exactly one finds the task unassigned. Every rule that depends on the task's
+own rows (who holds the claim, who submitted, whether the project is frozen) is checked inside that transaction, on
+rows that cannot move under the check; the HTTP layer's check of the same rules on its own read is what gives a 403
+its reason, and is never what decides.
+
+**One lock order, so no two transactions deadlock on each other's rows:** a project before its tasks, and several rows
+of one table always in key order — a consensus group's replicas and a send's tasks and groups by id. A task transition
+takes its project `FOR SHARE`, so it cannot interleave with a project write (`FOR NO KEY UPDATE`): a task cannot move
+while a publish checks that every task is terminal, and none moves once the project is frozen with a publish.
+
+**A publish run holds a lease on its project's row, never a connection** (`claim_publish`, `renew_publish`,
+`release_publish`): every store call takes a pooled connection for one transaction and gives it back, so no connection
+is held across a call to the catalog.
+
+**What a query answers is not stored:** a project's counts, its task index and whether it may publish are read from
+the task rows in the same transaction (`task_states`).
+
+**A lease has no timer.** A claim is its holder and an expiry; one past its expiry is unassigned to every reader
+(`task_states`, `machines.lapse_expired_claim`, both against the database's clock), and its `lease_expired` edge is
+written the next time the row is locked.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncGenerator, Callable, Iterable
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from importlib import resources
+from string import Template
+from typing import TYPE_CHECKING, Any, Final, cast
+
+from psycopg import AsyncConnection
+from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
+
+from annotator.projects.machines import (
+    EDIT_PERMISSION,
+    FROZEN_PROJECT_STATES,
+    PROJECT_SEND_STATES,
+    IllegalTransition,
+    edit_violation,
+    identity_violation,
+    lapse_expired_claim,
+    may_publish,
+    project_transition,
+    refuse_unreadable_ontology,
+    submit_target,
+    task_transition,
+)
+from annotator.projects.models import (
+    TERMINAL_TASK_STATES,
+    Adjudication,
+    AnnotationProject,
+    Draft,
+    DraftOrigin,
+    Link,
+    ProjectState,
+    PublishRecord,
+    ReviewNote,
+    Shape,
+    Task,
+    TaskState,
+    Transition,
+    new_id,
+)
+from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, validate_against_ontology
+from service_kit.exceptions import ConflictError
+
+
+if TYPE_CHECKING:
+    from annotator.core.config import AnnotatorSettings
+
+
+logger = logging.getLogger(__name__)
+
+type Connection = AsyncConnection[tuple[Any, ...]]
+
+#: The advisory lock every start takes while it applies the schema, so two replicas starting together apply it one
+#: after the other. Any constant no other lock in this database uses.
+SCHEMA_LOCK: Final = 0x616E6E6F74617465
+
+#: The project states a task may still be dropped in. Past `frozen` the answer set is closed and a publish is being
+#: prepared against it, so removing an item would change what the run facet describes after the description was fixed.
+DROPPABLE_STATES: Final = frozenset({ProjectState.DRAFT, ProjectState.LABELING})
+
+
+class TaskIndex(BaseModel):
+    """A project's tasks and the publish precondition, read in one statement."""
+
+    tasks: dict[str, TaskState]
+    counts: dict[TaskState, int]
+    total: int
+    terminal: int
+    may_publish: bool
+
+
+class DropReceipt(BaseModel):
+    task_id: str
+    removed: bool
+    total: int
+
+
+def connection_kwargs(settings: AnnotatorSettings) -> dict[str, Any]:
+    """The libpq parameters of one new connection, the password read from its mounted file at that moment."""
+    kwargs: dict[str, Any] = {
+        "host": settings.state_host,
+        "port": settings.state_port,
+        "dbname": settings.state_database,
+        "user": settings.state_user,
+        "sslmode": settings.state_sslmode,
+        "application_name": "annotator",
+        "connect_timeout": 10,
+        # Every stamp the store reads back from the database's clock is in UTC, whatever the server's own zone.
+        "options": "-c TimeZone=UTC",
+    }
+    if settings.state_ca_file is not None:
+        kwargs["sslrootcert"] = str(settings.state_ca_file)
+    if settings.state_password_file is not None:
+        kwargs["password"] = settings.state_password_file.read_text().rstrip("\n")
+    return kwargs
+
+
+def _sql_list(values: Iterable[str]) -> str:
+    return ", ".join(f"'{value}'" for value in values)
+
+
+async def apply_schema(pool: AsyncConnectionPool[Any]) -> None:
+    """Apply `schema.sql`, every statement of which is safe to re-run, in one transaction under `SCHEMA_LOCK`, its state
+    checks filled from the enums the models use."""
+    template = Template(resources.files("annotator.state").joinpath("schema.sql").read_text())
+    schema = template.substitute(project_states=_sql_list(ProjectState), task_states=_sql_list(TaskState))
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK,))
+        await conn.execute(schema.encode())
+
+
+def _project(document: dict[str, Any]) -> AnnotationProject:
+    try:
+        return AnnotationProject.model_validate(document)
+    except PydanticValidationError as exc:
+        refuse_unreadable_ontology(exc, "project", str(document.get("project_id") or "unknown"))
+
+
+def _task(document: dict[str, Any]) -> Task:
+    try:
+        return Task.model_validate(document)
+    except PydanticValidationError as exc:
+        refuse_unreadable_ontology(exc, "task", str(document.get("task_id") or "unknown"))
+
+
+def _refuse_if_frozen(project: AnnotationProject, task: Task, event: str) -> None:
+    """§5.2 rule 5: nothing escapes a published project, read off the project row this transaction holds."""
+    if project.state in FROZEN_PROJECT_STATES:
+        raise IllegalTransition(
+            "task",
+            task.state,
+            event,
+            message=f"project {project.project_id} is {project.state} — {event} is rejected; provenance is frozen with the published artifact",
+        )
+
+
+class AnnotatorStore:
+    """The state store over one connection pool. Built and closed by the service's lifespan (`annotator.main`)."""
+
+    def __init__(self, pool: AsyncConnectionPool[Any]) -> None:
+        self._pool = pool
+
+    @classmethod
+    async def open(cls, settings: AnnotatorSettings) -> AnnotatorStore:
+        """Connect, wait for the first connection, and apply the schema. Raises when the database cannot be reached."""
+        pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
+            kwargs=lambda: connection_kwargs(settings),
+            # Two from the start, so two requests arriving together run side by side from the first moment.
+            min_size=2,
+            max_size=settings.state_pool_size,
+            open=False,
+            check=AsyncConnectionPool.check_connection,
+            name="annotator-state",
+        )
+        await pool.open(wait=True, timeout=30)
+        try:
+            await apply_schema(pool)
+        except BaseException:
+            await pool.close()
+            raise
+        return cls(pool)
+
+    async def close(self) -> None:
+        await self._pool.close()
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncGenerator[Connection]:
+        async with self._pool.connection() as conn, conn.transaction():
+            yield cast("Connection", conn)
+
+    # ---------------------------------------------------------------------------------------------
+    # Projects
+    # ---------------------------------------------------------------------------------------------
+
+    async def _lock_project(self, conn: Connection, project_id: str, *, write: bool) -> AnnotationProject:
+        query = (
+            "SELECT document FROM projects WHERE project_id = %s FOR NO KEY UPDATE"
+            if write
+            else "SELECT document FROM projects WHERE project_id = %s FOR SHARE"
+        )
+        row = await (await conn.execute(query, (project_id,))).fetchone()
+        if row is None:
+            raise IllegalTransition("project", "absent", "any", message=f"annotation project {project_id} does not exist")
+        return _project(row[0])
+
+    @staticmethod
+    async def _write_project(conn: Connection, project: AnnotationProject) -> None:
+        now = await _clock(conn)
+        project.updated_at = now
+        # Counts are read, never stored: a stored count and the rows it counts are two truths.
+        document = project.model_dump(mode="json", exclude={"counts"})
+        # A publish lease means something only while the project is publishing: leaving that state ends it, so a retried
+        # publish is claimable at once whatever the previous run is still doing on its way out.
+        await conn.execute(
+            "UPDATE projects SET state = %s, document = %s, "
+            "publish_owner = CASE WHEN %s = 'publishing' THEN publish_owner END, "
+            "publish_lease_until = CASE WHEN %s = 'publishing' THEN publish_lease_until END "
+            "WHERE project_id = %s",
+            (str(project.state), Jsonb(document), str(project.state), str(project.state), project.project_id),
+        )
+
+    @staticmethod
+    async def _with_counts(conn: Connection, projects: list[AnnotationProject]) -> list[AnnotationProject]:
+        ids = [p.project_id for p in projects]
+        rows = await (await conn.execute("SELECT project_id, state, count(*) FROM task_states WHERE project_id = ANY(%s) GROUP BY 1, 2", (ids,))).fetchall()
+        for project in projects:
+            project.counts = dict.fromkeys(TaskState, 0)
+        by_id = {p.project_id: p for p in projects}
+        for project_id, state, count in rows:
+            by_id[project_id].counts[TaskState(state)] = int(count)
+        return projects
+
+    async def create_project(self, project: AnnotationProject) -> AnnotationProject:
+        """Store a new project, stamped with its creation on the database's clock (the column and the document hold the
+        one value). Its id is minted per create, so a second create is a second project."""
+        async with self._transaction() as conn:
+            project.created_at = project.updated_at = await _clock(conn)
+            document = project.model_dump(mode="json", exclude={"counts"})
+            await conn.execute(
+                "INSERT INTO projects (project_id, tenant, state, created_at, document) VALUES (%s, %s, %s, %s, %s)",
+                (project.project_id, project.tenant, str(project.state), project.created_at, Jsonb(document)),
+            )
+            return (await self._with_counts(conn, [project]))[0]
+
+    async def get_project(self, project_id: str) -> AnnotationProject | None:
+        async with self._transaction() as conn:
+            row = await (await conn.execute("SELECT document FROM projects WHERE project_id = %s", (project_id,))).fetchone()
+            if row is None:
+                return None
+            return (await self._with_counts(conn, [_project(row[0])]))[0]
+
+    async def list_projects(self, tenant: str) -> list[AnnotationProject]:
+        """An organisation's projects, oldest first."""
+        async with self._transaction() as conn:
+            rows = await (await conn.execute("SELECT document FROM projects WHERE tenant = %s ORDER BY created_at, project_id", (tenant,))).fetchall()
+            return await self._with_counts(conn, [_project(row[0]) for row in rows])
+
+    # ---------------------------------------------------------------------------------------------
+    # The publish lease
+    # ---------------------------------------------------------------------------------------------
+
+    async def claim_publish(self, owner: str, lease_seconds: int, *, project_id: str | None = None, limit: int = 1) -> list[str]:
+        """Claim the publish lease of publishing projects no live run holds, for ``owner``, until ``lease_seconds`` past
+        the database's clock; answer the ids claimed. Named, it claims that one project or none; otherwise up to ``limit``,
+        skipping rows another claim holds this moment, so replicas sweeping together never claim one project twice."""
+        if limit < 1:
+            return []
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "UPDATE projects SET publish_owner = %s, publish_lease_until = clock_timestamp() + make_interval(secs => %s) "
+                    "WHERE project_id IN ("
+                    "  SELECT project_id FROM projects"
+                    "  WHERE state = 'publishing' AND (publish_lease_until IS NULL OR publish_lease_until <= clock_timestamp())"
+                    "    AND (%s::text IS NULL OR project_id = %s)"
+                    "  ORDER BY publish_lease_until NULLS FIRST, project_id LIMIT %s FOR UPDATE SKIP LOCKED"
+                    ") RETURNING project_id",
+                    (owner, lease_seconds, project_id, project_id, limit),
+                )
+            ).fetchall()
+            return sorted(str(row[0]) for row in rows)
+
+    async def renew_publish(self, project_id: str, owner: str, lease_seconds: int) -> bool:
+        """Extend ``owner``'s lease on the project's publish; `False` when it holds none (it lapsed and another run claimed
+        it, or the publish ended)."""
+        async with self._transaction() as conn:
+            row = await (
+                await conn.execute(
+                    "UPDATE projects SET publish_lease_until = clock_timestamp() + make_interval(secs => %s) "
+                    "WHERE project_id = %s AND state = 'publishing' AND publish_owner = %s RETURNING project_id",
+                    (lease_seconds, project_id, owner),
+                )
+            ).fetchone()
+            return row is not None
+
+    async def release_publish(self, project_id: str, owner: str) -> None:
+        """Give up ``owner``'s lease, if it still holds it, so another run may claim the project at once."""
+        async with self._transaction() as conn:
+            await conn.execute(
+                "UPDATE projects SET publish_owner = NULL, publish_lease_until = NULL WHERE project_id = %s AND publish_owner = %s",
+                (project_id, owner),
+            )
+
+    async def _update_project(self, project_id: str, change: Callable[[Connection, AnnotationProject], Any]) -> AnnotationProject:
+        """Lock the project for writing, apply ``change`` (which may refuse), write it, and answer it with its counts."""
+        async with self._transaction() as conn:
+            project = await self._lock_project(conn, project_id, write=True)
+            await change(conn, project)
+            await self._write_project(conn, project)
+            return (await self._with_counts(conn, [project]))[0]
+
+    async def fire_project(
+        self, project_id: str, *, event: str, actor: str | None, target_namespace: str | None = None, error: str | None = None
+    ) -> AnnotationProject:
+        """Apply one edge of `PROJECT_EDGES`.
+
+        `publish` carries the precondition the table cannot express: every task terminal (§5.1), read from the task rows
+        while this transaction holds the project, so no task can move between the read and the transition. It mints the
+        publish token and instant once and pins the target namespace with them: the published table's id derives from
+        the token, so a retry finds the table it already created rather than making a second one, and a retry naming
+        another namespace is refused.
+        """
+
+        async def change(conn: Connection, project: AnnotationProject) -> None:
+            target, _permission = project_transition(project.state, event)
+            if event == "publish":
+                index = await _task_index(conn, project_id)
+                if not index.total:
+                    raise IllegalTransition("project", project.state, "publish (no tasks)")
+                if not index.may_publish:
+                    raise IllegalTransition("project", project.state, "publish (tasks are not all terminal)")
+                requested = target_namespace or project.pending_target_namespace
+                if not requested:
+                    raise IllegalTransition("project", project.state, "publish (no target namespace)")
+                if project.pending_publish_id is None:
+                    project.pending_publish_id = new_id()
+                    project.pending_publish_at = await _clock(conn)
+                    project.pending_target_namespace = requested
+                elif project.pending_target_namespace and requested != project.pending_target_namespace:
+                    raise IllegalTransition(
+                        "project",
+                        project.state,
+                        f"publish (pending publish targets {project.pending_target_namespace!r}, not {requested!r} — the retry must restate the pinned target)",
+                    )
+                # Re-stated per attempt: the record names the person whose action produced the publish that succeeded.
+                project.pending_publish_by = actor or project.pending_publish_by
+                project.publish_error = None
+                project.publish_progress = None
+            elif event == "publish_failed":
+                # `publish_progress` is kept: it names the step that was running when the attempt died.
+                project.publish_error = error or "publish failed"
+            elif event == "publish_succeeded":
+                project.publish_progress = None
+            project.state = target
+
+        return await self._update_project(project_id, change)
+
+    async def set_ontology(self, project_id: str, ontology: LabelOntology) -> AnnotationProject:
+        """Replace the ontology while the project still takes work; items already sent keep the copy they captured."""
+
+        async def change(_conn: Connection, project: AnnotationProject) -> None:
+            if project.state not in PROJECT_SEND_STATES:
+                raise IllegalTransition(
+                    "project",
+                    project.state,
+                    "set_ontology",
+                    message=f"project {project_id} is {project.state.value} — the ontology is editable only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
+                )
+            project.ontology = ontology
+
+        return await self._update_project(project_id, change)
+
+    async def adjudicate(self, project_id: str, *, group: str, task_id: str | None, actor: str) -> AnnotationProject:
+        """Record, or with no ``task_id`` clear, the manager's canonical pick for one replica group (a pick, never a blend).
+
+        Refused once provenance is frozen with a publish. The target must be the group's own replica (`{group}-r{k}`, the
+        exact sibling shape: a prefix check would admit `g1-r1-r2` as a member of `g1`), in this project and accepted.
+        Clearing exists because a pick has no other exit: the publish refuses a stale pick, so a wrong one would wedge it.
+        """
+
+        async def change(conn: Connection, project: AnnotationProject) -> None:
+            if project.state in FROZEN_PROJECT_STATES:
+                raise IllegalTransition("project", project.state, "adjudicate (provenance is frozen with the published artifact)")
+            if not task_id:
+                project.adjudications.pop(group, None)
+                return
+            if not _is_replica_of(task_id, group):
+                raise IllegalTransition("project", project.state, f"adjudicate ({task_id} is not a replica of group {group})")
+            members = await (await conn.execute("SELECT state FROM task_states WHERE project_id = %s AND task_id = %s", (project_id, task_id))).fetchone()
+            if members is None:
+                raise IllegalTransition("project", project.state, f"adjudicate ({task_id} is not in this project)")
+            if TaskState(members[0]) is not TaskState.ACCEPTED:
+                raise IllegalTransition("project", project.state, f"adjudicate ({task_id} is {members[0]}, not accepted — only accepted work can be canonical)")
+            project.adjudications[group] = Adjudication(task_id=task_id, by=actor, at=await _clock(conn))
+
+        return await self._update_project(project_id, change)
+
+    async def record_publish(self, project_id: str, record: PublishRecord) -> PublishRecord:
+        """Write the publish record, once (§4.1): a second call answers the first, so a resumed publish never records a
+        second, contradictory provenance."""
+        stored: list[PublishRecord] = []
+
+        async def change(_conn: Connection, project: AnnotationProject) -> None:
+            if project.published is None:
+                project.published = record
+            stored.append(project.published)
+
+        await self._update_project(project_id, change)
+        return stored[0]
+
+    async def note_progress(self, project_id: str, step: str) -> None:
+        """Record the publish's current step, only while it is publishing: a note from a run that has since finished
+        must not scribble on its result."""
+
+        async def change(_conn: Connection, project: AnnotationProject) -> None:
+            if project.state is ProjectState.PUBLISHING:
+                project.publish_progress = step
+
+        await self._update_project(project_id, change)
+
+    # ---------------------------------------------------------------------------------------------
+    # Sending and dropping tasks
+    # ---------------------------------------------------------------------------------------------
+
+    async def send_tasks(self, project_id: str, tasks: Iterable[Task]) -> list[str]:
+        """Add tasks to the project in one transaction, and answer the ids this call created.
+
+        Idempotent on the task id: one already in this project is left as it is (a re-send must not reset a claim
+        somebody holds). One that belongs to ANOTHER project, or a replica of a consensus group another project holds,
+        refuses the whole send and nothing is written.
+
+        Rows are written in key order, groups then tasks, each sorted by id: two sends naming overlapping ids in
+        different orders then wait on one another rather than deadlock.
+        """
+        ordered = sorted(tasks, key=lambda t: t.task_id)
+        async with self._transaction() as conn:
+            project = await self._lock_project(conn, project_id, write=False)
+            if project.state not in PROJECT_SEND_STATES:
+                raise IllegalTransition("project", project.state, "send")
+            for group in sorted({t.replica_of for t in ordered if t.replica_of}):
+                await conn.execute(
+                    "INSERT INTO replica_groups (replica_of, project_id) VALUES (%s, %s) ON CONFLICT (replica_of) DO NOTHING", (group, project_id)
+                )
+                holder = await (await conn.execute("SELECT project_id FROM replica_groups WHERE replica_of = %s", (group,))).fetchone()
+                if holder is not None and holder[0] != project_id:
+                    raise ConflictError(f"consensus group {group} already belongs to project {holder[0]} — refusing to send its replicas into {project_id}")
+            created: list[str] = []
+            for task in ordered:
+                task.trim_history()
+                row = await (
+                    await conn.execute(
+                        "INSERT INTO tasks (task_id, project_id, state, assignee, lease_expires_at, replica_of, document) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (task_id) DO NOTHING RETURNING task_id",
+                        _task_row(task),
+                    )
+                ).fetchone()
+                if row is not None:
+                    created.append(task.task_id)
+                    continue
+                owner = await (await conn.execute("SELECT project_id FROM tasks WHERE task_id = %s", (task.task_id,))).fetchone()
+                if owner is not None and owner[0] != project_id:
+                    raise ConflictError(f"task {task.task_id} already belongs to project {owner[0]} — refusing to send it into {project_id}")
+            return created
+
+    async def drop_task(self, project_id: str, task_id: str) -> DropReceipt:
+        """Remove one item, its draft and any canonical pick naming it. Idempotent: an absent task is `removed: false`."""
+        async with self._transaction() as conn:
+            project = await self._lock_project(conn, project_id, write=True)
+            if project.state not in DROPPABLE_STATES:
+                raise IllegalTransition(
+                    "project",
+                    project.state,
+                    "drop_task",
+                    message=f"project {project_id} is {project.state.value} — items can be dropped only in {sorted(s.value for s in DROPPABLE_STATES)}",
+                )
+            gone = await (await conn.execute("DELETE FROM tasks WHERE project_id = %s AND task_id = %s RETURNING task_id", (project_id, task_id))).fetchone()
+            if gone is not None:
+                project.adjudications = {group: pick for group, pick in project.adjudications.items() if pick.task_id != task_id}
+                await self._write_project(conn, project)
+            total = await (await conn.execute("SELECT count(*) FROM tasks WHERE project_id = %s", (project_id,))).fetchone()
+            return DropReceipt(task_id=task_id, removed=gone is not None, total=int(total[0]) if total else 0)
+
+    # ---------------------------------------------------------------------------------------------
+    # Reads
+    # ---------------------------------------------------------------------------------------------
+
+    async def get_task(self, task_id: str) -> Task | None:
+        """One task as every reader sees it: a lapsed claim reads as released."""
+        async with self._transaction() as conn:
+            row = await (await conn.execute("SELECT document, clock_timestamp() FROM tasks WHERE task_id = %s", (task_id,))).fetchone()
+        if row is None:
+            return None
+        task = _task(row[0])
+        lapse_expired_claim(task, row[1])
+        return task
+
+    async def get_project_task(self, project_id: str, task_id: str) -> Task | None:
+        """One task of the project, or `None` for a task id the project does not hold, whether it names a task of another
+        project or none at all: a door scoped to a project answers both alike."""
+        async with self._transaction() as conn:
+            row = await (
+                await conn.execute("SELECT document, clock_timestamp() FROM tasks WHERE task_id = %s AND project_id = %s", (task_id, project_id))
+            ).fetchone()
+        if row is None:
+            return None
+        task = _task(row[0])
+        lapse_expired_claim(task, row[1])
+        return task
+
+    async def get_tasks(self, project_id: str, task_ids: list[str]) -> list[Task]:
+        """The project's tasks among ``task_ids``, in task-id order, lapsed claims released."""
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT document, clock_timestamp() FROM tasks WHERE project_id = %s AND task_id = ANY(%s) ORDER BY task_id",
+                    (project_id, task_ids),
+                )
+            ).fetchall()
+        tasks = []
+        for document, now in rows:
+            task = _task(document)
+            lapse_expired_claim(task, now)
+            tasks.append(task)
+        return tasks
+
+    async def get_draft(self, task_id: str) -> Draft | None:
+        async with self._transaction() as conn:
+            row = await (await conn.execute("SELECT document FROM drafts WHERE task_id = %s", (task_id,))).fetchone()
+        return None if row is None else Draft.model_validate(row[0])
+
+    async def task_index(self, project_id: str) -> TaskIndex:
+        async with self._transaction() as conn:
+            return await _task_index(conn, project_id)
+
+    async def publish_material(self, project_id: str) -> list[tuple[Task, Draft | None]]:
+        """Every task of the project with its draft, in task-id order: what a publish builds its plan from."""
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT t.document, d.document, clock_timestamp() FROM tasks t LEFT JOIN drafts d USING (task_id) WHERE t.project_id = %s ORDER BY t.task_id",
+                    (project_id,),
+                )
+            ).fetchall()
+        material: list[tuple[Task, Draft | None]] = []
+        for task_document, draft_document, now in rows:
+            task = _task(task_document)
+            lapse_expired_claim(task, now)
+            material.append((task, None if draft_document is None else Draft.model_validate(draft_document)))
+        return material
+
+    # ---------------------------------------------------------------------------------------------
+    # Task transitions
+    # ---------------------------------------------------------------------------------------------
+
+    async def _lock_task(self, conn: Connection, task_id: str, *, project_write: bool = False) -> tuple[Task, AnnotationProject, list[Task], datetime]:
+        """Lock the task's project, then the task (with every replica of its consensus group, in task-id order), and
+        answer the task, its project, its siblings and the database's clock, with a lapsed claim released.
+
+        A task's project and group never change, so they are read before the locks that follow the one order.
+        """
+        found = await (await conn.execute("SELECT project_id, replica_of FROM tasks WHERE task_id = %s", (task_id,))).fetchone()
+        if found is None:
+            raise IllegalTransition("task", "absent", "any", message=f"task {task_id} does not exist")
+        project_id, group = found
+        project = await self._lock_project(conn, project_id, write=project_write)
+        if group is None:
+            rows = await (await conn.execute("SELECT document, clock_timestamp() FROM tasks WHERE task_id = %s FOR UPDATE", (task_id,))).fetchall()
+        else:
+            rows = await (
+                await conn.execute(
+                    "SELECT document, clock_timestamp() FROM tasks WHERE project_id = %s AND replica_of = %s ORDER BY task_id FOR UPDATE",
+                    (project_id, group),
+                )
+            ).fetchall()
+        task: Task | None = None
+        siblings: list[Task] = []
+        now: datetime | None = None
+        for document, clock in rows:
+            row_task = _task(document)
+            lapse_expired_claim(row_task, clock)
+            now = clock
+            if row_task.task_id == task_id:
+                task = row_task
+            else:
+                siblings.append(row_task)
+        if task is None or now is None:
+            raise IllegalTransition("task", "absent", "any", message=f"task {task_id} does not exist")
+        return task, project, siblings, now
+
+    async def fire_task(
+        self,
+        task_id: str,
+        *,
+        event: str,
+        actor: str,
+        subject_can_manage: bool = False,
+        lease_seconds: int | None = None,
+        assignee: str | None = None,
+        message: str = "",
+        shape_ids: Iterable[str] = (),
+    ) -> Task:
+        """Apply one principal's edge of `TASK_EDGES` to the task, in one transaction.
+
+        ``subject_can_manage`` is the checker's answer for ``actor`` on the task's project, stated by the layer that
+        asked it (`release` is "lease holder or can_manage"). Everything else is read from the rows this transaction holds.
+        """
+        async with self._transaction() as conn:
+            # `reopen` leaves `accepted`, which voids any canonical pick naming the task: a write to the project.
+            task, project, siblings, now = await self._lock_task(conn, task_id, project_write=event == "reopen")
+
+            target, permission = task_transition(task.state, event)
+            if permission is None:
+                raise IllegalTransition("task", task.state, f"{event} (caused by the system, never by a principal)")
+            violation = identity_violation(
+                event=event, subject=actor, assignee=task.assignee, submitted_by=task.submitted_by, subject_can_manage=subject_can_manage
+            )
+            if violation is not None:
+                raise IllegalTransition("task", task.state, f"{event} ({violation})")
+            _refuse_if_frozen(project, task, event)
+
+            # Consensus v1: one replica per annotator per group, against the group's rows this transaction holds, so two
+            # claims of two replicas by one person cannot both land.
+            if event in {"claim", "assign"} and task.replica_of:
+                recipient = (assignee or actor) if event == "assign" else actor
+                for sibling in siblings:
+                    if recipient in (sibling.assignee, sibling.submitted_by):
+                        raise ConflictError(
+                            f"one replica per annotator per group: {recipient} already holds or worked replica {sibling.task_id} of group {task.replica_of}"
+                        )
+
+            if event == "submit":
+                # Read from the TASK, captured at send from the project, never from the request: a caller-supplied
+                # `review_required` would let an annotator self-accept. The draft is the submission, judged against
+                # the ontology the task captured.
+                target = submit_target(task.review_required)
+                draft = await _draft(conn, task_id)
+                shapes = [ShapeLike.model_validate(s.model_dump()) for s in (draft.shapes if draft else [])]
+                links = [LinkLike.model_validate(link.model_dump()) for link in (draft.links if draft else [])]
+                if (contract := validate_against_ontology(task.ontology, shapes, links)) is not None:
+                    raise IllegalTransition("task", task.state, f"submit ({contract})")
+
+            task.transitions.append(Transition(at=now, by=actor, event=event, from_state=task.state, to_state=target))
+            leaving_accepted = task.state is TaskState.ACCEPTED
+            task.state = target
+            if event == "claim":
+                # A self-claim: the holder IS the actor. The duration falls back to the project's lease captured at send.
+                task.assignee = actor
+                task.lease_expires_at = now + _seconds(lease_seconds or task.lease_seconds)
+            elif event == "assign":
+                # A manager assigns to a NAMED person, and the assignment pins the task: no lease, because the assignee
+                # did not choose when to start (§4.2).
+                task.assignee = assignee or actor
+                task.lease_expires_at = None
+            elif event == "save_draft":
+                task.lease_expires_at = now + _seconds(lease_seconds or task.lease_seconds)
+            elif event == "submit":
+                task.submitted_by, task.submitted_at = actor, now
+                task.assignee, task.lease_expires_at = None, None
+            elif event in {"release", "skip"}:
+                task.assignee, task.lease_expires_at = None, None
+            elif event in {"accept", "fix_and_accept", "request_changes"}:
+                task.reviewed_by, task.reviewed_at = actor, now
+                task.review_action = "accepted" if event == "accept" else event
+                if event == "request_changes":
+                    # The reviewer's reason travels with the task back to the annotator (§5.2).
+                    task.review_notes.append(ReviewNote(by=actor, at=now, action="request_changes", message=message, shape_ids=[str(s) for s in shape_ids]))
+
+            if leaving_accepted and any(pick.task_id == task_id for pick in project.adjudications.values()):
+                # A pick is void once its target leaves `accepted`: a pick surviving reopen, resubmit and re-accept would
+                # make canonical work the adjudicator never saw.
+                project.adjudications = {group: pick for group, pick in project.adjudications.items() if pick.task_id != task_id}
+                await self._write_project(conn, project)
+            await _write_task(conn, task)
+            return task
+
+    async def save_draft(
+        self,
+        task_id: str,
+        *,
+        author: str,
+        shapes: list[Shape],
+        links: list[Link],
+        base_revision: int | None,
+        origin: DraftOrigin = "human",
+        reviewing: bool = False,
+        lease_seconds: int | None = None,
+    ) -> Draft:
+        """Replace the task's whole shape set in one write, bumping its revision.
+
+        Writable only while the task takes edits (claimed, or in review for a reviewer the caller verified,
+        ``reviewing``), only by who may edit it now (`machines.edit_violation`), and not once the project is frozen:
+        each checked on the rows this transaction holds. Once a draft exists the caller must state the revision it
+        edited, so two tabs cannot silently overwrite each other. A save into a claim renews its lease.
+        """
+        async with self._transaction() as conn:
+            task, project, _siblings, now = await self._lock_task(conn, task_id)
+            if task.state not in EDIT_PERMISSION or (task.state is TaskState.IN_REVIEW and not reviewing):
+                raise IllegalTransition("draft", task.state.value, "save_draft")
+            violation = edit_violation(state=task.state, subject=author, assignee=task.assignee, submitted_by=task.submitted_by)
+            if violation is not None:
+                raise IllegalTransition("draft", violation, "save_draft")
+            _refuse_if_frozen(project, task, "save_draft")
+
+            current = await _draft(conn, task_id)
+            if current is not None:
+                if base_revision is None:
+                    raise IllegalTransition("draft", f"revision {current.revision}", "save without base_revision")
+                if base_revision != current.revision:
+                    raise IllegalTransition("draft", f"revision {current.revision}", f"save at {base_revision}")
+            draft = Draft(
+                task_id=task_id,
+                project_id=task.project_id,
+                author=author,
+                shapes=shapes,
+                links=links,
+                revision=(current.revision + 1) if current else 1,
+                updated_at=now,
+                origin=origin,
+            )
+            await conn.execute(
+                "INSERT INTO drafts (task_id, revision, document) VALUES (%s, %s, %s) "
+                "ON CONFLICT (task_id) DO UPDATE SET revision = EXCLUDED.revision, document = EXCLUDED.document",
+                (task_id, draft.revision, Jsonb(draft.model_dump(mode="json"))),
+            )
+            if task.state is TaskState.CLAIMED:
+                task.lease_expires_at = now + _seconds(lease_seconds or task.lease_seconds)
+            await _write_task(conn, task)
+            return draft
+
+
+def _is_replica_of(task_id: str, group: str) -> bool:
+    prefix = f"{group}-r"
+    return task_id.startswith(prefix) and task_id[len(prefix) :].isdigit()
+
+
+def _seconds(seconds: int) -> timedelta:
+    return timedelta(seconds=seconds)
+
+
+async def _clock(conn: Connection) -> datetime:
+    """The database's clock: the one every replica's leases and stamps are read against."""
+    row = await (await conn.execute("SELECT clock_timestamp()")).fetchone()
+    if row is None:
+        raise RuntimeError("the database answered no clock")
+    return cast("datetime", row[0])
+
+
+async def _draft(conn: Connection, task_id: str) -> Draft | None:
+    row = await (await conn.execute("SELECT document FROM drafts WHERE task_id = %s", (task_id,))).fetchone()
+    return None if row is None else Draft.model_validate(row[0])
+
+
+def _task_row(task: Task) -> tuple[Any, ...]:
+    return (
+        task.task_id,
+        task.project_id,
+        str(task.state),
+        task.assignee,
+        task.lease_expires_at,
+        task.replica_of,
+        Jsonb(task.model_dump(mode="json")),
+    )
+
+
+async def _write_task(conn: Connection, task: Task) -> None:
+    # The history is bounded here, at the one seam every task write goes through: the document is rewritten whole, so an
+    # unbounded trail would make each event cost more than the last.
+    task.trim_history()
+    await conn.execute(
+        "UPDATE tasks SET state = %s, assignee = %s, lease_expires_at = %s, document = %s WHERE task_id = %s",
+        (str(task.state), task.assignee, task.lease_expires_at, Jsonb(task.model_dump(mode="json")), task.task_id),
+    )
+
+
+async def _task_index(conn: Connection, project_id: str) -> TaskIndex:
+    rows = await (await conn.execute("SELECT task_id, state FROM task_states WHERE project_id = %s ORDER BY task_id", (project_id,))).fetchall()
+    tasks = {str(task_id): TaskState(state) for task_id, state in rows}
+    counts = dict.fromkeys(TaskState, 0)
+    for state in tasks.values():
+        counts[state] += 1
+    states = list(tasks.values())
+    return TaskIndex(
+        tasks=tasks,
+        counts=counts,
+        total=len(states),
+        terminal=sum(1 for s in states if s in TERMINAL_TASK_STATES),
+        may_publish=may_publish(states),
+    )

@@ -2,10 +2,9 @@
 
 Module-level ``app``; ALL construction in the lifespan onto ``app.state`` (importing this module does
 zero I/O). The lifespan and the assembly are both SHARED — ``client_kit.media.lifespan`` and
-``client_kit.media.app`` — because viewer, search and annotator are three deployments of one shape
-and used to hand-write it three times (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" DUP-16 / X12 / DUP-20). What is genuinely
-this service's own — the actor plane — arrives through the shared lifespan's ``setup`` hook, which runs before
-readiness is announced.
+``client_kit.media.app`` — because viewer, search and annotator are three deployments of one shape.
+What is genuinely this service's own — its state store and its publish runner — arrives through the shared lifespan's
+``setup`` hook, which runs before readiness is announced, and leaves through its ``teardown``.
 
 The annotator is a client of the lakehouse with its own release (ADR 0171): it publishes nothing on the
 lakehouse's bus, and tells a person about their work on its own surface.
@@ -15,23 +14,18 @@ from __future__ import annotations
 
 import logging
 
-from dapr.ext.fastapi import DaprActor
 from fastapi import FastAPI, Request
 
+from annotator.api.dependencies import NO_STATE_STORE
 from annotator.api.v1.router import router as api_router
-from annotator.core.config import get_annotator_settings
-from annotator.projects.actor import AnnotationTaskActor
-from annotator.projects.project_actor import AnnotationProjectActor
-from annotator.projects.proxies import NO_SIDECAR, sidecar_configured
-from annotator.projects.tenant_actor import TenantProjectsActor
+from annotator.core.config import AnnotatorSettings, get_annotator_settings
+from annotator.projects.lakehouse import PublishRunner
+from annotator.state.store import AnnotatorStore
 from client_kit.media.app import build_media_app
 from client_kit.media.config import MediaSettings
 from client_kit.media.lifespan import make_media_lifespan
 from client_kit.media.state import AppState
 from service_kit import setup_logging
-from service_kit.governed.actor_state_store import probe_actor_state_store
-from service_kit.governed.actor_warmup import warm_actor_proxy_factory
-from service_kit.governed.dapr_auth import guard_actor_routes
 from service_kit.obs import configure_app_logging
 from service_kit.schemas.health import Readiness, ReadinessStatus
 
@@ -41,59 +35,46 @@ logger = logging.getLogger(__name__)
 configure_app_logging(packages=("annotator", "client_kit"))  # INFO audit/lifecycle logs reach OTLP (lance-ns obs contract)
 
 
-async def _start_task_plane(app: FastAPI, _state: AppState) -> None:
-    """The annotator's own startup, run BEFORE readiness is announced.
+async def _open_state(app: FastAPI, state: AppState) -> None:
+    """The annotator's own startup, run BEFORE readiness is announced: its state store and its publish runner.
 
-    Ordering is the whole reason this is a hook and not code after the shared lifespan: a pod that
-    reports ready while its task actors are unregistered answers 503 to every task route.
+    **No state database named, no project and task plane:** the store stays unset, every route of that plane answers
+    503 naming why (`annotator.api.dependencies.get_store`), and the read plane serves.
 
-    **Actor registration** happens here, not at import, because it mutates process-global runtime
-    state (`ActorRuntime._actor_managers`, and the entity list `/dapr/config` advertises) — a side
-    effect that merely importing this module for `--help` or an image build must not have.
+    **A state database named and unreachable fails the start.** The database is the service's own, declared beside it,
+    so a start that cannot reach it is a pod the platform restarts until it can, rather than one reporting ready while
+    every project route fails.
 
-    **No sidecar configured, no actor plane.** The Dapr sidecar announces itself to its app through
-    `DAPR_HTTP_PORT` and `DAPR_GRPC_PORT`; with neither set nothing would answer, so the plane is marked
-    unregistered at once, with that reason, and the warm-up (which waits up to
-    `WARMUP_TIMEOUT_SECONDS` for a sidecar) and the state-store probe are never started. The service then
-    starts in the time its read plane takes (the local stack, `scripts/local-stack.sh`).
-
-    **What registration proves is LOCAL, and `actors_registered` must not be read as more.**
-    `register_actor` builds the type info, constructs an actor client WITHOUT invoking it, and stores an
-    `ActorManager` in a dict; daprd learns the entity list afterwards by POLLING `/dapr/config`, which is
-    why the warm-up and the probe below ask the sidecar what it can actually do. A failure is logged and
-    left non-fatal: the read-plane annotation routes do not need actors, so a broken task plane must not
-    take the media surface down with it. `tasks.require_actor_plane` gates every task route on the flag
-    (503, with the reason), and `/readyz` reports it as a component.
+    The publish runner's re-drive starts here: it claims every publish whose run stopped, in this or any replica, at
+    once and then about every `ANNOTATOR_PUBLISH_REDRIVE_SECONDS`.
     """
-    from annotator.projects.lakehouse import use_publish_tokens  # noqa: PLC0415 - the publish module imports pyarrow lazily
-
-    use_publish_tokens(getattr(app.state, "lakehouse_tokens", None))
-
-    if actor_ext is None:
+    settings = state.settings
+    if not isinstance(settings, AnnotatorSettings):
+        raise TypeError(f"the annotator's lifespan needs AnnotatorSettings, not {type(settings).__name__}")
+    app.state.store = None
+    app.state.publish_runner = None
+    if settings.state_host is None:
+        logger.warning("annotator: %s; the project and task plane will 503", NO_STATE_STORE)
         return
-    if not sidecar_configured():
-        app.state.actors_registered = False
-        app.state.actor_plane_unavailable = NO_SIDECAR
-        logger.warning("annotator: %s; the task plane will 503", NO_SIDECAR)
-        return
-    try:
-        await actor_ext.register_actor(AnnotationTaskActor)
-        await actor_ext.register_actor(AnnotationProjectActor)
-        await actor_ext.register_actor(TenantProjectsActor)
-        app.state.actors_registered = True
-        logger.info("annotator: AnnotationTaskActor + AnnotationProjectActor + TenantProjectsActor registered with the sidecar")
-        # The SDK's proxy factory runs a BLOCKING `wait_for_sidecar()` on first use (60 s default, a
-        # `time.sleep` loop), so whichever request opens the first actor proxy pays it ON THE EVENT
-        # LOOP. Measured in the notifications service, where it made a wall-clock budget
-        # unenforceable; this plane has the same call shape, so it gets the same warm-up.
-        await warm_actor_proxy_factory()
-        # Everything above is PROCESS-LOCAL and cannot fail for a missing actor state store:
-        # registration never touches the sidecar, so this reports success while every actor call
-        # still refuses. Ask the sidecar what it can actually see.
-        await probe_actor_state_store(capability="the annotation task plane cannot hold a task")
-    except Exception:
-        app.state.actors_registered = False
-        logger.exception("annotator: actor registration failed — the task plane will 503")
+    store = await AnnotatorStore.open(settings)
+    runner = PublishRunner(
+        store,
+        getattr(app.state, "lakehouse_tokens", None),
+        lease_seconds=settings.publish_lease_seconds,
+        redrive_seconds=settings.publish_redrive_seconds,
+        concurrency=settings.publish_concurrency,
+    )
+    app.state.store, app.state.publish_runner = store, runner
+    runner.start()
+
+
+async def _close_state(app: FastAPI) -> None:
+    runner: PublishRunner | None = getattr(app.state, "publish_runner", None)
+    if runner is not None:
+        await runner.close()
+    store: AnnotatorStore | None = getattr(app.state, "store", None)
+    if store is not None:
+        await store.close()
 
 
 # Application logging, before the app exists — every module here uses getLogger(__name__), and
@@ -102,28 +83,17 @@ async def _start_task_plane(app: FastAPI, _state: AppState) -> None:
 setup_logging()
 
 
-async def _actor_plane_ready(request: Request) -> Readiness:
-    """Report the actor plane as a COMPONENT of a 200, never as `degraded`.
+async def _state_ready(request: Request) -> Readiness:
+    """Report the state store as a COMPONENT of a 200, never as `degraded`.
 
-    `service_kit.probes` renders `degraded` as a 503, which would pull the pod from rotation and take
-    the read-plane annotation routes down with the task plane — the exact coupling the non-fatal
-    registration in `_start_task_plane` exists to avoid. Refusing the task plane is the task routes'
-    job (`tasks.require_actor_plane`); this probe's job is to report, not to act.
-
-    **`registered` is not a health check on the sidecar.** The flag records only that this process
-    could register its actor CLASSES — a daprd that is absent, unreachable or not placing actors
-    reports `registered` here and still fails every task invocation. Reporting THAT means probing
-    daprd live on each `/readyz`, which couples this pod's readiness to its sidecar and is a decision
-    nobody has taken; until it is, read this component as "the process's own actor registration", not
-    as "the task plane works".
+    `service_kit.probes` renders `degraded` as a 503, which would pull the pod from rotation and take the read-plane
+    annotation routes down with the project plane. A store that was named opened before readiness, or the start
+    failed; one that was not named is reported as such.
     """
-    registered = bool(getattr(request.app.state, "actors_registered", False))
-    return Readiness(status=ReadinessStatus.ready, components={"actors": "registered" if registered else "unregistered"})
+    store = getattr(request.app.state, "store", None)
+    return Readiness(status=ReadinessStatus.ready, components={"state": "open" if store is not None else "unconfigured"})
 
 
-#: `closes` names the resources THIS service opens. Only the http pool: `AppState` carries slots for
-#: every media service (the search service's model handles among them), and closing those here would
-#: be a no-op that reads as ownership this service does not have.
 def _settings() -> MediaSettings:
     """Read the settings AT LIFESPAN TIME, never at import.
 
@@ -134,11 +104,14 @@ def _settings() -> MediaSettings:
     return get_annotator_settings()
 
 
+#: `closes` names the resources the shared state holds for this service: only the http pool. The state store and the
+#: publish runner are this service's own and close in `_close_state`.
 lifespan = make_media_lifespan(
     _settings,
     service="annotator",
     closes=lambda state: (state.http,),
-    setup=_start_task_plane,
+    setup=_open_state,
+    teardown=_close_state,
 )
 
 app = build_media_app(
@@ -146,32 +119,8 @@ app = build_media_app(
     settings=get_annotator_settings(),
     routers=[api_router],
     lifespan=lifespan,
-    ready_check=_actor_plane_ready,
+    ready_check=_state_ready,
 )
-
-# Mount the actor HTTP surface the sidecar calls back on (/dapr/config, /actors/...). Constructing
-# DaprActor only adds routes — it performs no I/O — so it is safe at import; the REGISTRATION that
-# does talk to the sidecar happens in `_start_task_plane`. Built here rather than inside the lifespan
-# because routes added after startup are not served.
-actor_ext: DaprActor | None
-try:
-    actor_ext = DaprActor(app)
-except Exception:  # pragma: no cover - a broken ext must not take the read plane down
-    actor_ext = None
-    logger.exception("annotator: could not mount the actor routes — the task plane is unavailable")
-else:
-    # The actor callback surface is SIDECAR-ONLY, and it was open. `DaprActor` mounts
-    # `PUT /actors/{type}/{id}/method/{method}` at the ROOT, so it inherits none of the doors the task
-    # and project routers declare — and these actors hold the task plane's own state: claims, drafts,
-    # reviews, the lease holder. The actor id is a project id, which is not a secret and never was.
-    # Same guard, same reason, one implementation (`service_kit.governed.dapr_auth`) as notifications.
-    guard_actor_routes(app)
-
-#: The task plane's own health, defined HERE and not only in the lifespan so it is never merely
-#: absent: a mount that failed above never reaches the registration block, and a flag that only
-#: exists on the happy path cannot be the thing a route gates on. False until `_start_task_plane`
-#: proves otherwise — the honest default, since nothing is registered yet at import.
-app.state.actors_registered = False
 
 
 def run() -> None:

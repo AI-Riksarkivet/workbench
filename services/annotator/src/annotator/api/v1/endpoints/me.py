@@ -7,12 +7,12 @@ lakehouse.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from annotator.api.security import AuthorizerDep, CurrentToken
+from annotator.api.security import AuthorizerDep, CurrentToken, SettingsDep
 
 
 router = APIRouter(tags=["identity"])
@@ -32,11 +32,21 @@ class Me(BaseModel):
     orgs: list[OrgStanding]
 
 
+#: The one organisation an unauthenticated local stack names, so its anonymous person can create a project and label.
+LOCAL_ORGANISATION: Final = "local"
+
+
 @router.get("/me")
-async def me(caller: CurrentToken, authz: AuthorizerDep) -> Me:
-    """The caller and their organisations; anonymous, with every role, when authentication and authorization are off."""
+async def me(caller: CurrentToken, authz: AuthorizerDep, settings: SettingsDep) -> Me:
+    """The caller and their organisations.
+
+    With authentication off — only ever with `WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED`, which the settings refuse beside
+    OIDC — the person is anonymous, holds every role (authorization is off too) and administers `LOCAL_ORGANISATION`.
+    An authenticated person's organisations are the store's answer alone.
+    """
     if caller is None:
-        return Me(sub="anon", estate_admin=authz is None, orgs=[])
+        local = [OrgStanding(org=LOCAL_ORGANISATION, role="admin")] if settings.insecure_allow_unauthenticated else []
+        return Me(sub="anon", estate_admin=authz is None, orgs=local)
     claims = caller.claims.model_extra or {}
     admin: list[str] = []
     member: list[str] = []

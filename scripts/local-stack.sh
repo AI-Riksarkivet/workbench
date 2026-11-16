@@ -13,11 +13,15 @@
 #                       MEDIA_CATALOG_URI names a catalog's REST door instead
 #   EDGE_PORT           the origin the browser uses (default 8700); serve.ts listens on EDGE_PORT + 1000
 #   VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT   the services' own ports (8701, 8702, 8703, 8704)
+#   STATE_PORT          the annotator's PostgreSQL (default 8705), the pinned server `make postgres` exports
+#   STATE_DIR           its data directory (default: the catalog directory's sibling `<catalog>-state`), kept between
+#                       runs, so projects and tasks survive a restart of the stack
 #
 # Every port is checked before anything starts: one that something already listens on is refused, by name.
 #
-# No Dapr sidecar runs here, so the annotator's task plane answers 503 naming that (`annotator.main`), and flows runs
-# its pipelines inline (`flows.lifespan`). No embedder runs either: full-text search works, semantic search does not.
+# The person is anonymous and administers the one local organisation (`annotator.api.v1.endpoints.me`). No sidecar
+# runs, so flows runs its pipelines inline (`flows.lifespan`). No embedder runs either: full-text search works,
+# semantic search does not.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,12 +51,19 @@ export VIEWER_MEDIA_URL_KEY_FILE="${VIEWER_MEDIA_URL_KEY_FILE:-$DEV_SECRETS/medi
 export WORKBENCH_FLOWS_SERVE_TOKEN_FILE="${WORKBENCH_FLOWS_SERVE_TOKEN_FILE:-$DEV_SECRETS/serve-token}"
 
 EDGE_PORT="${EDGE_PORT:-8700}"
+STATE_PORT="${STATE_PORT:-8705}"
+STATE_DIR="${STATE_DIR:-${MEDIA_CATALOG_DIR:-${TMPDIR:-/tmp}/workbench}-state}"
+POSTGRES_TREE="${WORKBENCH_POSTGRES_DIR:-$ROOT/.localbin/postgres}"
 VIEWER_PORT="${VIEWER_PORT:-8701}"
 SEARCH_PORT="${SEARCH_PORT:-8702}"
 ANNOTATOR_PORT="${ANNOTATOR_PORT:-8703}"
 FLOWS_PORT="${FLOWS_PORT:-8704}"
 APP_CONFIG="$ROOT/frontend/app/dev/config.json"
 
+if [ ! -x "$POSTGRES_TREE/bin/postgres" ]; then
+  echo "no PostgreSQL server at $POSTGRES_TREE: run \`make postgres\` (or \`make local\`)" >&2
+  exit 1
+fi
 if [ ! -f "$ROOT/frontend/app/build/index.html" ]; then
   echo "the app is not built: run \`bun --cwd=frontend/app run build\` (or \`make local\`)" >&2
   exit 1
@@ -61,12 +72,12 @@ fi
 # A port something already answers on would serve another program's pages under this stack's URL: refuse it, by name.
 busy=()
 for named in "edge:$EDGE_PORT" "app:$((EDGE_PORT + 1000))" "viewer:$VIEWER_PORT" "search:$SEARCH_PORT" \
-  "annotator:$ANNOTATOR_PORT" "flows:$FLOWS_PORT"; do
+  "annotator:$ANNOTATOR_PORT" "flows:$FLOWS_PORT" "state:$STATE_PORT"; do
   port=${named#*:}
   if (exec 3<>"/dev/tcp/$LOOPBACK/$port") 2>/dev/null; then busy+=("$port (${named%%:*})"); fi
 done
 if [ ${#busy[@]} -gt 0 ]; then
-  echo "not starting: something already listens on port ${busy[*]}. Stop it, or choose other ports (EDGE_PORT, VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT)." >&2
+  echo "not starting: something already listens on port ${busy[*]}. Stop it, or choose other ports (EDGE_PORT, VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT, STATE_PORT)." >&2
   exit 1
 fi
 
@@ -90,7 +101,10 @@ run() {  # run <name> <command...>
 # returns: `wait` alone returns at once when a trap interrupted a `wait -n`.
 stop() {
   set +m  # no job notices while the children end
-  for pid in "${!NAMES[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+  # PostgreSQL takes INT as a fast shutdown (sessions ended, a clean checkpoint); TERM would wait for every client.
+  for pid in "${!NAMES[@]}"; do
+    if [ "${NAMES[$pid]}" = state ]; then kill -INT -- "-$pid" 2>/dev/null || true; else kill -TERM -- "-$pid" 2>/dev/null || true; fi
+  done
   for pid in "${!NAMES[@]}"; do
     for _ in $(seq 1 50); do
       kill -0 -- "-$pid" 2>/dev/null || break
@@ -103,6 +117,32 @@ stop() {
 trap 'echo; echo "stopping the local stack..."; trap - INT TERM; stop; exit 0' INT TERM
 
 cd "$ROOT"
+
+# The annotator's state: the pinned PostgreSQL on the loopback, trusting only the loopback, its data kept in STATE_DIR.
+# Started first and waited for, since the annotator refuses to start without the database it names.
+pg() { LD_LIBRARY_PATH="$POSTGRES_TREE/deps" "$POSTGRES_TREE/bin/$1" "${@:2}"; }
+if [ ! -f "$STATE_DIR/PG_VERSION" ]; then
+  mkdir -p "$STATE_DIR"
+  pg initdb -D "$STATE_DIR" -U postgres --auth=trust --encoding=UTF8 --locale=C >/dev/null
+fi
+run state env LD_LIBRARY_PATH="$POSTGRES_TREE/deps" "$POSTGRES_TREE/bin/postgres" -D "$STATE_DIR" -p "$STATE_PORT" \
+  -c listen_addresses="$LOOPBACK" -c unix_socket_directories=
+for _ in $(seq 1 100); do
+  pg pg_isready -q -h "$LOOPBACK" -p "$STATE_PORT" -U postgres && break
+  sleep 0.1
+done
+if ! pg pg_isready -q -h "$LOOPBACK" -p "$STATE_PORT" -U postgres; then
+  echo "the annotator's PostgreSQL did not start within 10 s; stopping" >&2
+  trap - INT TERM
+  stop
+  exit 1
+fi
+if [ "$(pg psql -h "$LOOPBACK" -p "$STATE_PORT" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'annotator'")" != 1 ]; then
+  pg createdb -h "$LOOPBACK" -p "$STATE_PORT" -U postgres annotator
+fi
+export ANNOTATOR_STATE_HOST="$LOOPBACK" ANNOTATOR_STATE_PORT="$STATE_PORT" ANNOTATOR_STATE_DATABASE=annotator \
+  ANNOTATOR_STATE_USER=postgres ANNOTATOR_STATE_SSLMODE=disable
+
 run viewer uv run --no-sync uvicorn viewer.main:app --host "$LOOPBACK" --port "$VIEWER_PORT"
 run search uv run --no-sync uvicorn search.main:app --host "$LOOPBACK" --port "$SEARCH_PORT"
 run annotator uv run --no-sync uvicorn annotator.main:app --host "$LOOPBACK" --port "$ANNOTATOR_PORT"
@@ -143,7 +183,7 @@ fi
 
 # Loopback only, checked rather than assumed: a listener this stack opened on any other address is refused.
 if command -v ss >/dev/null; then
-  for port in "$EDGE_PORT" "$((EDGE_PORT + 1000))" "$VIEWER_PORT" "$SEARCH_PORT" "$ANNOTATOR_PORT" "$FLOWS_PORT"; do
+  for port in "$EDGE_PORT" "$((EDGE_PORT + 1000))" "$VIEWER_PORT" "$SEARCH_PORT" "$ANNOTATOR_PORT" "$FLOWS_PORT" "$STATE_PORT"; do
     wide=$(ss -ltnH "sport = :$port" | awk '{print $4}' | grep -v "^$LOOPBACK:" || true)
     if [ -n "$wide" ]; then
       echo "port $port listens beyond the loopback ($wide); stopping the local stack" >&2

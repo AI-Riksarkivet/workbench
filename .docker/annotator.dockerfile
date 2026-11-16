@@ -84,7 +84,6 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
     CMD ["python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8103)); s.close()"]
 
 ENTRYPOINT ["tini", "--"]
-# --workers intentionally unset: Dapr places an actor id on a HOST (one daprd and the one app behind its app-port),
-# so several workers would be several actor runtimes sharing one address. Scale replicas, never workers. The release
-# overrides these args with its `forwardedAllowIps`, never '*'.
+# --workers intentionally unset: one process per pod, each with its own state-store pool and publish runner. Scale
+# replicas, never workers. The release overrides these args with its `forwardedAllowIps`, never '*'.
 CMD ["uvicorn", "annotator.main:app", "--host", "0.0.0.0", "--port", "8103", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1"]

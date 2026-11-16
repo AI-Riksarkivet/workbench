@@ -5,7 +5,6 @@ hermetic against the platform's process-global state travels with the package, u
 `service_kit`, and loads in any environment that installs the package. Each fixture here guards state `service-kit` or
 its `dapr` dependency keeps across a process; this repository's suites get the same seam the same way.
 
-- every test gets its own cache of secret-store reads (`service_kit.governed.secret_cache.STORE_READS`);
 - Dapr's sidecar handshake is bounded and its process-global actor-proxy factory starts empty;
 - respx's bare `@respx.mock` is strict, and `respx_allows_unused_routes` opts a test out.
 """
@@ -18,8 +17,6 @@ from typing import Final
 import pytest
 from dapr.actor.client.proxy import ActorProxy
 from dapr.conf import settings as dapr_settings
-
-from service_kit.governed import secret_cache
 
 
 try:
@@ -62,17 +59,6 @@ def respx_allows_unused_routes() -> Iterator[None]:
         yield
     finally:
         respx.mock._assert_all_called = True
-
-
-@pytest.fixture(autouse=True)
-def _a_fresh_secret_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give each test its own process-global cache of secret-store reads.
-
-    It holds what a store double answered for up to ten minutes, so one test's answer would otherwise be the next
-    test's, and a test asserting what the store is asked would pass or fail by collection order. A test that drives the
-    TTL replaces it again with a cache on its own clock.
-    """
-    monkeypatch.setattr(secret_cache, "STORE_READS", secret_cache.SecretCache())
 
 
 @pytest.fixture(autouse=True)

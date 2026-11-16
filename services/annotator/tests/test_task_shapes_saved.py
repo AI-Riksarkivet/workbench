@@ -29,7 +29,11 @@ import pytest
 
 from annotator.annotations.save import new_rows
 from annotator.annotations.schema import EMPTY_SCHEMA, NewAnnotation
-from annotator.api.v1.endpoints.assist import _CANONICAL_SHAPE, AssistShape, _within_contract
+from annotator.api.v1.endpoints.assist import _CANONICAL_SHAPE, AssistShape, _task_ontology, _within_contract
+from annotator.core.config import AnnotatorSettings
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Task
+from annotator.projects.ontology import LabelOntology
+from annotator.state.store import AnnotatorStore
 
 
 if TYPE_CHECKING:
@@ -139,28 +143,30 @@ def test_per_row_attributes_ride_metadata_and_survive_an_edit_patch(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_assist_predictions_are_filtered_by_the_composite_ontology(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_assist_predictions_are_filtered_by_the_composite_ontology(state_settings: AnnotatorSettings) -> None:
     """The ML-backend interplay for a CUSTOM task: the server checks every producer shape against
-    the task's own taxonomy — the union of per-class tools — before it reaches a human. A mask
-    prediction against a polygon/bbox/text layout task is dropped AND reported, not queued."""
-
-    class _Task:
-        async def get(self) -> dict:
-            return {
-                "ontology": {
-                    "kind": "ocr-layout",
-                    "classes": [
-                        {"name": "header", "tools": ["bbox"]},
-                        {"name": "paragraph", "tools": ["polygon", "bbox"]},
-                        {"name": "marginalia", "tools": ["polygon"]},
-                        {"name": "transcription", "tools": ["text"]},
-                    ],
-                }
-            }
-
-    import annotator.api.v1.endpoints.tasks as tasks_mod
-
-    monkeypatch.setattr(tasks_mod, "_proxy", lambda _tid: _Task())
+    the task's own taxonomy — the union of per-class tools, read from the task the store holds — before it reaches a
+    human. A mask prediction against a polygon/bbox/text layout task is dropped AND reported, not queued."""
+    ontology = LabelOntology.model_validate(
+        {
+            "kind": "ocr-layout",
+            "classes": [
+                {"name": "header", "tools": ["bbox"]},
+                {"name": "paragraph", "tools": ["polygon", "bbox"]},
+                {"name": "marginalia", "tools": ["polygon"]},
+                {"name": "transcription", "tools": ["text"]},
+            ],
+        }
+    )
+    store = await AnnotatorStore.open(state_settings)
+    try:
+        await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="layout", state=ProjectState.LABELING))
+        await store.send_tasks(
+            "p1", [Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks", keys=["d1"]), media=MediaRef(kind="image"), ontology=ontology)]
+        )
+        contract = await _task_ontology(store, "p1", "t1")
+    finally:
+        await store.close()
 
     def shape(t: str) -> AssistShape:
         return AssistShape(shape_type=t, x=0, y=0, width=10, height=10)
@@ -171,9 +177,7 @@ async def test_assist_predictions_are_filtered_by_the_composite_ontology(monkeyp
     for s in shapes:
         s.shape_type = _CANONICAL_SHAPE.get(s.shape_type, s.shape_type)
 
-    from annotator.api.v1.endpoints.assist import _task_ontology
-
-    kept, dropped = _within_contract(shapes, await _task_ontology("t1"))
+    kept, dropped = _within_contract(shapes, contract)
 
     # `rectangle` (a producer dialect) normalized to `bbox` and accepted; `mask` refused.
     assert [s.shape_type for s in kept] == ["polygon", "bbox"]
