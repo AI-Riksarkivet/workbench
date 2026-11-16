@@ -8,7 +8,7 @@
 # - `workbench-services`, the services' confidential client: its own client-credentials token for the lakehouse (the
 #   machine `dex-client~workbench-services` there). Its secret is a DEVELOPMENT-ONLY literal, as the fixture's own
 #   `machineClients` secrets are (rask's deploy/fixtures/dex/chart/values.yaml); the workbench's release renders the
-#   same literal into the Secret `workbench-oidc-client` from its dev overlay (`values.yaml`, `dev.secrets`).
+#   same literal into the Secret `workbench-oidc-client` from its dev overlay (`deploy/values-dev.yaml`, `dev.secrets`).
 clients:
   - id: workbench-app
     public: true

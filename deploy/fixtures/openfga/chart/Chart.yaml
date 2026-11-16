@@ -1,0 +1,8 @@
+apiVersion: v2
+name: workbench-openfga
+description: >-
+  NOT FOR PRODUCTION. The workbench's development OpenFGA: the server, its Postgres (CloudNativePG) and a preshared key,
+  generated in the cluster. A platform's OpenFGA replaces it.
+type: application
+version: 0.1.0
+appVersion: "v1.18.3"

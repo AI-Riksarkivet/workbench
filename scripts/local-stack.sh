@@ -5,9 +5,14 @@
 # open; Ctrl-C stops every process it started, and if any of them stops on its own the rest are stopped and the script
 # says which.
 #
-# `make local` installs, builds the app and runs this with SEED=1, which seeds the catalog
-# (`scripts/seed_demo_corpus.py`) once the ports are known to be free: a seed rewrites the tables a running stack holds
-# open. Run on its own it expects the app built (`bun --cwd=frontend/app run build`) and seeds only with SEED=1.
+# `make local` first runs this with `check`, which refuses a port something already listens on before anything is
+# installed or built (a build replaces the files a running stack serves), then installs, builds the app and runs this
+# with SEED=1, which seeds the catalog (`scripts/seed_demo_corpus.py`) once the ports are known to be free: a seed
+# rewrites the tables a running stack holds open. Run on its own it expects the app built
+# (`bun --cwd=frontend/app run build`) and seeds only with SEED=1.
+#
+# The stack's root process writes its PID to PID_FILE (default: $TMPDIR/workbench-local-stack.pid) and removes it when
+# it ends; `stop` (`make local-stop`) stops exactly that process and waits until every port is free.
 #
 #   MEDIA_CATALOG_DIR   the directory catalog every service reads (default: $TMPDIR/workbench-catalog);
 #                       MEDIA_CATALOG_URI names a catalog's REST door instead
@@ -38,6 +43,72 @@ if [ -z "${MEDIA_CATALOG_URI:-}" ]; then
 fi
 export MEDIA_DEFAULT_DATASET="${MEDIA_DEFAULT_DATASET:-demo\$corpus}"
 
+EDGE_PORT="${EDGE_PORT:-8700}"
+STATE_PORT="${STATE_PORT:-8705}"
+STATE_DIR="${STATE_DIR:-${MEDIA_CATALOG_DIR:-${TMPDIR:-/tmp}/workbench}-state}"
+POSTGRES_TREE="${WORKBENCH_POSTGRES_DIR:-$ROOT/.localbin/postgres}"
+VIEWER_PORT="${VIEWER_PORT:-8701}"
+SEARCH_PORT="${SEARCH_PORT:-8702}"
+ANNOTATOR_PORT="${ANNOTATOR_PORT:-8703}"
+FLOWS_PORT="${FLOWS_PORT:-8704}"
+APP_CONFIG="$ROOT/frontend/app/dev/config.json"
+PID_FILE="${PID_FILE:-${TMPDIR:-/tmp}/workbench-local-stack.pid}"
+PORTS=("edge:$EDGE_PORT" "app:$((EDGE_PORT + 1000))" "viewer:$VIEWER_PORT" "search:$SEARCH_PORT" \
+  "annotator:$ANNOTATOR_PORT" "flows:$FLOWS_PORT" "state:$STATE_PORT")
+
+# The ports something already listens on, each with its name.
+listening() {
+  local named port
+  for named in "${PORTS[@]}"; do
+    port=${named#*:}
+    if (exec 3<>"/dev/tcp/$LOOPBACK/$port") 2>/dev/null; then echo "$port (${named%%:*})"; fi
+  done
+}
+
+# A port something already answers on would serve another program's pages under this stack's URL: refuse it, by name.
+refuse_busy_ports() {
+  local busy
+  busy="$(listening | paste -sd ' ')"
+  if [ -n "$busy" ]; then
+    echo "not starting: something already listens on port $busy. Stop it (\`make local-stop\` stops a local stack), or choose other ports (EDGE_PORT, VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT, STATE_PORT)." >&2
+    exit 1
+  fi
+}
+
+case "${1:-run}" in
+  check)
+    refuse_busy_ports
+    exit 0
+    ;;
+  stop)
+    if [ ! -s "$PID_FILE" ]; then
+      echo "no local stack is recorded at $PID_FILE"
+      exit 0
+    fi
+    pid="$(cat "$PID_FILE")"
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "the local stack recorded at $PID_FILE (pid $pid) is not running; forgetting it"
+      rm -f "$PID_FILE"
+      exit 0
+    fi
+    kill -TERM "$pid"
+    for _ in $(seq 1 150); do
+      if ! kill -0 "$pid" 2>/dev/null && [ -z "$(listening)" ]; then
+        echo "the local stack (pid $pid) stopped, and its ports are free"
+        exit 0
+      fi
+      sleep 0.2
+    done
+    echo "the local stack (pid $pid) did not stop within 30 s; still listening: $(listening | paste -sd ' ')" >&2
+    exit 1
+    ;;
+  run) ;;
+  *)
+    echo "usage: $0 [run|check|stop]" >&2
+    exit 2
+    ;;
+esac
+
 # Development credentials, in files as a deployment mounts them: the viewer's media-URL signing key (32 random bytes,
 # base64), made once per host, and the token flows presents to Serve. A local Serve verifies no token, so the dev one is
 # a placeholder; a deployment mounts a projected ServiceAccount token with audience `serve`.
@@ -50,15 +121,6 @@ fi
 export VIEWER_MEDIA_URL_KEY_FILE="${VIEWER_MEDIA_URL_KEY_FILE:-$DEV_SECRETS/media-url-key}"
 export WORKBENCH_FLOWS_SERVE_TOKEN_FILE="${WORKBENCH_FLOWS_SERVE_TOKEN_FILE:-$DEV_SECRETS/serve-token}"
 
-EDGE_PORT="${EDGE_PORT:-8700}"
-STATE_PORT="${STATE_PORT:-8705}"
-STATE_DIR="${STATE_DIR:-${MEDIA_CATALOG_DIR:-${TMPDIR:-/tmp}/workbench}-state}"
-POSTGRES_TREE="${WORKBENCH_POSTGRES_DIR:-$ROOT/.localbin/postgres}"
-VIEWER_PORT="${VIEWER_PORT:-8701}"
-SEARCH_PORT="${SEARCH_PORT:-8702}"
-ANNOTATOR_PORT="${ANNOTATOR_PORT:-8703}"
-FLOWS_PORT="${FLOWS_PORT:-8704}"
-APP_CONFIG="$ROOT/frontend/app/dev/config.json"
 
 if [ ! -x "$POSTGRES_TREE/bin/postgres" ]; then
   echo "no PostgreSQL server at $POSTGRES_TREE: run \`make postgres\` (or \`make local\`)" >&2
@@ -69,17 +131,8 @@ if [ ! -f "$ROOT/frontend/app/build/index.html" ]; then
   exit 1
 fi
 
-# A port something already answers on would serve another program's pages under this stack's URL: refuse it, by name.
-busy=()
-for named in "edge:$EDGE_PORT" "app:$((EDGE_PORT + 1000))" "viewer:$VIEWER_PORT" "search:$SEARCH_PORT" \
-  "annotator:$ANNOTATOR_PORT" "flows:$FLOWS_PORT" "state:$STATE_PORT"; do
-  port=${named#*:}
-  if (exec 3<>"/dev/tcp/$LOOPBACK/$port") 2>/dev/null; then busy+=("$port (${named%%:*})"); fi
-done
-if [ ${#busy[@]} -gt 0 ]; then
-  echo "not starting: something already listens on port ${busy[*]}. Stop it, or choose other ports (EDGE_PORT, VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT, STATE_PORT)." >&2
-  exit 1
-fi
+refuse_busy_ports
+echo "$$" > "$PID_FILE"
 
 if [ "${SEED:-}" = 1 ]; then
   (cd "$ROOT" && uv run --no-sync python scripts/seed_demo_corpus.py)
@@ -115,6 +168,8 @@ stop() {
 }
 
 trap 'echo; echo "stopping the local stack..."; trap - INT TERM; stop; exit 0' INT TERM
+# The record goes with the stack, however it ends, unless another stack has written its own since.
+trap '[ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$PID_FILE"' EXIT
 
 cd "$ROOT"
 

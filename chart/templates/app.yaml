@@ -1,7 +1,7 @@
 {{- if .Values.app.enabled }}
-{{- $r := .Values.rask.release -}}
-{{- $name := printf "%s-workbench-app" $r -}}
-{{- $selector := dict "app.kubernetes.io/name" "rask" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" "workbench-app" -}}
+{{- $r := .Release.Name -}}
+{{- $name := printf "%s-app" $r -}}
+{{- $selector := dict "app.kubernetes.io/name" "workbench" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" "app" -}}
 {{- $services := dict "viewer" .Values.media.viewer.prefix "search" .Values.media.search.prefix "annotator" .Values.route.prefix -}}
 {{- $config := dict "signIn" false "services" $services -}}
 {{- if .Values.auth.enabled }}
@@ -22,7 +22,7 @@ data:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $r }}-sa-workbench-app
+  name: {{ $r }}-app
   labels:
     {{- toYaml $selector | nindent 4 }}
 automountServiceAccountToken: false
@@ -61,7 +61,7 @@ spec:
       labels:
         {{- toYaml $selector | nindent 8 }}
     spec:
-      serviceAccountName: {{ $r }}-sa-workbench-app
+      serviceAccountName: {{ $r }}-app
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true

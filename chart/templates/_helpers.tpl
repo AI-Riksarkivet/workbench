@@ -1,14 +1,43 @@
-{{- define "annotator.name" -}}{{ printf "%s-annotator" .Values.rask.release }}{{- end -}}
+{{- /* Every object is named from the release (`<release>-<component>`) and labelled with the workbench's name, the
+release and its component, so two releases in one namespace never share a name or a selector. */ -}}
+{{- define "annotator.name" -}}{{ printf "%s-annotator" .Release.Name }}{{- end -}}
 
 {{- define "annotator.selector" -}}
-app.kubernetes.io/name: rask
-app.kubernetes.io/instance: {{ .Values.rask.release }}
+app.kubernetes.io/name: workbench
+app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: annotator
 {{- end -}}
 
 {{- define "annotator.stateCluster" -}}{{ printf "%s-state" (include "annotator.name" .) }}{{- end -}}
 
-{{- define "annotator.otlpEndpoint" -}}{{ .Values.otel.endpoint | default (printf "http://%s-otel-collector:4318" .Values.rask.release) }}{{- end -}}
+{{- define "annotator.otlpEndpoint" -}}{{ required "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" .Values.otel.endpoint }}{{- end -}}
+
+{{- /* The catalog every service reads datasets through: a lance-namespace REST catalog (`catalog.uri`, a rask lakehouse's
+or any other), or a directory catalog on a claim (`catalog.dir.claim`), mounted where `MEDIA_CATALOG_DIR` names. */ -}}
+{{- define "workbench.catalogEnv" -}}
+{{- if eq (empty .Values.catalog.uri) (empty .Values.catalog.dir.claim) }}{{ fail "name exactly one catalog: catalog.uri (a lance-namespace REST catalog) or catalog.dir.claim (a directory catalog on a PersistentVolumeClaim)" }}{{ end -}}
+{{- if .Values.catalog.uri }}
+- { name: MEDIA_CATALOG_URI, value: {{ .Values.catalog.uri | quote }} }
+{{- else }}
+- { name: MEDIA_CATALOG_DIR, value: /var/lib/workbench/catalog }
+{{- end }}
+{{- end -}}
+
+{{- define "workbench.catalogMount" -}}
+{{- if .Values.catalog.dir.claim }}
+- { name: catalog, mountPath: /var/lib/workbench/catalog }
+{{- end }}
+{{- end -}}
+
+{{- define "workbench.catalogVolume" -}}
+{{- if .Values.catalog.dir.claim }}
+- name: catalog
+  persistentVolumeClaim: { claimName: {{ .Values.catalog.dir.claim | quote }} }
+{{- end }}
+{{- end -}}
+
+{{- /* Whether the lakehouse authenticates the services' reads: a REST catalog with `auth.lakehouse.audience` named. */ -}}
+{{- define "workbench.lakehouseAuth" -}}{{ if and .Values.auth.enabled .Values.catalog.uri .Values.auth.lakehouse.audience }}true{{ end }}{{- end -}}
 
 {{- /* The workbench's sign-in and store settings, shared by the annotator and its model writer. */ -}}
 {{- define "annotator.fgaEnv" -}}
@@ -97,7 +126,9 @@ the app refuse a provider that offers no DPoP, and never lets it sign in without
 
 {{- define "annotator.authEnv" -}}
 {{ include "workbench.oidcEnv" (list . (include "workbench.publicUrl" (list . .Values.route.prefix))) }}
+{{- if include "workbench.lakehouseAuth" . }}
 {{ include "workbench.lakehouseEnv" . }}
+{{- end }}
 - { name: ANNOTATOR_ANNOTATIONS_NAMESPACE, value: {{ required "auth.annotationsNamespace: the workbench's own annotations namespace" .Values.auth.annotationsNamespace | quote }} }
 {{ include "annotator.fgaEnv" . }}
 {{- end -}}

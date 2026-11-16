@@ -1,6 +1,6 @@
 /**
  * `/config.json`: what the deployment tells the built app at boot, so the image carries no
- * environment. The release renders it from its values (`deploy/fixtures/annotator`'s
+ * environment. The release renders it from its values (`chart/`'s
  * `app.config`); `vite dev` serves `dev/config.json`.
  *
  * - `services` names each service's PUBLIC base: the path the Gateway routes to it and rewrites to the

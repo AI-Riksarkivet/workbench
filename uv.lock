@@ -3512,12 +3512,14 @@ source = { editable = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "jsonschema" },
     { name = "moto", extra = ["s3", "server"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "pyyaml" },
     { name = "requests" },
     { name = "respx" },
     { name = "ruff" },
@@ -3528,12 +3530,14 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "jsonschema", specifier = ">=4.23" },
     { name = "moto", extras = ["s3", "server"], specifier = ">=5.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "pytest-cov", specifier = ">=7.0" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32" },
     { name = "respx", specifier = ">=0.21" },
     { name = "ruff" },

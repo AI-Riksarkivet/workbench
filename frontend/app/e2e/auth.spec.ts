@@ -23,7 +23,7 @@ import {
 
 const SERVICES = { viewer: '/api/viewer', search: '/api/search', annotator: '/api/annotator' };
 
-/** The `/config.json` a Dex-shaped deployment renders (`deploy/fixtures/annotator`'s `app.oidc`). */
+/** The `/config.json` a Dex-shaped deployment renders (`chart/`'s `app.oidc`, `deploy/values-dev.yaml`). */
 const DEX_CONFIG = {
 	issuer: '/oidc-dex',
 	clientId: APP_CLIENT,
@@ -88,6 +88,25 @@ test('a discovery document naming another issuer is refused before any of its en
 
 	await expect(page.getByText(/names the issuer http:\/\/elsewhere\.example\/oidc/)).toBeVisible();
 	expect(issuerCalls.filter((url) => !url.includes('/.well-known/'))).toEqual([]);
+});
+
+test('an app whose client the provider does not know says so when the person comes back from the provider', async ({
+	page,
+	context,
+}) => {
+	await page.route('**/config.json', (route) =>
+		route.fulfill({ json: { ...DEX_CONFIG, clientId: 'a-client-nobody-registered' } }),
+	);
+	await signIn(context, person('Ada'));
+	// The provider answers a client it does not know with an error of its own and never sends the person back.
+	await page.goto('/datasets');
+	await expect(page).toHaveURL(/\/oidc-dex\/auth\?/);
+
+	await page.goBack();
+
+	await expect(
+		page.getByText(/does not know this app's client "a-client-nobody-registered"/),
+	).toBeVisible();
 });
 
 test('a deployment that requires bound tokens refuses a provider that offers no DPoP', async ({

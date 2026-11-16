@@ -1,6 +1,6 @@
 {{- $name := include "annotator.name" . -}}
 {{- if .Values.route.enabled }}
-{{- if not .Values.route.parentRefs }}{{ fail "route.parentRefs must name the Gateway rask's routes attach to (rask's `route.parentRefs`)" }}{{ end }}
+{{- if not .Values.route.parentRefs }}{{ fail "route.parentRefs must name the Gateway the workbench's routes attach to" }}{{ end }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -88,6 +88,6 @@ spec:
         - { protocol: TCP, port: 5432 }
     {{- /* A standby reaches its primary by the Cluster's Service name, so the instances resolve names. */}}
     {{- toYaml .Values.networkPolicy.dnsEgress | nindent 4 }}
-    {{- if not .Values.networkPolicy.apiServerEgress }}{{ fail "networkPolicy.apiServerEgress must name the Kubernetes API server's endpoints (rask's `networkPolicy.apiServerEgress`): each instance manager watches its Cluster" }}{{ end }}
+    {{- if not .Values.networkPolicy.apiServerEgress }}{{ fail "networkPolicy.apiServerEgress must name the Kubernetes API server's endpoints : each instance manager watches its Cluster" }}{{ end }}
     {{- toYaml .Values.networkPolicy.apiServerEgress | nindent 4 }}
 {{- end }}

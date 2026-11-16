@@ -1,12 +1,12 @@
 {{- if .Values.assist.enabled }}
-{{- $r := .Values.rask.release -}}
+{{- $r := .Release.Name -}}
 {{- $name := printf "%s-assist" $r -}}
 {{- $l := .Values.lifecycle -}}
-{{- $selector := dict "app.kubernetes.io/name" "rask" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" "assist" -}}
+{{- $selector := dict "app.kubernetes.io/name" "workbench" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" "assist" -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $r }}-sa-assist
+  name: {{ $r }}-assist
   labels:
     {{- toYaml $selector | nindent 4 }}
 automountServiceAccountToken: false
@@ -44,7 +44,7 @@ spec:
         {{- toYaml $selector | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: {{ $l.terminationGracePeriodSeconds }}
-      serviceAccountName: {{ $r }}-sa-assist
+      serviceAccountName: {{ $r }}-assist
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -70,7 +70,7 @@ spec:
               containerPort: {{ .Values.assist.port }}
           env:
             # The payload's image_url is relative; this base is the runner's only allowed origin.
-            - { name: ASSIST_FRAME_BASE, value: {{ .Values.assist.frameBase | default (printf "http://%s-viewer:8101" $r) | quote }} }
+            - { name: ASSIST_FRAME_BASE, value: {{ .Values.assist.frameBase | default (printf "http://%s-viewer:%v" $r .Values.media.viewer.port) | quote }} }
           startupProbe:
             httpGet: { path: /livez, port: http }
             periodSeconds: 10

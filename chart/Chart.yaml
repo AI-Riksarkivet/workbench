@@ -1,0 +1,9 @@
+apiVersion: v2
+name: workbench
+description: >-
+  The workbench: explore, search and annotate the datasets in a lance-namespace catalog (a rask lakehouse's, or a
+  directory of its own), as one app. Its sign-in, authorization and state are its own; a lakehouse is reached by
+  reference only.
+type: application
+version: 0.1.0
+appVersion: "0.3.0"

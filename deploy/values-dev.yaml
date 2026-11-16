@@ -5,7 +5,10 @@
 # The dev Dex binds no token and exchanges none of its own (its discovery read 2026-11-16 advertises no
 # `dpop_signing_alg_values_supported`; its token-exchange grant takes only an upstream connector's token), so the app
 # asks for the lakehouse's audience beside its own (Dex's cross-client scope, which rask's audience client issues to
-# every client in the fixture's `clients`, `dex-client.yaml`), the token is a bearer, and the services pass it on.
+# every client in the fixture's `clients`, `deploy/dex-client.yaml`), the token is a bearer, and the services pass it on.
+#
+# `make deploy-dev` installs the chart (`chart/`) as release `workbench` in namespace `workbench` with this file alone
+# and the image tags of the commit it builds (docs/DEPLOY.md).
 docs: true
 # The Gateway rask's routes attach to (rask's deploy/values-local.yaml), under a hostname of the workbench's own: rask's
 # console holds `/` with no hostname, and a route naming a hostname wins over it (Gateway API's precedence).
@@ -14,12 +17,11 @@ route:
   hostnames: [workbench.localhost]
 # The Gateway's data plane runs in the k3s pod CIDR, as rask's `forwardedAllowIps` in deploy/values-local.yaml.
 forwardedAllowIps: 10.42.0.0/16
-# rask's names, reached across namespaces by their Service's namespace-qualified name.
-rask:
-  release: rask
+# rask's catalog and Collector, reached across namespaces by their Services' namespace-qualified names.
 catalog:
-  url: http://rask-catalog.default.svc:2333
+  uri: http://rask-catalog.default.svc:2333
 otel:
+  enabled: true
   endpoint: http://rask-otel-collector.default.svc:4318
   environment: dev
 image:
@@ -50,10 +52,16 @@ auth:
     audience: rask-lakehouse
     audienceScope: audience:server:client_id:rask-lakehouse
     delegation: forward
+  # The workbench's annotation tables, in a warehouse the dev estate holds; `make grants-dev` creates the namespace and
+  # grants the workbench's own identity write there (scripts/lakehouse_grants.py).
+  annotationsNamespace: acme$workbench_annotations
+  # The workbench's own OpenFGA, the development fixture `deploy/fixtures/openfga` in this namespace, and the preshared
+  # key it generates.
   fga:
     apiUrl: http://workbench-openfga:8080
     credential:
-      name: workbench-openfga-key
+      name: workbench-openfga
+      key: preshared-key
     # The dev Dex's alice (rask's estate admin, `scripts/dex_principal.py` in rask) administers `acme`.
     orgs:
       acme:

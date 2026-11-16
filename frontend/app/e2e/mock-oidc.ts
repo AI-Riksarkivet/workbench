@@ -281,6 +281,12 @@ Bun.serve({
 				return serviceGrant(shape, issuer, form, req);
 			if (type !== 'authorization_code' && type !== 'refresh_token')
 				return refused('unsupported_grant_type', `no ${type} grant`);
+			// The client is authenticated before the grant is read (Dex v2.46.1 `authenticateClient`).
+			if (form.get('client_id') !== APP_CLIENT)
+				return json(
+					{ error: 'invalid_client', error_description: 'Invalid client credentials.' },
+					401,
+				);
 			let grant = redeemed(type, form);
 			if (!grant) return refused('invalid_grant', 'unknown code or refresh token');
 			if (form.get('client_id') !== grant.clientId) {

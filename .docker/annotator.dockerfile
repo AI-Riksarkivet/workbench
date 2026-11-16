@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.11
 # rask annotator image — a labeling tool that works on the lakehouse through its public doors (ADR 0171).
-# It is a client of the lakehouse with its own release (deploy/fixtures/annotator), so it ships its own
+# It is a client of the lakehouse with its own release (the workbench chart, chart/), so it ships its own
 # image built from the ROOT uv workspace with its own closure: `uv sync --package annotator` and nothing else.
 # Build (DAGGER builds every image in this repo — this recipe is the definition, not the driver):
 #   dagger call image --name=annotator

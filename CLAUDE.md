@@ -77,9 +77,9 @@ The open rows are issues #6 to #10 (WB-A to WB-E), each with its decisions in it
 one app) is split into steps, and each landed step has a comment saying what landed, the gates, what was not
 confirmed and the next step: **read #9's latest comment before starting.** The owner's order (2026-11-16) is to make
 it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
-keeps its state in its own Postgres (R2). Next is R3, sign-in with whatever OIDC provider the cluster runs (token
-exchange and DPoP only where the provider's discovery offers them) and the first cluster run, which is asked of the
-owner first; then R4 (read-only from any Lance source), R5 (graph and tree as dock panels), D3b-2, D3c and D4. Nothing
+keeps its state in its own Postgres (R2). R3 made sign-in work with whatever OIDC provider the cluster runs (token
+exchange and DPoP only where the provider's discovery offers them) and built the first cluster run (`make deploy-dev`,
+docs/DEPLOY.md); then R4 (read-only from any Lance source), R5 (graph and tree as dock panels), D3b-2, D3c and D4. Nothing
 has run on a cluster yet. Two live copies of one session must never drive the same worktree: before resuming an agent
 after a restart, check `~/.claude/sessions/*.json` for a second process with the same session id.
 Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
@@ -145,6 +145,9 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | --- | --- |
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
 | Run it locally with real data | `make local`: installs, seeds a demo page corpus and an audio dataset into a local directory catalog (`scripts/seed_demo_corpus.py`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
+| Stop the local stack | `make local-stop`: stops the process `make local` recorded (`$TMPDIR/workbench-local-stack.pid`) and waits until its ports are free; `make local` checks the ports before it installs or builds anything |
+| Deploy to the development cluster | `make deploy-dev` (images by commit, the OpenFGA fixture, the Dex client, the release, the lakehouse grants, a read-back), each step its own `make dev-*`; `make undeploy-dev` removes it all (docs/DEPLOY.md) |
+| The chart's renders | `make chart-check` (lint, and the dev overlay, a platform's, a release with no lakehouse and one with sign-in off) |
 | Tests (no live stack) | `make test` (= `uv run pytest -m "not e2e" -n 8`) |
 | One test | `uv run pytest services/<svc>/tests/<file>.py::<test>` |
 | Lint, format, type-check | `make check` |
@@ -197,7 +200,7 @@ Two language-pure planes, as in rask; never blur them.
     is `/projects` and `/projects/[project]` (`#lib/projects`, its calls `#lib/api/projects.api.ts`): a project's
     read answers the reader's `permissions`, and a page offers only what its door would let through; a dataset's
     search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`). Image
-    `.docker/frontend.dockerfile`; released by `deploy/fixtures/annotator` (`app.*`) at `/`.
+    `.docker/frontend.dockerfile`; released by the chart (`chart/`, `app.*`) at `/`.
   - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
     its Atlas node opens, the player), until D4 merges it with studio's flows. `frontend/annotator`, `frontend/studio`:
     the old SvelteKit 2 apps, moving into `frontend/app` (#9 D3, D4); never deployable. The annotator's project pages
@@ -207,9 +210,12 @@ Two language-pure planes, as in rask; never blur them.
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),
   built from the repository root against the root `uv.lock`.
 - `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`, `app-end-to-end`, `fga-test`).
-- `deploy/fixtures/annotator`: the workbench's release (the annotator, the viewer and search from the `media` image, and
-  the app), with the development estate's overlay (`values.yaml`) and the clients it supplies to rask's dev Dex
-  (`dex-client.yaml`).
+- `chart/`: the workbench's release (the annotator, the viewer and search from the `media` image, the app, the
+  annotator's Postgres and the model writer), every object named from the release; it reads a rask lakehouse by
+  reference (`catalog.uri`) or a directory catalog of its own (`catalog.dir.claim`), so it runs with no rask at all.
+- `deploy/`: the development estate's overlay (`values-dev.yaml`), the clients it supplies to rask's dev Dex
+  (`dex-client.yaml`), and `fixtures/openfga`, the workbench's own development OpenFGA. `docs/DEPLOY.md` says how a
+  release is installed on the development cluster (`make deploy-dev`) and on a platform.
 - `docs/rask/`: rask's published contract, vendored (`PROVENANCE.md` says from which sha and how to refresh it).
 - `scripts/`: dev and ops scripts.
 

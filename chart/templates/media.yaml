@@ -4,7 +4,7 @@ token `auth.lakehouse.delegation` says (exchanged, or the person's own passed on
 media link's one cell as itself. Each is published at its own prefix on the Gateway the annotator's route attaches to,
 rewritten to the service's root, so the prefix is what the browser's DPoP proofs name.
 */ -}}
-{{- $r := .Values.rask.release -}}
+{{- $r := .Release.Name -}}
 {{- $l := .Values.lifecycle -}}
 {{- $drain := sub $l.terminationGracePeriodSeconds (add $l.preStopSeconds $l.teardownSeconds) -}}
 {{- $m := .Values.media -}}
@@ -12,15 +12,15 @@ rewritten to the service's root, so the prefix is what the browser's DPoP proofs
 {{- $s := index $m $service -}}
 {{- if $s.enabled }}
 {{- $name := printf "%s-%s" $r $service -}}
-{{- $selector := dict "app.kubernetes.io/name" "rask" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" $service -}}
+{{- $selector := dict "app.kubernetes.io/name" "workbench" "app.kubernetes.io/instance" $r "app.kubernetes.io/component" $service -}}
 {{- /* The viewer reads a signed link's cell as itself, so it holds the confidential client; search reads only as the
 person, so it holds it only where it exchanges the person's token. */ -}}
-{{- $client := and $.Values.auth.enabled (or (eq $service "viewer") (eq $.Values.auth.lakehouse.delegation "exchange")) }}
+{{- $client := and (include "workbench.lakehouseAuth" $) (or (eq $service "viewer") (eq $.Values.auth.lakehouse.delegation "exchange")) }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $r }}-sa-{{ $service }}
+  name: {{ $r }}-{{ $service }}
   labels:
     {{- toYaml $selector | nindent 4 }}
 automountServiceAccountToken: false
@@ -58,7 +58,7 @@ spec:
         lance.dev/logs: otlp
     spec:
       terminationGracePeriodSeconds: {{ $l.terminationGracePeriodSeconds }}
-      serviceAccountName: {{ $r }}-sa-{{ $service }}
+      serviceAccountName: {{ $r }}-{{ $service }}
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -96,7 +96,7 @@ spec:
             - { name: MEDIA_DOCS, value: {{ $.Values.docs | quote }} }
             # The app calls each service's doors under `/api` below the service's public prefix.
             - { name: WORKBENCH_API_PREFIX, value: "/api" }
-            - { name: MEDIA_CATALOG_URI, value: {{ $.Values.catalog.url | default (printf "http://%s-catalog:2333" $r) | quote }} }
+            {{- include "workbench.catalogEnv" $ | nindent 12 }}
             {{- if eq $service "viewer" }}
             - { name: VIEWER_MEDIA_URL_KEY_FILE, value: /var/run/secrets/viewer/media-url-key/media-url-key }
             {{- end }}
@@ -112,7 +112,7 @@ spec:
             {{- include "workbench.oidcEnv" (list $ (include "workbench.publicUrl" (list $ $s.prefix))) | nindent 12 }}
             {{- if $client }}
             {{- include "workbench.lakehouseEnv" $ | nindent 12 }}
-            {{- else }}
+            {{- else if include "workbench.lakehouseAuth" $ }}
             - { name: WORKBENCH_LAKEHOUSE_AUDIENCE, value: {{ required "auth.lakehouse.audience: the lakehouse's audience" $.Values.auth.lakehouse.audience | quote }} }
             - { name: WORKBENCH_LAKEHOUSE_DELEGATION, value: {{ $.Values.auth.lakehouse.delegation | quote }} }
             {{- end }}
@@ -140,6 +140,7 @@ spec:
             {{- toYaml $s.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- include "workbench.catalogMount" $ | nindent 12 }}
             {{- if eq $service "viewer" }}
             - { name: media-url-key, mountPath: /var/run/secrets/viewer/media-url-key, readOnly: true }
             {{- end }}
@@ -148,6 +149,7 @@ spec:
             {{- end }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: "2Gi" } }
+        {{- include "workbench.catalogVolume" $ | nindent 8 }}
         {{- if eq $service "viewer" }}
         # The media-URL signing key alone: the kubelet mounts it, so the pod's ServiceAccount reads no Secret.
         - name: media-url-key

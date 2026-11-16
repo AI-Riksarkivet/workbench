@@ -1,11 +1,14 @@
-.PHONY: help install sync local test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model
+.PHONY: help install sync local local-stop test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model chart-check \
+	deploy-dev undeploy-dev dev-clean-tree dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback \
+	dev-undeploy-grants dev-undeploy-release dev-undeploy-openfga dev-undeploy-dex-client dev-undeploy-namespace
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
 PYTEST_WORKERS ?= 8
 
 help:
-	@echo "Targets: install local test lint fmt typecheck check frontend-check app-dev app-e2e fga-test fga-model openfga postgres image NAME=<stem> claude-bootstrap"
+	@echo "Targets: install local local-stop test lint fmt typecheck check chart-check frontend-check app-dev app-e2e fga-test fga-model openfga postgres image NAME=<stem> claude-bootstrap"
+	@echo "Dev cluster (docs/DEPLOY.md): deploy-dev undeploy-dev, or one step at a time: dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback"
 
 # The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
 # `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
@@ -54,10 +57,17 @@ sync:
 # catalog, and run the services and the app behind its Gateway stand-in on one origin, on the loopback
 # (`scripts/local-stack.sh`, which prints the URL to open, by default http://127.0.0.1:8700/datasets). LOCAL_CATALOG
 # names the catalog's directory; EDGE_PORT and the *_PORT variables move the ports, and a port already in use is refused.
+# The ports are checked first, before anything is installed or built: a build replaces the files a running stack serves.
 LOCAL_CATALOG ?= $(or $(TMPDIR),/tmp)/workbench-catalog
-local: sync $(POSTGRES_DIR)/bin/postgres
+local:
+	bash scripts/local-stack.sh check
+	$(MAKE) sync postgres
 	bun --cwd=frontend/app run build
 	SEED=1 MEDIA_CATALOG_DIR=$(LOCAL_CATALOG) bash scripts/local-stack.sh
+
+# Stop the local stack `make local` started (the process its PID file names), and wait until its ports are free.
+local-stop:
+	bash scripts/local-stack.sh stop
 
 test: $(OPENFGA_BIN) $(POSTGRES_DIR)/bin/postgres
 	uv run pytest -m "not e2e" -n $(PYTEST_WORKERS)
@@ -99,6 +109,108 @@ app-e2e:
 # make image NAME=media    → .docker/media.dockerfile, built by Dagger (never docker); NAME=frontend is the app
 image:
 	$(DAGGER) call image --name=$(NAME)
+
+# The chart renders and lints in each shape a deployment takes: the development estate's overlay, a platform's (an https
+# IdP that binds tokens, a rask lakehouse by reference), and a release with no lakehouse at all (a directory catalog).
+CHART_APIS = --api-versions postgresql.cnpg.io/v1/Cluster --api-versions generators.external-secrets.io/v1alpha1/Password
+CHART_PLATFORM = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example \
+	--set auth.oidc.client.secret.name=wb-client --set auth.lakehouse.audience=lakehouse --set catalog.uri=https://lakehouse.example \
+	--set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
+CHART_NO_LAKEHOUSE = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example \
+	--set catalog.dir.claim=workbench-catalog --set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media \
+	--set 'route.parentRefs[0].name=gw'
+chart-check:
+	helm lint chart -f deploy/values-dev.yaml
+	helm template workbench chart -n workbench $(CHART_APIS) -f deploy/values-dev.yaml >/dev/null
+	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_PLATFORM) >/dev/null
+	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_NO_LAKEHOUSE) >/dev/null
+	helm template workbench chart -n workbench $(CHART_APIS) --set auth.enabled=false --set route.enabled=false \
+		--set catalog.dir.claim=workbench-catalog --set media.viewer.mediaUrlKey.name=wb-media >/dev/null
+	helm lint deploy/fixtures/openfga/chart
+	helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) >/dev/null
+
+# ── The development cluster (docs/DEPLOY.md) ──────────────────────────────────────────────────────────────────────────
+# One entry point, `make deploy-dev`, and each step its own target, each safe to run again. Values come from git alone
+# (`deploy/values-dev.yaml` and the commit's image tags, with --reset-values): nothing is read back from a release.
+# Every dagger call names the shared engine, since an unscoped CLI removes engines named `dagger-engine-*`.
+DEV_NAMESPACE ?= workbench
+DEV_RELEASE ?= workbench
+DEV_OPENFGA_RELEASE ?= workbench-openfga
+DEV_REGISTRY_PUSH ?= 172.17.0.1:5000
+DEV_ENGINE ?= docker-container://dagger-engine-rask
+DEV_TAG = $(shell git rev-parse --short=12 HEAD)
+# rask's checkout, whose `scripts/fixtures.sh dex` installs its development Dex with the workbench's clients.
+RASK_DIR ?= $(abspath $(CURDIR)/../rask)
+DEV_ISSUER ?= http://localhost:8080/dex
+# The administrator who makes the workbench's grants on the lakehouse; the password is read from this file, or asked.
+DEV_ADMIN ?= alice@example.com
+DEV_ADMIN_PASSWORD_FILE ?=
+DEV_GATEWAY_HOST ?= workbench.localhost
+DEV_HELM = helm --namespace $(DEV_NAMESPACE)
+DEV_GRANTS = uv run python scripts/lakehouse_grants.py --values deploy/values-dev.yaml --admin $(DEV_ADMIN) \
+	$(if $(DEV_ADMIN_PASSWORD_FILE),--password-file $(DEV_ADMIN_PASSWORD_FILE))
+
+deploy-dev: dev-clean-tree dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback
+
+# Images are named by the commit they are built from, so the tree must be that commit.
+dev-clean-tree:
+	@test -z "$$(git status --porcelain)" || { echo "the working tree is not clean: images are tagged by the commit ($(DEV_TAG)); commit or stash first" >&2; exit 1; }
+
+# media (the viewer and search), the annotator and the app, published to the development registry the cluster pulls from
+# as localhost:5000 (the bridge address here, since the engine is itself a container).
+dev-images: dev-clean-tree
+	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=media publish --address=$(DEV_REGISTRY_PUSH)/workbench-media:$(DEV_TAG)
+	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=annotator publish --address=$(DEV_REGISTRY_PUSH)/workbench-annotator:$(DEV_TAG)
+	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=frontend publish --address=$(DEV_REGISTRY_PUSH)/workbench-app:$(DEV_TAG)
+
+# The workbench's own OpenFGA (deploy/fixtures/openfga), first: the release's model writer runs against it.
+dev-openfga:
+	$(DEV_HELM) upgrade --install $(DEV_OPENFGA_RELEASE) deploy/fixtures/openfga/chart --create-namespace --reset-values \
+		--description "workbench fixture: not for production" --wait --timeout 10m
+
+# The workbench's clients at rask's development Dex, through rask's own fixture script: it installs Dex again with rask's
+# values, the issuer rask passes it and this file, so a second run changes nothing, and Dex restarts only when its
+# configuration changed.
+dev-dex-client:
+	@test -x $(RASK_DIR)/scripts/fixtures.sh || { echo "no rask checkout at $(RASK_DIR): set RASK_DIR" >&2; exit 1; }
+	$(RASK_DIR)/scripts/fixtures.sh dex -- --set-string issuer=$(DEV_ISSUER) -f $(CURDIR)/deploy/dex-client.yaml
+
+dev-release:
+	$(DEV_HELM) upgrade --install $(DEV_RELEASE) chart --create-namespace --reset-values -f deploy/values-dev.yaml \
+		--set-string image.tag=$(DEV_TAG) --set-string media.image.tag=$(DEV_TAG) --set-string app.image.tag=$(DEV_TAG) \
+		--wait --wait-for-jobs --timeout 15m
+
+dev-grants:
+	$(DEV_GRANTS) grant
+
+# Every workload Ready, and the route answering the app's own /config.json through the Gateway under the workbench's host.
+dev-readback:
+	kubectl --namespace $(DEV_NAMESPACE) wait --for=condition=Available deployment --all --timeout=300s
+	kubectl --namespace $(DEV_NAMESPACE) wait --for=condition=Ready cluster.postgresql.cnpg.io --all --timeout=300s
+	@gateway="$$(kubectl --namespace kube-system get gateway traefik-gateway -o jsonpath='{.status.addresses[0].value}')"; \
+		curl -fsS -H 'Host: $(DEV_GATEWAY_HOST)' "http://$$gateway/config.json" >/dev/null \
+		&& echo "the workbench answers at http://$(DEV_GATEWAY_HOST):8080 (through the port-forward to the Gateway)"
+
+undeploy-dev: dev-undeploy-grants dev-undeploy-release dev-undeploy-openfga dev-undeploy-namespace dev-undeploy-dex-client
+	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry, and the annotations namespace's tables in the lakehouse (dropped by their owner at the catalog's drop door)"
+
+dev-undeploy-grants:
+	$(DEV_GRANTS) revoke
+
+dev-undeploy-release:
+	$(DEV_HELM) uninstall $(DEV_RELEASE) --ignore-not-found --wait
+
+dev-undeploy-openfga:
+	$(DEV_HELM) uninstall $(DEV_OPENFGA_RELEASE) --ignore-not-found --wait
+
+# The namespace last, and with it the claims both databases held.
+dev-undeploy-namespace:
+	kubectl delete namespace $(DEV_NAMESPACE) --ignore-not-found --wait
+
+# rask's development Dex installed again without the workbench's clients.
+dev-undeploy-dex-client:
+	@test -x $(RASK_DIR)/scripts/fixtures.sh || { echo "no rask checkout at $(RASK_DIR): set RASK_DIR" >&2; exit 1; }
+	$(RASK_DIR)/scripts/fixtures.sh dex -- --set-string issuer=$(DEV_ISSUER)
 
 claude-bootstrap:
 	@command -v claude  >/dev/null 2>&1 || { echo "  !! claude CLI not found — install Claude Code first"; exit 1; }

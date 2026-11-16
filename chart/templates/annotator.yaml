@@ -1,4 +1,4 @@
-{{- $r := .Values.rask.release -}}
+{{- $r := .Release.Name -}}
 {{- $name := include "annotator.name" . -}}
 {{- $cluster := include "annotator.stateCluster" . -}}
 {{- $l := .Values.lifecycle -}}
@@ -9,7 +9,7 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $r }}-sa-annotator
+  name: {{ $r }}-annotator
   labels:
     {{- toYaml $selector | nindent 4 }}
 automountServiceAccountToken: false
@@ -47,7 +47,7 @@ spec:
         lance.dev/logs: otlp
     spec:
       terminationGracePeriodSeconds: {{ $l.terminationGracePeriodSeconds }}
-      serviceAccountName: {{ $r }}-sa-annotator
+      serviceAccountName: {{ $r }}-annotator
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -80,8 +80,11 @@ spec:
             - { name: tmp, mountPath: /tmp }
             - { name: state-password, mountPath: /var/run/secrets/annotator/state-password, readOnly: true }
             - { name: state-ca, mountPath: /var/run/secrets/annotator/state-ca, readOnly: true }
-            {{- if .Values.auth.enabled }}
+            {{- include "workbench.catalogMount" . | nindent 12 }}
+            {{- if include "workbench.lakehouseAuth" . }}
             - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
+            {{- end }}
+            {{- if .Values.auth.enabled }}
             {{- if .Values.auth.fga.credential.name }}
             - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
             {{- end }}
@@ -94,7 +97,7 @@ spec:
             - { name: MEDIA_DOCS, value: {{ .Values.docs | quote }} }
             # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only: each
             # table opens through lance-namespace on the credential the catalog vends the person, so the pod holds no store key.
-            - { name: MEDIA_CATALOG_URI, value: {{ .Values.catalog.url | default (printf "http://%s-catalog:2333" $r) | quote }} }
+            {{- include "workbench.catalogEnv" . | nindent 12 }}
             # The annotator's own state: the Cluster this release renders, reached by its read-write Service, the server
             # verified against the Cluster's own CA, the password read from its mounted file on every new connection.
             - { name: ANNOTATOR_STATE_HOST, value: {{ printf "%s-rw" $cluster | quote }} }
@@ -118,7 +121,7 @@ spec:
             - { name: OTEL_METRIC_EXPORT_INTERVAL, value: "5000" }
             - { name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS, value: "/livez,/readyz,/healthz,/api/health,/metrics" }
             - { name: OTEL_SERVICE_NAME, value: "annotator" }
-            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=rask,deployment.environment.name={{ .Values.otel.environment }},service.version={{ .Chart.AppVersion }}" }
+            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=workbench,deployment.environment.name={{ .Values.otel.environment }},service.version={{ .Chart.AppVersion }}" }
             {{- end }}
             {{- if .Values.auth.enabled }}
             {{- include "annotator.authEnv" . | nindent 12 }}
@@ -152,12 +155,15 @@ spec:
           secret:
             secretName: {{ $cluster }}-app
             items: [{ key: password, path: password }]
-        {{- if .Values.auth.enabled }}
+        {{- include "workbench.catalogVolume" . | nindent 8 }}
+        {{- if include "workbench.lakehouseAuth" . }}
         # The workbench's confidential client's secret: the token exchange and its own token for the lakehouse.
         - name: oidc-client
           secret:
             secretName: {{ required "auth.oidc.client.secret.name: the Secret holding the workbench client's secret" .Values.auth.oidc.client.secret.name }}
             items: [{ key: {{ .Values.auth.oidc.client.secret.key }}, path: client-secret }]
+        {{- end }}
+        {{- if .Values.auth.enabled }}
         {{- with .Values.auth.fga.credential.name }}
         - name: fga-credential
           secret:

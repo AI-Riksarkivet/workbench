@@ -236,10 +236,74 @@ export const REAUTHENTICATE = { param: 'prompt', value: 'login' } as const;
 export async function login(returnTo: string, { reauthenticate = false } = {}): Promise<void> {
 	await initAuth();
 	if (!manager) return;
+	// A sign-in this tab started that never came back is the one case worth asking the provider about its client: it
+	// shows its own error page for a client it does not know, and the person comes back here by the browser's Back.
+	if (signInPending()) {
+		const unknown = await clientUnknown(manager);
+		if (unknown) {
+			auth.configError = unknown;
+			return;
+		}
+	}
+	markSignIn(true);
 	await manager.signinRedirect({
 		state: { returnTo },
 		...(reauthenticate ? { prompt: REAUTHENTICATE.value } : {}),
 	});
+}
+
+/** Where this tab notes a sign-in it sent to the provider, until the provider sends it back. */
+const PENDING_SIGN_IN = 'workbench.sign-in-pending';
+
+function markSignIn(pending: boolean): void {
+	try {
+		if (pending) sessionStorage.setItem(PENDING_SIGN_IN, '1');
+		else sessionStorage.removeItem(PENDING_SIGN_IN);
+	} catch {
+		// No storage: the provider's own page is what the person sees for a client it does not know.
+	}
+}
+
+function signInPending(): boolean {
+	try {
+		return sessionStorage.getItem(PENDING_SIGN_IN) !== null;
+	} catch {
+		return false;
+	}
+}
+
+/** Why the provider will not sign anyone in to this app's client, or null when it may.
+ *
+ *  A provider that does not know the client shows its own error page at the authorization endpoint and never comes back
+ *  (it cannot trust a redirect URI it holds for no client), so the app asks first: a code exchange with a code no
+ *  provider issued is refused `invalid_client` (RFC 6749 § 5.2, 401) for a client the provider does not hold, and for
+ *  any other reason for one it does (Dex v2.46.1 authenticates the client before it reads the code). Any other answer,
+ *  or none, leaves the sign-in to go ahead. */
+async function clientUnknown(oidc: UserManager): Promise<string | null> {
+	const endpoint = await oidc.metadataService.getTokenEndpoint().catch(() => undefined);
+	if (!endpoint) return null;
+	const nonce = crypto.randomUUID();
+	let answer: Response;
+	try {
+		answer = await fetch(endpoint, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: `not-a-code-${nonce}`,
+				code_verifier: `not-a-verifier-${nonce}-${nonce}`,
+				client_id: oidc.settings.client_id,
+				redirect_uri: oidc.settings.redirect_uri,
+			}),
+		});
+	} catch {
+		return null;
+	}
+	if (answer.status !== 401) return null;
+	const body: unknown = await answer.json().catch(() => null);
+	const error = typeof body === 'object' && body !== null && 'error' in body ? body.error : null;
+	if (error !== 'invalid_client') return null;
+	return `the identity provider does not know this app's client "${oidc.settings.client_id}": register it there (a development estate: \`make dev-dex-client\`)`;
 }
 
 /** The session has ended: renew it in place where it can be, or send the person to sign in again and come back to
@@ -255,6 +319,7 @@ export async function completeLogin(): Promise<string> {
 	await initAuth();
 	if (!manager) return '/';
 	user = await manager.signinRedirectCallback();
+	markSignIn(false);
 	auth.session = toSession(user);
 	const state = user.state as { returnTo?: unknown } | undefined;
 	return sameOriginPath(typeof state?.returnTo === 'string' ? state.returnTo : '/');

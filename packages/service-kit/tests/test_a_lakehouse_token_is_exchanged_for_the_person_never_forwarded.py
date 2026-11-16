@@ -89,12 +89,19 @@ def test_a_refused_exchange_is_the_persons_401_and_the_service_takes_its_own_tok
     assert [r["grant_type"] for r in oidc_provider.requests] == ["urn:ietf:params:oauth:grant-type:token-exchange", "client_credentials"]
 
 
-def test_where_the_provider_reads_the_audience_from_a_scope_the_services_own_token_asks_for_it(tmp_path: Path) -> None:
-    dex = Provider("dex")
+def test_at_a_dex_reached_in_cluster_the_services_own_token_is_asked_there_with_the_audiences_scope(tmp_path: Path) -> None:
+    """The development estate's Dex: its documents name the public issuer the browser reaches (`localhost:8080/dex`),
+    which a pod cannot reach, so the token is asked at the in-cluster address the discovery was fetched from."""
+    dex = Provider("dex", public_issuer="http://localhost:9/dex")
     secret = tmp_path / "client-secret"
     secret.write_text(CLIENT_SECRET)
     tokens = LakehouseTokens(
-        issuer=dex.issuer, audience=LAKEHOUSE_AUDIENCE, client_id=CLIENT_ID, client_secret_file=str(secret), audience_scope=LAKEHOUSE_AUDIENCE_SCOPE
+        issuer=dex.issuer,
+        audience=LAKEHOUSE_AUDIENCE,
+        client_id=CLIENT_ID,
+        client_secret_file=str(secret),
+        audience_scope=LAKEHOUSE_AUDIENCE_SCOPE,
+        discovery_url=dex.address,
     )
     try:
         own = jwt.decode(tokens.for_service(), options={"verify_signature": False})

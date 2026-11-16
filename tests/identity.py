@@ -84,7 +84,9 @@ class BrowserKey:
 class Provider:
     """The OIDC provider on a loopback port; see the module docstring."""
 
-    def __init__(self, shape: Literal["keycloak", "dex"] = "keycloak") -> None:
+    def __init__(self, shape: Literal["keycloak", "dex"] = "keycloak", *, public_issuer: str | None = None) -> None:
+        """``public_issuer``: the issuer its documents and tokens name, where it is reached at another address (the
+        loopback one, `address`), as a provider behind a public hostname is reached in-cluster."""
         self.shape = shape
         self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self._kid = uuid.uuid4().hex[:8]
@@ -134,7 +136,8 @@ class Provider:
                 self._answer(status, body)
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self.issuer = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self.address = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self.issuer = public_issuer or self.address
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 

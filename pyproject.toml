@@ -29,6 +29,10 @@ dev = [
     "moto[s3,server]>=5.0",
     "respx>=0.21",
     "requests>=2.32",
+    # scripts/lakehouse_grants.py reads the deployment's values; its test checks each request against the lakehouse's
+    # published OpenAPI schemas.
+    "pyyaml>=6.0",
+    "jsonschema>=4.23",
     "ruff",
     "ty",
 ]
@@ -112,7 +116,7 @@ exclude = ["**/.venv", "**/node_modules", "**/.claude/worktrees", "runners"]
 
 [tool.pytest.ini_options]
 # Globbed, so a member's tests/ runs the moment it exists; a new top-level tests/<x>/ is added here by hand.
-testpaths = ["packages/*/tests", "services/*/tests"]
+testpaths = ["packages/*/tests", "services/*/tests", "tests/deploy"]
 addopts = "--import-mode=importlib"
 pythonpath = ["."]
 empty_parameter_set_mark = "fail_at_collect"

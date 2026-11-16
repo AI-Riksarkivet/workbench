@@ -24,4 +24,10 @@
 
 <svelte:head><title>Sign in · workbench</title></svelte:head>
 
-<main class="text-muted-foreground p-8 text-sm">Redirecting to sign in…</main>
+<main class="p-8 text-sm">
+	{#if auth.configError}
+		<p class="text-destructive">Sign-in is not configured: {auth.configError}</p>
+	{:else}
+		<p class="text-muted-foreground">Redirecting to sign in…</p>
+	{/if}
+</main>

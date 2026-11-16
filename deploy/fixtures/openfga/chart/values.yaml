@@ -1,0 +1,18 @@
+# The OpenFGA server: the version the workbench's offline suite evaluates its model on (`.dagger/main.go`'s
+# `OpenfgaImage`).
+image: openfga/openfga:v1.18.3
+port: 8080
+replicas: 1
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: "1", memory: 512Mi }
+# The datastore. Postgres, not OpenFGA's in-memory engine: the tuples a project's creation and its members' changes
+# write are the workbench's record of who holds which role, which no model writer re-creates, so a restart must keep
+# them.
+database:
+  instances: 1
+  storage: 1Gi
+  # The Postgres image the Cluster runs; empty takes the operator's default for its version.
+  imageName: ""
+# The Secret this release generates: the preshared key a client presents (`preshared-key`), and the server's config.
+secretName: workbench-openfga

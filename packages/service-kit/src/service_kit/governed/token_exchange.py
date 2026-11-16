@@ -167,7 +167,8 @@ class LakehouseTokens:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._issuer = issuer.rstrip("/")
-        self._discovery = f"{(discovery_url or issuer).rstrip('/')}/.well-known/openid-configuration"
+        self._fetch_base = (discovery_url or issuer).rstrip("/")
+        self._discovery = f"{self._fetch_base}/.well-known/openid-configuration"
         self._audience = audience
         self._audience_scope = audience_scope
         self._client_id = client_id
@@ -248,9 +249,14 @@ class LakehouseTokens:
             try:
                 answer = self._http.get(self._discovery)
                 answer.raise_for_status()
-                self._token_endpoint = _Discovery.model_validate_json(answer.content).token_endpoint
+                endpoint = _Discovery.model_validate_json(answer.content).token_endpoint
             except (httpx.HTTPError, ValidationError) as exc:
                 raise ServiceUnavailableError("the identity provider's discovery document could not be read") from exc
+            # Split horizon, as the verifier's key set (`oidc.OIDCVerifier`): a provider reached in-cluster at another
+            # base than the public issuer its documents name is asked at that base, its token endpoint's path kept.
+            if self._fetch_base != self._issuer and (endpoint == self._issuer or endpoint.startswith(f"{self._issuer}/")):
+                endpoint = self._fetch_base + endpoint[len(self._issuer) :]
+            self._token_endpoint = endpoint
         return self._token_endpoint
 
     def _secret(self) -> str:
