@@ -25,6 +25,13 @@
 	//
 	// The guard is capture-phase and calls `stopImmediatePropagation`, so a handler bound directly on
 	// the child never runs — a bubble-phase guard would fire after it.
+	//
+	// 3. The wrapper is the tooltip's trigger, so it must take the pointer and see focus: a
+	//    `display: contents` box takes no pointer, so it is a real inline box, and a trigger's own
+	//    `focus` handler never hears the control inside (`focus` does not bubble), so the wrapper opens
+	//    the tooltip on `focusin` and closes it on `focusout`, which do.
+	// 4. The control inside is what a screen reader lands on, so it carries `aria-disabled` and is
+	//    described by the reason (`aria-describedby`), set on its first focusable element.
 
 	interface Props {
 		/** Whether the caller is allowed. `true` renders the child untouched. */
@@ -40,6 +47,8 @@
 	let { allowed, reason, action, class: className, children }: Props = $props();
 
 	const message = $derived(action ? `${action} — ${reason}` : reason);
+	const id = $props.id();
+	let open = $state(false);
 
 	function block(node: HTMLElement) {
 		const stop = (event: Event) => {
@@ -50,6 +59,11 @@
 		// `on` from `svelte/events`, not `addEventListener`: it preserves Svelte's own delegated-handler
 		// ordering, so a child's `onclick=` cannot slip in ahead of this guard, and it returns its own
 		// unsubscriber. `{ capture: true }` is the load-bearing half either way.
+		const control = node.querySelector<HTMLElement>(
+			'button, a[href], input, select, textarea, [tabindex]',
+		);
+		control?.setAttribute('aria-disabled', 'true');
+		control?.setAttribute('aria-describedby', `gated-${id}`);
 		const offClick = on(node, 'click', stop, { capture: true });
 		const offKey = on(
 			node,
@@ -62,6 +76,8 @@
 		return () => {
 			offClick();
 			offKey();
+			control?.removeAttribute('aria-disabled');
+			control?.removeAttribute('aria-describedby');
 		};
 	}
 </script>
@@ -70,7 +86,7 @@
 	{@render children()}
 {:else}
 	<Tooltip.Provider>
-		<Tooltip.Root>
+		<Tooltip.Root {open} onOpenChange={(next) => (open = next)}>
 			<!-- The `child` snippet, NOT the default trigger. `Tooltip.Trigger` renders a <button> of its
 			     own, and the thing being gated is almost always a <button> too — nesting them is invalid
 			     HTML, so the browser repairs it by hoisting the inner one out, content shifts, and SSR
@@ -79,13 +95,13 @@
 			     Delegating lets the trigger BE this span, so there is one element and it is not a button. -->
 			<Tooltip.Trigger>
 				{#snippet child({ props })}
-					<!-- `contents` keeps this wrapper out of the layout: the child keeps whatever geometry its
-					     own parent gave it, so gating a control never nudges the row it sits in. -->
+					<!-- An inline box the size of the control, so the pointer reaches it (see 3 above). -->
 					<span
 						{...props}
 						data-slot="gated-action"
-						class={cn('contents [&_*]:cursor-not-allowed [&_*]:opacity-50', className)}
-						aria-disabled="true"
+						class={cn('inline-flex [&_*]:cursor-not-allowed [&_*]:opacity-50', className)}
+						onfocusin={() => (open = true)}
+						onfocusout={() => (open = false)}
 						{@attach block}
 					>
 						{@render children()}
@@ -96,4 +112,5 @@
 			<Tooltip.Content role="status" class="max-w-xs text-xs">{message}</Tooltip.Content>
 		</Tooltip.Root>
 	</Tooltip.Provider>
+	<span id="gated-{id}" class="sr-only">{reason}</span>
 {/if}

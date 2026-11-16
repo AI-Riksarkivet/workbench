@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from annotator.annotations.access import MAY_READ_UNIT, UnitKey
 from annotator.annotations.unit import parse_unit
-from annotator.api.security import AnnotationsDep, CallerDep
+from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep
 from annotator.corpus import resolve
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.exceptions import NotFoundError
@@ -70,7 +70,7 @@ class AnnotationVersion(BaseModel):
     count: int
 
 
-@router.get("/annotations/{key:path}/versions", dependencies=[MAY_READ_UNIT])
+@router.get("/annotations/{key:path}/versions", dependencies=[MAY_READ_UNIT, READS_DATASET])
 def annotation_versions(
     caller: CallerDep,
     state: StateDep,
@@ -84,7 +84,7 @@ def annotation_versions(
     panel — the read-side of the write-plane provenance story (who=reviewer, when=version,
     what=lineage)."""
     corpus = resolve(state, dataset, caller)
-    unit = parse_unit(corpus.handle.descriptor, key)
+    unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
     ds = annotations(corpus.id).open()
     if ds is None:
         return []

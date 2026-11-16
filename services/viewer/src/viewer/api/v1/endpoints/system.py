@@ -14,13 +14,19 @@ from typing import Any
 import httpx
 from fastapi import APIRouter
 from pydantic import computed_field
+from starlette.concurrency import run_in_threadpool
 
 from client_kit.lancekit.introspect import ColumnInfo
 from client_kit.lancekit.registry import table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
+from client_kit.media.source_gate import may_read
+from client_kit.media.state import AppState, dataset_handle
 from client_kit.pagination import Page, PaginationDep, build_page
-from viewer.api.security import AUTHENTICATED, CallerDep, OptionalCallerDep
+from client_kit.sources import workbench_decides
+from service_kit.exceptions import ForbiddenError
+from service_kit.governed.deps import ANONYMOUS_SUBJECT
+from service_kit.governed.token_exchange import LakehouseCaller
+from viewer.api.security import READS_DATASET, CallerDep, CheckerDep, OptionalCallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.schemas.system import ColumnKind, DbFacts, FilterColumn, HealthResponse, VllmPing
 
@@ -35,7 +41,26 @@ DURATION_COLUMN = "duration"
 
 
 @router.get("/health")
-def health(caller: OptionalCallerDep, state: StateDep, dataset: DatasetParam = None) -> HealthResponse:
+async def health(caller: OptionalCallerDep, check: CheckerDep, state: StateDep, dataset: DatasetParam = None) -> HealthResponse:
+    """Frontend status badge: pings vLLM embed/rerank, reports DB facts; see :func:`_health`.
+
+    The facts of a dataset whose source the workbench decides for are read only for one of its readers: an anonymous
+    caller, or a person not declared, gets the probe's answer without them.
+    """
+    named = dataset or state.settings.default_dataset
+    readable = True
+    if named is not None:
+        try:
+            source = state.settings.sources.locate(named).source
+        except ValueError:
+            source = None
+        if source is not None and workbench_decides(source):
+            anonymous = caller.subject == ANONYMOUS_SUBJECT and getattr(state.settings, "oidc_enabled", False)
+            readable = not anonymous and await may_read(state.settings.sources, check, caller.subject, source.name)
+    return await run_in_threadpool(_health, caller, state, dataset, readable)
+
+
+def _health(caller: LakehouseCaller, state: AppState, dataset: str | None, readable: bool) -> HealthResponse:
     """Frontend status badge: pings vLLM embed/rerank, reports DB facts.
 
     ALWAYS 200 — this is the media plane's liveness/capability probe, not a dataset read. That
@@ -79,6 +104,8 @@ def health(caller: OptionalCallerDep, state: StateDep, dataset: DatasetParam = N
     rerank = _ping(state.settings.rerank_url)
 
     try:
+        if not readable:
+            raise ForbiddenError("the caller may not read this dataset's source")
         handle = dataset_handle(state, dataset, caller)
     except Exception as e:
         # NotFoundError (unknown id / missing-or-invalid descriptor) is the expected case on an
@@ -88,7 +115,7 @@ def health(caller: OptionalCallerDep, state: StateDep, dataset: DatasetParam = N
         reason = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         return HealthResponse(db=None, db_error=reason, embed=embed, rerank=rerank)
 
-    declared = handle.descriptor.declared
+    declared = handle.declared
     tables = handle.descriptor.tables
     row_table = declared.search.row_table if declared.search is not None else None
     row_info = tables.get(row_table) if row_table else None
@@ -130,7 +157,7 @@ def _filterable(column: ColumnInfo, exclude: set[str]) -> ColumnKind | None:
     return _column_kind(column.arrow_type)
 
 
-@router.get("/columns", dependencies=[AUTHENTICATED])
+@router.get("/columns", dependencies=[READS_DATASET])
 def columns(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) -> list[FilterColumn]:
     """Filterable scalar columns of the declared row table (name + friendly kind).
 
@@ -138,7 +165,7 @@ def columns(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) ->
     alignments columns are omitted — they can't appear in a SQL filter anyway.
     """
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     if declared.search is None:
         return []
     info = handle.descriptor.tables.get(declared.search.row_table)
@@ -169,7 +196,7 @@ class DocumentsPage(Page[dict[str, Any]]):
         return self.items
 
 
-@router.get("/documents", dependencies=[AUTHENTICATED])
+@router.get("/documents", dependencies=[READS_DATASET])
 def documents(
     caller: CallerDep,
     state: StateDep,
@@ -184,7 +211,7 @@ def documents(
     """Documents gallery: the declared doc-level display fields, paged."""
     per_page = pagination.page_size
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     binding = declared.document
     info = handle.descriptor.tables.get(binding.table) if binding is not None else None
     if binding is None or info is None:

@@ -21,7 +21,7 @@ from client_kit.lancekit.registry import table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
 from service_kit.exceptions import NotFoundError
-from viewer.api.security import AUTHENTICATED, CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.chunks import ChunkAlignments, DocChunks
 
 
@@ -39,7 +39,7 @@ def alignments_binding(declared: Declared) -> tuple[str, str] | None:
     return (table, column) if column else None
 
 
-@router.get("/doc-chunks/{doc_id}", dependencies=[AUTHENTICATED])
+@router.get("/doc-chunks/{doc_id}", dependencies=[READS_DATASET])
 def doc_chunks(caller: CallerDep, doc_id: str, state: StateDep, dataset: DatasetParam = None) -> DocChunks:
     """A document's chunks, ordered by declared start time. One lazy
     fetch drives both a clickable chunk timeline and (flattened) the player's
@@ -48,7 +48,7 @@ def doc_chunks(caller: CallerDep, doc_id: str, state: StateDep, dataset: Dataset
     dataset scan can't hit the FTS/vector _score restriction.
     """
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")
@@ -78,7 +78,7 @@ def doc_chunks(caller: CallerDep, doc_id: str, state: StateDep, dataset: Dataset
     return DocChunks(doc_id=doc_id, chunks=rows)
 
 
-@router.get("/chunk-alignments/{doc_id}/{group_id}/{chunk_id}", dependencies=[AUTHENTICATED])
+@router.get("/chunk-alignments/{doc_id}/{group_id}/{chunk_id}", dependencies=[READS_DATASET])
 def chunk_alignments(
     caller: CallerDep,
     doc_id: str,
@@ -94,7 +94,7 @@ def chunk_alignments(
     identity key fields (doc key first); no alignments capability → always ``[]``.
     """
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = alignments_binding(declared)
     if binding is None:

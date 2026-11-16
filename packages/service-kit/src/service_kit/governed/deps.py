@@ -121,20 +121,20 @@ def _passed_on(settings: Any, caller: Caller, people: PersonTokens) -> Lakehouse
 
 def lakehouse_service_caller(request: Request, settings: Any) -> LakehouseCaller:
     """This service as the lakehouse reads it: its own client-credentials token (`LakehouseTokens.for_service`), or no
-    token on a local directory catalog, which authenticates nobody. No person's token is held or used.
+    token where no lakehouse catalog is read over its REST door. No person's token is held or used.
 
     Raises:
         ServiceUnavailableError: the service reads a lakehouse catalog and names no confidential client.
     """
     tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
     if tokens is None:
-        if getattr(settings, "catalog_uri", None):
+        if getattr(settings, "reads_lakehouse", False):
             raise ServiceUnavailableError(
                 "this service names no confidential client to read the lakehouse as itself: set WORKBENCH_OIDC_CLIENT_ID, "
                 "WORKBENCH_OIDC_CLIENT_SECRET_FILE and WORKBENCH_LAKEHOUSE_AUDIENCE"
             )
         return LakehouseCaller(subject=SERVICE_SUBJECT)
-    return LakehouseCaller(subject=SERVICE_SUBJECT, token=tokens.for_service)
+    return LakehouseCaller(subject=SERVICE_SUBJECT, token=tokens.for_service, service=tokens.for_service)
 
 
 class AuthDeps:
@@ -229,13 +229,20 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
         return ALLOW_ALL if authz is None else authz.check
 
     def _as_lakehouse_caller(request: Request, settings: Any, caller: Caller | None) -> LakehouseCaller:
+        person = _as_person(request, settings, caller)
+        own: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
+        # The workbench's own token rides beside the person's, for a lakehouse source the deployment reads as the
+        # workbench (`client_kit.sources.SourceIdentity.SERVICE`); a source of any other kind is sent neither.
+        return person if own is None else person.model_copy(update={"service": own.for_service})
+
+    def _as_person(request: Request, settings: Any, caller: Caller | None) -> LakehouseCaller:
         if caller is None:
             return ANONYMOUS_CALLER
         issuer = caller.claims.iss.rstrip("/")
         delegations: dict[str, Delegation] = getattr(request.app.state, "delegations", {})
         plan = delegations.get(issuer)
         if plan is None:
-            if getattr(settings, "catalog_uri", None):
+            if getattr(settings, "reads_lakehouse_as_person", False):
                 # A read with no token would be made anonymously on a person's behalf, and their token is never sent
                 # to another issuer than its own: refused, never sent.
                 raise ServiceUnavailableError(
@@ -243,7 +250,7 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
                     "WORKBENCH_LAKEHOUSE_DELEGATION=forward, or WORKBENCH_OIDC_CLIENT_ID and WORKBENCH_OIDC_CLIENT_SECRET_FILE to "
                     "exchange; for a further issuer, its `lakehouse` entry in WORKBENCH_OIDC_PROVIDERS"
                 )
-            # A local directory catalog authenticates nobody, so the read needs no token.
+            # No lakehouse is read over its REST door: no source this person reads takes a token.
             return LakehouseCaller(subject=caller.subject)
         people: PersonTokens = request.app.state.person_tokens
         if plan.mode is LakehouseDelegation.FORWARD:

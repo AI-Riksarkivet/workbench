@@ -25,7 +25,9 @@ from service_kit.exceptions import NotFoundError, ValidationError
 def _descriptor(searches: list[dict[str, Any]]) -> DatasetDescriptor:
     return DatasetDescriptor.model_validate(
         {
-            "id": "corpus",
+            "id": "lake~corpus",
+            "source": "lake",
+            "kind": "rask",
             "tables": {
                 name: {
                     "name": name,
@@ -70,6 +72,10 @@ class _Handle:
     def __init__(self, descriptor: DatasetDescriptor) -> None:
         self.descriptor = descriptor
         self.opened: list[str] = []
+
+    @property
+    def declared(self) -> Any:
+        return self.descriptor.declared
 
     def open_table(self, name: str) -> _Table:
         self.opened.append(name)
@@ -153,7 +159,9 @@ def test_a_LEGACY_single_table_corpus_resolves_exactly_as_before() -> None:
     they do."""
     descriptor = DatasetDescriptor.model_validate(
         {
-            "id": "corpus",
+            "id": "lake~corpus",
+            "source": "lake",
+            "kind": "rask",
             "tables": {
                 "chunks": {
                     "name": "chunks",

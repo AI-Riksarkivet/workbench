@@ -9,20 +9,15 @@ from __future__ import annotations
 import pytest
 
 from annotator.annotations.unit import UnitKeyError, parse_unit
-from client_kit.lancekit.descriptor import DatasetDescriptor
+from client_kit.lancekit.descriptor import Declared
 from client_kit.lancekit.introspect import ColumnInfo, TableInfo
 
 
-def _dataset(fields: dict[str, str]) -> DatasetDescriptor:
+def _dataset(fields: dict[str, str]) -> tuple[Declared, dict[str, TableInfo]]:
     """A dataset whose rows table carries `fields` (name -> arrow type), its identity in that order."""
     columns = [ColumnInfo(name=name, arrow_type=arrow_type, nullable=False) for name, arrow_type in fields.items()]
-    return DatasetDescriptor.model_validate(
-        {
-            "id": "acme$media",
-            "tables": {"rows": TableInfo(name="rows", row_count=1, version=1, columns=columns, indexes=[])},
-            "declared": {"identity": {"key_fields": list(fields)}, "search": {"row_table": "rows"}},
-        }
-    )
+    declared = Declared.model_validate({"identity": {"key_fields": list(fields)}, "search": {"row_table": "rows"}})
+    return declared, {"rows": TableInfo(name="rows", row_count=1, version=1, columns=columns, indexes=[])}
 
 
 @pytest.mark.parametrize(
@@ -34,7 +29,7 @@ def _dataset(fields: dict[str, str]) -> DatasetDescriptor:
     ],
 )
 def test_a_key_of_the_identitys_shape_names_its_typed_values(fields: dict[str, str], key: str, values: dict[str, str | int]) -> None:
-    assert parse_unit(_dataset(fields), key).values == values
+    assert parse_unit(*_dataset(fields), key).values == values
 
 
 @pytest.mark.parametrize(
@@ -53,6 +48,6 @@ def test_a_key_of_the_identitys_shape_names_its_typed_values(fields: dict[str, s
 )
 def test_a_key_the_identity_cannot_name_is_refused_in_plain_words(fields: dict[str, str], key: str, detail: str) -> None:
     with pytest.raises(UnitKeyError) as refused:
-        parse_unit(_dataset(fields), key)
+        parse_unit(*_dataset(fields), key)
 
     assert (refused.value.status_code, refused.value.detail) == (422, detail)

@@ -17,6 +17,7 @@ import lancedb
 from fastapi.testclient import TestClient
 
 from scripts.seed_demo_corpus import seed
+from tests.media_catalog import lake, lakehouse_dir
 from viewer.core.config import ViewerSettings, get_viewer_settings
 from viewer.main import create_viewer_app
 
@@ -33,15 +34,15 @@ def _signed(client: TestClient, dataset: str, item: dict[str, object]) -> tuple[
 
 def test_the_seeded_pages_and_recordings_open_as_the_player_reads_them(tmp_path: Path) -> None:
     properties = {"root": str(tmp_path / "catalog")}
-    pages, recordings = seed(lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties), "demo")
+    pages, recordings = (lake(d) for d in seed(lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties), "demo"))
     key = tmp_path / "media-url-key"
     key.write_text(base64.b64encode(secrets.token_bytes(32)).decode())
-    settings = ViewerSettings.model_validate({"MEDIA_CATALOG_DIR": properties["root"], "VIEWER_MEDIA_URL_KEY_FILE": str(key)})
+    settings = ViewerSettings.model_validate({**lakehouse_dir(properties["root"]), "VIEWER_MEDIA_URL_KEY_FILE": str(key)})
     app = create_viewer_app(settings)
     app.dependency_overrides[get_viewer_settings] = lambda: settings
 
     with TestClient(app) as client:
-        listed = sorted(d["id"] for d in client.get("/api/datasets").json()["datasets"])
+        listed = sorted(d["id"] for source in client.get("/api/datasets").json()["sources"] for d in source["datasets"])
         described = {d: client.get(f"/api/datasets/{d}/descriptor") for d in (pages, recordings)}
         frame = _signed(client, pages, {"role": "frame", "doc_id": "fe00cd746463ad2c", "keys": [1, 1], "frame_idx": 0})
         cover = _signed(client, pages, {"role": "media", "doc_id": "fe00cd746463ad2c"})
@@ -50,7 +51,7 @@ def test_the_seeded_pages_and_recordings_open_as_the_player_reads_them(tmp_path:
         chunks = client.get("/api/doc-chunks/c41f0e2a9b7d3e15", params={"dataset": recordings}).json()["chunks"]
         turns = client.get("/api/diarization/c41f0e2a9b7d3e15", params={"dataset": recordings}).json()
 
-    assert listed == ["demo$corpus", "demo$recordings"]
+    assert listed == ["lake~demo$corpus", "lake~demo$recordings"]
     kinds = {d: (r.status_code, r.json().get("declared", {}).get("document", {}).get("kind")) for d, r in described.items()}
     assert kinds == {pages: (200, "image"), recordings: (200, "audio")}
     for status, media_type, body in (frame, cover, thumb):

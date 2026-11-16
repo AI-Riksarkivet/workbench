@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict
 
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
-from viewer.api.security import AUTHENTICATED, CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.graph import (
     CypherResponse,
     EntityClip,
@@ -337,7 +337,7 @@ def _build_resources(handle: DatasetHandle, names: _KgTables) -> _GraphResources
         rels=rels,
         n_mentions=tables["MENTIONS"].num_rows,
         n_videos=len(set(chunk_doc.values())),
-        clip_title_column=_clip_title_column(handle.descriptor.declared),
+        clip_title_column=_clip_title_column(handle.declared),
     )
 
 
@@ -351,7 +351,7 @@ def _resources(state: AppState, handle: DatasetHandle) -> _GraphResources | None
     ``state`` is what the cache hangs from: the engines are one app's resources, released when that
     app is (see :class:`_GraphCache`), and a build for one dataset never blocks a read of another.
     """
-    names = _kg_tables(handle.descriptor.declared)
+    names = _kg_tables(handle.declared)
     if names is None:
         return None
     all_names = (names.entities, names.chunks, names.mentions, names.relationships)
@@ -389,7 +389,7 @@ def _run_rows(res: _GraphResources, cypher: str) -> list[dict[str, Any]]:
     return result.to_pylist() if hasattr(result, "to_pylist") else list(result)
 
 
-@router.get("/status", dependencies=[AUTHENTICATED])
+@router.get("/status", dependencies=[READS_DATASET])
 def get_status(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) -> GraphStatusResponse:
     """Row counts for the explorer header, or ``built: false`` if the KG is absent."""
     res = _resources(state, dataset_handle(state, dataset, caller))
@@ -411,7 +411,7 @@ class CypherRequest(BaseModel):
     limit: int = _DEFAULT_LIMIT
 
 
-@router.post("/cypher", dependencies=[AUTHENTICATED])
+@router.post("/cypher", dependencies=[READS_DATASET])
 def run_cypher(caller: CallerDep, body: CypherRequest, state: StateDep, dataset: DatasetParam = None) -> CypherResponse:
     """Run arbitrary read Cypher; invalid queries return ``error`` (HTTP 200)."""
     res = _resources(state, dataset_handle(state, dataset, caller))
@@ -437,7 +437,7 @@ def run_cypher(caller: CallerDep, body: CypherRequest, state: StateDep, dataset:
     )
 
 
-@router.get("/search", dependencies=[AUTHENTICATED])
+@router.get("/search", dependencies=[READS_DATASET])
 def search_entities(caller: CallerDep, q: str, state: StateDep, dataset: DatasetParam = None) -> GraphSearchResponse:
     """Entity-name substring matches (top 10 by mention count). ``q`` never hits Cypher."""
     res = _resources(state, dataset_handle(state, dataset, caller))
@@ -479,7 +479,7 @@ def _clip(row: dict[str, Any], title_column: str | None) -> EntityClip:
     )
 
 
-@router.get("/entity/{entity_id}", dependencies=[AUTHENTICATED])
+@router.get("/entity/{entity_id}", dependencies=[READS_DATASET])
 def get_entity(caller: CallerDep, entity_id: str, state: StateDep, dataset: DatasetParam = None) -> GraphEntityResponse:
     """An entity's properties + clips + relationship neighbours + co-occurrences.
 
@@ -546,7 +546,7 @@ def get_entity(caller: CallerDep, entity_id: str, state: StateDep, dataset: Data
     )
 
 
-@router.get("/subgraph", dependencies=[AUTHENTICATED])
+@router.get("/subgraph", dependencies=[READS_DATASET])
 def get_subgraph(
     caller: CallerDep,
     state: StateDep,

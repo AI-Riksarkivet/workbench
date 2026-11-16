@@ -42,7 +42,7 @@ from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
 from service_kit.arrow_rows import arrow_rows_response
 from service_kit.exceptions import NotFoundError, ValidationError
 from service_kit.governed.token_exchange import LakehouseCaller
-from viewer.api.security import AUTHENTICATED, CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.api.v1.endpoints.media import FRAME_INDEX_COLUMN
 from viewer.api.v1.endpoints.system import DURATION_COLUMN
@@ -88,7 +88,7 @@ def _built_rows(ds: lance.LanceDataset, space: AtlasSpace) -> int:
     return ds.count_rows(filter=f"{space.x} IS NOT NULL")
 
 
-@router.get("/status", dependencies=[AUTHENTICATED])
+@router.get("/status", dependencies=[READS_DATASET])
 def atlas_status(caller: CallerDep, state: StateDep, space: SpaceParam = None, dataset: DatasetParam = None) -> AtlasStatusResponse:
     """Which projection spaces are built, plus the requested space's row count.
 
@@ -97,7 +97,7 @@ def atlas_status(caller: CallerDep, state: StateDep, space: SpaceParam = None, d
     (back-compatible with the old single-space shape).
     """
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     requested = _space(declared, space)
     datasets: dict[str, lance.LanceDataset] = {}
     rows_by_space: dict[str, int] = {}
@@ -114,7 +114,7 @@ def atlas_status(caller: CallerDep, state: StateDep, space: SpaceParam = None, d
     )
 
 
-@router.get("/points", dependencies=[AUTHENTICATED])
+@router.get("/points", dependencies=[READS_DATASET])
 async def atlas_points(
     caller: CallerDep,
     state: StateDep,
@@ -144,7 +144,7 @@ def _read_as_caller(
 ) -> tuple[Declared, AtlasSpace, lance.LanceDataset, PointsKey]:
     """The caller's own read of the space's table: resolved, opened and counted as them, or their refusal."""
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     requested = _space(declared, space)
     ds = table_dataset(handle, requested.table)
     if _built_rows(ds, requested) == 0:
@@ -212,7 +212,7 @@ def _hit_columns(declared: Declared, present: set[str]) -> list[str]:
 
 
 def _finalize_hits(handle: DatasetHandle, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    declared = handle.descriptor.declared
+    declared = handle.declared
     align = alignments_binding(declared)
     align_col = align[1] if align is not None else None
     for hit in rows:
@@ -228,7 +228,7 @@ def _attach_frame_captions(handle: DatasetHandle, rows: list[dict[str, Any]]) ->
     a no-op when the capability, table, or column is absent (captions are
     decorative, never a reason to fail).
     """
-    declared = handle.descriptor.declared
+    declared = handle.declared
     target = declared.capabilities.get("captions")
     if not target or not rows:
         return
@@ -263,7 +263,7 @@ def _attach_frame_captions(handle: DatasetHandle, rows: list[dict[str, Any]]) ->
         logger.warning("frame caption attach failed", exc_info=True)
 
 
-@router.get("/chunk/{doc_id}/{group_id}/{chunk_id}", dependencies=[AUTHENTICATED])
+@router.get("/chunk/{doc_id}/{group_id}/{chunk_id}", dependencies=[READS_DATASET])
 def atlas_chunk(
     caller: CallerDep,
     state: StateDep,
@@ -275,7 +275,7 @@ def atlas_chunk(
     """Full hit for one chunk (detail pane + playback), looked up by key. The
     path params map positionally onto the descriptor's identity key fields."""
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")
@@ -288,7 +288,7 @@ def atlas_chunk(
     return _finalize_hits(handle, rows)[0]
 
 
-@router.post("/chunks/by-key", dependencies=[AUTHENTICATED])
+@router.post("/chunks/by-key", dependencies=[READS_DATASET])
 def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dataset: DatasetParam = None) -> ChunkHits:
     """Full hits for rows addressed BY KEY — the join a labelling queue needs (#60).
 
@@ -315,7 +315,7 @@ def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dat
     would be handing it a second source of truth for the identity it is already addressing by.
     """
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")
     key_fields = list(declared.identity.key_fields)
@@ -331,7 +331,7 @@ def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dat
     return ChunkHits(rows=_finalize_hits(handle, rows), key_fields=key_fields)
 
 
-@router.post("/chunks", dependencies=[AUTHENTICATED])
+@router.post("/chunks", dependencies=[READS_DATASET])
 def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset: DatasetParam = None) -> Response:
     """Full hits for a lasso/box/legend selection, addressed by ``_rowid``: one Arrow IPC stream of rows
     (`service_kit.arrow_rows`), since a selection is up to 1000 full corpus rows.
@@ -343,7 +343,7 @@ def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset:
     1000 (the table render budget); the full selection still drives map dimming.
     """
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")
     rowids = body.rowids[:1000]

@@ -68,3 +68,55 @@ export function shownTab(
 	if (panes.speakers) return 'speakers';
 	return null;
 }
+
+/**
+ * What a dataset with no workbench descriptor offers, read from one table's columns (the viewer's
+ * `ColumnView`: its kind and the indices the table itself carries). Nothing is guessed: text search
+ * needs a full-text index, similar rows a vector index, the atlas a declared projection (which a plain
+ * table has none of), and annotation a lakehouse's dataset with a descriptor naming its rows' identity.
+ * Each capability the table lacks carries the reason a disabled control shows.
+ */
+export interface PlainColumn {
+	name: string;
+	kind: string;
+	text_search: boolean;
+	similar: boolean;
+}
+
+export interface PlainPanes {
+	/** The column a text search runs over, or why there is none. */
+	search: { column: string } | { why: string };
+	/** The vector column similar rows are ranked by, or why there is none. */
+	similar: { column: string } | { why: string };
+	/** Why the atlas cannot be drawn. */
+	atlas: string;
+	/** Why the rows cannot be sent to a project. */
+	send: string;
+}
+
+export function plainPanes(columns: readonly PlainColumn[], readOnly: string | null): PlainPanes {
+	const searchable = columns.find((c) => c.text_search);
+	const similar = columns.find((c) => c.similar);
+	const texts = columns.some((c) => c.kind === 'text');
+	const vectors = columns.some((c) => c.kind === 'vector');
+	return {
+		search: searchable
+			? { column: searchable.name }
+			: {
+					why: texts
+						? 'no text column of this table carries a full-text index'
+						: 'this table has no text column',
+				},
+		similar: similar
+			? { column: similar.name }
+			: {
+					why: vectors
+						? 'no vector column of this table carries a vector index'
+						: 'this table has no vector column',
+				},
+		atlas: 'this dataset declares no embedding projection to draw',
+		send:
+			readOnly ??
+			'this dataset declares no workbench descriptor, so its rows have no identity a task can name',
+	};
+}

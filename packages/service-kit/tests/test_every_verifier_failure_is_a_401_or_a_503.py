@@ -89,7 +89,7 @@ class _AuthSettings(BaseModel):
     fga_enabled: bool = False
     public_url: str | None = None
     public_mount: str = ""
-    catalog_uri: str | None = None
+    reads_lakehouse_as_person: bool = False
 
 
 def _auth_settings() -> _AuthSettings:
@@ -726,7 +726,7 @@ def test_one_persons_flood_of_proofs_does_not_make_the_store_forget_anothers(mon
 def test_a_lakehouse_read_as_a_person_with_no_client_to_exchange_their_token_is_refused_not_anonymous(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
     client = _client(idp)
     app = cast(FastAPI, client.app)
-    app.dependency_overrides[_auth_settings] = lambda: _AuthSettings(catalog_uri="http://catalog.test")
+    app.dependency_overrides[_auth_settings] = lambda: _AuthSettings(reads_lakehouse_as_person=True)
     token = _token(idp, rsa_key, "RS256")
     url = "http://testserver/as-person"
 

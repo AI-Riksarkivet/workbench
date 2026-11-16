@@ -23,7 +23,7 @@ from annotator.annotations.schema import (
     TagWrite,
     identity_values,
 )
-from annotator.api.security import AnnotationsDep, CallerDep, CurrentSubject
+from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from client_kit.lancekit.descriptor import Declared
 from client_kit.lancekit.keys import validate_doc_key
@@ -85,7 +85,7 @@ def tag_rows(adds: Sequence[TagWrite], declared: Declared, *, author: str, schem
     return pa.Table.from_pylist(list(by_id.values()), schema=schema)
 
 
-@router.post("/annotations/tags")
+@router.post("/annotations/tags", dependencies=[READS_DATASET])
 def apply_tags(
     task: EditableTask,
     caller: CallerDep,

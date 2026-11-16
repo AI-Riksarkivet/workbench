@@ -171,7 +171,7 @@ def resolve_bindings(handle: DatasetHandle) -> VoiceBindings | None:
     on disk, and a declared search row table + time axis (the turn→chunk join
     is undefined without them).
     """
-    declared = handle.descriptor.declared
+    declared = handle.declared
     target = declared.capabilities.get("voice")
     if target is None:
         return None
@@ -212,7 +212,7 @@ def _require_bindings(handle: DatasetHandle) -> VoiceBindings:
 
 def voice_status(handle: DatasetHandle) -> VoiceStatusResponse:
     """Whether the voice tables exist + their row counts (no error when absent)."""
-    declared = handle.descriptor.declared
+    declared = handle.declared
     emb_table = _capability_table(declared, "voice")
     if not _table_exists(handle, emb_table):
         return VoiceStatusResponse(built=False)
@@ -502,7 +502,7 @@ def speaker_identity(handle: DatasetHandle, *, doc_id: str, speaker: str) -> Voi
     most speech first. ``doc_id`` is whitelisted by the router; ``speaker`` is
     quoted here.
     """
-    speakers_name = _capability_table(handle.descriptor.declared, "speakers")
+    speakers_name = _capability_table(handle.declared, "speakers")
     if not _table_exists(handle, speakers_name):
         raise ServiceUnavailableError("speakers table not built yet — run `ratch build-speakers`")
     speakers_tbl: Any = handle.open_table(str(speakers_name))

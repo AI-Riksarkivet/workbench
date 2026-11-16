@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { panesFor, shownTab, type ViewerCapabilities } from './pane-capabilities.ts';
+import { panesFor, plainPanes, shownTab, type ViewerCapabilities } from './pane-capabilities.ts';
 
 const view = (isPlayable: boolean, capabilities: string[] = []): ViewerCapabilities => ({
 	isPlayable,
@@ -107,5 +107,32 @@ describe('which tab is actually shown', () => {
 		// is derived, not a corrected `tab` — so switching back restores it.
 		expect(shownTab('speakers', panesFor(view(true, ['alignments'])))).toBe('transcript');
 		expect(shownTab('transcript', panesFor(view(true, ['diarization'])))).toBe('speakers');
+	});
+});
+
+describe('what a table with no descriptor offers', () => {
+	const column = (name: string, kind: string, text_search = false, similar = false) => ({
+		name,
+		kind,
+		text_search,
+		similar,
+	});
+
+	it('searches and ranks only where the table carries the index', () => {
+		const panes = plainPanes(
+			[column('note', 'text', true), column('embedding', 'vector', false, true)],
+			null,
+		);
+		expect([panes.search, panes.similar]).toEqual([{ column: 'note' }, { column: 'embedding' }]);
+	});
+
+	it('says why a column of the kind is not enough, and why there is none', () => {
+		const panes = plainPanes([column('note', 'text'), column('n', 'integer')], 'read-only source');
+		expect(panes).toEqual({
+			search: { why: 'no text column of this table carries a full-text index' },
+			similar: { why: 'this table has no vector column' },
+			atlas: 'this dataset declares no embedding projection to draw',
+			send: 'read-only source',
+		});
 	});
 });

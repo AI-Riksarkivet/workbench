@@ -89,7 +89,7 @@ test('a document’s pages are turned with the buttons and the keys, and each pa
 }) => {
 	await signIn(context, person('Ada'));
 	const violations = await watchCsp(page);
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await open(page, /A letter from the harbour/);
 
 	const viewer = player(page);
@@ -130,7 +130,7 @@ test('a page is zoomed with its controls, the wheel and the keyboard, and fitted
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await open(page, /A map of the harbour/);
 
 	const viewer = player(page);
@@ -173,7 +173,7 @@ test('media the viewer cannot sign is said plainly in the player, with no image,
 			? route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } })
 			: route.continue(),
 	);
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await open(page, /A map of the harbour/);
 
 	const viewer = player(page);
@@ -196,7 +196,7 @@ for (const { kind, noun } of [
 	}) => {
 		await signIn(context, person('Ada'));
 		await asRecording(page, kind);
-		await page.goto('/datasets/acme%24letters');
+		await page.goto('/datasets/lake~acme%24letters');
 		await open(page, /A letter from the harbour/);
 
 		const viewer = player(page);
@@ -253,7 +253,7 @@ test('the transcript follows the playhead, a line seeks, and no line is clipped 
 	await asRecording(page, 'audio', {
 		1: 'The harbour master counted twelve ships and wrote every name into the Hamnkaptenensräkenskapsbokföringsprotokoll before nightfall.',
 	});
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await open(page, /A letter from the harbour/);
 
 	const viewer = player(page);

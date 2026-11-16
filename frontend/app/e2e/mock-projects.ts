@@ -149,7 +149,7 @@ function task(
 		state,
 		assignee: null,
 		lease_expires_at: null,
-		source: { kind: 'chunks', keys: [key], where: 'acme$letters', dataset_version: 3 },
+		source: { kind: 'chunks', keys: [key], where: 'lake~acme$letters', dataset_version: 3 },
 		media: { kind: 'image', image_url: null, media_url: null },
 		review_required: true,
 		replica_of: null,
@@ -315,7 +315,7 @@ function seed(sub: string): World {
 			source: {
 				kind: 'chunks',
 				keys: ['letter-001/0', 'letter-001/1'],
-				where: 'acme$letters',
+				where: 'lake~acme$letters',
 				dataset_version: 3,
 			},
 			ontology: pagesOntology,

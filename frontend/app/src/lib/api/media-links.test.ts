@@ -21,11 +21,12 @@ function viewer(ttl = 300) {
 	const sign = async (dataset: string, items: MediaItem[]): Promise<MediaLink[]> => {
 		batches.push({ dataset, items });
 		signature += 1;
-		return items.map((item) =>
-			item.doc_id === 'missing'
+		return items.map((item) => {
+			const name = 'doc_id' in item ? item.doc_id : `${item.table}/${item.row}`;
+			return name === 'missing'
 				? { url: null, detail: 'no payload for doc_id' }
-				: { url: `/signed/${item.role}/${item.doc_id}/${signature}`, lifetime: ttl },
-		);
+				: { url: `/signed/${item.role}/${name}/${signature}`, lifetime: ttl };
+		});
 	};
 	return { batches, sign };
 }

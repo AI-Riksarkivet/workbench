@@ -1,13 +1,19 @@
 #!/usr/bin/env python
 """Seed REAL, SEARCHABLE dev datasets, so every media surface has something to show.
 
-The media plane reads its datasets from a lance-namespace catalog: a dataset is a namespace ``<warehouse>$<namespace>``
-and its tables are what ListTables answers there. So the datasets are written through the same catalog the services
-read, ``MEDIA_CATALOG_DIR`` (lance-namespace's directory catalog, for a local stack) or ``MEDIA_CATALOG_URI`` (the
-catalog's REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), and each one's descriptor is stamped on its row table's schema
-metadata, where the registry reads it.
+The media plane reads its datasets from the sources a deployment declares (`client_kit.sources`). The local stack
+declares three (`scripts/local-sources.json`), one of each kind, and this writes all three under one root:
 
-Two datasets in one warehouse:
+- ``<root>/lakehouse``: a directory catalog laid out as a lakehouse's (``<warehouse>$<namespace>``), standing in for one,
+  holding the two stamped datasets below, each one's descriptor on its row table's schema metadata, where the registry
+  reads it;
+- ``<root>/archive``: a lance-namespace directory catalog holding one UNSTAMPED table two namespaces deep
+  (``field$survey`` → ``observations``: text with a full-text index, numbers, a timestamp, a list, a vector with a vector
+  index), which the workbench shows from its schema alone;
+- ``<root>/loose/scans.lance``: a bare Lance table read by path (text, numbers, a timestamp, a vector and an image blob),
+  no index and no descriptor.
+
+The two stamped datasets, in one warehouse:
 
 - ``<warehouse>$corpus``: page images. Three volumes of a few pages each, every page a drawn PNG with distinct prose and
   an FTS index, a thumbnail per volume, and an atlas projection.
@@ -25,9 +31,9 @@ query for a common word returns MANY hits across MANY documents.
 This is a DEV FIXTURE, not production data. Every image and sound is made here rather than shipped as a binary, so the
 fixture stays reviewable in a diff.
 
-    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_demo_corpus.py [<warehouse>]
+    uv run python scripts/seed_demo_corpus.py <root>
 
-Then run the media services with the same ``MEDIA_CATALOG_DIR`` (``MEDIA_DEFAULT_DATASET=<warehouse>$corpus``).
+Then run the media services with the declaration copied into ``<root>`` (`scripts/local-stack.sh` does both).
 """
 
 from __future__ import annotations
@@ -216,22 +222,6 @@ def _alignments(text: str, start: float, end: float) -> str:
     step = (end - start) / len(words)
     timed = [{"text": w if i == 0 else f" {w}", "start": round(start + i * step, 3), "end": round(start + (i + 1) * step, 3)} for i, w in enumerate(words)]
     return json.dumps([{"start": start, "end": end, "text": text, "words": timed}], ensure_ascii=False)
-
-
-def _catalog() -> tuple[LanceNamespace, lancedb.DBConnection]:
-    """The catalog the media plane reads, from the same settings it reads them from, as a namespace client and a lancedb
-    connection (the FTS index is built through lancedb, the stack the search service queries it with)."""
-    root = os.environ.get("MEDIA_CATALOG_DIR")
-    uri = os.environ.get("MEDIA_CATALOG_URI")
-    if bool(root) == bool(uri):
-        raise SystemExit("set exactly one of MEDIA_CATALOG_DIR and MEDIA_CATALOG_URI")
-    if root:
-        properties = {"root": root}
-        return lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties)
-    properties = {"uri": str(uri)}
-    if token := os.environ.get("MEDIA_CATALOG_TOKEN"):
-        properties["header.Authorization"] = f"Bearer {token}"
-    return lance_namespace.connect("rest", properties), lancedb.connect_namespace("rest", properties)
 
 
 def _fresh_table(client: LanceNamespace, table_id: list[str], data: pa.Table) -> lance.LanceDataset:
@@ -464,24 +454,107 @@ def seed_recordings(client: LanceNamespace, connection: lancedb.DBConnection, na
 
 
 def seed(client: LanceNamespace, connection: lancedb.DBConnection, warehouse: str) -> list[str]:
-    """Write both datasets into ``warehouse``; their ids."""
+    """Write both stamped datasets into ``warehouse``; their ids in the catalog."""
     pages, recordings = [warehouse, PAGES], [warehouse, RECORDINGS]
     seed_pages(client, connection, pages)
     seed_recordings(client, connection, recordings)
     return [CATALOG_DELIMITER.join(pages), CATALOG_DELIMITER.join(recordings)]
 
 
+#: The unstamped fixture's namespace in the archive catalog, two levels deep, and its table.
+ARCHIVE_NAMESPACE = ["field", "survey"]
+OBSERVATIONS = "observations"
+#: The bare table's directory name under the loose root, and its table name there.
+SCANS = "scans"
+
+
+def _vectors(texts: Sequence[str], dim: int) -> pa.FixedSizeListArray:
+    """A deterministic small embedding per text (a hash spread over ``dim`` floats), so similar-row queries have something
+    to rank; it is a fixture's stand-in for a model's vectors, not one."""
+    values: list[float] = []
+    for text in texts:
+        digest = hashlib.sha256(text.encode()).digest()
+        values.extend((digest[i] - 128) / 128 for i in range(dim))
+    return pa.FixedSizeListArray.from_arrays(pa.array(values, pa.float32()), dim)
+
+
+def seed_archive(root: str) -> list[str]:
+    """An UNSTAMPED table in a lance-namespace directory catalog (`lance_docs/ns_catalog/catalog/dir/index.md` § V2), two
+    namespace levels deep: field observations with text (a full-text index), numbers, a timestamp and a vector (a vector
+    index). No descriptor: the workbench shows it from its schema alone."""
+    client = lance_namespace.connect("dir", {"root": root})
+    _namespace(client, ARCHIVE_NAMESPACE)
+    notes = [
+        f"{site}: {what}"
+        for site in ("Uppsala", "Visby", "Kalmar", "Luleå")
+        for what in ("salt i hamnen", "järn till bruket", "tull på spannmål", "fisk från kusten", "brev från landshövdingen")
+    ]
+    count = len(notes)
+    table = pa.table(
+        {
+            "observation_id": pa.array(range(1, count + 1), pa.int64()),
+            "note": pa.array(notes, pa.utf8()),
+            "weight_kg": pa.array([round(12.5 + i * 3.25, 2) for i in range(count)], pa.float64()),
+            "observed_at": pa.array([1_600_000_000_000_000 + i * 86_400_000_000 for i in range(count)], pa.timestamp("us", tz="UTC")),
+            "tags": pa.array([["coast", "trade"] if i % 2 else ["inland"] for i in range(count)], pa.list_(pa.utf8())),
+            "embedding": _vectors(notes, 16),
+        }
+    )
+    table_id = [*ARCHIVE_NAMESPACE, OBSERVATIONS]
+    ds = _fresh_table(client, table_id, table)
+    ds.create_scalar_index("note", "INVERTED")
+    lance.dataset(namespace_client=client, table_id=table_id).create_index("embedding", "IVF_FLAT", num_partitions=1, metric="cosine")
+    return [CATALOG_DELIMITER.join(ARCHIVE_NAMESPACE)]
+
+
+def seed_loose(root: str) -> str:
+    """A bare Lance table at ``<root>/scans.lance``, read by path: text, numbers, a timestamp, a vector and an image in a
+    blob column, with no index and no descriptor. Its path, the URI a `tables` source names."""
+    titles = [document["title"] for document in DOCUMENTS]
+    images = [page_image(title, 0) for title in titles]
+    schema = pa.schema(
+        [
+            pa.field("scan", pa.utf8()),
+            pa.field("pages", pa.int32()),
+            pa.field("scanned_at", pa.timestamp("ms")),
+            pa.field("embedding", pa.list_(pa.float32(), 8)),
+            lance.blob_field("image"),
+        ]
+    )
+    table = pa.table(
+        {
+            "scan": titles,
+            "pages": [len(document["pages"]) for document in DOCUMENTS],
+            "scanned_at": [1_700_000_000_000 + i * 3_600_000 for i in range(len(titles))],
+            "embedding": _vectors(titles, 8),
+            "image": lance.blob_array(images),
+        },
+        schema=schema,
+    )
+    path = os.path.join(root, f"{SCANS}.lance")
+    os.makedirs(root, exist_ok=True)
+    lance.write_dataset(table, path, mode="overwrite", data_storage_version="2.2", enable_stable_row_ids=True)
+    return path
+
+
 def main() -> None:
-    warehouse = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_WAREHOUSE
-    if not warehouse or CATALOG_DELIMITER in warehouse:
-        raise SystemExit("name the warehouse as one segment: the datasets are <warehouse>$corpus and <warehouse>$recordings")
-    client, connection = _catalog()
-    for dataset in seed(client, connection, warehouse):
+    """Seed every demo source under one root: the stamped datasets in ``<root>/lakehouse`` (a directory catalog standing
+    in for a lakehouse), an unstamped table in ``<root>/archive`` and a bare table at ``<root>/loose/scans.lance``, the
+    three the local stack declares (`scripts/local-sources.json`)."""
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: seed_demo_corpus.py <root>")
+    root = sys.argv[1]
+    properties = {"root": os.path.join(root, "lakehouse")}
+    client, connection = lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties)
+    for dataset in seed(client, connection, DEFAULT_WAREHOUSE):
         namespace = dataset.split(CATALOG_DELIMITER)
         for name in sorted(client.list_tables(ListTablesRequest(id=namespace)).tables or []):
             ds = lance.dataset(namespace_client=client, table_id=[*namespace, name])
             print(f"  {dataset}${name}: {ds.count_rows()} rows, v{ds.version}")
-        print(f"seeded {dataset}")
+        print(f"seeded lakehouse {dataset}")
+    for dataset in seed_archive(os.path.join(root, "archive")):
+        print(f"seeded archive {dataset} (no descriptor)")
+    print(f"seeded {seed_loose(os.path.join(root, 'loose'))} (a bare table)")
 
 
 if __name__ == "__main__":

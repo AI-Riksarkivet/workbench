@@ -17,6 +17,8 @@ where it names no delegation, their read is refused and their token sent nowhere
 
 from __future__ import annotations
 
+import base64
+import secrets
 import time
 from collections.abc import Generator, Iterator, MutableMapping
 from contextlib import contextmanager
@@ -28,8 +30,20 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.identity import CLIENT_ID, CLIENT_SECRET, IDP_ID, LAKEHOUSE_AUDIENCE, TOKEN_EXCHANGE, WORKBENCH_AUDIENCE, BrowserKey, Provider
-from tests.media_catalog import write_table
+from service_kit.governed.fga import user_object
+from tests.identity import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    IDP_ID,
+    LAKEHOUSE_AUDIENCE,
+    LAKEHOUSE_AUDIENCE_SCOPE,
+    TOKEN_EXCHANGE,
+    WORKBENCH_AUDIENCE,
+    BrowserKey,
+    Provider,
+)
+from tests.media_catalog import lakehouse_rest, write_table
+from tests.openfga import OpenFgaStore
 from tests.vending_catalog import VendingCatalog
 from viewer import main as main_mod
 from viewer.core.config import ViewerSettings, get_viewer_settings
@@ -37,9 +51,9 @@ from viewer.core.config import ViewerSettings, get_viewer_settings
 
 _DESCRIPTOR = {"identity": {"key_fields": ["doc_id"], "doc_key": "doc_id"}, "search": {"row_table": "chunks"}}
 _ROWS = pa.table({"doc_id": ["a", "b"]})
-URL = "http://testserver/api/datasets/wh%24ns/descriptor"
+URL = "http://testserver/api/datasets/lake~wh%24ns/descriptor"
 #: A read that opens the row table on the dataset's cached handle, as every row read does.
-CHUNKS = "/api/doc-chunks/a?dataset=wh%24ns"
+CHUNKS = "/api/doc-chunks/a?dataset=lake~wh%24ns"
 
 
 class _AdmitsTheLakehousesAudience(MutableMapping[str, Any]):
@@ -85,7 +99,7 @@ def _settings(provider: Provider, catalog: VendingCatalog, secret: Path, **over:
     }[provider.shape]
     return ViewerSettings.model_validate(
         {
-            "MEDIA_CATALOG_URI": catalog.url,
+            **lakehouse_rest(catalog.url),
             "WORKBENCH_OIDC_ENABLED": True,
             "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
             "WORKBENCH_OIDC_ISSUER": provider.issuer,
@@ -104,7 +118,6 @@ def _settings(provider: Provider, catalog: VendingCatalog, secret: Path, **over:
 @contextmanager
 def _viewer(settings: ViewerSettings, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient]:
     """The module-level app the pod serves, with its lifespan, on ``settings``."""
-    monkeypatch.delenv("MEDIA_CATALOG_DIR", raising=False)
     monkeypatch.setattr(main_mod, "get_viewer_settings", lambda: settings)
     main_mod.app.dependency_overrides[get_viewer_settings] = lambda: settings
     try:
@@ -126,7 +139,6 @@ def test_a_persons_read_reaches_the_lakehouse_exchanged_or_passed_on_as_the_prov
     catalog = VendingCatalog(table.uri, _AdmitsTheLakehousesAudience())
     secret = tmp_path / "client-secret"
     secret.write_text(CLIENT_SECRET)
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
     settings = _settings(provider, catalog, secret)
     monkeypatch.setattr(main_mod, "get_viewer_settings", lambda: settings)
     main_mod.app.dependency_overrides[get_viewer_settings] = lambda: settings
@@ -139,7 +151,7 @@ def test_a_persons_read_reaches_the_lakehouse_exchanged_or_passed_on_as_the_prov
         headers = {"Authorization": f"Bearer {token}"}
     try:
         with TestClient(main_mod.app) as client:
-            response = client.get("/api/datasets/wh%24ns/descriptor", headers=headers)
+            response = client.get("/api/datasets/lake~wh%24ns/descriptor", headers=headers)
     finally:
         main_mod.app.dependency_overrides.clear()
         catalog.close()
@@ -172,7 +184,6 @@ def test_a_token_passed_on_must_name_the_lakehouse_and_no_key_or_the_read_is_nev
     catalog = VendingCatalog(table.uri, _AdmitsTheLakehousesAudience())
     secret = tmp_path / "client-secret"
     secret.write_text(CLIENT_SECRET)
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
     settings = _settings(dex, catalog, secret)
     monkeypatch.setattr(main_mod, "get_viewer_settings", lambda: settings)
     main_mod.app.dependency_overrides[get_viewer_settings] = lambda: settings
@@ -181,7 +192,7 @@ def test_a_token_passed_on_must_name_the_lakehouse_and_no_key_or_the_read_is_nev
     headers = {"Authorization": f"DPoP {token}", "DPoP": browser.proof("GET", URL, token)} if bound else {"Authorization": f"Bearer {token}"}
     try:
         with TestClient(main_mod.app) as client:
-            response = client.get("/api/datasets/wh%24ns/descriptor", headers=headers)
+            response = client.get("/api/datasets/lake~wh%24ns/descriptor", headers=headers)
     finally:
         main_mod.app.dependency_overrides.clear()
         catalog.close()
@@ -191,7 +202,6 @@ def test_a_token_passed_on_must_name_the_lakehouse_and_no_key_or_the_read_is_nev
 
 
 def test_a_passed_on_read_presents_the_persons_latest_token_and_none_past_its_expiry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
     dex = Provider("dex")
     table = write_table(tmp_path, ["wh", "ns", "chunks"], _ROWS, descriptor=_DESCRIPTOR)
     catalog = VendingCatalog(table.uri, _AdmitsTheLakehousesAudience(vend_seconds=30))
@@ -217,19 +227,19 @@ def test_a_passed_on_read_presents_the_persons_latest_token_and_none_past_its_ex
     assert len(catalog.calls) == after_renewal
 
 
-#: A token from a further issuer: (that issuer's `lakehouse` entry, the status of its person's read, whether that issuer
-#: exchanged it).
+#: A token from a further issuer: (that issuer's `lakehouse` entry, the lakehouse source's identity, the status of its
+#: person's read, whether that issuer exchanged it). A lakehouse read as the workbench needs no way to read as the person.
 FURTHER_ISSUER = {
-    "names-no-delegation": (None, 503, False),
-    "exchanges-at-itself": ({"delegation": "exchange", "client_id": CLIENT_ID}, 200, True),
+    "names-no-delegation": (None, "person", 503, False),
+    "exchanges-at-itself": ({"delegation": "exchange", "client_id": CLIENT_ID}, "person", 200, True),
+    "names-no-delegation-read-as-the-workbench": (None, "service", 200, False),
 }
 
 
-@pytest.mark.parametrize(("lakehouse", "status", "exchanged"), FURTHER_ISSUER.values(), ids=FURTHER_ISSUER.keys())
+@pytest.mark.parametrize(("lakehouse", "identity", "status", "exchanged"), FURTHER_ISSUER.values(), ids=FURTHER_ISSUER.keys())
 def test_a_token_is_exchanged_only_at_the_issuer_that_signed_it(
-    lakehouse: dict[str, str] | None, status: int, exchanged: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    lakehouse: dict[str, str] | None, identity: str, status: int, exchanged: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
     primary, further = Provider(), Provider()
     table = write_table(tmp_path, ["wh", "ns", "chunks"], _ROWS, descriptor=_DESCRIPTOR)
     catalog = VendingCatalog(table.uri, _AdmitsTheLakehousesAudience())
@@ -238,12 +248,13 @@ def test_a_token_is_exchanged_only_at_the_issuer_that_signed_it(
     entry: dict[str, object] = {"issuer": further.issuer, "idp_id": "further", "allow_insecure": True}
     if lakehouse is not None:
         entry["lakehouse"] = lakehouse | {"client_secret_file": str(secret)}
-    settings = _settings(primary, catalog, secret, WORKBENCH_OIDC_PROVIDERS=[entry])
+    sources = [{"kind": "rask", "name": "lake", "uri": catalog.url, "identity": identity}]
+    settings = _settings(primary, catalog, secret, WORKBENCH_OIDC_PROVIDERS=[entry], WORKBENCH_SOURCES=sources)
     browser = BrowserKey()
     token = further.mint("ada", jkt=browser.jkt)
     try:
         with _viewer(settings, monkeypatch) as client:
-            response = client.get("/api/datasets/wh%24ns/descriptor", headers={"Authorization": f"DPoP {token}", "DPoP": browser.proof("GET", URL, token)})
+            response = client.get("/api/datasets/lake~wh%24ns/descriptor", headers={"Authorization": f"DPoP {token}", "DPoP": browser.proof("GET", URL, token)})
     finally:
         catalog.close()
         primary.close()
@@ -252,3 +263,60 @@ def test_a_token_is_exchanged_only_at_the_issuer_that_signed_it(
     assert response.status_code == status, response.text
     assert [request for request in primary.requests if token in request.values()] == []
     assert [request.get("subject_token") for request in further.requests] == ([token] if exchanged else [])
+
+
+@pytest.mark.parametrize("kind", ["namespace", "lakehouse-read-as-the-workbench"])
+def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, openfga_store: OpenFgaStore
+) -> None:
+    """A lance-namespace source knows nobody, and a lakehouse read as the workbench sees only the workbench: the
+    workbench's own OpenFGA decides who reads either (`reader` on `source:<name>`, from git). A declared reader lists,
+    opens and has a cell signed; a signed-in stranger sees the source omitted, is refused the dataset and the signing;
+    and a link signed for the reader stops serving once they are no longer a reader."""
+    dex = Provider("dex")
+    rows = pa.table({"doc_id": ["a"], "payload": [b"\x89PNG\r\n\x1a\n...."]})
+    table = write_table(tmp_path / "catalog", ["wh", "ns", "chunks"], rows)
+    catalog = VendingCatalog(table.uri, _AdmitsTheLakehousesAudience())
+    readers = {"people": [f"{IDP_ID}~reader"]}
+    source = (
+        {"kind": "namespace", "name": "src", "impl": "dir", "properties": {"root": str(tmp_path / "catalog")}, "readers": readers}
+        if kind == "namespace"
+        else {"kind": "rask", "name": "src", "uri": catalog.url, "identity": "service", "readers": readers}
+    )
+    secret = tmp_path / "client-secret"
+    secret.write_text(CLIENT_SECRET)
+    key = tmp_path / "media-url-key"
+    key.write_text(base64.b64encode(secrets.token_bytes(32)).decode())
+    settings = _settings(
+        dex,
+        catalog,
+        secret,
+        WORKBENCH_SOURCES=[source],
+        WORKBENCH_FGA_ENABLED=True,
+        WORKBENCH_FGA_API_URL=openfga_store.url,
+        WORKBENCH_FGA_STORE=openfga_store.name,
+        WORKBENCH_FGA_MODEL_ID=openfga_store.model_id,
+        VIEWER_MEDIA_URL_KEY_FILE=str(key),
+        WORKBENCH_LAKEHOUSE_AUDIENCE_SCOPE=LAKEHOUSE_AUDIENCE_SCOPE,
+    )
+    openfga_store.write((user_object(f"{IDP_ID}~reader"), "reader", "source:src"))
+
+    def bearer(sub: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {dex.mint(sub, audience=[WORKBENCH_AUDIENCE, LAKEHOUSE_AUDIENCE, 'workbench-app'], azp='workbench-app')}"}
+
+    item = {"role": "cell", "table": "src~wh$ns$chunks", "column": "payload", "row": 0, "version": int(table.version)}
+    try:
+        with _viewer(settings, monkeypatch) as client:
+            listed = {sub: [s["name"] for s in client.get("/api/datasets", headers=bearer(sub)).json()["sources"]] for sub in ("reader", "stranger")}
+            opened = {sub: client.get("/api/datasets/src~wh%24ns", headers=bearer(sub)).status_code for sub in ("reader", "stranger")}
+            signing = {sub: client.post("/api/signed-media", json={"items": [item]}, headers=bearer(sub)) for sub in ("reader", "stranger")}
+            link = str(signing["reader"].json()["urls"][0]["url"])
+            served = client.get(link).status_code
+            openfga_store.delete((user_object(f"{IDP_ID}~reader"), "reader", "source:src"))
+            served_after = client.get(link).status_code
+    finally:
+        catalog.close()
+        dex.close()
+
+    assert (listed, opened) == ({"reader": ["src"], "stranger": []}, {"reader": 200, "stranger": 403})
+    assert ({sub: answer.status_code for sub, answer in signing.items()}, served, served_after) == ({"reader": 200, "stranger": 403}, 200, 403)

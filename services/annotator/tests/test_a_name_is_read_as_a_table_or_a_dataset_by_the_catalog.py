@@ -20,6 +20,7 @@ from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.governed.deps import ANONYMOUS_CALLER
+from tests.media_catalog import lakehouse_dir
 
 
 DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "searches": [{"name": "default", "row_table": "chunks"}]}
@@ -36,12 +37,12 @@ def catalog(tmp_path: Path) -> AppState:
         schema=pa.schema([("doc_id", pa.string()), ("text", pa.string())], metadata={DESCRIPTOR_METADATA_KEY: json.dumps(DESCRIPTOR).encode()}),
     )
     lancedb.connect_namespace("dir", {"root": root}).create_table("chunks", rows, namespace_path=["acme", "media"])
-    return AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": root}))
+    return AppState(settings=Settings.model_validate({**lakehouse_dir(root)}))
 
 
 def test_input_tables_reads_each_name_as_the_catalog_holds_it(catalog: AppState) -> None:
-    names = ["acme$media$chunks", "acme$media", "acme$media$nested", "acme"]
+    names = ["lake~acme$media$chunks", "lake~acme$media", "lake~acme$media$nested", "acme"]
 
     found = corpus.input_tables(catalog, names, ANONYMOUS_CALLER)
 
-    assert found == {"acme$media$chunks": "acme$media$chunks", "acme$media": "acme$media$chunks"}
+    assert found == {"lake~acme$media$chunks": "lake~acme$media$chunks", "lake~acme$media": "lake~acme$media$chunks"}

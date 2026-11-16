@@ -10,10 +10,10 @@ from functools import lru_cache
 from pydantic import Field
 
 from client_kit.media.config import Settings
-from service_kit.governed.settings import LakehouseTokenSettings, OidcSettings
+from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
-class SearchSettings(Settings, OidcSettings, LakehouseTokenSettings):
+class SearchSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     """The search service's config: the media plane's, the workbench's sign-in, and its client for lakehouse tokens.
 
     Search reads every corpus as the person asking, on a token it exchanges for them, so the lakehouse decides what they

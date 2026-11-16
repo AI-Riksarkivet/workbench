@@ -1,0 +1,7 @@
+{
+  "sources": [
+    {"kind": "rask", "name": "lake", "title": "Demo lakehouse (a directory catalog standing in for rask)", "dir": "lakehouse", "identity": "none"},
+    {"kind": "namespace", "name": "archive", "title": "Field archive (a lance-namespace directory catalog)", "impl": "dir", "properties": {"root": "archive"}},
+    {"kind": "tables", "name": "scans", "title": "Scans (a bare Lance table)", "uri": "loose/scans.lance"}
+  ]
+}

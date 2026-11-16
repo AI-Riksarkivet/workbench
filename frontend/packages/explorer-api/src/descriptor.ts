@@ -140,7 +140,10 @@ export const DatasetSummarySchema = v.object({
 	tables: v.optional(v.record(v.string(), v.object({ row_count: int(), version: int() })), {}),
 	capabilities: v.optional(v.array(v.string()), []),
 });
-export const DatasetsResponseSchema = v.object({ datasets: v.array(DatasetSummarySchema) });
+/** The viewer's listing: every declared source, each with the datasets the reader can see in it. */
+export const DatasetsResponseSchema = v.object({
+	sources: v.array(v.object({ name: v.string(), datasets: v.array(DatasetSummarySchema) })),
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // Row envelope — the ranking + alignments contract, NOT corpus columns

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The workbench's local stack: the viewer, search, annotator and flows with sign-in off, on a local lance-namespace
-# directory catalog, and the built app behind its Gateway stand-in (`frontend/app/edge.ts`), on one origin. Everything
-# listens on the loopback only: with sign-in off, nothing beyond this machine may reach it. It prints the one URL to
-# open; Ctrl-C stops every process it started, and if any of them stops on its own the rest are stopped and the script
-# says which.
+# The workbench's local stack: the viewer, search, annotator and flows with sign-in off, reading local demo sources (one
+# of each kind a deployment can declare), and the built app behind its Gateway stand-in (`frontend/app/edge.ts`), on one
+# origin. Everything listens on the loopback only: with sign-in off, nothing beyond this machine may reach it. It prints
+# the one URL to open; Ctrl-C stops every process it started, and if any of them stops on its own the rest are stopped and
+# the script says which.
 #
 # `make local` first runs this with `check`, which refuses a port something already listens on before anything is
 # installed or built (a build replaces the files a running stack serves), then installs, builds the app and runs this
@@ -14,8 +14,10 @@
 # The stack's root process writes its PID to PID_FILE (default: $TMPDIR/workbench-local-stack.pid) and removes it when
 # it ends; `stop` (`make local-stop`) stops exactly that process and waits until every port is free.
 #
-#   MEDIA_CATALOG_DIR   the directory catalog every service reads (default: $TMPDIR/workbench-catalog);
-#                       MEDIA_CATALOG_URI names a catalog's REST door instead
+#   LOCAL_CATALOG       the root every demo source lives under (default: $TMPDIR/workbench-catalog): the declaration
+#                       `scripts/local-sources.json` is copied there and names three sources beside it, one of each kind
+#                       (a directory catalog standing in for a lakehouse, a lance-namespace directory catalog, a bare
+#                       table), which SEED=1 writes (`scripts/seed_demo_corpus.py`)
 #   EDGE_PORT           the origin the browser uses (default 8700); serve.ts listens on EDGE_PORT + 1000
 #   VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT   the services' own ports (8701, 8702, 8703, 8704)
 #   STATE_PORT          the annotator's PostgreSQL (default 8705), the pinned server `make postgres` exports
@@ -37,15 +39,15 @@ export WORKBENCH_API_PREFIX="${WORKBENCH_API_PREFIX:-/api}"
 # A local stack signs nobody in, and says so the one way the services accept (authentication is on by default).
 export WORKBENCH_OIDC_ENABLED=false
 export WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED=true
-if [ -z "${MEDIA_CATALOG_URI:-}" ]; then
-  export MEDIA_CATALOG_DIR="${MEDIA_CATALOG_DIR:-${TMPDIR:-/tmp}/workbench-catalog}"
-  mkdir -p "$MEDIA_CATALOG_DIR"
-fi
-export MEDIA_DEFAULT_DATASET="${MEDIA_DEFAULT_DATASET:-demo\$corpus}"
+LOCAL_CATALOG="${LOCAL_CATALOG:-${TMPDIR:-/tmp}/workbench-catalog}"
+mkdir -p "$LOCAL_CATALOG"
+cp "$ROOT/scripts/local-sources.json" "$LOCAL_CATALOG/sources.json"
+export WORKBENCH_SOURCES_FILE="$LOCAL_CATALOG/sources.json"
+export MEDIA_DEFAULT_DATASET="${MEDIA_DEFAULT_DATASET:-lake~demo\$corpus}"
 
 EDGE_PORT="${EDGE_PORT:-8700}"
 STATE_PORT="${STATE_PORT:-8705}"
-STATE_DIR="${STATE_DIR:-${MEDIA_CATALOG_DIR:-${TMPDIR:-/tmp}/workbench}-state}"
+STATE_DIR="${STATE_DIR:-$LOCAL_CATALOG-state}"
 POSTGRES_TREE="${WORKBENCH_POSTGRES_DIR:-$ROOT/.localbin/postgres}"
 VIEWER_PORT="${VIEWER_PORT:-8701}"
 SEARCH_PORT="${SEARCH_PORT:-8702}"
@@ -135,7 +137,7 @@ refuse_busy_ports
 echo "$$" > "$PID_FILE"
 
 if [ "${SEED:-}" = 1 ]; then
-  (cd "$ROOT" && uv run --no-sync python scripts/seed_demo_corpus.py)
+  (cd "$ROOT" && uv run --no-sync python scripts/seed_demo_corpus.py "$LOCAL_CATALOG")
 fi
 
 # Each child in a process group of its own (job control), so stopping one stops its whole pipeline, and the terminal's

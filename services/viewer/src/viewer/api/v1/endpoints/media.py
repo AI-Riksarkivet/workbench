@@ -38,7 +38,7 @@ from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.token_exchange import LakehouseCaller
-from viewer.api.security import AUTHENTICATED, CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.services.clips import MAX_CLIP_S, ClipBusyError, build_clip
 
 
@@ -278,7 +278,7 @@ def _frames_binding(handle: DatasetHandle) -> tuple[str, str, str | None] | None
     mime column is discovered: the first ``*_mime`` string column beside the
     blob (None → the JPEG default applies).
     """
-    declared = handle.descriptor.declared
+    declared = handle.declared
     target = declared.capabilities.get("frames")
     if not target:
         return None
@@ -312,7 +312,7 @@ def frame_row(handle: DatasetHandle, doc_id: str, keys: tuple[int, ...], frame_i
 
     The key fields after the doc key map positionally onto ``keys``.
     """
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = _frames_binding(handle)
     if binding is None:
@@ -345,10 +345,10 @@ def frame_row(handle: DatasetHandle, doc_id: str, keys: tuple[int, ...], frame_i
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/thumbnail/{doc_id}", dependencies=[AUTHENTICATED])
+@router.get("/thumbnail/{doc_id}", dependencies=[READS_DATASET])
 def thumbnail(caller: CallerDep, doc_id: str, state: StateDep, dataset: DatasetParam = None) -> Response:
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document
     if binding is None:
@@ -371,7 +371,7 @@ def thumbnail(caller: CallerDep, doc_id: str, state: StateDep, dataset: DatasetP
     return blob_response(blob, mime=mime, empty_detail="no thumbnail for doc_id")
 
 
-@router.get("/chunk-frame/{doc_id}/{group_id}/{chunk_id}", dependencies=[AUTHENTICATED])
+@router.get("/chunk-frame/{doc_id}/{group_id}/{chunk_id}", dependencies=[READS_DATASET])
 def chunk_frame(
     caller: CallerDep,
     doc_id: str,
@@ -401,7 +401,7 @@ def chunk_frame(
 def _clip_source(state: AppState, dataset: str | None, caller: LakehouseCaller, doc_id: str) -> tuple[DatasetHandle, str, DocumentBinding]:
     """The dataset, the validated doc key and the document binding a clip is cut from; 404 when the doc is absent."""
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document
     if binding is None:
@@ -411,7 +411,7 @@ def _clip_source(state: AppState, dataset: str | None, caller: LakehouseCaller, 
     return handle, doc_id, binding
 
 
-@router.get("/media-clip/{doc_id}", dependencies=[AUTHENTICATED])
+@router.get("/media-clip/{doc_id}", dependencies=[READS_DATASET])
 async def media_clip(
     caller: CallerDep,
     doc_id: str,
@@ -441,7 +441,7 @@ async def media_clip(
 
     def write_source(path: Path) -> None:
         ds = table_dataset(handle, binding.table)
-        rowid = rowid_for_doc(ds, handle.descriptor.declared.identity.doc_key, doc_id)
+        rowid = rowid_for_doc(ds, handle.declared.identity.doc_key, doc_id)
         if rowid is None:
             raise NotFoundError("doc_id not found")
         total = payload_size(ds, binding.media_blob, rowid)
@@ -474,10 +474,10 @@ async def media_clip(
     return FileResponse(path, media_type=mime, headers={"Cache-Control": "no-store"}, stat_result=stat_result)
 
 
-@router.get("/media/{doc_id}", dependencies=[AUTHENTICATED])
+@router.get("/media/{doc_id}", dependencies=[READS_DATASET])
 def media(caller: CallerDep, doc_id: str, request: Request, state: StateDep, dataset: DatasetParam = None) -> Response:
     handle = dataset_handle(state, dataset, caller)
-    declared = handle.descriptor.declared
+    declared = handle.declared
     doc_id = validate_doc_key(declared, doc_id)
     binding = declared.document
     if binding is None:

@@ -157,7 +157,7 @@ const CHUNK_ROWS = DOCS.reduce((n, d) => n + d.chunks.length, 0);
 
 /** Two datasets: one with documents, chunks, thumbnails and an atlas; one with none of them. */
 const DATASETS = {
-	acme$letters: {
+	'lake~acme$letters': {
 		tables: {
 			documents: table('documents', DOCS.length, 3, ['doc_id', 'title', 'collection', 'mime']),
 			chunks: table('chunks', CHUNK_ROWS, 3, ['doc_id', 'chunk_id', 'title', 'text']),
@@ -180,7 +180,7 @@ const DATASETS = {
 	},
 	// A second dataset with an atlas and a graph of its own, so moving between two datasets shows each
 	// page drawing the one it is on.
-	acme$maps: {
+	'lake~acme$maps': {
 		tables: {
 			documents: table('documents', 1, 2, ['doc_id', 'title', 'collection', 'mime']),
 			chunks: table('chunks', 1, 2, ['doc_id', 'chunk_id', 'title', 'text']),
@@ -197,12 +197,114 @@ const DATASETS = {
 			capabilities: { graph: 'kg' },
 		},
 	},
-	acme$notes: {
+	'lake~acme$notes': {
 		tables: { notes: table('notes', 0, 1, ['note_id', 'text']) },
 		capabilities: [],
 		declared: { identity: { doc_key: 'note_id', key_fields: ['note_id'] }, atlas: [] },
 	},
 } as const;
+
+/** A dataset with no workbench descriptor, in a read-only lance-namespace source: shown as a plain table, its
+ *  rows read from its schema (`viewer.services.plain_rows`). Its note column carries a full-text index and its
+ *  embedding a vector index, so search and similar rows work; its tags are a list, which Lance does not order. */
+const PLAIN_ID = 'archive~field$survey';
+const PLAIN_TABLE = 'observations';
+const column = (
+	name: string,
+	arrow_type: string,
+	kind: string,
+	extra: Record<string, unknown> = {},
+) => ({
+	name,
+	arrow_type,
+	kind,
+	sortable: false,
+	text_search: false,
+	similar: false,
+	dim: null,
+	...extra,
+});
+const PLAIN_COLUMNS = [
+	column('n', 'int64', 'integer', { sortable: true }),
+	column('note', 'string', 'text', { sortable: true, text_search: true }),
+	column('tags', 'list<item: string>', 'json'),
+	column('embedding', 'fixed_size_list<item: float>[4]', 'vector', { similar: true, dim: 4 }),
+	column('image', 'extension<lance.blob.v2<BlobType>>', 'blob'),
+];
+const PLAIN_ROWS = [
+	{ n: 3, note: 'salt in the harbour', tags: '["coast"]' },
+	{ n: 1, note: 'iron to the works', tags: '["inland"]' },
+	{ n: 4, note: 'salt and grain', tags: '["coast","trade"]' },
+	{ n: 2, note: 'letters from the governor', tags: '[]' },
+].map((row, rowid) => ({
+	rowid,
+	cells: {
+		...row,
+		embedding: { dim: 4, head: [rowid, 0.5, 0.25, 0] },
+		image: { size: 1024 + rowid },
+	} as Record<string, unknown>,
+	media: {},
+	score: null as number | null,
+}));
+const READ_ONLY = "source 'archive' is read-only: only a rask lakehouse's datasets are annotated";
+const NOT_WRITTEN =
+	'the catalog lists it, but holds no version of it to read: declared and never written, or its data removed';
+const PLAIN_FACTS = {
+	id: PLAIN_ID,
+	source: 'archive',
+	kind: 'namespace',
+	stamped: false,
+	tables: {
+		[PLAIN_TABLE]: {
+			name: PLAIN_TABLE,
+			row_count: PLAIN_ROWS.length,
+			version: 3,
+			columns: PLAIN_COLUMNS.map((c) => ({
+				name: c.name,
+				arrow_type: c.arrow_type,
+				nullable: true,
+			})),
+			indexes: [
+				{ name: 'note_idx', index_type: 'Inverted', columns: ['note'] },
+				{ name: 'embedding_idx', index_type: 'Vector', columns: ['embedding'] },
+			],
+		},
+	},
+	capabilities: [],
+	problem: null,
+	unreadable: { drafts: NOT_WRITTEN },
+	read_only: READ_ONLY,
+};
+
+/** One page of the plain table, as the viewer answers it: sorted, searched or ranked. */
+function plainPage(params: URLSearchParams): unknown {
+	const offset = Number(params.get('offset') ?? 0);
+	const limit = Number(params.get('limit') ?? 50);
+	let rows = [...PLAIN_ROWS];
+	const q = params.get('q');
+	const near = params.get('near');
+	const sort = params.get('sort');
+	if (q) {
+		rows = rows.filter((r) => String(r.cells.note).includes(q)).map((r) => ({ ...r, score: 0.5 }));
+	} else if (near !== null) {
+		rows = rows
+			.filter((r) => r.rowid !== Number(near))
+			.map((r, i) => ({ ...r, score: 0.1 * (i + 1) }));
+	} else if (sort === 'n' || sort === 'note') {
+		rows.sort((a, b) => (String(a.cells[sort]) < String(b.cells[sort]) ? -1 : 1));
+		if (params.get('order') === 'desc') rows.reverse();
+	}
+	return {
+		table: PLAIN_TABLE,
+		qualified: `${PLAIN_ID}$${PLAIN_TABLE}`,
+		version: 3,
+		columns: PLAIN_COLUMNS,
+		total: rows.length,
+		offset,
+		limit,
+		rows: rows.slice(offset, offset + limit),
+	};
+}
 
 type DatasetId = keyof typeof DATASETS;
 const isDataset = (id: string | null): id is DatasetId => id !== null && id in DATASETS;
@@ -243,10 +345,10 @@ const chunkRow = ({ doc, chunk_id }: Chunk, score?: number) => ({
 
 type Point = Chunk & { cluster: number; x: number; y: number };
 
-/** The `umap` space's points: in `acme$letters` sixty, every chunk first, then further passages, in
- *  three clusters; in `acme$maps` twenty-four. */
+/** The `umap` space's points: in `lake~acme$letters` sixty, every chunk first, then further passages, in
+ *  three clusters; in `lake~acme$maps` twenty-four. */
 const pointsOf = (dataset: string | null): Point[] =>
-	dataset === 'acme$maps' ? MAP_POINTS : POINTS;
+	dataset === 'lake~acme$maps' ? MAP_POINTS : POINTS;
 
 const POINTS: Point[] = Array.from({ length: 60 }, (_, i) => {
 	const chunk: Chunk = CHUNKS[i] ?? { doc: DOCS[i % DOCS.length]!, chunk_id: 100 + i };
@@ -339,7 +441,7 @@ const MAP_EDGES: Edge[] = [
 
 /** A dataset's knowledge graph. */
 const graphOf = (dataset: string | null): { entities: Entity[]; edges: Edge[] } =>
-	dataset === 'acme$maps'
+	dataset === 'lake~acme$maps'
 		? { entities: MAP_ENTITIES, edges: MAP_EDGES }
 		: { entities: ENTITIES, edges: EDGES };
 
@@ -457,19 +559,93 @@ Bun.serve({
 				return json({ detail: 'the lakehouse refused the read' }, 403);
 			}
 			ok(200);
-			if (who.name === 'Nobody') return json({ datasets: [] });
+			const lake = {
+				name: 'lake',
+				kind: 'rask',
+				title: 'The lakehouse',
+				unlisted: [],
+				truncated: false,
+			};
+			if (who.name === 'Nobody') return json({ sources: [{ ...lake, datasets: [] }] });
+			const stamped = Object.entries(DATASETS).map(([id, d]) => ({
+				id,
+				source: 'lake',
+				stamped: true,
+				tables: Object.fromEntries(
+					Object.entries(d.tables).map(([name, t]) => [
+						name,
+						{ row_count: t.row_count, version: t.version, n_columns: t.columns.length },
+					]),
+				),
+				capabilities: d.capabilities,
+				problem: null,
+				unreadable: {},
+				read_only: null,
+			}));
+			const plainSummary = {
+				id: PLAIN_ID,
+				source: 'archive',
+				stamped: false,
+				tables: {
+					[PLAIN_TABLE]: {
+						row_count: PLAIN_ROWS.length,
+						version: 3,
+						n_columns: PLAIN_COLUMNS.length,
+					},
+				},
+				capabilities: [],
+				problem: null,
+				unreadable: { drafts: NOT_WRITTEN },
+				read_only: READ_ONLY,
+			};
 			return json({
-				datasets: Object.entries(DATASETS).map(([id, d]) => ({
-					id,
-					tables: Object.fromEntries(
-						Object.entries(d.tables).map(([name, t]) => [
-							name,
-							{ row_count: t.row_count, version: t.version, n_columns: t.columns.length },
-						]),
-					),
-					capabilities: d.capabilities,
-				})),
+				sources: [
+					{ ...lake, datasets: stamped },
+					{
+						name: 'archive',
+						kind: 'namespace',
+						title: 'Field archive',
+						datasets: [plainSummary],
+						unlisted: [
+							{ id: 'archive~sealed', reason: 'catalog denied the request: no read on sealed' },
+						],
+						truncated: false,
+					},
+				],
 			});
+		}
+		const facts = /^\/api\/datasets\/([^/]+)$/.exec(url.pathname);
+		if (facts && req.method === 'GET') {
+			const id = decodeURIComponent(facts[1] ?? '');
+			if (id === PLAIN_ID) {
+				ok(200);
+				return json(PLAIN_FACTS);
+			}
+			if (!isDataset(id)) {
+				ok(404);
+				return json({ detail: `unknown dataset ${id}` }, 404);
+			}
+			ok(200);
+			return json({
+				id,
+				source: 'lake',
+				kind: 'rask',
+				stamped: true,
+				tables: DATASETS[id].tables,
+				capabilities: DATASETS[id].capabilities,
+				problem: null,
+				unreadable: {},
+				read_only: null,
+			});
+		}
+		const plainRows = /^\/api\/datasets\/([^/]+)\/tables\/([^/]+)\/rows(?:\/(\d+))?$/.exec(
+			url.pathname,
+		);
+		if (plainRows && req.method === 'GET' && decodeURIComponent(plainRows[1] ?? '') === PLAIN_ID) {
+			ok(200);
+			if (plainRows[3] === undefined) return json(plainPage(url.searchParams));
+			const row = PLAIN_ROWS[Number(plainRows[3])];
+			return row ? json(row) : json({ detail: 'no such row' }, 404);
 		}
 		const descriptor = /^\/api\/datasets\/([^/]+)\/descriptor$/.exec(url.pathname);
 		if (descriptor && req.method === 'GET') {
@@ -542,7 +718,7 @@ Bun.serve({
 			const page = Number(url.searchParams.get('page') ?? 1);
 			const perPage = Number(url.searchParams.get('per_page') ?? 24);
 			const docs =
-				dataset === 'acme$letters'
+				dataset === 'lake~acme$letters'
 					? DOCS.map(({ doc_id, title, collection, mime }) => ({ doc_id, title, collection, mime }))
 					: [];
 			ok(200);
@@ -559,7 +735,7 @@ Bun.serve({
 		// Voice tables are built for the letters only: the other dataset offers no voice search.
 		if (url.pathname === '/api/voice/status' && req.method === 'GET') {
 			ok(200);
-			const built = dataset === 'acme$letters';
+			const built = dataset === 'lake~acme$letters';
 			return json({ built, turns: built ? CHUNKS.length : 0, speakers: built ? 2 : 0 });
 		}
 		if (url.pathname === '/api/voice/similar' && req.method === 'GET') {
@@ -742,7 +918,10 @@ Bun.serve({
 			});
 		}
 		if (url.pathname === '/api/atlas/points' && req.method === 'GET') {
-			if ((dataset !== 'acme$letters' && dataset !== 'acme$maps') || fault === 'unbuilt') {
+			if (
+				(dataset !== 'lake~acme$letters' && dataset !== 'lake~acme$maps') ||
+				fault === 'unbuilt'
+			) {
 				ok(400);
 				return json({ detail: 'umap 2D projection not built yet' }, 400);
 			}

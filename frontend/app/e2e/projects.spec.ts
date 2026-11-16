@@ -259,7 +259,7 @@ test('the rows a search answered are sent to a project, labelled, and appear in 
 	context,
 }) => {
 	const who = await as(context, 'Annotator');
-	await page.goto('/datasets/acme%24letters?project=letters');
+	await page.goto('/datasets/lake~acme%24letters?project=letters');
 	await page.getByRole('searchbox').fill('harbour');
 	await page.keyboard.press('Enter');
 	await page.getByRole('button', { name: 'Send to a project' }).click();
@@ -278,7 +278,7 @@ test('the rows a search answered are sent to a project, labelled, and appear in 
 		}
 	).items;
 	expect(items[0]).toMatchObject({
-		source: { where: 'acme$letters', dataset_version: 3 },
+		source: { where: 'lake~acme$letters', dataset_version: 3 },
 		prediction: [{ shape_type: 'tag', label: 'letter' }],
 	});
 	await expect(dialog.getByTestId('send-done')).toContainText(`Sent ${items.length} items.`);
@@ -443,7 +443,7 @@ test('a viewer is offered no project to send to: the list is the projects the st
 	context,
 }) => {
 	await as(context, 'Viewer');
-	await page.goto('/datasets/acme%24letters?project=letters');
+	await page.goto('/datasets/lake~acme%24letters?project=letters');
 	await page.getByRole('searchbox').fill('harbour');
 	await page.keyboard.press('Enter');
 	await page.getByRole('button', { name: 'Send to a project' }).click();
@@ -456,7 +456,7 @@ test('a viewer is offered no project to send to: the list is the projects the st
 
 /** The search page's send dialog, opened over the rows `harbour` answers. */
 async function sendDialog(page: Page) {
-	await page.goto('/datasets/acme%24letters?project=letters');
+	await page.goto('/datasets/lake~acme%24letters?project=letters');
 	await page.getByRole('searchbox').fill('harbour');
 	await page.keyboard.press('Enter');
 	await page.getByRole('button', { name: 'Send to a project' }).click();

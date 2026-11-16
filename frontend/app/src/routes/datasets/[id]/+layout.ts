@@ -1,6 +1,8 @@
 import { ApiError } from '@workbench/explorer-api';
 import { setActiveTable, setActiveView } from '@workbench/explorer-api/descriptor';
+import { datasetFacts } from '#lib/api/datasets.api.ts';
 import { datasetView } from '#lib/api/explore.api.ts';
+import { plain } from '#lib/plain/plain.svelte.ts';
 import { explore } from '#lib/explore/explore.svelte.ts';
 import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
 import { failureText } from '#lib/failure.ts';
@@ -14,6 +16,9 @@ import type { LayoutLoad } from './$types';
  * is the layout's own "no such dataset" state, not an error page: the sidebar and the way back stay. A viewer
  * that could not be reached (no answer, or a gateway's 502, 503 or 504) is told apart from that, since the
  * dataset may well exist: `unreachable`, with a way to try again.
+ *
+ * The dataset's facts are read first: one that carries no workbench descriptor is shown as a plain
+ * table (`plain`, `#lib/plain/plain.svelte.ts`) and its descriptor is never asked for.
  */
 
 /** Whether a failed read means the viewer was not reached, rather than that it answered no. */
@@ -29,16 +34,28 @@ export const load: LayoutLoad = async ({ params, url, parent }) => {
 	explore.open(params.id);
 	setActiveTable(url.searchParams.get('table'));
 	let view: Awaited<ReturnType<typeof datasetView>>;
+	let facts: Awaited<ReturnType<typeof datasetFacts>>;
 	try {
+		facts = await datasetFacts(params.id);
+		if (!facts.stamped) {
+			if (explore.dataset === params.id) plain.open(facts);
+			return { id: params.id, failure: null, unreachable: false, view: null, facts };
+		}
 		view = await datasetView(params.id);
 	} catch (err) {
-		return { id: params.id, failure: failureText(err), unreachable: unreachable(err), view: null };
+		return {
+			id: params.id,
+			failure: failureText(err),
+			unreachable: unreachable(err),
+			view: null,
+			facts: null,
+		};
 	}
 	// A navigation to another dataset started while this one's descriptor was read: that load owns the
 	// client's active view now, and this one's answer must not overwrite it.
 	if (explore.dataset !== params.id)
-		return { id: params.id, failure: null, unreachable: false, view: null };
+		return { id: params.id, failure: null, unreachable: false, view: null, facts };
 	setActiveView(view);
 	voiceSearch.probe();
-	return { id: params.id, failure: null, unreachable: false, view };
+	return { id: params.id, failure: null, unreachable: false, view, facts };
 };

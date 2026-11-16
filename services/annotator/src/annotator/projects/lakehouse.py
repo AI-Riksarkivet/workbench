@@ -48,6 +48,7 @@ from annotator.core.config import get_annotator_settings
 from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, PublishRefusal, publish_namespace
 from annotator.projects.saga import LostLease, Publisher, PublishOutcome, run_publish
 from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog, translate_catalog_errors
+from client_kit.sources import SOURCE_SEPARATOR
 from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseTokens
 from service_kit.naming import CATALOG_DELIMITER
@@ -99,14 +100,28 @@ class CatalogPublisher:
         self,
         base_url: str,
         *,
+        source: str,
         delimiter: str = CATALOG_DELIMITER,
         token: Callable[[], str] | None = None,
         originator: str | None = None,
     ) -> None:
+        self._source = source
         self._base_url = base_url
         self._delimiter = delimiter
         self._token = token
         self._originator = originator
+
+    def _in_lakehouse(self, table: str) -> list[str]:
+        """A captured input's lakehouse id: its qualified name (``<source>~<id>``, `client_kit.sources`) without the source,
+        which a send admits only from the lakehouse (`annotator.corpus.not_annotatable`).
+
+        Raises:
+            PublishRefusal: The input names another source, which no send admits.
+        """
+        source, separator, identifier = table.partition(SOURCE_SEPARATOR)
+        if not separator or source != self._source:
+            raise PublishRefusal(f"input {table!r} is not a table of the lakehouse {self._source!r}")
+        return identifier.split(self._delimiter)
 
     def _headers(self) -> dict[str, str]:
         """This call's static headers: the person the publish is for.
@@ -130,7 +145,7 @@ class CatalogPublisher:
         body = _arrow_stream_bytes(plan)
         headers = {**self._headers(), RUN_ID_HEADER: run_id, JOB_NAMESPACE_HEADER: PUBLISH_JOB[0], JOB_HEADER: PUBLISH_JOB[1]}
         if inputs:
-            headers[INPUTS_HEADER] = json.dumps([{"table": table.split(self._delimiter), "version": version} for table, version in inputs])
+            headers[INPUTS_HEADER] = json.dumps([{"table": self._in_lakehouse(table), "version": version} for table, version in inputs])
         catalog = NamespaceCatalogWriteTransport(
             connect_catalog(self._base_url, token=self._token, delimiter=self._delimiter, headers=headers),
             table_id.split(self._delimiter),
@@ -344,7 +359,7 @@ class PublishRunner:
                     project_id,
                     event="publish_failed",
                     actor=subject,
-                    error="MEDIA_CATALOG_URI is not configured — the publish transport has no catalog to post to",
+                    error="no rask lakehouse source is read over its REST door, so a publish has no catalog to post to",
                 )
             except Exception:
                 logger.exception("could not record the missing-catalog failure for project %s", project_id)
@@ -354,12 +369,13 @@ class PublishRunner:
     def _catalog_publisher(self, subject: str) -> Publisher | None:
         """The publisher over the catalog's REST door, as the workbench's own confidential client (its token asked per
         call; one that cannot be had fails the call it was for, which surfaces as `publish_failed` with the reason)."""
-        settings = get_annotator_settings()
-        if not settings.catalog_uri:
+        lakehouse = get_annotator_settings().sources.lakehouse
+        if lakehouse is None or lakehouse.uri is None:
             return None
         return CatalogPublisher(
-            settings.catalog_uri,
-            delimiter=settings.catalog_delimiter,
+            lakehouse.uri,
+            source=lakehouse.name,
+            delimiter=lakehouse.delimiter,
             token=self._tokens.for_service if self._tokens is not None else None,
             originator=subject,
         )

@@ -34,6 +34,10 @@ class _Handle:
     def __init__(self, dataset_id: str, keys: list[str]) -> None:
         self.descriptor = type("D", (), {"id": dataset_id, "declared": _Declared(keys)})()
 
+    @property
+    def declared(self) -> Any:
+        return self.descriptor.declared
+
 
 def _install(
     monkeypatch: pytest.MonkeyPatch,

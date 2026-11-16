@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from lance import blob_array, blob_field
 
 from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
 from viewer.api import security
 from viewer.core.config import ViewerSettings, get_viewer_settings
@@ -40,17 +40,17 @@ def _docs() -> pa.Table:
     return pa.table({"doc_id": list(_PAYLOADS), "media": blob_array(list(_PAYLOADS.values())), "mime": ["video/mp4", "audio/wav"]}, schema=schema)
 
 
-def _app(root: Path, **catalog: str) -> FastAPI:
+def _app(root: Path, catalog: dict[str, object] | None = None) -> FastAPI:
     key_file = root / "media-url-key"
     if not key_file.exists():
         key_file.write_text(base64.b64encode(secrets.token_bytes(32)).decode())
-    settings = ViewerSettings.model_validate({**(catalog or {"MEDIA_CATALOG_DIR": str(root)}), "VIEWER_MEDIA_URL_KEY_FILE": str(key_file)})
+    settings = ViewerSettings.model_validate({**(catalog or {**lakehouse_dir(str(root))}), "VIEWER_MEDIA_URL_KEY_FILE": str(key_file)})
     app = create_viewer_app(settings)
     app.dependency_overrides[get_viewer_settings] = lambda: settings
     return app
 
 
-def _sign(client: TestClient, items: list[dict[str, object]], dataset: str | None = "wh$corpus") -> list[dict[str, object]]:
+def _sign(client: TestClient, items: list[dict[str, object]], dataset: str | None = "lake~wh$corpus") -> list[dict[str, object]]:
     answer = client.post("/api/signed-media", json={"dataset": dataset, "items": items})
     assert answer.status_code == 200, answer.text
     return answer.json()["urls"]
@@ -123,8 +123,7 @@ def test_a_replica_that_never_saw_the_person_serves_the_url_as_itself(tmp_path: 
     descriptor = {**_DOCUMENTS, "document": {**_DOCUMENTS["document"], "table": "chunks"}}
     location = write_table(tmp_path, ["wh", "corpus", "chunks"], _docs(), descriptor=descriptor).uri
     catalog = VendingCatalog(location, {"person-token": {}, "service-token": {}})
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
-    signer, other_replica = (_app(tmp_path, MEDIA_CATALOG_URI=catalog.url) for _ in range(2))
+    signer, other_replica = (_app(tmp_path, lakehouse_rest(catalog.url)) for _ in range(2))
     signer.dependency_overrides[security._deps.lakehouse_caller] = lambda: LakehouseCaller(subject="keycloak~ada", token=lambda: "person-token")
     other_replica.state.lakehouse_tokens = cast("LakehouseTokens", _ServiceOnly())
     try:
@@ -149,7 +148,7 @@ def test_a_chunks_frame_is_served_by_its_door_and_by_a_signed_url(tmp_path: Path
     write_table(tmp_path, ["wh", "corpus", "frames"], frames, descriptor=descriptor)
 
     with TestClient(_app(tmp_path)) as client:
-        by_door = client.get("/api/chunk-frame/d1/0/1", params={"dataset": "wh$corpus", "frame_idx": 1})
+        by_door = client.get("/api/chunk-frame/d1/0/1", params={"dataset": "lake~wh$corpus", "frame_idx": 1})
         url = _sign(client, [{"role": "frame", "doc_id": "d1", "keys": [0, 1], "frame_idx": 1}])[0]["url"]
         by_url = client.get(str(url))
 
@@ -165,7 +164,7 @@ def test_a_pages_payload_is_served_by_a_signed_url_and_named_by_its_magic(tmp_pa
     write_table(tmp_path, ["acme", "bronze", "pages"], pa.table({"id": [0, 1], "payload": values}, schema=pa.schema([("id", pa.int64()), payload])))
 
     with TestClient(_app(tmp_path)) as client:
-        url = _sign(client, [{"role": "page", "table": "acme$bronze$pages", "page_id": 1}], dataset=None)[0]["url"]
+        url = _sign(client, [{"role": "page", "table": "lake~acme$bronze$pages", "page_id": 1}], dataset=None)[0]["url"]
         served = client.get(str(url))
 
     assert (served.status_code, served.content, served.headers["content-type"]) == (200, _JPEG, "image/jpeg")
@@ -190,22 +189,23 @@ def test_a_type_a_browser_would_run_is_served_as_an_inert_attachment(tmp_path: P
         assert answer.headers["content-security-policy"] == "sandbox; default-src 'none'"
 
 
-def test_a_plain_payload_too_large_to_serve_whole_is_not_signed(tmp_path: Path) -> None:
+def test_a_plain_payload_too_large_to_serve_whole_is_signed_unread_and_not_served(tmp_path: Path) -> None:
+    """Lance reads a plain binary cell only whole, so the signing reads none (it checks the row is there), and the serve,
+    which has to read it, serves none past the cap."""
     from viewer.api.v1.endpoints.signed_media import MAX_PLAIN_CELL_BYTES
 
     payloads = pa.array([_JPEG + b"\x00" * MAX_PLAIN_CELL_BYTES], pa.large_binary())
     write_table(tmp_path, ["acme", "bronze", "pages"], pa.table({"id": [0], "payload": payloads}))
 
     with TestClient(_app(tmp_path)) as client:
-        answer = _sign(client, [{"role": "page", "table": "acme$bronze$pages", "page_id": 0}], dataset=None)
+        [signed, absent] = _sign(client, [{"role": "page", "table": "lake~acme$bronze$pages", "page_id": p} for p in (0, 9)], dataset=None)
+        served = client.get(str(signed["url"]))
 
-    assert answer == [
-        {
-            "url": None,
-            "expires_at": None,
-            "detail": f"row 0 in 'acme$bronze$pages' is a plain binary payload over {MAX_PLAIN_CELL_BYTES} bytes, too large to serve whole",
-        }
-    ]
+    assert (absent["detail"], served.status_code, served.json()["detail"]) == (
+        "no page with id 9 in 'lake~acme$bronze$pages'",
+        404,
+        f"this payload is plain binary over {MAX_PLAIN_CELL_BYTES} bytes, too large to serve whole",
+    )
 
 
 @pytest.mark.parametrize(
@@ -236,6 +236,6 @@ def test_a_key_short_of_32_decoded_bytes_signs_nothing(tmp_path: Path) -> None:
     (tmp_path / "media-url-key").write_text("ab" * 16)
 
     with TestClient(_app(tmp_path)) as client:
-        refused = client.post("/api/signed-media", json={"dataset": "wh$corpus", "items": [{"role": "media", "doc_id": "d1"}]})
+        refused = client.post("/api/signed-media", json={"dataset": "lake~wh$corpus", "items": [{"role": "media", "doc_id": "d1"}]})
 
     assert refused.status_code == 503, refused.text

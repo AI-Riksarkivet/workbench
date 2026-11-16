@@ -35,7 +35,7 @@ from annotator.state.store import AnnotatorStore
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, write_table
 
 
 SUBJECT = "henry"
@@ -90,7 +90,7 @@ def wired(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Callabl
         app.dependency_overrides[get_checker] = lambda: checker
         app.dependency_overrides[get_authorizer] = lambda: None
         app.dependency_overrides[current_subject] = lambda: SUBJECT
-        state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
+        state = AppState(settings=Settings.model_validate({**lakehouse_dir(str(tmp_path))}))
         app.dependency_overrides[get_state] = lambda: state
         client = TestClient(app)
         client.__enter__()
@@ -115,7 +115,7 @@ def wired(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Callabl
 
 
 def _item(prediction: list[dict[str, Any]] | None = None, *, task_id: str = "t1") -> dict[str, Any]:
-    item: dict[str, Any] = {"task_id": task_id, "source": {"kind": "chunks", "keys": ["page-1"], "where": "acme$vasa"}, "media": {"kind": "image"}}
+    item: dict[str, Any] = {"task_id": task_id, "source": {"kind": "chunks", "keys": ["page-1"], "where": "lake~acme$vasa"}, "media": {"kind": "image"}}
     if prediction is not None:
         item["prediction"] = prediction
     return item

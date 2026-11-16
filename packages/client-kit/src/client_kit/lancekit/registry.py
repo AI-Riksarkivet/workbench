@@ -1,14 +1,15 @@
-"""The media plane's datasets, found and opened through lance-namespace as the caller.
+"""The media plane's datasets, found and opened through lance-namespace as the caller, in every declared source.
 
-A dataset is a catalog namespace written ``warehouse$namespace`` (`lance_docs/ns_catalog/namespace/object-relationship.md`
-§ Object Identifier), and its tables are what ListTables answers there. Every table opens with
+A dataset is a namespace of a source that holds tables, at any depth, written ``<source>~<namespace id>``
+(`client_kit.sources`; `lance_docs/ns_catalog/namespace/object-relationship.md` § Object Identifier), and its tables are
+what ListTables answers there. Every table opens with
 ``lance.dataset(namespace_client=..., table_id=[*namespace, table])``, and a lancedb table through a
 ``LanceNamespaceDBConnection`` on the same namespace client (``open_table(name, namespace_path=namespace)``): both ask
 DescribeTable for the table's location and read with the storage options it returns, which on rask carry the credential
 the catalog vends this caller (`lance_docs/ns_catalog/spec.yaml` § DescribeTableResponse.storage_options). This process
-holds no store credential.
+holds no store credential: a source that vends none is read on the workload's own identity.
 
-The namespace client presents the caller's own token for the lakehouse, asked per call, so a handle is the caller's: the
+On a lakehouse the namespace client presents the caller's own token, asked per call, so a handle is the caller's: the
 cache is keyed on the caller's principal key and the dataset, never on a token, and one caller's handle (and the
 credential its tables were opened on) is never served to another. A handle reuses each open until shortly before its
 vend expires, so a read costs one DescribeTable (one store session minted on rask) per table per vend lifetime rather than
@@ -24,12 +25,15 @@ is refused, so a session shares no credential between callers.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import timedelta
 from pathlib import Path
 from typing import Final
@@ -39,14 +43,16 @@ import lance_namespace
 import lancedb
 from lance_namespace import DescribeTableRequest, LanceNamespace, ListNamespacesRequest, ListTablesRequest
 from lancedb.namespace import LanceNamespaceDBConnection
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from client_kit.lancekit.absence import reads_as_absent
-from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, bounded, connect_namespace, translate_catalog_errors
+from client_kit.lancekit.catalog import CALL_TIMEOUT_S, bounded, translate_catalog_errors
 from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, DatasetDescriptor, Declared, validate_descriptor
 from client_kit.lancekit.introspect import TableInfo, dataset_info
 from client_kit.media.config import MediaSettings
-from service_kit.exceptions import NotFoundError, ServiceUnavailableError
+from client_kit.source_names import check_segments
+from client_kit.sources import NamespaceSource, RaskSource, TablesSource, annotatable, connect_source, qualify
+from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.outage import reads_as_store_outage
 
@@ -58,13 +64,28 @@ CALLER_SESSIONS: Final = 64
 #: Each caller's Lance index cache and metadata cache ceilings: a session per caller multiplies what they may hold.
 INDEX_CACHE_BYTES: Final = 256 * 1024 * 1024
 METADATA_CACHE_BYTES: Final = 64 * 1024 * 1024
-#: How many (caller, dataset) handles one process keeps. A handle holds a namespace client and a descriptor, not table
-#: bytes, so the bound is on callers times datasets in use, and the least recently used one is dropped first.
-HANDLE_CACHE_SIZE: Final = 256
+#: How many (caller, dataset) handles one process keeps per source. A handle holds a namespace client and a descriptor,
+#: not table bytes. One listing opens up to :data:`DISCOVERY_NAMESPACES` datasets of each source, so the cache holds
+#: several listings' worth: a listing never evicts the handles it opened itself.
+HANDLES_PER_SOURCE: Final = 4 * 256
 #: How long before a vend's expiry an open stops being reused.
 EXPIRY_MARGIN_S: Final = 60.0
 #: How long an open on storage options that name no expiry is reused.
 UNEXPIRING_OPEN_TTL_S: Final = 300.0
+#: The most namespaces one source's discovery visits, and the deepest it walks: a catalog's shape is its own, and a
+#: listing a person waits on is bounded whatever that shape is.
+DISCOVERY_NAMESPACES: Final = 256
+DISCOVERY_DEPTH: Final = 8
+#: The most names one listing's pages may answer, and the most pages it reads, past which the listing is cut and says so.
+LISTING_NAMES: Final = 2000
+LISTING_PAGES: Final = 100
+#: How long one source's discovery may take, every listing and open of it together, before it is cut and says so.
+DISCOVERY_DEADLINE_S: Final = 20.0
+#: What a table the catalog lists and Lance cannot find is, in words a person reads. DeclareTable reserves a name and a
+#: location and writes no data (`lance_docs/ns_catalog/namespace/supported-catalogs/lance-dir.md` § DeclareTable), so a
+#: declared table no one has written is listed with no version to open, as one whose data was removed is; measured
+#: 2026-11-16, the dev lakehouse lists three such tables, each with a `declare_table` its only event and no version.
+LISTED_NOT_WRITTEN: Final = "the catalog lists it, but holds no version of it to read: declared and never written, or its data removed"
 
 
 class UnknownDatasetError(LookupError):
@@ -129,6 +150,7 @@ class DatasetHandle(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str
+    source: RaskSource | NamespaceSource | TablesSource
     namespace: list[str]
     descriptor: DatasetDescriptor
     client: LanceNamespace
@@ -144,6 +166,23 @@ class DatasetHandle(BaseModel):
     def table_id(self, table: str) -> list[str]:
         """The catalog identifier of one of this dataset's tables."""
         return [*self.namespace, table]
+
+    @property
+    def declared(self) -> Declared:
+        """The dataset's declared roles.
+
+        Raises:
+            NotFoundError: The dataset declares none: it is shown as a plain table, and a door that needs a role refuses.
+        """
+        declared = self.descriptor.declared
+        if declared is None:
+            why = f" ({self.descriptor.problem})" if self.descriptor.problem else ""
+            raise NotFoundError(f"dataset {self.id!r} declares no workbench descriptor it can use{why}: it is shown as a plain table")
+        return declared
+
+    def qualified_table(self, table: str) -> str:
+        """A table of this dataset by its qualified name (``<source>~<namespace>$<table>``)."""
+        return qualify(self.source, self.table_id(table))
 
     def dataset(self, table: str) -> lance.LanceDataset:
         """One table at its latest version, opened through the namespace on the storage options DescribeTable vends.
@@ -172,10 +211,6 @@ class DatasetHandle(BaseModel):
             opened = bounded(lambda: self.connection.open_table(table, namespace_path=self.namespace))
         self._remember(key, opened, opened.to_lance().initial_storage_options)
         return opened
-
-    def writer(self, table: str) -> NamespaceCatalogWriteTransport:
-        """The catalog's write doors for one of this dataset's tables, as the same caller: the catalog governs the write."""
-        return NamespaceCatalogWriteTransport(self.client, self.table_id(table))
 
     def has_table(self, table: str) -> bool:
         """Whether the catalog holds ``table`` in this dataset, asked without vending a credential for it."""
@@ -242,101 +277,285 @@ def table_dataset(handle: DatasetHandle, table: str) -> lance.LanceDataset:
     return handle.dataset(table)
 
 
-def _pages(list_page: Callable[[str | None], tuple[list[str], str | None]]) -> Iterator[str]:
-    """Every name a paginated listing answers, following ``page_token`` until the listing gives none."""
+class Listed(BaseModel):
+    """What one listing answered, sorted, and whether it was cut at :data:`LISTING_NAMES` or :data:`LISTING_PAGES`."""
+
+    names: list[str]
+    truncated: bool = False
+
+
+def _bounded_names(list_page: Callable[[str | None], tuple[list[str], str | None]]) -> Listed:
+    """Every name a paginated listing answers, following ``page_token`` (`lance_docs/ns_catalog/spec.yaml` §
+    PageToken) for at most :data:`LISTING_PAGES` pages and :data:`LISTING_NAMES` names: a catalog that answers pages
+    without end, empty or not, is cut there."""
+    names: list[str] = []
     token: str | None = None
-    while True:
-        names, token = list_page(token)
-        yield from names
+    for _ in range(LISTING_PAGES):
+        page, token = list_page(token)
+        for name in page:
+            if len(names) == LISTING_NAMES:
+                return Listed(names=sorted(names), truncated=True)
+            names.append(name)
         if not token:
-            return
+            return Listed(names=sorted(names))
+    return Listed(names=sorted(names), truncated=True)
 
 
-def _list_namespaces(client: LanceNamespace, parent: list[str]) -> list[str]:
+def _list_namespaces(client: LanceNamespace, parent: list[str]) -> Listed:
     def page(token: str | None) -> tuple[list[str], str | None]:
         answer = bounded(lambda: client.list_namespaces(ListNamespacesRequest(id=parent, page_token=token)))
-        return sorted(answer.namespaces or []), answer.page_token
+        return list(answer.namespaces or []), answer.page_token
 
-    return list(_pages(page))
+    return _bounded_names(page)
 
 
-def _list_tables(client: LanceNamespace, namespace: list[str]) -> list[str]:
+def _list_tables(client: LanceNamespace, namespace: list[str]) -> Listed:
     def page(token: str | None) -> tuple[list[str], str | None]:
         answer = bounded(lambda: client.list_tables(ListTablesRequest(id=namespace, page_token=token)))
-        return sorted(answer.tables or []), answer.page_token
+        return list(answer.tables or []), answer.page_token
 
-    return list(_pages(page))
+    return _bounded_names(page)
 
 
-def load_dataset_descriptor(client: LanceNamespace, dataset_id: str, namespace: list[str], descriptor_dir: Path, session: lance.Session) -> DatasetDescriptor:
+class Unlisted(BaseModel):
+    """A namespace, or a whole source, whose listing could not be read, and why."""
+
+    id: str
+    reason: str
+
+
+class SourceDiscovery(BaseModel):
+    """One source as the caller sees it: the datasets (namespaces holding tables) found, what could not be listed, and
+    whether the walk stopped at its bounds before seeing everything."""
+
+    source: str
+    kind: str
+    title: str
+    datasets: list[str] = Field(default_factory=list)
+    unlisted: list[Unlisted] = Field(default_factory=list)
+    truncated: bool = False
+
+
+#: A failure as a person reading the dataset list is told it: a short stable reason, with no location, path or exception
+#: text, which go to the log beside the request's trace.
+_REASONS: Final = (
+    (ForbiddenError, "the catalog does not let you read it"),
+    (lance_namespace.PermissionDeniedError, "the catalog does not let you read it"),
+    (UnauthorizedError, "the catalog did not accept the credential"),
+    (lance_namespace.UnauthenticatedError, "the catalog did not accept the credential"),
+    (NotFoundError, "it is not there any more"),
+    (lance_namespace.TableNotFoundError, "it is not there any more"),
+    (lance_namespace.NamespaceNotFoundError, "it is not there any more"),
+    (ServiceUnavailableError, "the catalog or its store did not answer"),
+)
+COULD_NOT_READ: Final = "it could not be read right now"
+_REFUSALS: Final = (ForbiddenError, UnauthorizedError, lance_namespace.PermissionDeniedError, lance_namespace.UnauthenticatedError)
+
+
+def reason_for(exc: BaseException) -> str:
+    """The reason a person reads for ``exc``."""
+    return next((reason for kind, reason in _REASONS if isinstance(exc, kind)), COULD_NOT_READ)
+
+
+def _tables_of(source: RaskSource | NamespaceSource | TablesSource, listed: list[str]) -> list[str]:
+    if isinstance(source, TablesSource) and source.single is not None:
+        return [name for name in listed if name == source.single]
+    return listed
+
+
+def discover(source: RaskSource | NamespaceSource | TablesSource, client: LanceNamespace, deadline: float) -> SourceDiscovery:
+    """Every namespace of ``source`` that holds tables, found by walking ListNamespaces from the root and asking each
+    namespace's ListTables: tables may sit at the root, one level down, or at any depth
+    (`lance_docs/ns_catalog/namespace/index.md` § Namespace Hierarchy; a V1 directory catalog lists no child namespace
+    and every table at the root, `lance_docs/ns_catalog/namespace/supported-catalogs/lance-dir.md` § ListNamespaces).
+
+    Bounded by :data:`DISCOVERY_NAMESPACES`, :data:`DISCOVERY_DEPTH`, :data:`LISTING_NAMES`, :data:`LISTING_PAGES` and
+    ``deadline`` (a monotonic time), and honest: a namespace whose listing fails, and a child whose name could not be one
+    (it holds a delimiter or a path character), is reported with its reason, and a walk cut at a bound says so. A
+    lakehouse's warehouses (the first level) serve no tables, so only deeper namespaces are asked for theirs.
+    """
+    found = SourceDiscovery(source=source.name, kind=source.kind, title=source.title)
+    queue: list[list[str]] = [[]]
+    visited = 0
+    while queue:
+        namespace = queue.pop(0)
+        visited += 1
+        if visited > DISCOVERY_NAMESPACES or time.monotonic() > deadline:
+            found.truncated = True
+            break
+        label = qualify(source, namespace)
+        lakehouse_container = isinstance(source, RaskSource) and len(namespace) < 2
+        try:
+            with translate_catalog_errors():
+                if not lakehouse_container:
+                    tables = _list_tables(client, namespace)
+                    found.truncated |= tables.truncated
+                    if _tables_of(source, tables.names):
+                        found.datasets.append(label)
+                children = _list_namespaces(client, namespace) if len(namespace) < DISCOVERY_DEPTH else Listed(names=[], truncated=True)
+        except Exception as exc:
+            logger.warning("namespace %s could not be listed", label, exc_info=True)
+            found.unlisted.append(Unlisted(id=label, reason=reason_for(exc)))
+            if not namespace:
+                # The root itself: the whole source could not be read, which the caller is told as such.
+                return found
+            continue
+        found.truncated |= children.truncated
+        for child in children.names:
+            try:
+                queue.append(check_segments([*namespace, child], source.delimiter))
+            except ValueError:
+                found.unlisted.append(
+                    Unlisted(id=f"{label}{source.delimiter if namespace else ''}{child}", reason="its name holds a delimiter or a path character")
+                )
+    return found
+
+
+def load_dataset_descriptor(
+    client: LanceNamespace,
+    source: RaskSource | NamespaceSource | TablesSource,
+    dataset_id: str,
+    namespace: list[str],
+    descriptor_dir: Path,
+    session: lance.Session,
+) -> DatasetDescriptor:
     """Discover a dataset's tables, read its declared roles, and check the one against the other.
 
     The declared roles come from ``<descriptor_dir>/<dataset_id>.json`` when that file exists, else from the
-    ``lance_media.descriptor`` schema-metadata stamp on the first table (by name) that carries one. A table ListTables
-    names but Lance cannot find (dropped in between) is left out; any other read failure propagates, because a flaky read
-    is not absence.
-
-    Raises:
-        ValueError: The dataset declares no descriptor, or the descriptor names a table or column the dataset lacks.
+    ``lance_media.descriptor`` schema-metadata stamp on the first table (by name) that carries one. A dataset with
+    neither, or whose roles name a table or column it lacks, is served with no declared roles (a plain table, the reason
+    kept in ``problem``): nothing is guessed. A table ListTables names that cannot be opened is kept out of ``tables`` and
+    named in ``unreadable`` with why: absent, refused, or (any other failure) unreadable right now, which is not absence,
+    so the dataset is then not cached (``transient``) and its declared roles are not judged against the tables it has.
     """
     tables: dict[str, TableInfo] = {}
+    unreadable: dict[str, str] = {}
+    transient = False
     stamped: Declared | None = None
-    for name in _list_tables(client, namespace):
+    problem: str | None = None
+    listed = _list_tables(client, namespace)
+    for name in _tables_of(source, listed.names):
         try:
+            check_segments([name], source.delimiter)
             ds = _open(client, [*namespace, name], session)
-        except (ValueError, OSError) as exc:
-            if not reads_as_absent(exc):
-                raise
-            logger.warning("skipping %s: listed but not a readable Lance table: %s", name, exc)
+            info = dataset_info(ds, name)
+        except _REFUSALS:
+            # A refusal is the caller's answer for the dataset, never a table's reason to show it without that table.
+            raise
+        except Exception as exc:
+            logger.warning("table %s of %s could not be opened", name, dataset_id, exc_info=True)
+            absent = isinstance(exc, ValueError | OSError) and reads_as_absent(exc)
+            unreadable[name] = LISTED_NOT_WRITTEN if absent else reason_for(exc)
+            transient |= unreadable[name] == COULD_NOT_READ or isinstance(exc, ServiceUnavailableError)
             continue
-        tables[name] = dataset_info(ds, name)
+        tables[name] = info
         stamp = (ds.schema.metadata or {}).get(DESCRIPTOR_METADATA_KEY)
-        if stamped is None and stamp:
-            stamped = Declared.model_validate(json.loads(stamp.decode()))
+        if stamped is None and problem is None and stamp:
+            try:
+                stamped = Declared.model_validate(json.loads(stamp.decode()))
+            except (ValueError, ValidationError) as exc:
+                problem = f"the descriptor stamped on {name!r} is not one the workbench reads: {exc}"
     override = descriptor_dir / f"{dataset_id}.json"
+    if override.resolve().parent != descriptor_dir.resolve():
+        raise UnknownDatasetError(f"dataset id {dataset_id!r} names no file of the descriptor directory")
     declared = Declared.model_validate_json(override.read_text()) if override.exists() else stamped
-    if declared is None:
-        raise ValueError(f"dataset {dataset_id!r}: no declared descriptor (config file or schema stamp)")
-    if problems := validate_descriptor(declared, tables):
-        raise ValueError(f"dataset {dataset_id!r}: invalid descriptor: " + "; ".join(problems))
-    return DatasetDescriptor(id=dataset_id, tables=tables, declared=declared)
+    if transient and declared is not None:
+        problem = "a table could not be read right now, so its descriptor is not used until it can be"
+        declared = None
+    elif declared is not None and (problems := validate_descriptor(declared, tables)):
+        problem = "its descriptor names what the dataset lacks: " + "; ".join(problems)
+        declared = None
+    if problem is not None:
+        logger.warning("dataset %s is shown as a plain table: %s", dataset_id, problem)
+    return DatasetDescriptor(
+        id=dataset_id,
+        source=source.name,
+        kind=source.kind,
+        tables=tables,
+        declared=declared,
+        problem=problem,
+        unreadable=unreadable,
+        read_only=annotatable(source),
+        transient=transient,
+    )
+
+
+class Survey(BaseModel):
+    """One source as a listing shows it: what discovery found, the datasets it opened, and what it could not open."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    discovery: SourceDiscovery
+    opened: list[DatasetDescriptor] = Field(default_factory=list)
+
+
+#: The threads sources are surveyed on, each source on its own, so one that hangs delays and hides no other.
+_SURVEYS: Final = ThreadPoolExecutor(max_workers=8, thread_name_prefix="source-survey")
 
 
 class DatasetRegistry:
-    """The datasets of one catalog, as each caller sees them, with a bounded cache of the handles opened."""
+    """The datasets of every declared source, as each caller sees them, with a bounded cache of the handles opened."""
 
     def __init__(self, settings: MediaSettings) -> None:
         self._settings = settings
         self._handles: OrderedDict[tuple[str, str], DatasetHandle] = OrderedDict()
-        self._sessions: OrderedDict[str, CallerSessions] = OrderedDict()
+        self._sessions: OrderedDict[tuple[str, str], CallerSessions] = OrderedDict()
         self._lock = threading.Lock()
+        self._handle_cap = HANDLES_PER_SOURCE * len(settings.sources.items)
 
-    def list_ids(self, caller: LakehouseCaller) -> list[str]:
-        """Every ``warehouse$namespace`` the catalog shows the caller: the root's warehouses, then each one's namespaces.
+    def client(self, source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller) -> LanceNamespace:
+        """The namespace client ``source`` is read through for ``caller``: a lakehouse with the token its identity names,
+        any other source with none (`client_kit.sources.connect_source`)."""
+        return connect_source(source, person=caller.token, service=caller.service)
 
-        A warehouse whose listing fails (refused, or gone since the root listed it) is logged and left out, so one
-        warehouse cannot hide the others; a failure to list the root is the caller's answer.
-        """
-        client = connect_namespace(self._settings, caller.token)
-        delimiter = self._settings.catalog_delimiter
-        with translate_catalog_errors():
-            warehouses = _list_namespaces(client, [])
-        ids: list[str] = []
-        for warehouse in warehouses:
+    def _survey(self, source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller, deadline: float) -> Survey:
+        try:
+            found = discover(source, self.client(source, caller), deadline)
+        except Exception as exc:
+            logger.warning("source %s could not be listed", source.name, exc_info=True)
+            found = SourceDiscovery(
+                source=source.name, kind=source.kind, title=source.title, unlisted=[Unlisted(id=qualify(source, []), reason=reason_for(exc))]
+            )
+        survey = Survey(discovery=found)
+        for dataset_id in found.datasets:
+            if time.monotonic() > deadline:
+                found.truncated = True
+                break
             try:
-                children = _list_namespaces(client, [warehouse])
-            except lance_namespace.LanceNamespaceError as exc:
-                logger.warning("skipping warehouse %s: its namespaces could not be listed: %s", warehouse, exc)
-                continue
-            ids.extend(delimiter.join([warehouse, child]) for child in children)
-        return ids
+                survey.opened.append(self.get(dataset_id, caller).descriptor)
+            except Exception as exc:
+                logger.warning("dataset %s could not be opened", dataset_id, exc_info=True)
+                found.unlisted.append(Unlisted(id=dataset_id, reason=reason_for(exc)))
+        return survey
+
+    def survey(self, caller: LakehouseCaller, only: set[str]) -> list[Survey]:
+        """The sources named ``only``, each surveyed on its own within :data:`DISCOVERY_DEADLINE_S`, in the declaration's
+        order: one that cannot be read, or does not answer in time, is reported as such and never hides the others."""
+        sources = [source for source in self._settings.sources.items if source.name in only]
+        deadline = time.monotonic() + DISCOVERY_DEADLINE_S
+        futures: list[Future[Survey]] = []
+        for source in sources:
+            context = contextvars.copy_context()
+            futures.append(_SURVEYS.submit(lambda c=context, s=source: c.run(self._survey, s, caller, deadline)))
+        surveys: list[Survey] = []
+        for source, future in zip(sources, futures, strict=True):
+            try:
+                surveys.append(future.result(timeout=max(0.0, deadline - time.monotonic()) + CALL_TIMEOUT_S))
+            except FutureTimeoutError:
+                reason = f"it did not answer within {DISCOVERY_DEADLINE_S:.0f} s"
+                late = SourceDiscovery(
+                    source=source.name, kind=source.kind, title=source.title, truncated=True, unlisted=[Unlisted(id=qualify(source, []), reason=reason)]
+                )
+                surveys.append(Survey(discovery=late))
+        return surveys
 
     def get(self, dataset_id: str, caller: LakehouseCaller) -> DatasetHandle:
-        """The caller's handle on ``dataset_id``, opened on first use and cached for this caller alone.
+        """The caller's handle on ``dataset_id`` (``<source>~<namespace>``), opened on first use and cached for this caller
+        alone; a dataset a table of which could not be read right now is not cached, so the next request reads it again.
 
         Raises:
-            UnknownDatasetError: The id is not a warehouse-qualified namespace, or the catalog holds no such namespace.
-            ValueError: The dataset's descriptor is missing or invalid.
+            UnknownDatasetError: The id names no declared source, is not a namespace id the source admits, or the source
+                holds no such namespace.
         """
         key = (caller.subject, dataset_id)
         with self._lock:
@@ -345,36 +564,53 @@ class DatasetRegistry:
                 self._handles.move_to_end(key)
                 return handle
         try:
-            namespace = self._settings.catalog_namespace_id(dataset_id)
+            located = self._settings.sources.dataset(dataset_id)
         except ValueError as exc:
             raise UnknownDatasetError(f"invalid dataset id {dataset_id!r}: {exc}") from exc
-        client = connect_namespace(self._settings, caller.token)
-        sessions = self._caller_sessions(caller.subject)
+        client = self.client(located.source, caller)
+        sessions = self._caller_sessions(located.source.name, caller.subject)
         try:
             with translate_catalog_errors():
-                descriptor = load_dataset_descriptor(client, dataset_id, namespace, self._settings.descriptor_dir, sessions.lance)
+                descriptor = load_dataset_descriptor(client, located.source, dataset_id, located.identifier, self._settings.descriptor_dir, sessions.lance)
         except NotFoundError as exc:
             raise UnknownDatasetError(f"dataset {dataset_id!r} not found: {exc}") from exc
+        if not descriptor.tables and not descriptor.unreadable:
+            raise UnknownDatasetError(f"dataset {dataset_id!r} holds no table")
         # The lancedb connection shares the namespace client, so lancedb's opens carry the same token and trace context.
         connection = LanceNamespaceDBConnection(namespace_client=client, session=sessions.lancedb, read_consistency_interval=timedelta(0))
-        handle = DatasetHandle(id=dataset_id, namespace=namespace, descriptor=descriptor, client=client, connection=connection, sessions=sessions)
+        handle = DatasetHandle(
+            id=dataset_id,
+            source=located.source,
+            namespace=located.identifier,
+            descriptor=descriptor,
+            client=client,
+            connection=connection,
+            sessions=sessions,
+        )
+        if descriptor.transient:
+            return handle
         with self._lock:
             self._handles[key] = handle
             self._handles.move_to_end(key)
-            while len(self._handles) > HANDLE_CACHE_SIZE:
+            while len(self._handles) > self._handle_cap:
                 self._handles.popitem(last=False)
         logger.info("opened dataset %s (%d tables)", dataset_id, len(descriptor.tables))
         return handle
 
-    def _caller_sessions(self, caller: str) -> CallerSessions:
-        """``caller``'s sessions, made on first use; the least recently used caller's are dropped past :data:`CALLER_SESSIONS`
-        (a handle that still holds them keeps them alive)."""
+    def _caller_sessions(self, source: str, caller: str) -> CallerSessions:
+        """``caller``'s sessions on ``source``, made on first use; the least recently used are dropped past
+        :data:`CALLER_SESSIONS` per source (a handle that still holds them keeps them alive).
+
+        Per source as well as per caller: a session reuses a live store for a location whatever credential the next open
+        carries, so a store one source's catalog vended is never reused for another source's table at the same place.
+        """
+        key = (source, caller)
         with self._lock:
-            sessions = self._sessions.get(caller)
+            sessions = self._sessions.get(key)
             if sessions is None:
-                sessions = self._sessions[caller] = CallerSessions.fresh()
-            self._sessions.move_to_end(caller)
-            while len(self._sessions) > CALLER_SESSIONS:
+                sessions = self._sessions[key] = CallerSessions.fresh()
+            self._sessions.move_to_end(key)
+            while len(self._sessions) > CALLER_SESSIONS * len(self._settings.sources.items):
                 self._sessions.popitem(last=False)
             return sessions
 

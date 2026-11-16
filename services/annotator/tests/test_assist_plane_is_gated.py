@@ -27,6 +27,7 @@ level when every route in the group needs it, "cheaper to read and harder to for
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,7 @@ from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, write_table
 
 
 def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: str = "gina") -> FastAPI:
@@ -79,8 +80,8 @@ def _corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         {"doc_id": pa.array([], pa.string()), "image": lance.blob_array([])}, schema=pa.schema([pa.field("doc_id", pa.string()), lance.blob_field("image")])
     )
     write_table(tmp_path, ["acme", "corpus-1", "documents"], documents, descriptor=CORPUS_DECLARED)
-    monkeypatch.setenv("MEDIA_CATALOG_DIR", str(tmp_path))
-    monkeypatch.setenv("MEDIA_DEFAULT_DATASET", "acme$corpus-1")
+    monkeypatch.setenv("WORKBENCH_SOURCES", json.dumps(lakehouse_dir(tmp_path)["WORKBENCH_SOURCES"]))
+    monkeypatch.setenv("MEDIA_DEFAULT_DATASET", "lake~acme$corpus-1")
 
 
 BODY = {"producer": "sam", "prompt": "a line of text"}

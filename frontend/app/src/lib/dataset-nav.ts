@@ -57,15 +57,22 @@ const AREAS: readonly {
 	},
 ];
 
-/** The dataset's views, every one listed; `view` is null while its descriptor is read. */
+/** The dataset's views, every one listed; `view` is null while its descriptor is read, and for a
+ *  dataset shown as a plain table (`plain`), which declares none of them. */
 export function datasetPages(
 	view: DatasetView | null,
 	rowTable: string | null = null,
+	plain = false,
 ): DatasetPageEntry[] {
 	return AREAS.map(({ page, available, why }) => ({
 		page,
 		name: DATASET_PAGE_NAMES[page],
-		unavailable:
-			view === null ? 'the dataset is still being read' : available(view, rowTable) ? null : why,
+		unavailable: plain
+			? 'this dataset carries no workbench descriptor, so it is shown as a plain table'
+			: view === null
+				? 'the dataset is still being read'
+				: available(view, rowTable)
+					? null
+					: why,
 	}));
 }

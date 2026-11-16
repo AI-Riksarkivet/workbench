@@ -24,6 +24,7 @@ from annotator.state.store import AnnotatorStore
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
+from tests.media_catalog import lakehouse_dir
 
 
 SUBJECT = "henry"
@@ -122,7 +123,7 @@ def wired(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Callabl
             app.dependency_overrides[get_checker] = lambda: checker
             app.dependency_overrides[get_authorizer] = lambda: None
             app.dependency_overrides[current_subject] = lambda: SUBJECT
-            media = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
+            media = AppState(settings=Settings.model_validate({**lakehouse_dir(str(tmp_path))}))
             app.dependency_overrides[get_state] = lambda: media
             client = stack.enter_context(TestClient(app))
             return _Door(client, app, seen)

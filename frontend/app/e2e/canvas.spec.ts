@@ -163,7 +163,7 @@ test('an item opens on the canvas from its queue, drawn by WebGPU under the CSP,
 	for (const call of calls) {
 		const url = new URL(call.url());
 		expect([...url.searchParams.entries()].toSorted()).toEqual([
-			['dataset', 'acme$letters'],
+			['dataset', 'lake~acme$letters'],
 			['project', 'pages'],
 			['task', 'pages-t1'],
 		]);

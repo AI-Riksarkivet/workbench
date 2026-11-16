@@ -40,7 +40,7 @@ test('the atlas draws its points under the CSP, revalidates them by ETag, and a 
 	const who = person('Grace');
 	await signIn(context, who);
 	const violations = await watchCsp(page);
-	await page.goto('/datasets/acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters/atlas');
 
 	await expect(page.getByText('60 pts')).toBeVisible();
 	const canvas = page.locator('canvas').first();
@@ -107,7 +107,7 @@ test('the atlas fits its points in the area its toolbar and status bar leave fre
 	context,
 }) => {
 	await signIn(context, person('Grace'));
-	await page.goto('/datasets/acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters/atlas');
 	await expect(page.getByText('60 pts')).toBeVisible();
 	const canvas = page.locator('canvas').first();
 	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
@@ -135,7 +135,7 @@ test('in the dock, a map selection becomes the results, and a search afterwards 
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await expect(page.getByText('60 pts')).toBeVisible();
 	await expect(page.getByText('Browsing 3 documents')).toBeVisible();
 
@@ -164,7 +164,7 @@ test('the graph draws its entities under the CSP, and a node’s panel re-centre
 }) => {
 	await signIn(context, person('Barbara'));
 	const violations = await watchCsp(page);
-	await page.goto('/datasets/acme%24letters/graph');
+	await page.goto('/datasets/lake~acme%24letters/graph');
 
 	const canvas = page.locator('canvas').first();
 	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
@@ -184,14 +184,14 @@ test('another dataset’s atlas draws that dataset’s points, read for it', asy
 }) => {
 	const who = person('Margaret');
 	await signIn(context, who);
-	await page.goto('/datasets/acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters/atlas');
 	await expect(page.getByText('60 pts')).toBeVisible();
 
 	// Straight from one dataset's atlas to another's, client-side, inside the dataset layout.
-	await gotoInPage(page, '/datasets/acme%24maps/atlas');
+	await gotoInPage(page, '/datasets/lake~acme%24maps/atlas');
 	await expect(page.getByText('24 pts')).toBeVisible();
 	const points = (await callsOf(page, who)).filter((c) => c.path === '/api/atlas/points');
-	expect(points.at(-1)?.query).toContain('dataset=acme%24maps');
+	expect(points.at(-1)?.query).toContain('dataset=lake%7Eacme%24maps');
 });
 
 test('a cluster hidden on the map keeps its legend row legible (WCAG 2.2 1.4.3)', async ({
@@ -199,7 +199,7 @@ test('a cluster hidden on the map keeps its legend row legible (WCAG 2.2 1.4.3)'
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/acme%24letters/atlas');
+	await page.goto('/datasets/lake~acme%24letters/atlas');
 	const hide = page.getByRole('button', { name: 'Hide cluster #0 on the map' });
 	await hide.click();
 	await expect(hide).toHaveAttribute('aria-pressed', 'true');
@@ -249,7 +249,7 @@ function contrastOf(target: Locator): Promise<number> {
 test('in the light theme the graph clears to the light background', async ({ page, context }) => {
 	await signIn(context, person('Barbara'));
 	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'light'));
-	await page.goto('/datasets/acme%24letters/graph');
+	await page.goto('/datasets/lake~acme%24letters/graph');
 	const canvas = page.locator('canvas').first();
 	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
 	// The canvas's corner, clear of nodes and overlays, is the page's light `--background`.
@@ -289,7 +289,7 @@ test('an atlas selection is sent to a project whole, each item from the dataset 
 }) => {
 	const who = person('Annotator');
 	await signIn(context, who);
-	await page.goto('/datasets/acme%24letters/atlas?project=letters');
+	await page.goto('/datasets/lake~acme%24letters/atlas?project=letters');
 	await expect(page.getByText('60 pts')).toBeVisible();
 	await page.getByRole('button', { name: 'Select cluster #0, 20 points' }).click();
 	await expect(page.getByRole('status').filter({ hasText: '20 rows' })).toBeVisible();
@@ -309,7 +309,7 @@ test('an atlas selection is sent to a project whole, each item from the dataset 
 	expect(
 		items.every(
 			(item) =>
-				item.source.where === 'acme$letters' && /^[^/]+\/\d+$/.test(item.source.keys[0] ?? ''),
+				item.source.where === 'lake~acme$letters' && /^[^/]+\/\d+$/.test(item.source.keys[0] ?? ''),
 		),
 	).toBe(true);
 	await expect(dialog.getByTestId('send-done')).toContainText(`Sent ${items.length} items`);

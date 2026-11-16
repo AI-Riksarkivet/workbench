@@ -17,9 +17,13 @@ route:
   hostnames: [workbench.localhost]
 # The Gateway's data plane runs in the k3s pod CIDR, as rask's `forwardedAllowIps` in deploy/values-local.yaml.
 forwardedAllowIps: 10.42.0.0/16
-# rask's catalog and Collector, reached across namespaces by their Services' namespace-qualified names.
-catalog:
-  uri: http://rask-catalog.default.svc:2333
+# rask's catalog and Collector, reached across namespaces by their Services' namespace-qualified names; rask is the one
+# source, read as the person whose token Dex issued (`auth.lakehouse.delegation: forward`).
+sources:
+  - name: lake
+    title: The dev estate's lakehouse
+    kind: rask
+    uri: http://rask-catalog.default.svc:2333
 otel:
   enabled: true
   endpoint: http://rask-otel-collector.default.svc:4318

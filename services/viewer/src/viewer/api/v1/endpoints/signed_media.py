@@ -21,32 +21,39 @@ which needs the store reachable from browsers and a raw S3 client this repositor
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable, Iterator
+from functools import partial
 from typing import Annotated, Literal
 
 import lance
+import pyarrow as pa
 from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from client_kit.lancekit.blobs import is_blob_field
-from client_kit.lancekit.catalog import connect_namespace
 from client_kit.lancekit.keys import validate_doc_key
 from client_kit.lancekit.predicate import eq
-from client_kit.lancekit.registry import DatasetHandle, table_dataset
+from client_kit.lancekit.registry import DatasetHandle, reason_for, table_dataset
 from client_kit.media.deps import StateDep
+from client_kit.media.source_gate import may_read, require_read
 from client_kit.media.state import AppState, dataset_handle
-from service_kit.exceptions import NotFoundError
+from client_kit.sources import connect_source
+from service_kit.exceptions import ForbiddenError, NotFoundError
 from service_kit.governed.deps import lakehouse_service_caller
 from service_kit.governed.token_exchange import LakehouseCaller
-from viewer.api.security import AUTHENTICATED, CallerDep, SettingsDep
+from viewer.api.security import CallerDep, CheckerDep, CurrentSubject, SettingsDep
 from viewer.api.v1.endpoints.media import ByteRange, RangeVerdict, frame_row, parse_range, served_media_type
 from viewer.api.v1.endpoints.pages import open_page_table, sniff_media_type
 from viewer.services import signed_media
+from viewer.services.plain_rows import at_version
 from viewer.services.signed_media import ServiceReads, SignedBlob
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/signed-media", tags=["media"])
 
@@ -88,7 +95,18 @@ class PageItem(BaseModel):
     page_id: int = Field(ge=0)
 
 
-type MediaItem = Annotated[DocumentItem | FrameItem | PageItem, Field(discriminator="role")]
+class CellItem(BaseModel):
+    """Any table's binary or blob cell, by its qualified table name, column, Lance row id and the version its row was
+    read at: what a plain table's row detail previews (`viewer.services.plain_rows`)."""
+
+    role: Literal["cell"]
+    table: str = Field(min_length=1)
+    column: str = Field(min_length=1)
+    row: int = Field(ge=0)
+    version: int = Field(ge=1)
+
+
+type MediaItem = Annotated[DocumentItem | FrameItem | PageItem | CellItem, Field(discriminator="role")]
 
 
 class MediaUrlRequest(BaseModel):
@@ -112,6 +130,7 @@ class MediaUrls(BaseModel):
 
 
 class _Cell(BaseModel):
+    source: str
     table: list[str]
     column: str
     row: int
@@ -120,7 +139,7 @@ class _Cell(BaseModel):
 
 
 def _document_cell(handle: DatasetHandle, item: DocumentItem) -> _Cell:
-    declared = handle.descriptor.declared
+    declared = handle.declared
     binding = declared.document
     if binding is None:
         raise NotFoundError("the dataset declares no documents table")
@@ -141,30 +160,64 @@ def _document_cell(handle: DatasetHandle, item: DocumentItem) -> _Cell:
         raise NotFoundError("no payload for doc_id")
     mime = found.column(mime_column)[0].as_py() if mime_column else None
     return _Cell(
-        table=handle.table_id(binding.table), column=column, row=int(found.column("_rowid")[0].as_py()), version=int(ds.version), mime=mime or default_mime
+        source=handle.source.name,
+        table=handle.table_id(binding.table),
+        column=column,
+        row=int(found.column("_rowid")[0].as_py()),
+        version=int(ds.version),
+        mime=mime or default_mime,
     )
 
 
 def _frame_cell(handle: DatasetHandle, item: FrameItem) -> _Cell:
     frame = frame_row(handle, item.doc_id, tuple(item.keys), item.frame_idx)
-    return _Cell(table=handle.table_id(frame.table), column=frame.column, row=frame.row, version=int(frame.ds.version), mime=frame.mime)
+    return _Cell(
+        source=handle.source.name, table=handle.table_id(frame.table), column=frame.column, row=frame.row, version=int(frame.ds.version), mime=frame.mime
+    )
 
 
 def _page_cell(state: AppState, caller: LakehouseCaller, item: PageItem) -> _Cell:
     ds = open_page_table(state, item.table, caller)
-    found = ds.to_table(columns=["payload"], filter=eq("id", item.page_id), with_row_id=True, limit=1)
+    found = ds.to_table(columns=[], filter=eq("id", item.page_id), with_row_id=True, limit=1)
     if found.num_rows == 0:
         raise NotFoundError(f"no page with id {item.page_id} in {item.table!r}")
-    cell = found.column("payload")[0]
-    if not cell.is_valid:
-        raise NotFoundError(f"row {item.page_id} in {item.table!r} has no payload")
-    if not is_blob_field(ds.schema.field("payload")) and len(cell.as_py()) > MAX_PLAIN_CELL_BYTES:
-        raise NotFoundError(f"row {item.page_id} in {item.table!r} is a plain binary payload over {MAX_PLAIN_CELL_BYTES} bytes, too large to serve whole")
-    table = item.table.split(state.settings.catalog_delimiter)
-    return _Cell(table=table, column="payload", row=int(found.column("_rowid")[0].as_py()), version=int(ds.version), mime=None)
+    row = int(found.column("_rowid")[0].as_py())
+    _require_payload(ds, "payload", row, f"row {item.page_id} in {item.table!r}")
+    located = state.settings.sources.table_named(item.table)
+    return _Cell(source=located.source.name, table=located.identifier, column="payload", row=row, version=int(ds.version), mime=None)
 
 
-def _sign_all(state: AppState, caller: LakehouseCaller, body: MediaUrlRequest, key: bytes, ttl: int) -> MediaUrls:
+def _require_payload(ds: lance.LanceDataset, column: str, row: int, what: str) -> None:
+    """Refuse (404) a cell that holds nothing, without reading its bytes: a blob cell by its descriptor, a plain binary
+    cell by its row alone. Lance reads a plain binary cell only whole, even to test it for null (measured 2026-11-16 on
+    pylance 13.0.0: ``IS NOT NULL`` on a 300 MiB cell peaked 634 MiB), so whether it holds bytes, and whether they are
+    few enough to serve, is answered by the serve, which has to read them anyway."""
+    if is_blob_field(ds.schema.field(column)):
+        blob = ds.take_blobs(column, ids=[row])[0]
+        if blob is None:
+            raise NotFoundError(f"{what} holds no {column!r} payload")
+        blob.close()
+    elif ds.to_table(columns=[], filter=f"_rowid = {int(row)}", with_row_id=True, limit=1).num_rows == 0:
+        raise NotFoundError(f"{what} holds no {column!r} payload")
+
+
+def _any_cell(state: AppState, caller: LakehouseCaller, item: CellItem) -> _Cell:
+    """The cell, read as the person at the version named: its column must hold bytes and its row must be there
+    (`_require_payload`)."""
+    ds = at_version(open_page_table(state, item.table, caller), item.version)
+    if item.column not in ds.schema.names:
+        raise NotFoundError(f"{item.table!r} has no column {item.column!r}")
+    field = ds.schema.field(item.column)
+    if not is_blob_field(field) and not (pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type)):
+        raise NotFoundError(f"column {item.column!r} of {item.table!r} holds no bytes to serve")
+    _require_payload(ds, item.column, item.row, f"row {item.row} of {item.table!r}")
+    located = state.settings.sources.table_named(item.table)
+    return _Cell(source=located.source.name, table=located.identifier, column=item.column, row=item.row, version=int(ds.version), mime=None)
+
+
+def _sign_all(state: AppState, caller: LakehouseCaller, reader: str, body: MediaUrlRequest, key: bytes, ttl: int) -> MediaUrls:
+    """One answer per item: a URL, or why there is none. One item that cannot be signed (absent, refused, unreadable right
+    now) is that item's answer, never the batch's."""
     handle: DatasetHandle | None = None
     expires_at = math.floor(signed_media.now()) + ttl
     urls: list[MediaUrl] = []
@@ -172,22 +225,33 @@ def _sign_all(state: AppState, caller: LakehouseCaller, body: MediaUrlRequest, k
         try:
             if isinstance(item, PageItem):
                 cell = _page_cell(state, caller, item)
+            elif isinstance(item, CellItem):
+                cell = _any_cell(state, caller, item)
             else:
                 handle = handle or dataset_handle(state, body.dataset, caller)
                 cell = _document_cell(handle, item) if isinstance(item, DocumentItem) else _frame_cell(handle, item)
         except NotFoundError as exc:
             urls.append(MediaUrl(detail=exc.detail))
             continue
-        token = signed_media.sign(SignedBlob(exp=expires_at, **cell.model_dump()), key)
+        except Exception as exc:
+            logger.warning("a media item could not be signed", exc_info=True)
+            urls.append(MediaUrl(detail=f"this item could not be signed: {reason_for(exc)}"))
+            continue
+        token = signed_media.sign(SignedBlob(exp=expires_at, reader=reader, **cell.model_dump()), key)
         urls.append(MediaUrl(url=f"{router.prefix}/{token}", expires_at=expires_at))
     return MediaUrls(urls=urls)
 
 
-@router.post("", dependencies=[AUTHENTICATED])
-async def sign_media_urls(body: MediaUrlRequest, caller: CallerDep, state: StateDep, settings: SettingsDep) -> MediaUrls:
-    """Short signed URLs for the cells a page shows, each resolved by the person's own read; an item naming none says why."""
+@router.post("")
+async def sign_media_urls(
+    body: MediaUrlRequest, caller: CallerDep, subject: CurrentSubject, check: CheckerDep, state: StateDep, settings: SettingsDep
+) -> MediaUrls:
+    """Short signed URLs for the cells a page shows, each resolved by the person's own read; an item naming none says why.
+    A source the workbench decides for is signed only for one of its readers (403 otherwise)."""
+    named = [body.dataset or state.settings.default_dataset or "", *(item.table for item in body.items if isinstance(item, PageItem | CellItem))]
+    await require_read(state.settings.sources, check, subject, [name for name in named if name])
     key = signed_media.read_key(settings.media_url_key_file)
-    return await run_in_threadpool(_sign_all, state, caller, body, key, settings.media_url_ttl_seconds)
+    return await run_in_threadpool(_sign_all, state, caller, subject, body, key, settings.media_url_ttl_seconds)
 
 
 def _service_reads(state: AppState) -> ServiceReads:
@@ -209,7 +273,9 @@ class _OpenCell(BaseModel):
 
 def _open_cell(state: AppState, caller: LakehouseCaller, signed: SignedBlob) -> _OpenCell:
     """Exactly the signed cell, at the signed version, as the viewer's own identity."""
-    ds: lance.LanceDataset = _service_reads(state).dataset(lambda: connect_namespace(state.settings, caller.token), signed.table, signed.version)
+    source = state.settings.sources.named(signed.source)
+    client = partial(connect_source, source, person=caller.token, service=caller.service)
+    ds: lance.LanceDataset = _service_reads(state).dataset(client, signed.source, signed.table, signed.version)
     if signed.column not in ds.schema.names:
         raise NotFoundError("the media URL names a column the table does not hold")
     if is_blob_field(ds.schema.field(signed.column)):
@@ -218,12 +284,15 @@ def _open_cell(state: AppState, caller: LakehouseCaller, signed: SignedBlob) -> 
             raise NotFoundError("no payload for this media URL")
         size, read, close = blob.size(), blob.read_range, blob.close
     else:
-        # A plain binary column has no take path: a scan of the one row, by its stable id, is the cell and nothing else.
+        # A plain binary column has no take path and no range: a scan of the one row, by its stable id, reads the cell
+        # whole, and one past the cap is not served.
         found = ds.to_table(columns=[signed.column], filter=f"_rowid = {int(signed.row)}", limit=1)
         if found.num_rows == 0 or not found.column(signed.column)[0].is_valid:
             raise NotFoundError("no payload for this media URL")
         payload: bytes = found.column(signed.column)[0].as_py()
         size = len(payload)
+        if size > MAX_PLAIN_CELL_BYTES:
+            raise NotFoundError(f"this payload is plain binary over {MAX_PLAIN_CELL_BYTES} bytes, too large to serve whole")
 
         def read(offset: int, length: int) -> bytes:
             return payload[offset : offset + length]
@@ -257,6 +326,7 @@ async def serve_signed_media(
     request: Request,
     state: StateDep,
     settings: SettingsDep,
+    check: CheckerDep,
     range_header: Annotated[str | None, Header(alias="range")] = None,
     if_none_match: Annotated[str | None, Header()] = None,
 ) -> Response:
@@ -269,6 +339,13 @@ async def serve_signed_media(
         "Cache-Control": f"public, max-age={max(0, signed.exp - math.ceil(signed_media.now()))}, immutable",
         "Accept-Ranges": "bytes",
     }
+    try:
+        source = state.settings.sources.named(signed.source)
+    except ValueError as exc:
+        raise NotFoundError("the media URL names a source this viewer does not read") from exc
+    if not await may_read(state.settings.sources, check, signed.reader, source.name):
+        # The link is the permission only while its reader may still read the source the workbench decides for.
+        raise ForbiddenError("the person this media URL was signed for may no longer read its source")
     if if_none_match is not None and signed.etag in (tag.strip() for tag in if_none_match.split(",")):
         return Response(status_code=304, headers=headers)
     caller = lakehouse_service_caller(request, settings)

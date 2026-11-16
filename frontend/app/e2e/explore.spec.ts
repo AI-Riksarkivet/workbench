@@ -20,7 +20,7 @@ test('before a search the dataset’s documents are browsed, and one opens in th
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 
 	const documents = page.getByRole('list', { name: 'Documents' });
 	await expect(page.getByText('Browsing 3 documents')).toBeVisible();
@@ -59,7 +59,7 @@ test('a recording whose media and transcript both fail says so, and one Try agai
 				? route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } })
 				: route.continue(),
 		);
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await page
 		.getByRole('list', { name: 'Documents' })
 		.getByRole('button', { name: /A map of the harbour/ })
@@ -93,7 +93,7 @@ test('a diarized dataset without voice tables says so in its search modes and it
 	await page.route('**/api/viewer/api/voice/status*', (route) =>
 		route.fulfill({ json: { built: false, turns: 0, speakers: 0 } }),
 	);
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 
 	await page.getByLabel('Search mode').click();
 	await expect(
@@ -131,7 +131,7 @@ for (const { kind, shows } of [
 			if (kind) body.declared.document.kind = kind;
 			await route.fulfill({ response: answer, json: body });
 		});
-		await page.goto('/datasets/acme%24letters');
+		await page.goto('/datasets/lake~acme%24letters');
 		await page.getByRole('button', { name: 'Grid', exact: true }).click();
 
 		const tiles = page.getByRole('list', { name: 'Documents' }).getByRole('listitem');
@@ -153,7 +153,7 @@ test('a dock narrowed past the breakpoint stacks its panels, and widened again s
 }) => {
 	await signIn(context, person('Ada'));
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	const search = page.getByRole('searchbox');
 	const player = page.getByRole('region', { name: 'Player' });
 	await expect(player).toBeVisible();
@@ -179,7 +179,7 @@ test('the hits are a list, a grid or a table, and a still-image dataset offers n
 	context,
 }) => {
 	await signIn(context, person('Grace'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'harbour');
 	await expect(results(page).getByRole('listitem')).toHaveCount(3);
 
@@ -200,7 +200,7 @@ test('a voice search finds the speaker elsewhere, and clearing it returns to the
 }) => {
 	const who = person('Barbara');
 	await signIn(context, who);
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'master');
 	await expect(results(page).getByRole('listitem')).toHaveCount(1);
 
@@ -226,7 +226,7 @@ test('a saved search is kept for the person and applied again after a reload', a
 	context,
 }) => {
 	await signIn(context, person('Edsger'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'harvest');
 	await expect(results(page).getByRole('listitem')).toHaveCount(1);
 
@@ -250,7 +250,7 @@ test('a topic link opens the page filtered to it, and the keyboard reaches the s
 	context,
 }) => {
 	await signIn(context, person('Margaret'));
-	await page.goto('/datasets/acme%24letters?topic=Maps');
+	await page.goto('/datasets/lake~acme%24letters?topic=Maps');
 
 	await expect(results(page).getByRole('listitem')).toHaveCount(1);
 	await results(page)
@@ -270,20 +270,20 @@ test('a failed search, a failed browse, a dataset with nothing and a missing dat
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'fail');
 	await expect(page.getByRole('alert')).toHaveText(
 		'Search failed: the search index could not be read',
 	);
 	await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
 
-	await page.goto('/datasets/acme%24notes');
+	await page.goto('/datasets/lake~acme%24notes');
 	await expect(page.getByText('This dataset declares no search')).toBeVisible();
 	await expect(page.getByText('This dataset has no documents to browse.')).toBeVisible();
 	await expect(page.getByRole('searchbox')).toHaveCount(0);
 
-	await page.goto('/datasets/acme%24nope');
-	await expect(page.getByRole('alert')).toContainText('No dataset acme$nope that you can see');
+	await page.goto('/datasets/lake~acme%24nope');
+	await expect(page.getByRole('alert')).toContainText('No dataset lake~acme$nope that you can see');
 	await expect(page.getByRole('link', { name: 'All datasets' })).toBeVisible();
 });
 
@@ -292,7 +292,7 @@ test('a browse the viewer cannot answer says why and offers to try again', async
 	context,
 }) => {
 	await signIn(context, person('Broken'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await expect(page.getByRole('alert')).toHaveText(
 		'The documents could not be read: the documents table could not be opened',
 	);
@@ -304,7 +304,7 @@ test('a filter narrows the results, shows as a pill, and clearing it brings them
 	context,
 }) => {
 	await signIn(context, person('Grace'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'harbour');
 	await expect(results(page).getByRole('listitem')).toHaveCount(3);
 
@@ -334,7 +334,7 @@ test('a thumbnail whose signed link expired is signed again and shown, not hidde
 	// The first loads of every image fail, so no expired link is in the document's image cache, which
 	// serves a URL it holds whatever its link's life.
 	await page.route('**/api/viewer/api/signed-media/*', (route) => route.abort());
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'harbour');
 	await page.getByRole('button', { name: 'Grid', exact: true }).click();
 	await expect(results(page).getByRole('listitem')).toHaveCount(3);
@@ -367,7 +367,7 @@ test('dark mode is readable: a search match on its highlight and the Search butt
 }) => {
 	await signIn(context, person('Margaret'));
 	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'dark'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'harbour');
 	const match = results(page).locator('mark').first();
 	await expect(match).toBeVisible();
@@ -390,21 +390,21 @@ test('a dataset opened while another one is still loading is the one the page re
 	// The notes' descriptor answers late: by then the reader has gone on to the letters.
 	let released: () => void = () => {};
 	const late = new Promise<void>((done) => (released = done));
-	await page.route('**/api/viewer/api/datasets/acme%24notes/descriptor', async (route) => {
+	await page.route('**/api/viewer/api/datasets/lake~acme%24notes/descriptor', async (route) => {
 		await late;
 		await route.continue();
 	});
 	await page.goto('/datasets');
-	const datasets = page.getByRole('list', { name: 'Datasets' });
+	const datasets = page.getByRole('list', { name: 'Datasets in The lakehouse' });
 	await datasets.getByRole('link', { name: /acme\$notes/ }).click();
 	await datasets.getByRole('link', { name: /acme\$letters/ }).click();
 	await expect(page.getByText('Browsing 3 documents')).toBeVisible();
 
-	const landed = page.waitForResponse('**/acme%24notes/descriptor');
+	const landed = page.waitForResponse('**/lake~acme%24notes/descriptor');
 	released();
 	await landed;
 	await page.waitForTimeout(100);
 	const browse = page.waitForRequest((req) => req.url().includes('/api/documents'));
 	await page.getByRole('button', { name: 'Refresh' }).click();
-	expect(new URL((await browse).url()).searchParams.get('dataset')).toBe('acme$letters');
+	expect(new URL((await browse).url()).searchParams.get('dataset')).toBe('lake~acme$letters');
 });

@@ -398,6 +398,35 @@
     {
       "metadata": {
         "relations": {
+          "can_read": {},
+          "reader": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "relation": "member",
+                "type": "org"
+              }
+            ]
+          }
+        }
+      },
+      "relations": {
+        "can_read": {
+          "computedUserset": {
+            "relation": "reader"
+          }
+        },
+        "reader": {
+          "this": {}
+        }
+      },
+      "type": "source"
+    },
+    {
+      "metadata": {
+        "relations": {
           "can_edit": {},
           "can_read": {},
           "can_run": {},

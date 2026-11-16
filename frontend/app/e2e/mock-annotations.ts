@@ -70,7 +70,7 @@ function ipc(rows: Row[]): Uint8Array {
 /** Two boxes on the first page of the canvas's item: a figure top left and a caption bottom right (the picture is
  *  160 × 160). */
 const SEEDED: Record<string, Row[]> = {
-	'pages|acme$letters|letter-001/0': [
+	'pages|lake~acme$letters|letter-001/0': [
 		{
 			id: 'fig-1',
 			shape_type: 'bbox',
@@ -106,8 +106,8 @@ const SEEDED: Record<string, Row[]> = {
 
 /** Each mock dataset's identity, as its descriptor declares it (`mock-services.ts`): a doc key and an integer chunk. */
 const IDENTITY: Record<string, string[]> = {
-	acme$letters: ['doc_id', 'chunk_id'],
-	acme$maps: ['doc_id', 'chunk_id'],
+	'lake~acme$letters': ['doc_id', 'chunk_id'],
+	'lake~acme$maps': ['doc_id', 'chunk_id'],
 };
 
 /** The service's refusal of a key its dataset's identity cannot name (`annotator.annotations.unit.parse_unit`). */

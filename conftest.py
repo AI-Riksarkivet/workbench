@@ -1,8 +1,8 @@
 """What every offline suite in the workspace shares.
 
 At import, before collection builds any app, the media plane is pointed at an empty lance-namespace directory catalog
-under the system temp dir (``MEDIA_CATALOG_DIR``, with ``setdefault``): the media settings refuse to load naming no
-catalog, and the offline suites run on the stock ``dir`` catalog the media code runs on unchanged. A test whose claim is
+under the system temp dir, declared as the deployment's one source (``WORKBENCH_SOURCES``, with ``setdefault``): the
+media settings refuse to load naming no source, and the offline suites run on the stock ``dir`` catalog the media code runs on unchanged. A test whose claim is
 about the datasets builds them under its own ``tmp_path`` (``tests.media_catalog``) and names that root in the settings
 it builds. Authentication, ON by default, is turned off for the offline suites the one way a deployment can
 (``WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED``), so a test that signs a person in turns it on itself.
@@ -10,6 +10,7 @@ it builds. Authentication, ON by default, is turned off for the offline suites t
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from collections.abc import Iterator
@@ -21,7 +22,10 @@ from tests.openfga import OpenFgaServer, OpenFgaStore, openfga_binary
 from tests.postgres import PostgresServer, StateDatabase, postgres_tree
 
 
-os.environ.setdefault("MEDIA_CATALOG_DIR", tempfile.mkdtemp(prefix="workbench-media-catalog-"))
+os.environ.setdefault(
+    "WORKBENCH_SOURCES",
+    json.dumps([{"kind": "rask", "name": "lake", "dir": tempfile.mkdtemp(prefix="workbench-media-catalog-"), "identity": "none"}]),
+)
 # Authentication is on by default; the offline suites build their apps unauthenticated unless a test turns it on, and say
 # so the one way a deployment can.
 os.environ.setdefault("WORKBENCH_OIDC_ENABLED", "false")

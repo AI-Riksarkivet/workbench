@@ -4,6 +4,10 @@
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
+# A host's own settings, in a file git does not track. A host that shares one Dagger engine between repositories names it
+# here, `export _EXPERIMENTAL_DAGGER_RUNNER_HOST := docker-container://<engine>`, so every target's Dagger call reaches
+# that engine: a call with no engine named starts the CLI's own and can remove the shared one.
+-include local.mk
 PYTEST_WORKERS ?= 8
 
 help:
@@ -53,17 +57,17 @@ sync:
 	uv sync --all-packages
 	bun --cwd=frontend install
 
-# The workbench on this machine, with real data: install, build the app, seed the demo datasets into a local directory
-# catalog, and run the services and the app behind its Gateway stand-in on one origin, on the loopback
+# The workbench on this machine, with real data: install, build the app, seed the demo sources (a directory catalog
+# standing in for a lakehouse, a lance-namespace directory catalog and a bare table, `scripts/local-sources.json`), and run the services and the app behind its Gateway stand-in on one origin, on the loopback
 # (`scripts/local-stack.sh`, which prints the URL to open, by default http://127.0.0.1:8700/datasets). LOCAL_CATALOG
-# names the catalog's directory; EDGE_PORT and the *_PORT variables move the ports, and a port already in use is refused.
+# names the root they live under; EDGE_PORT and the *_PORT variables move the ports, and a port already in use is refused.
 # The ports are checked first, before anything is installed or built: a build replaces the files a running stack serves.
 LOCAL_CATALOG ?= $(or $(TMPDIR),/tmp)/workbench-catalog
 local:
 	bash scripts/local-stack.sh check
 	$(MAKE) sync postgres
 	bun --cwd=frontend/app run build
-	SEED=1 MEDIA_CATALOG_DIR=$(LOCAL_CATALOG) bash scripts/local-stack.sh
+	SEED=1 LOCAL_CATALOG=$(LOCAL_CATALOG) bash scripts/local-stack.sh
 
 # Stop the local stack `make local` started (the process its PID file names), and wait until its ports are free.
 local-stop:
@@ -111,21 +115,29 @@ image:
 	$(DAGGER) call image --name=$(NAME)
 
 # The chart renders and lints in each shape a deployment takes: the development estate's overlay, a platform's (an https
-# IdP that binds tokens, a rask lakehouse by reference), and a release with no lakehouse at all (a directory catalog).
+# IdP that binds tokens, a rask lakehouse by reference), a release with no lakehouse at all (a directory catalog on a
+# claim and a bare table on a store), and one with sign-in off reading one table on a claim.
 CHART_APIS = --api-versions postgresql.cnpg.io/v1/Cluster --api-versions generators.external-secrets.io/v1alpha1/Password
 CHART_PLATFORM = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example \
-	--set auth.oidc.client.secret.name=wb-client --set auth.lakehouse.audience=lakehouse --set catalog.uri=https://lakehouse.example \
+	--set auth.oidc.client.secret.name=wb-client --set auth.lakehouse.audience=lakehouse --set 'sources[0].name=lake' --set 'sources[0].kind=rask' --set 'sources[0].uri=https://lakehouse.example' \
 	--set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
 CHART_NO_LAKEHOUSE = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example \
-	--set catalog.dir.claim=workbench-catalog --set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media \
+	--set 'sources[0].name=archive' --set 'sources[0].kind=namespace' --set 'sources[0].impl=dir' --set 'sources[0].claim=archive' \
+	--set 'sources[0].readers.orgs[0]=acme' --set 'sources[0].readers.people[0]=corp~ada' \
+	--set 'sources[1].name=scans' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://bucket/scans.lance' \
+	--set 'sources[1].storage.region=eu-north-1' --set 'sources[1].storage.aws_role_arn=arn:aws:iam::1:role/scans' \
+	--set 'sources[1].storage.aws_web_identity_token_file=/var/run/secrets/workbench/store/token' --set storeIdentity.audience=sts.amazonaws.com \
+	--set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media \
 	--set 'route.parentRefs[0].name=gw'
 chart-check:
+	uv run python -m client_kit.source_keys | diff - chart/files/source-keys.json
 	helm lint chart -f deploy/values-dev.yaml
 	helm template workbench chart -n workbench $(CHART_APIS) -f deploy/values-dev.yaml >/dev/null
 	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_PLATFORM) >/dev/null
 	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_NO_LAKEHOUSE) >/dev/null
 	helm template workbench chart -n workbench $(CHART_APIS) --set auth.enabled=false --set route.enabled=false \
-		--set catalog.dir.claim=workbench-catalog --set media.viewer.mediaUrlKey.name=wb-media >/dev/null
+		--set 'sources[0].name=scans' --set 'sources[0].kind=tables' --set 'sources[0].claim=scans' --set 'sources[0].path=scans.lance' \
+		--set media.viewer.mediaUrlKey.name=wb-media >/dev/null
 	helm lint deploy/fixtures/openfga/chart
 	helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) >/dev/null
 

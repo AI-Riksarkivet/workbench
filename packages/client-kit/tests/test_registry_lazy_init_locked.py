@@ -20,6 +20,7 @@ from client_kit.media.config import Settings
 from client_kit.media.state import AppState
 from service_kit.governed.deps import ANONYMOUS_CALLER
 from service_kit.governed.token_exchange import LakehouseCaller
+from tests.media_catalog import lakehouse_dir
 
 
 def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,7 +46,7 @@ def test_concurrent_first_requests_build_exactly_one_registry(monkeypatch: pytes
     # so patching the module attribute intercepts the construction.
     monkeypatch.setattr(registry_mod, "DatasetRegistry", RacedRegistry)
 
-    state = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": "/catalog"}))
+    state = AppState(settings=Settings.model_validate({**lakehouse_dir("/catalog")}))
     results: list[object] = []
 
     def first_request() -> None:

@@ -116,7 +116,7 @@ def catalog() -> Iterator[_Catalog]:
 @pytest.mark.asyncio
 async def test_create_posts_exist_ok_with_schema_typed_rows_and_its_run(catalog: _Catalog, tmp_path: Path) -> None:
     catalog.version = 9
-    publisher = CatalogPublisher(catalog.url, token=lambda: "svc-token", originator="alice")
+    publisher = CatalogPublisher(catalog.url, source="lake", token=lambda: "svc-token", originator="alice")
 
     version = await publisher.create_table(
         "acme$published$vasa_0123456789ab", _plan(rows=2), properties={"annotation.project_id": "p1"}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[]
@@ -139,8 +139,12 @@ async def test_create_posts_exist_ok_with_schema_typed_rows_and_its_run(catalog:
 @pytest.mark.asyncio
 async def test_every_input_reaches_the_create_as_the_runs_inputs(catalog: _Catalog) -> None:
     """§7.2 over the wire: each captured table version is one of the run's inputs in the catalog Context."""
-    await CatalogPublisher(catalog.url).create_table(
-        "acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[("acme$media$pages", 24), ("acme$media$letters", 3)]
+    await CatalogPublisher(catalog.url, source="lake").create_table(
+        "acme$published$t_1",
+        _plan(),
+        properties={},
+        run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07",
+        inputs=[("lake~acme$media$pages", 24), ("lake~acme$media$letters", 3)],
     )
 
     assert json.loads(catalog.calls[0].headers["x-rask-inputs"]) == [
@@ -164,7 +168,7 @@ async def test_the_run_rule_is_read_off_every_namespace_on_the_targets_path(cata
     catalog.namespaces = namespaces
     target = max(namespaces, key=len) if required else "acme$published"
 
-    assert await CatalogPublisher(catalog.url).requires_run(target) is required
+    assert await CatalogPublisher(catalog.url, source="lake").requires_run(target) is required
 
 
 @pytest.mark.asyncio
@@ -175,7 +179,7 @@ async def test_every_publish_call_presents_the_workbench_token_of_the_moment_and
     construction would present an expired credential to every call after the first.
     """
     issued = iter(["token-1", "token-2"])
-    publisher = CatalogPublisher(catalog.url, token=lambda: next(issued), originator="keycloak~gina")
+    publisher = CatalogPublisher(catalog.url, source="lake", token=lambda: next(issued), originator="keycloak~gina")
 
     await publisher.create_table("acme$published$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[])
     await publisher.create_table("acme$published$labels_p1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[])
@@ -191,7 +195,7 @@ async def test_a_create_the_catalog_does_not_take_is_sent_again(catalog: _Catalo
     monkeypatch.setattr(lakehouse, "CREATE_BACKOFF_S", 0.0)
     catalog.unavailable = lakehouse.CREATE_ATTEMPTS - 1
 
-    version = await CatalogPublisher(catalog.url).create_table(
+    version = await CatalogPublisher(catalog.url, source="lake").create_table(
         "acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[]
     )
 
@@ -206,7 +210,9 @@ async def test_a_create_the_catalog_never_takes_fails_after_its_attempts(catalog
     catalog.unavailable = lakehouse.CREATE_ATTEMPTS
 
     with pytest.raises(ServiceUnavailableError, match="the catalog is unavailable"):
-        await CatalogPublisher(catalog.url).create_table("acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[])
+        await CatalogPublisher(catalog.url, source="lake").create_table(
+            "acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[]
+        )
     assert len(catalog.calls) == lakehouse.CREATE_ATTEMPTS
 
 
@@ -218,4 +224,4 @@ async def test_a_namespace_the_catalog_will_not_describe_refuses_the_publish_nam
     catalog.refused = {"acme$published"}
 
     with pytest.raises(PublishRefusal, match=r"does not let the workbench read namespace acme\$published"):
-        await CatalogPublisher(catalog.url).requires_run("acme$published")
+        await CatalogPublisher(catalog.url, source="lake").requires_run("acme$published")

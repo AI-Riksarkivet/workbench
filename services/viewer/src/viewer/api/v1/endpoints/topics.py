@@ -22,7 +22,7 @@ from fastapi import APIRouter
 from client_kit.lancekit.topics_meta import NOISE_LABEL
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import dataset_handle
-from viewer.api.security import AUTHENTICATED, CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.topics import TopicsResponse
 
 
@@ -43,11 +43,11 @@ def _decode_jsonb(raw: Any) -> Any:
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-@router.get("", dependencies=[AUTHENTICATED])
+@router.get("", dependencies=[READS_DATASET])
 def get_topics(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) -> TopicsResponse:
     """The topic hierarchy for the treemap, or ``built: false`` if not generated yet."""
     handle = dataset_handle(state, dataset, caller)
-    target = handle.descriptor.declared.capabilities.get("topics")
+    target = handle.declared.capabilities.get("topics")
     if target is None:
         return _NOT_BUILT
     table, _, column = target.partition(".")

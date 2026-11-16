@@ -120,7 +120,7 @@ def resolve_target(handle: DatasetHandle, table: str | None = None) -> SearchTar
     asked for is a wrong answer, not a lenient one, and it would be invisible in the results.
     A vector-binding table that fails to open degrades that leg to empty instead of failing every mode.
     """
-    declared = handle.descriptor.declared
+    declared = handle.declared
     search = declared.search_named(table)
     if search is None:
         if table is not None:

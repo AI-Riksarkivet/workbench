@@ -1,0 +1,60 @@
+{
+  "mountRoot": "/var/run/secrets/",
+  "mountedFiles": [
+    "application_credentials",
+    "aws_web_identity_token_file",
+    "azure_federated_token_file",
+    "federated_token_file",
+    "google_application_credentials",
+    "google_service_account",
+    "service_account"
+  ],
+  "namespaceProperties": {
+    "dir": [
+      "dir_listing_enabled",
+      "manifest_enabled",
+      "root"
+    ],
+    "rest": [
+      "delimiter",
+      "uri"
+    ]
+  },
+  "storage": [
+    "account_name",
+    "allow_http",
+    "aws_endpoint",
+    "aws_provider_scheme",
+    "aws_region",
+    "aws_role_arn",
+    "aws_role_session_name",
+    "aws_s3_express",
+    "aws_server_side_encryption",
+    "aws_skip_signature",
+    "aws_sse_bucket_key_enabled",
+    "aws_sse_kms_key_id",
+    "aws_virtual_hosted_style_request",
+    "azure_client_id",
+    "azure_disable_tagging",
+    "azure_endpoint",
+    "azure_storage_account_name",
+    "azure_tenant_id",
+    "azure_use_fabric_endpoint",
+    "block_size",
+    "client_id",
+    "client_max_retries",
+    "client_retry_timeout",
+    "connect_timeout",
+    "disable_tagging",
+    "download_retry_count",
+    "endpoint",
+    "region",
+    "s3_express",
+    "scheduler_error_mode",
+    "tenant_id",
+    "timeout",
+    "use_fabric_endpoint",
+    "user_agent",
+    "virtual_hosted_style_request"
+  ]
+}

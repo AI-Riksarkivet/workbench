@@ -400,10 +400,10 @@ import {
 	DatasetView as DatasetViewClass,
 } from './descriptor';
 
-/** List the datasets the backend serves (id + table stats + capabilities). */
+/** List the datasets the backend serves (id + table stats + capabilities), every source's in turn. */
 export async function listDatasets(fetcher: Fetcher = apiFetch) {
 	const r = await fetcher(apiUrl('/api/datasets'));
-	return asJson(r, DatasetsResponseSchema).then((d) => d.datasets);
+	return asJson(r, DatasetsResponseSchema).then((d) => d.sources.flatMap((s) => s.datasets));
 }
 
 /** Fetch + parse one dataset's descriptor and wrap it in a DatasetView. */

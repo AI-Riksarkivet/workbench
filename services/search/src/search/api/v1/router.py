@@ -27,7 +27,7 @@ from starlette.concurrency import run_in_threadpool
 from client_kit.lancekit.registry import DatasetHandle
 from client_kit.media.state import AppState, dataset_handle
 from search.api.dependencies import EmbedderFactoryDep, RerankerFactoryDep, StateDep
-from search.api.security import CallerDep, FanOut
+from search.api.security import READS_DATASET, CallerDep, FanOut
 from search.core.rate_limit import SEARCH_LIMIT, SEARCH_SCOPE, limiter
 from search.services.filters import TOPIC_FILTER, extract_filters
 from search.services.fuse import reciprocal_rank_fusion
@@ -58,7 +58,7 @@ def _filterable(handle: DatasetHandle, table: str | None = None) -> list[str]:
     table's list while searching another would silently drop that table's own filters and silently
     accept the default's — filters that do not exist on the rows being searched.
     """
-    search = handle.descriptor.declared.search_named(table)
+    search = handle.declared.search_named(table)
     return search.filterable if search is not None else []
 
 
@@ -115,7 +115,7 @@ def _spec_from_query(request: Request) -> SearchSpec:
         raise ValidationError(str(exc)) from exc
 
 
-@router.get("/search")
+@router.get("/search", dependencies=[READS_DATASET])
 @limiter.shared_limit(SEARCH_LIMIT, scope=SEARCH_SCOPE)
 def search_get(
     caller: CallerDep,
@@ -190,7 +190,7 @@ def _fused_search(
             logger.warning("fan-out: skipping corpus %s — %s", dataset_id, exc)
             continue
         if hits and not key_fields:
-            key_fields = list(handle.descriptor.declared.identity.key_fields)
+            key_fields = list(handle.declared.identity.key_fields)
         ranked.append(hits)
 
     if not key_fields:
@@ -235,7 +235,7 @@ def _post_spec(
     )
 
 
-@router.post("/search")
+@router.post("/search", dependencies=[READS_DATASET])
 @limiter.shared_limit(SEARCH_LIMIT, scope=SEARCH_SCOPE)
 async def search_post(
     caller: CallerDep,
@@ -294,7 +294,7 @@ def _run_similar(state: AppState, spec: SimilarSpec, dataset: str | None, table:
         # still rank. Here it is the only leg, so absent means the request cannot be answered.
         raise ValidationError(f"vector table {binding.table!r} could not be opened")
 
-    where = key_predicate(handle.descriptor.declared, spec.key)
+    where = key_predicate(handle.declared, spec.key)
     vec = seed_vector(vec_tbl, where=where, column=binding.column)
 
     hits = vector_search(
@@ -322,7 +322,7 @@ class _AsList:
         return self._values
 
 
-@router.get("/search/similar")
+@router.get("/search/similar", dependencies=[READS_DATASET])
 @limiter.shared_limit(SEARCH_LIMIT, scope=SEARCH_SCOPE)
 async def search_similar(
     caller: CallerDep,

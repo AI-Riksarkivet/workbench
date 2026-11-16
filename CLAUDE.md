@@ -4,15 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**The workbench: explore, search and annotate the datasets in a rask lakehouse, and run model pipelines over them**, as
-one product (FiftyOne-like). Its parts:
+**The workbench: explore, search and annotate the datasets in a rask lakehouse, read any Lance data beside it, and run
+model pipelines over them**, as one product (FiftyOne-like). Its parts:
 
 - **explorer**: the viewer, search and the explorer UI;
 - **annotator**: the annotator, its assist runner and its UI;
 - **flows**: model pipelines and the studio UI.
 
-**It is a client of rask, never part of it.** It reaches a lakehouse only through what rask publishes, the way any outside
-tool would:
+**It reads the sources a deployment declares, and is a client of rask, never part of it** (owner, 2026-11-16: "as a client
+for rask, or without rask with lance-namespace or a Lance table directly"). The sources are one declaration in git
+(`client_kit.sources`; the chart's `sources`, the local stack's `scripts/local-sources.json`), each a name and a kind:
+`rask` (a lakehouse by its catalog's REST door, at most one), `namespace` (any lance-namespace implementation and its
+properties, through `lance_namespace.connect`) or `tables` (a bare `.lance` table or a directory of them, read as a V1
+directory catalog with the manifest off). A dataset is a namespace of a source that holds tables, at any depth, and its
+id is `<source>~<namespace>` (`lake~acme$corpus`, `scans~`). **Everything rask-only sits behind the `rask` kind** and
+nothing else: the person's lakehouse token (never sent to another source), the `x-lance-originator` and `x-rask-*`
+headers, the warehouse-first id rule, annotation and publish. Every other source is read-only and read with no token,
+through `client_kit.lancekit.confined.ConfinedNamespace` (only the names it lists, only under its declared locations, on
+its declared storage options). **Who reads what:** a lakehouse read as the person decides every read itself; every other
+source, and a lakehouse read as the workbench (`identity: service`), is decided by the workbench's own OpenFGA, `reader`
+on `source:<name>` from the source's `readers` in git (`client_kit.media.source_gate`; none means nobody). No source
+names a credential: properties and storage options are an allow-list (`client_kit.source_keys`, the chart's copy in
+`chart/files/source-keys.json`), and every id segment a request names is checked (`client_kit.source_names`). A dataset with no `lance_media.descriptor` (or an invalid one) is shown from its
+schema as a plain table (`viewer.services.plain_rows`, the dock's Rows and Row panels, `#lib/plain`): paging, sorting where
+Lance orders a column, text search only where a full-text index is, similar rows only where a vector index is, a blob
+cell's image or audio previewed through a signed media URL, every read bounded (a page's depth, a sort's keys, a cell's
+text and list cut at the read, a plain binary cell never read); nothing is guessed and nothing is built. It reaches a
+lakehouse only through what rask publishes, the way any outside tool would:
 
 - data through stock `lance_namespace` and pylance, on the credentials the catalog vends;
 - every other call through the catalog's and lineage's doors (`docs/rask/*-openapi.json`);
@@ -54,7 +72,8 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_PUBLIC_URL`, `WORKBENCH_PUBLIC_MOUNT`, `WORKBENCH_DPOP_WINDOW_SECONDS` | the URL a DPoP proof's `htu` names (and the path a gateway rewrites it to), and the proof's `iat` and replay window |
 | `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE`, `_AUDIENCE_SCOPE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse (asking for the audience's scope where the provider reads one, Dex's `audience:server:client_id:<audience>`) |
 | `WORKBENCH_LAKEHOUSE_DELEGATION` | `exchange` (default) or `forward`: how the primary issuer's people's reads reach the lakehouse; `forward` needs `WORKBENCH_DPOP_REQUIRED=false`. A further issuer names its own in its `WORKBENCH_OIDC_PROVIDERS` entry (`lakehouse`, with its own client), or its people's reads are refused: a token is exchanged only at the issuer that signed it. Under `forward` a read presents the person's latest token, never one past its own `exp` (`token_exchange.PersonTokens`) |
-| `ANNOTATOR_ANNOTATIONS_NAMESPACE` | the lakehouse namespace that holds every project's annotation tables (`workbench$annotations`) |
+| `WORKBENCH_SOURCES_FILE` | the sources declaration (`{"sources": [...]}`, `client_kit.sources`), a file the chart renders from `sources` (`<release>-sources`); a relative local path in it is read beside the file. `WORKBENCH_SOURCES` gives the list inline (tests). No source names a credential: a property or storage option off the allow-list (`client_kit.source_keys`) is refused at load, by name |
+| `ANNOTATOR_ANNOTATIONS_NAMESPACE` | the namespace of the `rask` source that holds every project's annotation tables (`workbench$annotations`); with no `rask` source nothing is annotated |
 | `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
 | `ANNOTATOR_PUBLISH_LEASE_SECONDS`, `_REDRIVE_SECONDS`, `_CONCURRENCY` | a publish run's lease on its project (default 300 s), how often each replica sweeps for publishes no live run holds (30 s, jittered), and how many runs one replica drives at once (2, below the pool size) |
 | `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned |
@@ -79,7 +98,8 @@ confirmed and the next step: **read #9's latest comment before starting.** The o
 it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
 keeps its state in its own Postgres (R2). R3 made sign-in work with whatever OIDC provider the cluster runs (token
 exchange and DPoP only where the provider's discovery offers them) and built the first cluster run (`make deploy-dev`,
-docs/DEPLOY.md); then R4 (read-only from any Lance source), R5 (graph and tree as dock panels), D3b-2, D3c and D4. Nothing
+docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.sources`, above); then R5 (graph and tree as
+dock panels), D3b-2, D3c and D4. Nothing
 has run on a cluster yet. Two live copies of one session must never drive the same worktree: before resuming an agent
 after a restart, check `~/.claude/sessions/*.json` for a second process with the same session id.
 Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
@@ -144,7 +164,7 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | Goal | Command |
 | --- | --- |
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
-| Run it locally with real data | `make local`: installs, seeds a demo page corpus and an audio dataset into a local directory catalog (`scripts/seed_demo_corpus.py`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
+| Run it locally with real data | `make local`: installs, seeds three demo sources under `LOCAL_CATALOG` (`scripts/seed_demo_corpus.py`, declared by `scripts/local-sources.json`): a stamped page corpus and an audio dataset in a directory catalog standing in for a lakehouse (`lake`), an unstamped table two namespaces deep in a lance-namespace directory catalog (`archive`) and a bare `.lance` table with an image blob (`scans`), builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
 | Stop the local stack | `make local-stop`: stops the process `make local` recorded (`$TMPDIR/workbench-local-stack.pid`) and waits until its ports are free; `make local` checks the ports before it installs or builds anything |
 | Deploy to the development cluster | `make deploy-dev` (images by commit, the OpenFGA fixture, the Dex client, the release, the lakehouse grants, a read-back), each step its own `make dev-*`; `make undeploy-dev` removes it all (docs/DEPLOY.md) |
 | The chart's renders | `make chart-check` (lint, and the dev overlay, a platform's, a release with no lakehouse and one with sign-in off) |
@@ -165,8 +185,9 @@ Two language-pure planes, as in rask; never blur them.
 
 - `packages/`: reusable Python libraries, no entrypoints. `service-kit` (the service base: app factory, governed
   auth, settings) and `client-kit` (the media app factory and dataset registry the viewer, search and annotator
-  share). Every dataset is a catalog namespace opened through lance-namespace as the caller, on the credentials the
-  catalog vends: the workbench holds no store key.
+  share, and `client_kit.sources`, the declared sources). Every dataset is a namespace of a declared source opened
+  through lance-namespace, as the caller on a lakehouse (on the credentials the catalog vends) and with no token anywhere
+  else: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
   - The annotator keeps its projects, tasks, drafts and claims in its own PostgreSQL (`annotator.state.store`, psycopg 3
     with its pool, plain SQL over `state/schema.sql`, applied at start under an advisory lock): each row holds its Pydantic
@@ -211,8 +232,9 @@ Two language-pure planes, as in rask; never blur them.
   built from the repository root against the root `uv.lock`.
 - `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`, `app-end-to-end`, `fga-test`).
 - `chart/`: the workbench's release (the annotator, the viewer and search from the `media` image, the app, the
-  annotator's Postgres and the model writer), every object named from the release; it reads a rask lakehouse by
-  reference (`catalog.uri`) or a directory catalog of its own (`catalog.dir.claim`), so it runs with no rask at all.
+  annotator's Postgres and the model writer), every object named from the release; it reads the `sources` its values
+  declare (`<release>-sources`, validated at render): a rask lakehouse by reference, any other source by URI or on a
+  claim, so it runs with no rask at all.
 - `deploy/`: the development estate's overlay (`values-dev.yaml`), the clients it supplies to rask's dev Dex
   (`dex-client.yaml`), and `fixtures/openfga`, the workbench's own development OpenFGA. `docs/DEPLOY.md` says how a
   release is installed on the development cluster (`make deploy-dev`) and on a platform.

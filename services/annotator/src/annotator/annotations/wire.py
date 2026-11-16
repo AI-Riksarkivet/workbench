@@ -16,7 +16,7 @@ from annotator.annotations.access import MAY_READ_UNIT, UnitKey
 from annotator.annotations.schema import EMPTY_SCHEMA
 from annotator.annotations.unit import parse_unit
 from annotator.annotations.versions import checkout
-from annotator.api.security import AnnotationsDep, CallerDep
+from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep
 from annotator.corpus import resolve
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE, encode_arrow_stream
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 router = APIRouter(tags=["annotate"])
 
 
-@router.get("/annotations/{key:path}", dependencies=[MAY_READ_UNIT])
+@router.get("/annotations/{key:path}", dependencies=[MAY_READ_UNIT, READS_DATASET])
 def annotations(
     caller: CallerDep,
     state: StateDep,
@@ -43,7 +43,7 @@ def annotations(
     The key's segments pair with the dataset's identity fields (`annotator.annotations.unit`). ``version`` reads a
     HISTORICAL snapshot (Lance time-travel) for the compare-versions view; omitted ⇒ the latest."""
     corpus = resolve(state, dataset, caller)
-    unit = parse_unit(corpus.handle.descriptor, key)
+    unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
     ds = annotations(corpus.id).open()
     if ds is None:
         # No annotations table yet — serve an empty stream so the client renders 0.

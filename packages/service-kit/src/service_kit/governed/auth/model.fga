@@ -72,6 +72,15 @@ type corpus
 
     define can_view: can_view from project
 
+# A source no catalog decides reads for per person (a lance-namespace catalog, a bare table, a lakehouse read as the
+# workbench): its readers are what git declares for it, an organisation's members or a person, written by the model
+# writer. A source that names none is read by nobody.
+type source
+  relations
+    define reader: [user, org#member]
+
+    define can_read: reader
+
 # A flow belongs to one project and takes its permissions from it.
 type flow
   relations

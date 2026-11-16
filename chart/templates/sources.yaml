@@ -1,0 +1,12 @@
+{{- /* The sources every service reads, the declaration git holds (`sources` in the values), validated at render
+(`workbench.sources`). A change rolls every pod that reads it (`checksum/sources` on each pod template). */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-sources" .Release.Name }}
+  labels:
+    app.kubernetes.io/name: workbench
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: sources
+data:
+  sources.json: {{ include "workbench.sources" . | quote }}

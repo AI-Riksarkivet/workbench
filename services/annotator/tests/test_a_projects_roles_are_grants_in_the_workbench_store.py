@@ -35,7 +35,7 @@ from service_kit.governed import fga
 from service_kit.governed.identity import Caller
 from service_kit.governed.oidc import IDToken
 from service_kit.governed.principal import Principal
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, write_table
 from tests.openfga import OpenFgaStore
 
 
@@ -57,7 +57,7 @@ class _Door:
 
 
 DOC = "a" * 16
-DATASET = "acme$media"
+DATASET = "lake~acme$media"
 #: The unit a task of the test's project names, and one it does not.
 UNIT = f"{DOC}/0/19"
 OTHER_UNIT = f"{DOC}/0/20"
@@ -71,7 +71,7 @@ def door(openfga_store: OpenFgaStore, state_settings: AnnotatorSettings, tmp_pat
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        app.state.resources = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
+        app.state.resources = AppState(settings=Settings.model_validate({**lakehouse_dir(str(tmp_path))}))
         app.state.authz = fga.Authorizer(
             fga.make_client(openfga_store.url, credential_file=None, store_id=openfga_store.store_id, model_id=openfga_store.model_id)
         )

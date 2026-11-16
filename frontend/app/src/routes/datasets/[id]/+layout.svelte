@@ -11,8 +11,9 @@
 	import { invalidateAll } from '$app/navigation';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { datasetView } from '#lib/api/explore.api.ts';
-	import { datasetPages, type DatasetPage } from '#lib/dataset-nav.ts';
+	import { DATASET_PAGE_NAMES, datasetPages, type DatasetPage } from '#lib/dataset-nav.ts';
 	import { projectOf } from '#lib/project.ts';
+	import { datasetLabel } from '#lib/dataset-label.ts';
 	import * as Tooltip from '@workbench/ui/tooltip';
 
 	let { data, children } = $props();
@@ -33,7 +34,8 @@
 	const rowTable = $derived(
 		data.view?.searchTable(page.url.searchParams.get('table'))?.row_table ?? null,
 	);
-	const entries = $derived(datasetPages(data.view, rowTable));
+	const isPlain = $derived(data.facts !== null && !data.facts.stamped);
+	const entries = $derived(datasetPages(data.view, rowTable, isPlain));
 
 	const routes = {
 		atlas: '/datasets/[id]/atlas',
@@ -85,7 +87,7 @@
 				: resolve(`/datasets?${new URLSearchParams({ project })}`)}>All datasets</a
 		>
 	</div>
-{:else if data.view !== null}
+{:else if data.view !== null || isPlain}
 	<!-- Each href is a route id resolved by `hrefOf`, with the kept query after it, which the rule cannot see. -->
 	<!-- eslint-disable svelte/no-navigation-without-resolve -->
 	<nav
@@ -101,7 +103,7 @@
 				current === null
 					? 'bg-secondary text-foreground'
 					: 'text-muted-foreground hover:text-foreground',
-			]}><span class="truncate">{id}</span></a
+			]}><span class="truncate">{datasetLabel(id)}</span></a
 		>
 		{#each entries as entry (entry.page)}
 			{#if entry.unavailable === null}
@@ -158,6 +160,13 @@
 	<!-- Another dataset mounts its pages afresh: no page's state (a map, an open entity, a chosen topic)
 	     or late answer outlives the dataset it was read for. -->
 	{#key data.id}
-		{@render children()}
+		{#if isPlain && current !== null}
+			<p class="text-muted-foreground p-6 text-sm" role="status">
+				{DATASET_PAGE_NAMES[current as DatasetPage]} is not available: this dataset carries no workbench
+				descriptor, so it is shown as a plain table.
+			</p>
+		{:else}
+			{@render children()}
+		{/if}
 	{/key}
 {/if}

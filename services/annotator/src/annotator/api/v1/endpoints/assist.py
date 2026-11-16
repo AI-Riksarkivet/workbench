@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.security import CallerDep, CheckerDep, CurrentSubject, ProjectParam
+from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam
 from annotator.api.v1.endpoints.serve_discovery import discovered_backends
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AssistBackend
@@ -350,7 +350,7 @@ async def generation_contract(request: Request, project: ProjectParam, task_id: 
     return GenerationContract(output_schema=generation_schema(await _task_ontology(_store(request), project, task_id)))
 
 
-@router.post("/assist/{doc_id}/{speech_id}/{chunk_id}")
+@router.post("/assist/{doc_id}/{speech_id}/{chunk_id}", dependencies=[READS_DATASET])
 async def assist(
     request: Request,
     state: StateDep,

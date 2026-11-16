@@ -6,9 +6,11 @@ What: the workbench's own OpenFGA model (`service_kit/governed/auth/model.fga`):
 a project's five concentric roles (owner > manager > reviewer > annotator > viewer), and the tasks and corpora that
 inherit from a project. The annotator never asks the lakehouse what a person may do in the annotator.
 
-Data: the lakehouse decides. A corpus is read as the person, on a token the annotator exchanges for them (`CallerDep`),
-and annotations are written as the workbench's own identity once the annotator's own role check has passed, naming
-the person in the commit (`annotator.annotations.commit`).
+Data: a corpus is a lakehouse's (only a lakehouse's data is annotated). Read as the person (``identity: person``), the
+lakehouse decides, on a token the annotator exchanges or passes on for them (`CallerDep`); read as the workbench
+(``identity: service``), the workbench's own store decides first, `reader` on its source (`READS_DATASET`). Annotations
+are written as the workbench's own identity once the annotator's own role check has passed, naming the person in the
+commit (`annotator.annotations.commit`).
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from fastapi import Depends, Query, Request
 
 from annotator.annotations.store import ProjectAnnotations
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
+from client_kit.media.deps import StateDep
+from client_kit.media.source_gate import named_in, require_read
 from service_kit.exceptions import ServiceUnavailableError
 from service_kit.governed.deps import ANONYMOUS_SUBJECT, FgaChecker, make_auth_deps
 from service_kit.governed.fga import Authorizer, Grant
@@ -29,6 +33,7 @@ from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
 
 __all__ = [
     "ANONYMOUS_SUBJECT",
+    "READS_DATASET",
     "AnnotationsDep",
     "AuthorizerDep",
     "CallerDep",
@@ -77,7 +82,7 @@ def service_token(request: Request, settings: SettingsDep) -> LakehouseTokens | 
     if not settings.oidc_enabled:
         return None
     tokens: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
-    if tokens is None and settings.catalog_uri:
+    if tokens is None and settings.reads_lakehouse:
         raise ServiceUnavailableError("the annotator names no confidential client to write the lakehouse as itself")
     return tokens
 
@@ -149,3 +154,11 @@ def project_annotations(request: Request, project: ProjectParam, settings: Setti
 
 
 AnnotationsDep = Annotated[Callable[[str], ProjectAnnotations], Depends(project_annotations)]
+
+
+async def _reads_dataset(request: Request, subject: CurrentSubject, checker: CheckerDep, state: StateDep) -> None:
+    await require_read(state.settings.sources, checker, subject, named_in(request, state.settings.default_dataset))
+
+
+#: The decorator dependency a route reading a corpus carries: the person may read its source, where the workbench decides.
+READS_DATASET = Depends(_reads_dataset)

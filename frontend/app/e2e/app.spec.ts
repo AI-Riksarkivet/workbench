@@ -95,19 +95,19 @@ test('the dataset list shows what the viewer lists, each a link to its page', as
 	await signIn(context, person('Edsger'));
 	await page.goto('/datasets?project=acme');
 
-	const list = page.getByRole('list', { name: 'Datasets' });
+	const list = page.getByRole('list', { name: 'Datasets in The lakehouse' });
 	await expect(list.getByRole('link')).toHaveCount(3);
 	const letters = list.getByRole('link', { name: /acme\$letters/ });
 	await expect(letters).toContainText('2 tables · 7 rows');
-	await expect(letters).toHaveAttribute('href', '/datasets/acme%24letters?project=acme');
+	await expect(letters).toHaveAttribute('href', '/datasets/lake~acme%24letters?project=acme');
 	await expect(page).toHaveTitle('Datasets · workbench');
 });
 
 test('a dataset page searches through Arrow and shows signed media', async ({ page, context }) => {
 	const who = person('Margaret');
 	await signIn(context, who);
-	await page.goto('/datasets/acme%24letters');
-	await expect(page).toHaveTitle('acme$letters · Datasets · workbench');
+	await page.goto('/datasets/lake~acme%24letters');
+	await expect(page).toHaveTitle('lake~acme$letters · Datasets · workbench');
 
 	await page.getByRole('searchbox').fill('harbour');
 	await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -132,7 +132,7 @@ test('a dataset page searches through Arrow and shows signed media', async ({ pa
 		'/api/search',
 		'/api/signed-media',
 		'/api/documents',
-		'/api/datasets/acme%24letters/descriptor',
+		'/api/datasets/lake~acme%24letters/descriptor',
 	]) {
 		expect(calls.some((call) => call.path === path && call.status === 200)).toBe(true);
 	}
@@ -148,7 +148,7 @@ test('a search answering several rows of one document lists each row', async ({
 	const errors: string[] = [];
 	page.on('pageerror', (err) => errors.push(err.message));
 	await signIn(context, person('Ada'));
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 
 	await page.getByRole('searchbox').fill('repeated');
 	await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -183,7 +183,7 @@ test('a dataset with no atlas says so, and its views say why they are closed', a
 	context,
 }) => {
 	await signIn(context, person('Barbara'));
-	await page.goto('/datasets/acme%24notes');
+	await page.goto('/datasets/lake~acme%24notes');
 	await expect(page.getByText('This dataset has no embedding map.')).toBeVisible();
 
 	const views = page.getByRole('navigation', { name: 'Dataset pages' });
@@ -233,7 +233,7 @@ test('a viewer that cannot be reached is told apart from a dataset that does not
 			},
 		}),
 	);
-	await page.goto('/datasets/acme%24letters');
+	await page.goto('/datasets/lake~acme%24letters');
 	await expect(page.getByRole('alert')).toHaveText(
 		'The viewer could not be reached, so this dataset cannot be shown right now.',
 	);

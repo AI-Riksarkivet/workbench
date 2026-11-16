@@ -48,6 +48,10 @@ class _Handle:
         self.id = dataset_id
         self.descriptor = _Descriptor()
 
+    @property
+    def declared(self) -> Any:
+        return self.descriptor.declared
+
     def has_table(self, _name: str) -> bool:
         return True
 

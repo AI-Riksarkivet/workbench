@@ -19,13 +19,14 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from client_kit.media.config import Settings
+from client_kit.sources import annotatable
 from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
 class LineageSink(StrEnum):
-    """Where a save the annotator commits to a local directory catalog logs its OpenLineage RunEvent.
+    """Where a save the annotator commits to a directory catalog standing in for the lakehouse logs its OpenLineage RunEvent.
 
-    Only a directory catalog's save emits: a write through the catalog's REST door is announced by the catalog, so
+    Only such a save emits: a write through the lakehouse's REST door is announced by the lakehouse, so
     emitting here too would count the run twice (`AnnotatorSettings.effective_lineage_sink`).
     """
 
@@ -57,7 +58,8 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     service_name: str = "annotator"
     service_port: int = Field(default=8103, alias="ANNOTATOR_PORT")
 
-    #: The lakehouse namespace that holds the workbench's annotation tables (`<warehouse>$<namespace>`), which the
+    #: The namespace of the deployment's lakehouse source that holds the workbench's annotation tables
+    #: (`<warehouse>$<namespace>`, in the lakehouse's own id, with no source), which the
     #: workbench's own identity is granted to write: one table per (project, dataset), so a project's annotations are
     #: its own rows and no other project's write can reach them (`annotator.annotations.store`).
     annotations_namespace: str = Field(default="workbench$annotations", min_length=3, alias="ANNOTATOR_ANNOTATIONS_NAMESPACE")
@@ -114,6 +116,14 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     publish_concurrency: int = Field(default=2, ge=1, le=20, alias="ANNOTATOR_PUBLISH_CONCURRENCY")
 
     @model_validator(mode="after")
+    def _default_is_annotatable(self) -> Self:
+        """A default dataset is what an item naming none is sent from, so it must be one that can be annotated: a
+        lakehouse's (`client_kit.sources.annotatable`)."""
+        if self.default_dataset is not None and (reason := annotatable(self.sources.locate(self.default_dataset).source)):
+            raise ValueError(f"MEDIA_DEFAULT_DATASET {self.default_dataset!r} cannot be the annotator's default: {reason}")
+        return self
+
+    @model_validator(mode="after")
     def _validate_state(self) -> Self:
         """A state connection that could not verify its server, or that would cross the network unencrypted, fails here,
         and so do publish runs that could take every pooled connection."""
@@ -132,9 +142,9 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
 
     @property
     def effective_lineage_sink(self) -> LineageSink:
-        """The sink a save uses: ``none`` on the catalog's REST door, which announces the write itself; a local directory
-        catalog announces nothing, so there the annotator logs its own."""
-        if self.catalog_uri:
+        """The sink a save uses: ``none`` on a lakehouse's REST door, which announces the write itself; a directory catalog
+        standing in for one announces nothing, so there the annotator logs its own."""
+        if self.reads_lakehouse:
             return LineageSink.none
         return self.lineage_sink
 

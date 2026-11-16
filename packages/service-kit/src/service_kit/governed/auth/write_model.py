@@ -8,7 +8,10 @@ image's model exists before its pods look for it, and a service never writes a m
   model mints no new version);
 * each organisation's ``admin`` and ``member`` tuples are exactly what ``WORKBENCH_FGA_ORGS_FILE`` declares: a declared
   one missing is written, and one present that the file does not declare is deleted. The file is required: an unset
-  or unreadable one fails the Job rather than declare nothing and revoke every org grant.
+  or unreadable one fails the Job rather than declare nothing and revoke every org grant;
+* each source's ``reader`` tuples are exactly the ``readers`` the sources declaration (``WORKBENCH_SOURCES_FILE``,
+  `client_kit.sources`) names for it: an organisation's members (``org:<org>#member``) and people. A source that
+  names none holds none, so nobody reads it where the workbench decides; a source git no longer declares loses them.
 
 Run again with nothing changed, it writes nothing. The store's preshared key is read from the mounted
 ``WORKBENCH_FGA_CREDENTIAL_FILE``, never from the environment.
@@ -17,6 +20,7 @@ Run again with nothing changed, it writes nothing. The store's preshared key is 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
@@ -32,8 +36,10 @@ from service_kit.governed.principal import PrincipalKey
 
 log = logging.getLogger(__name__)
 
-#: The relations on an `org` the declaration owns; every other tuple in the store is a door's to write.
+#: The relations the declarations own: an `org`'s admins and members, a `source`'s readers. Every other tuple in the
+#: store is a door's to write.
 ORG_RELATIONS: Final = frozenset({"admin", "member"})
+SOURCE_RELATIONS: Final = frozenset({"reader"})
 #: A bound on the pages of the store's tuples one run reads: past it the run fails rather than converge on part.
 MAX_READ_PAGES: Final = 10_000
 
@@ -47,20 +53,45 @@ class OrgDeclaration(BaseModel):
     members: list[PrincipalKey] = Field(default_factory=list)
 
 
+class SourceReaders(BaseModel):
+    """Who reads one source, as the sources declaration names them (`client_kit.sources.SourceReaders`)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    orgs: list[str] = Field(default_factory=list)
+    people: list[PrincipalKey] = Field(default_factory=list)
+
+
+class SourceEntry(BaseModel):
+    """What the writer reads of one declared source: its name and its readers; the rest is the services'."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    name: str = Field(pattern=r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+    readers: SourceReaders = Field(default_factory=SourceReaders)
+
+
 class Declaration(BaseModel):
-    """The organisations git declares, keyed by org id (the tenant a project names)."""
+    """The organisations git declares, keyed by org id (the tenant a project names), and the sources' readers."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     orgs: dict[str, OrgDeclaration] = Field(default_factory=dict)
+    sources: list[SourceEntry] = Field(default_factory=list)
 
     def grants(self) -> set[Grant]:
-        return {
+        orgs = {
             Grant(user=user_object(person), relation=relation, object=f"org:{org}")
             for org, declared in self.orgs.items()
             for relation, people in (("admin", declared.admins), ("member", declared.members))
             for person in people
         }
+        readers = {
+            Grant(user=reader, relation="reader", object=f"source:{source.name}")
+            for source in self.sources
+            for reader in [*(f"org:{org}#member" for org in source.readers.orgs), *(user_object(person) for person in source.readers.people)]
+        }
+        return orgs | readers
 
 
 class WriterSettings(BaseSettings):
@@ -73,6 +104,8 @@ class WriterSettings(BaseSettings):
     credential_file: str | None = Field(default=None, alias="WORKBENCH_FGA_CREDENTIAL_FILE")
     #: Required: an absent declaration must fail the Job, never read as "no organisations" and revoke every org grant.
     orgs_file: Path = Field(alias="WORKBENCH_FGA_ORGS_FILE")
+    #: Required for the same reason: an absent one would revoke every source's readers.
+    sources_file: Path = Field(alias="WORKBENCH_SOURCES_FILE")
 
 
 class Converged(BaseModel):
@@ -98,7 +131,8 @@ async def converge(settings: WriterSettings, declaration: Declaration) -> Conver
             held |= {
                 Grant(user=t.key.user, relation=t.key.relation, object=t.key.object)
                 for t in page.tuples or []
-                if t.key.object.startswith("org:") and t.key.relation in ORG_RELATIONS
+                if (t.key.object.startswith("org:") and t.key.relation in ORG_RELATIONS)
+                or (t.key.object.startswith("source:") and t.key.relation in SOURCE_RELATIONS)
             }
             token = page.continuation_token or ""
             if not token:
@@ -123,9 +157,11 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     try:
         settings = WriterSettings()
-        declaration = Declaration.model_validate_json(settings.orgs_file.read_text())
-    except (OSError, ValueError):
-        log.exception("the model writer has no readable declaration (WORKBENCH_FGA_ORGS_FILE); refusing to converge on none")
+        declaration = Declaration.model_validate(
+            json.loads(settings.orgs_file.read_text()) | {"sources": json.loads(settings.sources_file.read_text())["sources"]}
+        )
+    except (OSError, ValueError, KeyError):
+        log.exception("the model writer has no readable declaration (WORKBENCH_FGA_ORGS_FILE, WORKBENCH_SOURCES_FILE); refusing to converge on none")
         return 1
     try:
         result = asyncio.run(converge(settings, declaration))

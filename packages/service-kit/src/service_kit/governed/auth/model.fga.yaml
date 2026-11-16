@@ -25,8 +25,35 @@ tuples:
   - { user: project:p1, relation: project, object: corpus:c1 }
   - { user: project:p2, relation: project, object: corpus:c1 }
   - { user: project:p1, relation: project, object: flow:f1 }
+  # source archive is read by acme's members and by gina; source scans names no reader
+  - { user: org:acme#member, relation: reader, object: source:archive }
+  - { user: user:gina, relation: reader, object: source:archive }
 
 tests:
+  - name: a source is read by the organisations and people declared for it, and by nobody else
+    check:
+      - user: user:bob
+        object: source:archive
+        assertions: { can_read: true }
+      - user: user:alice
+        object: source:archive
+        assertions: { can_read: true }
+      - user: user:gina
+        object: source:archive
+        assertions: { can_read: true }
+      - user: user:frank
+        object: source:archive
+        assertions: { can_read: false }
+      - user: user:gina
+        object: source:scans
+        assertions: { can_read: false }
+    list_objects:
+      - user: user:frank
+        type: source
+        assertions: { can_read: [] }
+      - user: user:bob
+        type: source
+        assertions: { can_read: [source:archive] }
   - name: an org admin owns every project of the org; a member views and creates them
     check:
       - user: user:alice

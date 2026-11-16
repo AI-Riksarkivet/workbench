@@ -42,6 +42,9 @@ spec:
       {{- toYaml $selector | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # A changed declaration rolls the pods: the sources are read once, at start.
+        checksum/sources: {{ include "workbench.sources" . | sha256sum | trunc 16 }}
       labels:
         {{- toYaml $selector | nindent 8 }}
         lance.dev/logs: otlp
@@ -80,7 +83,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
             - { name: state-password, mountPath: /var/run/secrets/annotator/state-password, readOnly: true }
             - { name: state-ca, mountPath: /var/run/secrets/annotator/state-ca, readOnly: true }
-            {{- include "workbench.catalogMount" . | nindent 12 }}
+            {{- include "workbench.sourcesMount" . | nindent 12 }}
             {{- if include "workbench.lakehouseAuth" . }}
             - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
             {{- end }}
@@ -97,7 +100,7 @@ spec:
             - { name: MEDIA_DOCS, value: {{ .Values.docs | quote }} }
             # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only: each
             # table opens through lance-namespace on the credential the catalog vends the person, so the pod holds no store key.
-            {{- include "workbench.catalogEnv" . | nindent 12 }}
+            {{- include "workbench.sourcesEnv" . | nindent 12 }}
             # The annotator's own state: the Cluster this release renders, reached by its read-write Service, the server
             # verified against the Cluster's own CA, the password read from its mounted file on every new connection.
             - { name: ANNOTATOR_STATE_HOST, value: {{ printf "%s-rw" $cluster | quote }} }
@@ -155,7 +158,7 @@ spec:
           secret:
             secretName: {{ $cluster }}-app
             items: [{ key: password, path: password }]
-        {{- include "workbench.catalogVolume" . | nindent 8 }}
+        {{- include "workbench.sourcesVolume" . | nindent 8 }}
         {{- if include "workbench.lakehouseAuth" . }}
         # The workbench's confidential client's secret: the token exchange and its own token for the lakehouse.
         - name: oidc-client

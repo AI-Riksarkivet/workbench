@@ -46,13 +46,14 @@ from pydantic import BaseModel, computed_field
 
 from client_kit.lancekit.absence import reads_as_absent
 from client_kit.lancekit.blobs import is_blob_field
-from client_kit.lancekit.catalog import bounded, connect_namespace, translate_catalog_errors
+from client_kit.lancekit.catalog import bounded, translate_catalog_errors
 from client_kit.lancekit.predicate import eq
 from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState
+from client_kit.sources import connect_source
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.token_exchange import LakehouseCaller
-from viewer.api.security import CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.media import MAX_BUFFERED_BLOB_BYTES, _handle_size, _stream_handle, served_media_type
 
 
@@ -160,7 +161,7 @@ def sniff_media_type(payload: bytes) -> str:
 
 
 def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lance.LanceDataset:
-    """Open a catalog table by its id (``acme$media$pages``), through the namespace as the caller.
+    """Open a table by its qualified name (``lake~acme$media$pages``), through its source's namespace as the caller.
 
     THROUGH THE CATALOG, never a caller-supplied URI. Taking an ``s3://`` parameter would let a caller point this
     endpoint at any object it names; resolving the id at the catalog keeps the viewer to the tables the catalog governs,
@@ -173,8 +174,12 @@ def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lan
     404. A store failure behind a table the catalog resolved is a 503 too, with the location kept out of the detail: it
     is a path the caller never supplied.
     """
-    client = connect_namespace(state.settings, caller.token)
-    identifier = table.split(state.settings.catalog_delimiter)
+    try:
+        located = state.settings.sources.table_named(table)
+    except ValueError as exc:
+        raise NotFoundError(f"no table {table!r}: {exc}") from exc
+    client = connect_source(located.source, person=caller.token, service=caller.service)
+    identifier = located.identifier
     try:
         with translate_catalog_errors():
             # No shared session: one shared across callers serves a later caller the store an earlier caller's live open
@@ -283,7 +288,7 @@ def _read_all(blob: BlobFile | BytesIO, size: int) -> bytes:
         return f.read(size)
 
 
-@router.get("/pages", summary="Pages in a page dataset")
+@router.get("/pages", summary="Pages in a page dataset", dependencies=[READS_DATASET])
 async def list_pages(
     state: StateDep,
     caller: CallerDep,
@@ -325,7 +330,7 @@ async def list_pages(
     return PageListing(dataset=table, pages=pages)
 
 
-@router.get("/page", summary="One row's payload bytes")
+@router.get("/page", summary="One row's payload bytes", dependencies=[READS_DATASET])
 async def get_page(
     state: StateDep,
     caller: CallerDep,

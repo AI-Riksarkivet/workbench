@@ -53,6 +53,9 @@ spec:
       {{- toYaml $selector | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # A changed declaration rolls the pods: the sources are read once, at start.
+        checksum/sources: {{ include "workbench.sources" $ | sha256sum | trunc 16 }}
       labels:
         {{- toYaml $selector | nindent 8 }}
         lance.dev/logs: otlp
@@ -96,7 +99,7 @@ spec:
             - { name: MEDIA_DOCS, value: {{ $.Values.docs | quote }} }
             # The app calls each service's doors under `/api` below the service's public prefix.
             - { name: WORKBENCH_API_PREFIX, value: "/api" }
-            {{- include "workbench.catalogEnv" $ | nindent 12 }}
+            {{- include "workbench.sourcesEnv" $ | nindent 12 }}
             {{- if eq $service "viewer" }}
             - { name: VIEWER_MEDIA_URL_KEY_FILE, value: /var/run/secrets/viewer/media-url-key/media-url-key }
             {{- end }}
@@ -140,16 +143,19 @@ spec:
             {{- toYaml $s.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-            {{- include "workbench.catalogMount" $ | nindent 12 }}
+            {{- include "workbench.sourcesMount" $ | nindent 12 }}
             {{- if eq $service "viewer" }}
             - { name: media-url-key, mountPath: /var/run/secrets/viewer/media-url-key, readOnly: true }
             {{- end }}
             {{- if $client }}
             - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
             {{- end }}
+            {{- if $.Values.storeIdentity.audience }}
+            - { name: store-identity, mountPath: /var/run/secrets/workbench/store, readOnly: true }
+            {{- end }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: "2Gi" } }
-        {{- include "workbench.catalogVolume" $ | nindent 8 }}
+        {{- include "workbench.sourcesVolume" $ | nindent 8 }}
         {{- if eq $service "viewer" }}
         # The media-URL signing key alone: the kubelet mounts it, so the pod's ServiceAccount reads no Secret.
         - name: media-url-key
@@ -162,6 +168,13 @@ spec:
           secret:
             secretName: {{ required "auth.oidc.client.secret.name: the Secret holding the workbench client's secret" $.Values.auth.oidc.client.secret.name }}
             items: [{ key: {{ $.Values.auth.oidc.client.secret.key }}, path: client-secret }]
+        {{- end }}
+        {{- with $.Values.storeIdentity.audience }}
+        # The pod's own identity at a store that trusts the cluster's tokens, for that audience alone.
+        - name: store-identity
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, audience: {{ . | quote }}, expirationSeconds: {{ $.Values.storeIdentity.expirationSeconds }} }
         {{- end }}
 {{- if $.Values.route.enabled }}
 ---

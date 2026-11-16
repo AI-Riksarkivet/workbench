@@ -1,4 +1,4 @@
-"""`send` refuses an item whose media dataset does not resolve.
+"""`send` refuses an item whose media dataset does not resolve, or belongs to a source that is not annotated.
 
 Removal is the escape hatch; this is what stops the trap being set. An item naming a dataset that
 was renamed or removed cannot be opened on the canvas, so it can never be claimed, submitted or
@@ -21,6 +21,7 @@ import pyarrow as pa
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints.project_events import router
@@ -30,7 +31,7 @@ from annotator.state.store import AnnotatorStore
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 
 
 DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "search": {"row_table": "chunks"}}
@@ -48,8 +49,7 @@ def _send(state_app: Callable[..., FastAPI], settings: Settings, body: dict[str,
     app.dependency_overrides[current_subject] = lambda: "gina"
     state = AppState(settings=settings)
     app.dependency_overrides[get_state] = lambda: state
-    catalog = {"MEDIA_CATALOG_URI": settings.catalog_uri} if settings.catalog_uri else {"MEDIA_CATALOG_DIR": str(settings.catalog_dir)}
-    annotator = AnnotatorSettings.model_validate(catalog)
+    annotator = AnnotatorSettings.model_validate({"WORKBENCH_SOURCES": [source.model_dump(mode="json") for source in settings.sources.items]})
     app.dependency_overrides[get_annotator_settings] = lambda: annotator
 
     with TestClient(app) as client:
@@ -70,9 +70,9 @@ def _send(state_app: Callable[..., FastAPI], settings: Settings, body: dict[str,
 
 @pytest.fixture
 def catalog(tmp_path: Path) -> Settings:
-    """A directory catalog holding one dataset, ``acme$demo``."""
+    """A directory catalog holding one dataset, ``lake:acme$demo``."""
     write_table(tmp_path, ["acme", "demo", "chunks"], pa.table({"doc_id": ["doc0"]}), descriptor=DESCRIPTOR)
-    return Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)})
+    return Settings.model_validate({**lakehouse_dir(str(tmp_path))})
 
 
 def _items(*wheres: str | None) -> dict[str, Any]:
@@ -80,18 +80,41 @@ def _items(*wheres: str | None) -> dict[str, Any]:
 
 
 def test_an_item_naming_an_unknown_dataset_is_refused(state_app: Callable[..., FastAPI], catalog: Settings) -> None:
-    r, held = _send(state_app, catalog, _items("acme$gone-away"))
+    r, held = _send(state_app, catalog, _items("lake~acme$gone-away"))
 
     assert r.status_code == 409, r.text
     assert "gone-away" in r.json()["detail"], "the refusal must name the dataset that does not exist"
     assert held == [], "a task was written for an item that can never be opened"
 
 
+@pytest.mark.parametrize("named", [True, False], ids=["named", "by-default"])
+def test_an_item_of_a_source_that_is_not_annotated_is_refused_with_the_reason(state_app: Callable[..., FastAPI], tmp_path: Path, named: bool) -> None:
+    """Only a lakehouse's datasets are annotated (`client_kit.sources`): an item of another source, named or taken by
+    default, is refused before the catalog is asked, naming why, and nothing is written; and the annotator refuses to
+    start with such a default."""
+    write_table(tmp_path / "archive", ["field", "survey", "observations"], pa.table({"doc_id": ["doc0"]}), descriptor=DESCRIPTOR)
+    sources = [
+        {"kind": "rask", "name": "lake", "dir": str(tmp_path / "lake"), "identity": "none"},
+        {"kind": "namespace", "name": "archive", "impl": "dir", "properties": {"root": str(tmp_path / "archive")}},
+    ]
+    settings = Settings.model_validate({"WORKBENCH_SOURCES": sources, "MEDIA_DEFAULT_DATASET": "archive~field$survey"})
+
+    r, held = _send(state_app, settings, _items("archive~field$survey" if named else None))
+    with pytest.raises(ValidationError, match="cannot be the annotator's default: source 'archive' is read-only"):
+        AnnotatorSettings.model_validate({"WORKBENCH_SOURCES": sources, "MEDIA_DEFAULT_DATASET": "archive~field$survey"})
+
+    assert (r.status_code, r.json()["detail"], held) == (
+        409,
+        "nothing was sent: archive~field$survey: source 'archive' is read-only: only a rask lakehouse's datasets are annotated",
+        [],
+    )
+
+
 def test_a_known_dataset_sends_normally(state_app: Callable[..., FastAPI], catalog: Settings) -> None:
-    r, held = _send(state_app, catalog, _items("acme$demo"))
+    r, held = _send(state_app, catalog, _items("lake~acme$demo"))
 
     assert r.status_code == 201, r.text
-    assert [t.source.where for t in held] == ["acme$demo"]
+    assert [t.source.where for t in held] == ["lake~acme$demo"]
 
 
 @pytest.mark.parametrize(
@@ -108,13 +131,13 @@ def test_an_items_version_is_kept_only_when_its_table_has_it(
 ) -> None:
     """The version an item names is the sender's, and the publish names it as an input: the send keeps it only once the
     catalog shows the stamped table at that version, and writes nothing otherwise."""
-    body = _items("acme$demo")
+    body = _items("lake~acme$demo")
     body["items"][0]["source"]["dataset_version"] = version
 
     r, held = _send(state_app, catalog, body)
 
     assert r.status_code == status, r.text
-    assert [(t.source.table, t.source.dataset_version) for t in held] == ([("acme$demo$chunks", kept)] if kept else [])
+    assert [(t.source.table, t.source.dataset_version) for t in held] == ([("lake~acme$demo$chunks", kept)] if kept else [])
 
 
 def test_an_unverifiable_catalog_refuses_the_send_and_writes_nothing(state_app: Callable[..., FastAPI], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,10 +146,9 @@ def test_an_unverifiable_catalog_refuses_the_send_and_writes_nothing(state_app: 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed = probe.getsockname()[1]
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
-    unreachable = Settings.model_validate({"MEDIA_CATALOG_URI": f"http://127.0.0.1:{closed}"})
+    unreachable = Settings.model_validate({**lakehouse_rest(f"http://127.0.0.1:{closed}")})
 
-    r, held = _send(state_app, unreachable, _items("acme$anything"))
+    r, held = _send(state_app, unreachable, _items("lake~acme$anything"))
 
     assert r.status_code == 503, r.text
     assert held == []

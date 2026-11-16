@@ -12,32 +12,129 @@ app.kubernetes.io/component: annotator
 
 {{- define "annotator.otlpEndpoint" -}}{{ required "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" .Values.otel.endpoint }}{{- end -}}
 
-{{- /* The catalog every service reads datasets through: a lance-namespace REST catalog (`catalog.uri`, a rask lakehouse's
-or any other), or a directory catalog on a claim (`catalog.dir.claim`), mounted where `MEDIA_CATALOG_DIR` names. */ -}}
-{{- define "workbench.catalogEnv" -}}
-{{- if eq (empty .Values.catalog.uri) (empty .Values.catalog.dir.claim) }}{{ fail "name exactly one catalog: catalog.uri (a lance-namespace REST catalog) or catalog.dir.claim (a directory catalog on a PersistentVolumeClaim)" }}{{ end -}}
-{{- if .Values.catalog.uri }}
-- { name: MEDIA_CATALOG_URI, value: {{ .Values.catalog.uri | quote }} }
-{{- else }}
-- { name: MEDIA_CATALOG_DIR, value: /var/lib/workbench/catalog }
+{{- /* The sources the services read (`client_kit.sources`), validated here so a release that could not be read as
+written fails at render: each a DNS-label `name`, one of three kinds, at most one `rask` lakehouse (by its catalog's REST
+`uri`, read as the person or as the workbench, never as nobody), a `namespace` by its lance-namespace `impl`, a `tables`
+source by its `uri` or by a `path` on its `claim`. A declaration carries no credential: every property and storage
+option must be on the allow-list `files/source-keys.json` holds (the services enforce the same list,
+`client_kit.source_keys`, and `make chart-check` fails when the two differ), a credential file must lie under its mount
+root, and no location carries a user, a password, a query or a fragment. A source the workbench decides for (any but a
+lakehouse read as the person) names its `readers`, organisations and principal keys the model writer grants `reader` on
+`source:<name>`; with none, nobody reads it. A source with a `claim` reads a PersistentVolumeClaim mounted at
+`/var/lib/workbench/sources/<name>`: a `namespace` source's `dir` root, or a `tables` source's directory. The declaration
+rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
+{{- define "workbench.sources" -}}
+{{- $keys := .Files.Get "files/source-keys.json" | fromJson -}}
+{{- $declared := list -}}
+{{- $names := dict -}}
+{{- $lakehouses := 0 -}}
+{{- range $i, $s := .Values.sources -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" (toString $s.name)) }}{{ fail (printf "sources[%d].name %q is not a DNS label" $i (toString $s.name)) }}{{ end -}}
+{{- if hasKey $names $s.name }}{{ fail (printf "sources: the name %q is declared twice" $s.name) }}{{ end -}}
+{{- $_ := set $names $s.name true -}}
+{{- $out := dict "name" $s.name "kind" $s.kind "title" ($s.title | default "") -}}
+{{- $mount := printf "/var/lib/workbench/sources/%s" $s.name -}}
+{{- $decides := true -}}
+{{- if eq $s.kind "rask" -}}
+{{- $lakehouses = add1 $lakehouses -}}
+{{- $_ := set $out "uri" (required (printf "sources[%d].uri: the lakehouse catalog's REST door" $i) $s.uri) -}}
+{{- include "workbench.checkLocation" (list (printf "sources[%d].uri" $i) $s.uri) -}}
+{{- $_ := set $out "identity" ($s.identity | default "person") -}}
+{{- if not (has $out.identity (list "person" "service")) }}{{ fail (printf "sources[%d].identity is person or service: a lakehouse's REST door is never read as nobody" $i) }}{{ end -}}
+{{- $decides = eq $out.identity "service" -}}
+{{- if and $s.readers (not $decides) }}{{ fail (printf "sources[%d].readers: a lakehouse read as the person decides every read itself" $i) }}{{ end -}}
+{{- if $s.delimiter }}{{ $_ := set $out "delimiter" $s.delimiter }}{{ end -}}
+{{- else if eq $s.kind "namespace" -}}
+{{- $_ := set $out "impl" (required (printf "sources[%d].impl: the lance-namespace implementation" $i) $s.impl) -}}
+{{- $allowed := index $keys.namespaceProperties $s.impl | default list -}}
+{{- if not (hasKey $keys.namespaceProperties $s.impl) }}{{ fail (printf "sources[%d].impl %q takes no declared property a source may name: one of %s" $i $s.impl (keys $keys.namespaceProperties | sortAlpha | join ", ")) }}{{ end -}}
+{{- $properties := deepCopy ($s.properties | default dict) -}}
+{{- if $s.claim }}{{ $_ := set $properties "root" $mount }}{{ end -}}
+{{- range $k, $v := $properties }}
+{{- if not (has $k $allowed) }}{{ fail (printf "sources[%d].properties.%s is not one a %s source may declare (allowed: %s)" $i $k $s.impl (join ", " $allowed)) }}{{ end -}}
+{{- if has $k (list "uri" "root") }}{{ include "workbench.checkLocation" (list (printf "sources[%d].properties.%s" $i $k) $v) }}{{ end -}}
+{{- end -}}
+{{- if and (eq $s.impl "dir") (not (hasKey $properties "root")) }}{{ fail (printf "sources[%d]: a dir source names its `root`, or a `claim`" $i) }}{{ end -}}
+{{- $locations := $s.locations | default list -}}
+{{- if and (ne $s.impl "dir") (empty $locations) }}{{ fail (printf "sources[%d].locations: the store prefixes its tables may lie under" $i) }}{{ end -}}
+{{- range $locations }}{{ include "workbench.checkLocation" (list (printf "sources[%d].locations" $i) .) }}{{ end -}}
+{{- include "workbench.checkStorage" (list $keys (printf "sources[%d].storage" $i) ($s.storage | default dict)) -}}
+{{- $_ := set $out "properties" $properties -}}
+{{- $_ := set $out "storage" ($s.storage | default dict) -}}
+{{- if $locations }}{{ $_ := set $out "locations" $locations }}{{ end -}}
+{{- else if eq $s.kind "tables" -}}
+{{- $uri := ternary (printf "%s/%s" $mount ($s.path | default "" | trimPrefix "/")) ($s.uri | default "") (not (empty $s.claim)) | trimSuffix "/" -}}
+{{- if empty $uri }}{{ fail (printf "sources[%d]: a tables source names its `uri`, or a `path` on its `claim`" $i) }}{{ end -}}
+{{- include "workbench.checkLocation" (list (printf "sources[%d].uri" $i) $uri) -}}
+{{- include "workbench.checkStorage" (list $keys (printf "sources[%d].storage" $i) ($s.storage | default dict)) -}}
+{{- $_ := set $out "uri" $uri -}}
+{{- $_ := set $out "storage" ($s.storage | default dict) -}}
+{{- else -}}
+{{- fail (printf "sources[%d].kind %q is rask, namespace or tables" $i (toString $s.kind)) -}}
+{{- end -}}
+{{- if and $s.claim (eq $s.kind "rask") }}{{ fail (printf "sources[%d]: a rask lakehouse is reached at its catalog's `uri`, never on a claim" $i) }}{{ end -}}
+{{- if and $decides $s.readers }}{{ $_ := set $out "readers" (dict "orgs" ($s.readers.orgs | default list) "people" ($s.readers.people | default list)) }}{{ end -}}
+{{- $declared = append $declared $out -}}
+{{- end -}}
+{{- if empty $declared }}{{ fail "sources: declare at least one source the workbench reads" }}{{ end -}}
+{{- if gt $lakehouses 1 }}{{ fail "sources: at most one source is a rask lakehouse" }}{{ end -}}
+{{- toJson (dict "sources" $declared) -}}
+{{- end -}}
+
+{{- /* Fails the render when a location carries a user, a password, a query or a fragment: a credential travels in each. */ -}}
+{{- define "workbench.checkLocation" -}}
+{{- $where := index . 0 -}}{{- $location := toString (index . 1) -}}
+{{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://[^/]*@" $location }}{{ fail (printf "%s carries a user or password: a source declares no credential" $where) }}{{ end -}}
+{{- if regexMatch "[?#]" $location }}{{ fail (printf "%s carries a query or fragment, as a pre-signed URL does: a source declares no credential" $where) }}{{ end -}}
+{{- end -}}
+
+{{- /* Fails the render on a storage option not on the allow-list, or a credential file outside its mount root; a per-base
+option (`base_<id>.<key>`) is held to its key's rule. */ -}}
+{{- define "workbench.checkStorage" -}}
+{{- $keys := index . 0 -}}{{- $where := index . 1 -}}
+{{- range $k, $v := index . 2 -}}
+{{- $name := regexReplaceAll "^base_[0-9]+\\." $k "" -}}
+{{- if has $name $keys.mountedFiles -}}
+{{- if or (not (hasPrefix $keys.mountRoot (toString $v))) (contains "/../" (printf "%s/" $v)) }}{{ fail (printf "%s.%s names a credential file outside %s: mount it there" $where $k $keys.mountRoot) }}{{ end -}}
+{{- else if not (has $name $keys.storage) -}}
+{{- fail (printf "%s.%s is not a storage option a source may declare (no credential is declared; see client_kit.source_keys)" $where $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* The rask lakehouse source, as JSON (`{}` when the release reads none). */ -}}
+{{- define "workbench.lakehouse" -}}
+{{- $found := dict -}}
+{{- range .Values.sources }}{{ if eq .kind "rask" }}{{ $found = . }}{{ end }}{{ end -}}
+{{- toJson $found -}}
+{{- end -}}
+
+{{- define "workbench.sourcesEnv" -}}
+- { name: WORKBENCH_SOURCES_FILE, value: /etc/workbench/sources/sources.json }
+{{- end -}}
+
+{{- define "workbench.sourcesMount" -}}
+- { name: sources, mountPath: /etc/workbench/sources, readOnly: true }
+{{- range .Values.sources }}
+{{- if .claim }}
+- { name: {{ printf "source-%s" .name }}, mountPath: {{ printf "/var/lib/workbench/sources/%s" .name }}, readOnly: true }
+{{- end }}
 {{- end }}
 {{- end -}}
 
-{{- define "workbench.catalogMount" -}}
-{{- if .Values.catalog.dir.claim }}
-- { name: catalog, mountPath: /var/lib/workbench/catalog }
+{{- define "workbench.sourcesVolume" -}}
+- name: sources
+  configMap: { name: {{ printf "%s-sources" .Release.Name }} }
+{{- range .Values.sources }}
+{{- if .claim }}
+- name: {{ printf "source-%s" .name }}
+  persistentVolumeClaim: { claimName: {{ .claim | quote }}, readOnly: true }
+{{- end }}
 {{- end }}
 {{- end -}}
 
-{{- define "workbench.catalogVolume" -}}
-{{- if .Values.catalog.dir.claim }}
-- name: catalog
-  persistentVolumeClaim: { claimName: {{ .Values.catalog.dir.claim | quote }} }
-{{- end }}
-{{- end -}}
-
-{{- /* Whether the lakehouse authenticates the services' reads: a REST catalog with `auth.lakehouse.audience` named. */ -}}
-{{- define "workbench.lakehouseAuth" -}}{{ if and .Values.auth.enabled .Values.catalog.uri .Values.auth.lakehouse.audience }}true{{ end }}{{- end -}}
+{{- /* Whether the lakehouse authenticates the services' reads: a rask source, with `auth.lakehouse.audience` named. */ -}}
+{{- define "workbench.lakehouseAuth" -}}{{ $lake := include "workbench.lakehouse" . | fromJson }}{{ if and .Values.auth.enabled $lake.uri .Values.auth.lakehouse.audience }}true{{ end }}{{- end -}}
 
 {{- /* The workbench's sign-in and store settings, shared by the annotator and its model writer. */ -}}
 {{- define "annotator.fgaEnv" -}}

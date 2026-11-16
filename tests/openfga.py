@@ -106,6 +106,18 @@ class OpenFgaStore:
 
         asyncio.run(_write())
 
+    def delete(self, *grants: tuple[str, str, str]) -> None:
+        """Delete ``(user, relation, object)`` tuples, as a declaration that drops them converges."""
+
+        async def _delete() -> None:
+            authz = fga.Authorizer(fga.make_client(self.url, credential_file=None, store_id=self.store_id, model_id=self.model_id))
+            try:
+                await authz.delete([fga.Grant(user=u, relation=r, object=o) for u, r, o in grants])
+            finally:
+                await authz.close()
+
+        asyncio.run(_delete())
+
     def tuples(self, obj: str) -> set[tuple[str, str, str]]:
         """Every ``(user, relation, object)`` the store holds on ``obj``."""
 

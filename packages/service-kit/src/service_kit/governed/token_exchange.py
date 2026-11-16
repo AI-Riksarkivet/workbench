@@ -59,13 +59,15 @@ HTTP_TIMEOUT_SECONDS: Final = 10.0
 
 
 class LakehouseCaller(BaseModel):
-    """The person a lakehouse read is made as: their principal key, which every per-caller cache is keyed on, and a
-    function answering their current token addressed to the lakehouse (``None`` with authentication off)."""
+    """The person a lakehouse read is made as: their principal key, which every per-caller cache is keyed on, a function
+    answering their current token addressed to the lakehouse (``None`` with authentication off), and one answering the
+    workbench's own, for a source the deployment reads as the workbench (``None`` where no client is configured)."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     subject: str
     token: Callable[[], str] | None = None
+    service: Callable[[], str] | None = None
 
 
 class _Discovery(BaseModel):

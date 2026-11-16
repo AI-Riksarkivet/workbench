@@ -22,7 +22,7 @@ from annotator.annotations.store import table_name
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Task, TaskState
 from client_kit.media.config import Settings
 from client_kit.media.state import AppState
-from tests.media_catalog import namespace_client, write_table
+from tests.media_catalog import lakehouse_dir, namespace_client, write_table
 
 
 DOC = "a" * 16
@@ -31,7 +31,7 @@ SCHEMA = pa.schema([("doc_id", pa.string()), ("speech_id", pa.int64()), ("chunk_
 UNIT = {"doc_id": DOC, "speech_id": 0, "chunk_id": 19}
 OTHER = {"doc_id": DOC, "speech_id": 0, "chunk_id": 99}
 #: Project p1's annotations on dataset acme$proj1, in the workbench's own namespace.
-TABLE = ["workbench", "annotations", table_name("p1", "acme$proj1")]
+TABLE = ["workbench", "annotations", table_name("p1", "lake~acme$proj1")]
 #: The chunks table's identity columns, which type the unit key's segments.
 CHUNKS = pa.table({"doc_id": [DOC], "speech_id": pa.array([0], pa.int64()), "chunk_id": pa.array([19], pa.int64())})
 #: The unit, as task t1 of project p1 names it.
@@ -46,7 +46,7 @@ def client_of(state_app: Callable[..., FastAPI]) -> Iterator[Callable[[Path], Te
 
     def open_at(root: Path) -> TestClient:
         app = state_app(annotations_router)
-        app.state.resources = AppState(settings=Settings.model_validate({"MEDIA_CATALOG_DIR": str(root), "MEDIA_DEFAULT_DATASET": "acme$proj1"}))
+        app.state.resources = AppState(settings=Settings.model_validate({**lakehouse_dir(str(root)), "MEDIA_DEFAULT_DATASET": "lake~acme$proj1"}))
         client = TestClient(app)
         client.__enter__()
         opened.append(client)

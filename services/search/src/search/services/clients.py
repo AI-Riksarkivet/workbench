@@ -39,7 +39,7 @@ def _default_embed_dim(state: AppState, caller: LakehouseCaller) -> int:
     caller bug surfaced as the same 503 the accessor maps everything to.
     """
     handle = dataset_handle(state, None, caller)
-    search = handle.descriptor.declared.search
+    search = handle.declared.search
     if search is None or not search.vectors:
         raise RuntimeError("default dataset declares no vector bindings")
     binding = search.vectors.get(SearchMode.SEMANTIC.value) or next(iter(search.vectors.values()))

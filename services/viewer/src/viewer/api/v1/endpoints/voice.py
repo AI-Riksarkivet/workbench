@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from client_kit.media.deps import DatasetParam, StateDep
 from client_kit.media.state import AppState, dataset_handle
 from service_kit.exceptions import ServiceUnavailableError, ValidationError
-from viewer.api.security import AUTHENTICATED, CallerDep
+from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.voice import VoiceIdentityResponse, VoiceSimilarResponse, VoiceStatusResponse
 from viewer.services import voice_service
 from viewer.services.voice_service import MAX_N, MAX_UPLOAD_BYTES
@@ -44,7 +44,7 @@ def require_valid_doc_id(handle: "DatasetHandle", doc_id: str) -> None:
     Runs BEFORE the value is inlined into any Lance filter literal — otherwise
     a crafted doc id is a SQL-injection vector.
     """
-    if re.fullmatch(handle.descriptor.declared.identity.doc_key_pattern, doc_id) is None:
+    if re.fullmatch(handle.declared.identity.doc_key_pattern, doc_id) is None:
         raise ValidationError("invalid doc_id")
 
 
@@ -73,13 +73,13 @@ def voice_encoder(state: AppState) -> "ServeEncoder":
     return ServeEncoder(url)
 
 
-@router.get("/status", dependencies=[AUTHENTICATED])
+@router.get("/status", dependencies=[READS_DATASET])
 def voice_status(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) -> VoiceStatusResponse:
     """Whether the voice tables exist + their row counts (no error when absent)."""
     return voice_service.voice_status(dataset_handle(state, dataset, caller))
 
 
-@router.get("/similar", dependencies=[AUTHENTICATED])
+@router.get("/similar", dependencies=[READS_DATASET])
 def voice_similar(
     caller: CallerDep,
     state: StateDep,
@@ -112,7 +112,7 @@ def voice_similar(
     )
 
 
-@router.get("/identity", dependencies=[AUTHENTICATED])
+@router.get("/identity", dependencies=[READS_DATASET])
 def voice_identity(caller: CallerDep, state: StateDep, doc_id: str, speaker: str, dataset: DatasetParam = None) -> VoiceIdentityResponse:
     """The global identity cluster for one (``doc_id``, ``speaker``).
 
@@ -125,7 +125,7 @@ def voice_identity(caller: CallerDep, state: StateDep, doc_id: str, speaker: str
     return voice_service.speaker_identity(handle, doc_id=doc_id, speaker=speaker)
 
 
-@router.post("/similar", dependencies=[AUTHENTICATED])
+@router.post("/similar", dependencies=[READS_DATASET])
 async def voice_similar_upload(
     caller: CallerDep,
     state: StateDep,

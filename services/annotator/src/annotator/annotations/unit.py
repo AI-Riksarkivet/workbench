@@ -13,7 +13,8 @@ from http import HTTPStatus
 
 from pydantic import BaseModel
 
-from client_kit.lancekit.descriptor import DatasetDescriptor
+from client_kit.lancekit.descriptor import Declared
+from client_kit.lancekit.introspect import TableInfo
 from client_kit.lancekit.keys import validate_doc_key
 from client_kit.lancekit.predicate import and_, eq
 from service_kit.exceptions import DomainError, ValidationError
@@ -43,33 +44,33 @@ class Unit(BaseModel):
         return and_(*(eq(field, value) for field, value in self.values.items()))
 
 
-def _column_type(descriptor: DatasetDescriptor, field: str) -> str | None:
+def _column_type(declared: Declared, tables: dict[str, TableInfo], field: str) -> str | None:
     """The arrow type of an identity field: the default search's row table's, else any of the dataset's tables that
     carries the field. None when no table declares it."""
-    search = descriptor.declared.search
-    tables = [descriptor.tables.get(search.row_table)] if search is not None else []
-    tables += list(descriptor.tables.values())
-    for table in tables:
+    search = declared.search
+    candidates = [tables.get(search.row_table)] if search is not None else []
+    candidates += list(tables.values())
+    for table in candidates:
         column = table.column(field) if table is not None else None
         if column is not None:
             return column.arrow_type
     return None
 
 
-def parse_unit(descriptor: DatasetDescriptor, key: str) -> Unit:
+def parse_unit(declared: Declared, tables: dict[str, TableInfo], key: str) -> Unit:
     """`key` read against the dataset's identity, or a `UnitKeyError` naming what does not fit."""
-    identity = descriptor.declared.identity
+    identity = declared.identity
     segments = key.split("/")
     fields = [identity.doc_key, *(f for f in identity.key_fields if f != identity.doc_key)]
     if len(segments) != len(fields):
         raise UnitKeyError(f"unit key {key!r} has {len(segments)} part(s), and this dataset names a unit by {len(fields)}: {'/'.join(fields)}")
     try:
-        doc = validate_doc_key(descriptor.declared, segments[0])
+        doc = validate_doc_key(declared, segments[0])
     except ValidationError as exc:
         raise UnitKeyError(f"unit key {key!r}: {segments[0]!r} is not a {identity.doc_key}") from exc
     values: dict[str, str | int] = {identity.doc_key: doc}
     for field, segment in zip(fields[1:], segments[1:], strict=True):
-        arrow_type = _column_type(descriptor, field)
+        arrow_type = _column_type(declared, tables, field)
         if arrow_type is None:
             raise UnitKeyError(f"unit key {key!r}: this dataset declares no type for its identity field {field}")
         if arrow_type.startswith(("int", "uint")):

@@ -2,7 +2,7 @@
 
 A client reaches the catalog through pylance's ``RestNamespace`` (what ``lance_namespace.connect("rest", ...)`` builds): the
 Python SDK `lance_docs/ns_catalog/namespace/index.md` names for engines and frameworks; locally and in the offline suite
-the same doors answer from lance-namespace's stock ``dir`` catalog (:func:`connect_namespace`). It depends on the
+the same doors answer from lance-namespace's stock ``dir`` catalog (`client_kit.sources`). It depends on the
 lakehouse only through that spec and the platform package (``service_kit``).
 
 A table is read by opening it through the namespace (:mod:`client_kit.lancekit.registry`). A write goes through the
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
     from lance_namespace import LanceNamespace
 
-    from client_kit.media.config import MediaSettings
+    from client_kit.sources import RaskSource
 
 
 log = logging.getLogger(__name__)
@@ -134,33 +134,26 @@ class CallContext(DynamicContextProvider):
         return {f"headers.{name}": value for name, value in carrier.items()}
 
 
-def connect_namespace(settings: MediaSettings, token: Callable[[], str] | None) -> LanceNamespace:
-    """The namespace client the media plane reads and writes through, presenting ``token`` (a person's or its own).
+def as_workbench(lakehouse: RaskSource, token: Callable[[], str] | None, headers: Mapping[str, str] | None = None) -> LanceNamespace:
+    """The lakehouse as the workbench's own identity, for the workbench's own reads and writes there (its annotation
+    tables): its REST door on ``token``, whatever identity people's reads take, or the directory catalog standing in for
+    it, which authenticates nobody and carries no header."""
+    if lakehouse.dir is not None:
+        return lance_namespace.connect("dir", {"root": str(lakehouse.dir)})
+    if lakehouse.uri is None:
+        raise TypeError("a rask source's validator admits none without a catalog")
+    return connect_catalog(lakehouse.uri, token=token, delimiter=lakehouse.delimiter, headers=headers)
 
-    The catalog's REST door on ``MEDIA_CATALOG_URI``, carrying that bearer and no other credential; or lance-namespace's
-    stock directory catalog on ``MEDIA_CATALOG_DIR``, which authenticates nobody, for development and the offline suite.
-    Either way the same doors answer, so the code above this seam does not know which it has.
+
+def lakehouse_writer(lakehouse: RaskSource, table_id: list[str], *, token: Callable[[], str] | None, originator: str) -> NamespaceCatalogWriteTransport:
+    """The lakehouse's write doors for one table as the workbench's own identity, naming the person it writes for.
+
+    Only a lakehouse is ever written (`client_kit.sources`): the workbench decides who may annotate before it writes (its
+    own role check), and the lakehouse decides whether the workbench may write the table. ``originator`` rides the
+    spec's ``x-lance-originator`` context header, which the catalog stamps in the commit's run as
+    ``rask_lance.originator`` (`docs/rask/COMMIT-EVENTS.md` § Whom a run names).
     """
-    if settings.catalog_dir is not None:
-        return lance_namespace.connect("dir", {"root": str(settings.catalog_dir)})
-    if settings.catalog_uri is None:
-        raise TypeError("MediaSettings names no catalog; its validator admits none without one")
-    return connect_catalog(settings.catalog_uri, token=token, delimiter=settings.catalog_delimiter)
-
-
-def service_writer(settings: MediaSettings, table_id: list[str], *, token: Callable[[], str] | None, originator: str) -> NamespaceCatalogWriteTransport:
-    """The catalog's write doors for one table as the workbench's own identity, naming the person it writes for.
-
-    The workbench decides who may annotate before it writes (its own role check); the lakehouse decides whether the
-    workbench may write the table. ``originator`` rides the spec's ``x-lance-originator`` context header, which the
-    catalog stamps in the commit's run as ``rask_lance.originator`` (`docs/rask/COMMIT-EVENTS.md` § Whom a run names).
-    """
-    if settings.catalog_dir is not None:
-        return NamespaceCatalogWriteTransport(lance_namespace.connect("dir", {"root": str(settings.catalog_dir)}), table_id)
-    if settings.catalog_uri is None:
-        raise TypeError("MediaSettings names no catalog; its validator admits none without one")
-    client = connect_catalog(settings.catalog_uri, token=token, delimiter=settings.catalog_delimiter, headers={"x-lance-originator": originator})
-    return NamespaceCatalogWriteTransport(client, table_id)
+    return NamespaceCatalogWriteTransport(as_workbench(lakehouse, token, {"x-lance-originator": originator}), table_id)
 
 
 @contextmanager

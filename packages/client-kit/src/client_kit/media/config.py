@@ -15,20 +15,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Self
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from service_kit.naming import CATALOG_DELIMITER
-
-
-def _warehouse_qualified(namespace: list[str], delimiter: str) -> None:
-    """Refuse a namespace id with fewer than two segments or an empty one.
-
-    Raises:
-        ValueError: The namespace is not warehouse-qualified.
-    """
-    if len(namespace) < 2 or not all(namespace):
-        raise ValueError(f"catalog namespace {delimiter.join(namespace)!r} is not warehouse-qualified: write it as <warehouse>{delimiter}<namespace>")
+from client_kit.sources import Source, SourceIdentity, Sources
 
 
 class MediaSettings(BaseSettings):
@@ -93,62 +83,44 @@ class MediaSettings(BaseSettings):
     #: `service_kit.config.Settings.docs_enabled` for why the default is closed.
     docs_enabled: bool = Field(default=False, alias="MEDIA_DOCS")
 
-    #: Where the media plane finds its datasets: a lance-namespace catalog, exactly one of the two. A dataset is a
-    #: namespace written ``warehouse$namespace``, its tables are what ListTables answers there, and each opens through
-    #: the namespace on the storage options DescribeTable returns, so this process holds no store credential.
-    #:
-    #: ``MEDIA_CATALOG_URI`` is the catalog's REST door (`lance_docs/ns_catalog/namespace/supported-catalogs/lance-rest.md`),
-    #: reached as the caller on the caller's own bearer. ``MEDIA_CATALOG_DIR`` is lance-namespace's stock directory
-    #: catalog under a local root (`lance_docs/ns_catalog/catalog/dir/index.md`), for development and the offline suite:
-    #: the same code runs on it, with nobody to authenticate.
-    catalog_uri: str | None = Field(default=None, alias="MEDIA_CATALOG_URI")
-    catalog_dir: Path | None = Field(default=None, alias="MEDIA_CATALOG_DIR")
-    catalog_delimiter: str = Field(default=CATALOG_DELIMITER, alias="MEDIA_CATALOG_DELIMITER")
-    #: The dataset a request that names none reads, written ``warehouse$namespace``; unset, such a request is a 404.
+    #: The sources the media plane reads (`client_kit.sources`): the declaration git holds, as the file the deployment
+    #: mounts (``WORKBENCH_SOURCES_FILE``) or, for a test or a one-off run, its ``sources`` list inline
+    #: (``WORKBENCH_SOURCES``, JSON). Exactly one of the two.
+    sources_file: Path | None = Field(default=None, alias="WORKBENCH_SOURCES_FILE")
+    sources_inline: list[Source] | None = Field(default=None, alias="WORKBENCH_SOURCES")
+    #: The dataset a request that names none reads, written ``<source>~<namespace>``; unset, such a request is a 404.
     default_dataset: str | None = Field(default=None, alias="MEDIA_DEFAULT_DATASET")
 
+    _sources: Sources = PrivateAttr()
+
     @model_validator(mode="after")
-    def _one_catalog(self) -> Self:
-        """Exactly one catalog, refused at load: with none the plane has nowhere to read, and with both it would pick one
-        silently."""
-        if (self.catalog_uri is None) == (self.catalog_dir is None):
-            raise ValueError("set exactly one of MEDIA_CATALOG_URI (the catalog's REST door) and MEDIA_CATALOG_DIR (a local directory catalog)")
+    def _read_sources(self) -> Self:
+        """The declaration, read and checked at load: a deployment that names no source, names it twice, or names a default
+        dataset no source could hold fails here rather than at its first request."""
+        if (self.sources_file is None) == (self.sources_inline is None):
+            raise ValueError("set exactly one of WORKBENCH_SOURCES_FILE (the declaration's file) and WORKBENCH_SOURCES (its sources, inline)")
+        self._sources = Sources.read(self.sources_file) if self.sources_file is not None else Sources(items=list(self.sources_inline or []))
+        if self.default_dataset is not None:
+            self._sources.dataset(self.default_dataset)
         return self
 
-    @field_validator("default_dataset")
-    @classmethod
-    def _default_dataset_is_warehouse_qualified(cls, value: str | None, info: ValidationInfo) -> str | None:
-        """A configured default is refused at load, not at every request, when no table could live in it."""
-        if value is not None:
-            delimiter = str(info.data.get("catalog_delimiter", CATALOG_DELIMITER))
-            _warehouse_qualified(value.split(delimiter), delimiter)
-        return value
+    @property
+    def sources(self) -> Sources:
+        return self._sources
 
-    def catalog_namespace_id(self, dataset_id: str) -> list[str]:
-        """The catalog identifier of a dataset's namespace: the dataset id, split on the delimiter.
+    @property
+    def reads_lakehouse(self) -> bool:
+        """Whether a lakehouse catalog is read over its REST door, which authenticates every caller: the workbench's own
+        reads and writes there need its client."""
+        lakehouse = self._sources.lakehouse
+        return lakehouse is not None and lakehouse.uri is not None
 
-        Written as the catalog writes it (``warehouse$namespace``). A name's first segment is its warehouse, and a
-        one-segment namespace names a warehouse, which serves no tables, so it needs at least two non-empty segments
-        (`docs/rask/COMMIT-EVENTS.md`).
-
-        Raises:
-            ValueError: The namespace has fewer than two segments or an empty one.
-        """
-        namespace = dataset_id.split(self.catalog_delimiter)
-        _warehouse_qualified(namespace, self.catalog_delimiter)
-        return namespace
-
-    def catalog_table_id(self, dataset_id: str, table: str) -> list[str]:
-        """The catalog identifier of a dataset's table: its namespace's segments, then the table, one segment, since the
-        delimiter inside it would split the identifier server-side into another namespace.
-
-        Raises:
-            ValueError: The namespace is not warehouse-qualified, or the table name is empty or carries the delimiter.
-        """
-        namespace = self.catalog_namespace_id(dataset_id)
-        if not table or self.catalog_delimiter in table:
-            raise ValueError(f"catalog table name {table!r} must be one non-empty segment without {self.catalog_delimiter!r}")
-        return [*namespace, table]
+    @property
+    def reads_lakehouse_as_person(self) -> bool:
+        """Whether that lakehouse is read as the person (``identity: person``): a person's read then needs a way to present
+        their token. A lakehouse read as the workbench needs none of theirs."""
+        lakehouse = self._sources.lakehouse
+        return lakehouse is not None and lakehouse.uri is not None and lakehouse.identity is SourceIdentity.PERSON
 
     @field_validator("cors_origins", mode="before")
     @classmethod

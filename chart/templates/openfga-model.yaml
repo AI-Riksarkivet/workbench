@@ -1,6 +1,7 @@
 {{- /*
 The workbench's model writer, run before the annotator rolls: the store named `auth.fga.store` holds the model this
-image carries and exactly the organisations `auth.fga.orgs` declares (`service_kit.governed.auth.write_model`). A hook,
+image carries, exactly the organisations `auth.fga.orgs` declares, and exactly the `readers` each source the workbench
+decides for declares (`reader` on `source:<name>`; `service_kit.governed.auth.write_model`). A hook,
 so a new image's model is in the store before its pods look for it; run again with nothing changed, it writes nothing.
 */ -}}
 {{- if .Values.auth.enabled }}
@@ -8,7 +9,7 @@ so a new image's model is in the store before its pods look for it; run again wi
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ $name }}-orgs
+  name: {{ $name }}-declaration
   labels:
     {{- include "annotator.selector" . | nindent 4 }}
   annotations:
@@ -17,6 +18,7 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation
 data:
   orgs.json: {{ dict "orgs" .Values.auth.fga.orgs | toJson | quote }}
+  sources.json: {{ include "workbench.sources" . | quote }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -54,9 +56,10 @@ spec:
               drop: ["ALL"]
           env:
             {{- include "annotator.fgaEnv" . | nindent 12 }}
-            - { name: WORKBENCH_FGA_ORGS_FILE, value: /etc/workbench/orgs/orgs.json }
+            - { name: WORKBENCH_FGA_ORGS_FILE, value: /etc/workbench/declaration/orgs.json }
+            - { name: WORKBENCH_SOURCES_FILE, value: /etc/workbench/declaration/sources.json }
           volumeMounts:
-            - { name: orgs, mountPath: /etc/workbench/orgs, readOnly: true }
+            - { name: declaration, mountPath: /etc/workbench/declaration, readOnly: true }
             {{- if .Values.auth.fga.credential.name }}
             - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
             {{- end }}
@@ -64,9 +67,9 @@ spec:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 500m, memory: 256Mi }
       volumes:
-        - name: orgs
+        - name: declaration
           configMap:
-            name: {{ $name }}-orgs
+            name: {{ $name }}-declaration
         {{- with .Values.auth.fga.credential.name }}
         - name: fga-credential
           secret:

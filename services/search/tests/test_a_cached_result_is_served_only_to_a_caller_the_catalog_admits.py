@@ -23,7 +23,7 @@ from search.services.result_cache import run_cached
 from search.services.spec import SearchSpec
 from service_kit.exceptions import ForbiddenError
 from service_kit.governed.token_exchange import LakehouseCaller
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
 
 
@@ -35,9 +35,8 @@ def test_a_refused_caller_is_not_served_what_another_caller_cached(monkeypatch: 
     # A vend that has already expired, so no open is reused and every request asks the catalog again.
     expired = {"expires_at_millis": str(int(time.time() * 1000))}
     catalog = VendingCatalog(write_table(tmp_path, ["wh", "ns", "chunks"], _ROWS).uri, {"caller-a": expired, "caller-b": expired})
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
-    registry = DatasetRegistry(MediaSettings.model_validate({"MEDIA_CATALOG_URI": catalog.url}))
-    as_a, as_b = (registry.get("wh$ns", LakehouseCaller(subject=f"keycloak~{t}", token=lambda t=t: t)) for t in ("caller-a", "caller-b"))
+    registry = DatasetRegistry(MediaSettings.model_validate({**lakehouse_rest(catalog.url)}))
+    as_a, as_b = (registry.get("lake~wh$ns", LakehouseCaller(subject=f"keycloak~{t}", token=lambda t=t: t)) for t in ("caller-a", "caller-b"))
     cache: dict[Any, Any] = {}
     spec = SearchSpec.model_validate({"q": "cat"})
     catalog.answers["caller-a"] = "fail"

@@ -24,7 +24,7 @@ from client_kit.lancekit.descriptor import AtlasSpace, Declared
 from client_kit.media.config import MediaSettings
 from service_kit.exceptions import ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseCaller
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
 from viewer.api import security
 from viewer.api.v1.endpoints import atlas
@@ -47,15 +47,15 @@ _ROWS = pa.table(
 
 
 def _app(root: Path) -> FastAPI:
-    return create_viewer_app(MediaSettings.model_validate({"MEDIA_CATALOG_DIR": str(root)}))
+    return create_viewer_app(MediaSettings.model_validate({**lakehouse_dir(str(root))}))
 
 
 def test_a_payload_the_browser_holds_is_revalidated_not_sent_again(tmp_path: Path) -> None:
     write_table(tmp_path, ["wh", "corpus", "chunks"], _ROWS, descriptor=_DESCRIPTOR)
 
     with TestClient(_app(tmp_path)) as client:
-        first = client.get("/api/atlas/points", params={"dataset": "wh$corpus"})
-        again = client.get("/api/atlas/points", params={"dataset": "wh$corpus"}, headers={"If-None-Match": first.headers["etag"]})
+        first = client.get("/api/atlas/points", params={"dataset": "lake~wh$corpus"})
+        again = client.get("/api/atlas/points", params={"dataset": "lake~wh$corpus"}, headers={"If-None-Match": first.headers["etag"]})
 
     assert first.status_code == 200, first.text
     assert first.headers["cache-control"] == "private, no-cache"
@@ -76,9 +76,9 @@ def test_callers_asking_for_one_cold_payload_at_once_share_one_build_and_its_fai
 
     monkeypatch.setattr(atlas, "build_points", _failing_build)
     with TestClient(_app(tmp_path)) as client, ThreadPoolExecutor(max_workers=8) as pool:
-        failed = list(pool.map(lambda _: client.get("/api/atlas/points", params={"dataset": "wh$corpus"}).status_code, range(8)))
+        failed = list(pool.map(lambda _: client.get("/api/atlas/points", params={"dataset": "lake~wh$corpus"}).status_code, range(8)))
         builds_while_failing = len(builds)
-        later = client.get("/api/atlas/points", params={"dataset": "wh$corpus"})
+        later = client.get("/api/atlas/points", params={"dataset": "lake~wh$corpus"})
 
     assert failed == [503] * 8
     assert builds_while_failing == 1
@@ -88,15 +88,14 @@ def test_callers_asking_for_one_cold_payload_at_once_share_one_build_and_its_fai
 def test_a_refused_caller_is_not_served_the_payload_another_caller_warmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     location = write_table(tmp_path, ["wh", "corpus", "chunks"], _ROWS, descriptor=_DESCRIPTOR).uri
     catalog = VendingCatalog(location, {"caller-a": {}, "caller-b": "refuse"})
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
-    app = create_viewer_app(MediaSettings.model_validate({"MEDIA_CATALOG_URI": catalog.url}))
+    app = create_viewer_app(MediaSettings.model_validate({**lakehouse_rest(catalog.url)}))
     as_whom = {"token": "caller-a"}
     app.dependency_overrides[security._deps.lakehouse_caller] = lambda: LakehouseCaller(subject=f"keycloak~{as_whom['token']}", token=lambda: as_whom["token"])
     try:
         with TestClient(app) as client:
-            warmed = client.get("/api/atlas/points", params={"dataset": "wh$corpus"})
+            warmed = client.get("/api/atlas/points", params={"dataset": "lake~wh$corpus"})
             as_whom["token"] = "caller-b"
-            refused = client.get("/api/atlas/points", params={"dataset": "wh$corpus"})
+            refused = client.get("/api/atlas/points", params={"dataset": "lake~wh$corpus"})
     finally:
         catalog.close()
 

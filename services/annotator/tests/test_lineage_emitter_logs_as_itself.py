@@ -18,6 +18,7 @@ import pytest
 
 from annotator.annotations import lineage
 from annotator.core.config import AnnotatorSettings, LineageSink
+from tests.media_catalog import lakehouse_dir, lakehouse_rest
 
 
 _LOGGER = "annotator.annotations.lineage"
@@ -68,6 +69,5 @@ def test_the_none_sink_still_emits_nothing() -> None:
 
 
 def test_a_save_through_the_catalogs_rest_door_leaves_its_lineage_to_the_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    assert AnnotatorSettings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}).effective_lineage_sink is LineageSink.log
-    monkeypatch.delenv("MEDIA_CATALOG_DIR")
-    assert AnnotatorSettings.model_validate({"MEDIA_CATALOG_URI": "http://catalog:2333"}).effective_lineage_sink is LineageSink.none
+    assert AnnotatorSettings.model_validate({**lakehouse_dir(str(tmp_path))}).effective_lineage_sink is LineageSink.log
+    assert AnnotatorSettings.model_validate({**lakehouse_rest("http://catalog:2333")}).effective_lineage_sink is LineageSink.none

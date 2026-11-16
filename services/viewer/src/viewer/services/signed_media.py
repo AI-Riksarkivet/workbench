@@ -49,6 +49,11 @@ class SignedBlob(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    #: The source the table is read from (`client_kit.sources`), whose kind decides the identity the GET reads as.
+    source: str
+    #: The person the URL was signed for: where the workbench decides who reads the source, the GET serves the cell only
+    #: while they still may.
+    reader: str
     table: list[str]
     version: int
     row: int
@@ -59,7 +64,7 @@ class SignedBlob(BaseModel):
     @property
     def etag(self) -> str:
         """The strong ETag of these bytes: a table version is immutable, so (table, version, row, column) names them."""
-        digest = hashlib.sha256("\x00".join((*self.table, str(self.version), str(self.row), self.column)).encode()).hexdigest()
+        digest = hashlib.sha256("\x00".join((self.source, *self.table, str(self.version), str(self.row), self.column)).encode()).hexdigest()
         return f'"{digest[:32]}"'
 
 
@@ -151,12 +156,13 @@ class ServiceReads:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._opens: OrderedDict[tuple[tuple[str, ...], int], _Open] = OrderedDict()
+        self._opens: OrderedDict[tuple[str, tuple[str, ...], int], _Open] = OrderedDict()
         self._session = lance.Session(index_cache_size_bytes=INDEX_CACHE_BYTES, metadata_cache_size_bytes=METADATA_CACHE_BYTES)
 
-    def dataset(self, client: Callable[[], LanceNamespace], table: list[str], version: int) -> lance.LanceDataset:
-        """``table`` at ``version``, opened through ``client()`` on the storage options the catalog vends the viewer."""
-        key = (tuple(table), version)
+    def dataset(self, client: Callable[[], LanceNamespace], source: str, table: list[str], version: int) -> lance.LanceDataset:
+        """``source``'s ``table`` at ``version``, opened through ``client()`` on the storage options the catalog vends the
+        viewer."""
+        key = (source, tuple(table), version)
         with self._lock:
             cached = self._opens.get(key)
             if cached is not None and cached.until > time.monotonic():

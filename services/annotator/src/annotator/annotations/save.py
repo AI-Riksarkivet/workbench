@@ -25,7 +25,7 @@ from annotator.annotations.schema import (
     SaveResult,
 )
 from annotator.annotations.unit import parse_unit
-from annotator.api.security import AnnotationsDep, CallerDep, CurrentSubject
+from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.exceptions import NotFoundError
@@ -51,7 +51,7 @@ def new_rows(inserts: Sequence[NewAnnotation], ident: Mapping[str, object], sche
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-@router.post("/annotations/{key:path}", dependencies=[MAY_EDIT_UNIT])
+@router.post("/annotations/{key:path}", dependencies=[MAY_EDIT_UNIT, READS_DATASET])
 def save_annotations(
     caller: CallerDep,
     state: StateDep,
@@ -68,7 +68,7 @@ def save_annotations(
     """Flush a review delta to Lance as ONE atomic version (see module docstring)."""
     corpus = resolve(state, dataset, caller)
     declared = corpus.declared
-    unit = parse_unit(corpus.handle.descriptor, key)
+    unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
     # The version check AND the carry-forward read are of the table the wire GET served, the project's own, so the 409
     # compares the version the client loaded against the same source. A project's first save creates it.
     table = annotations(corpus.id)

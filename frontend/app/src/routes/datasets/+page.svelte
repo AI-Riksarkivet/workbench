@@ -1,7 +1,10 @@
 <script lang="ts">
 	/**
-	 * The datasets the lakehouse shows the reader, each a link to its page. The viewer lists them on the
-	 * reader's own read, so a dataset the lakehouse does not let them read is not here.
+	 * The datasets the deployment's sources show the reader, grouped by source, each a link to its page.
+	 * A lakehouse lists them on the reader's own read, so a dataset it does not let them read is not here;
+	 * any other source lists what its catalog holds. A dataset that carries a workbench descriptor is a
+	 * media dataset; one that carries none is a plain table, shown from its schema. What could not be
+	 * listed or opened is listed too, with the reason.
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -11,6 +14,7 @@
 	import { listProjects } from '#lib/api/projects.api.ts';
 	import { linkWith, projectOf } from '#lib/project.ts';
 	import { titleOf } from '#lib/nav.ts';
+	import { datasetParts } from '#lib/dataset-label.ts';
 
 	let { data } = $props();
 
@@ -36,6 +40,22 @@
 	const rows = (tables: Record<string, { row_count: number }>): number =>
 		Object.values(tables).reduce((sum, t) => sum + t.row_count, 0);
 
+	const counted = (n: number, noun: string): string =>
+		`${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`;
+
+	/** A dataset's name within its source: its namespace, or, at the source's root, its tables. */
+	const nameOf = (id: string, tables: Record<string, unknown> = {}): string =>
+		datasetParts(id).namespace ?? (Object.keys(tables).sort().join(', ') || 'the root');
+
+	const KIND_NAMES = {
+		rask: 'Lakehouse',
+		namespace: 'Lance namespace',
+		tables: 'Lance tables',
+	} as const;
+
+	const sources = $derived(datasets.current?.sources ?? []);
+	const empty = $derived(sources.every((s) => s.datasets.length === 0 && s.unlisted.length === 0));
+
 	function chooseProject(event: Event): void {
 		const value = (event.currentTarget as HTMLSelectElement).value;
 		// One history entry per change, so Back is the project as it was.
@@ -55,7 +75,7 @@
 	<header class="flex flex-wrap items-end justify-between gap-3">
 		<div>
 			<h1 class="text-2xl font-semibold">Datasets</h1>
-			<p class="text-muted-foreground text-sm">What the lakehouse lets you read.</p>
+			<p class="text-muted-foreground text-sm">What the deployment's sources let you read.</p>
 		</div>
 		<label class="flex items-center gap-2 text-sm">
 			<span class="text-muted-foreground">Project</span>
@@ -84,36 +104,96 @@
 		</div>
 	{:else if !datasets.current}
 		<p class="text-muted-foreground text-sm" role="status">Reading the datasets…</p>
-	{:else if datasets.current.datasets.length === 0}
+	{:else if empty}
 		<div class="text-muted-foreground flex flex-col gap-1 text-sm">
-			<p>The lakehouse shows you no dataset.</p>
-			<p>A dataset is listed once the lakehouse grants you a read on it.</p>
+			<p>No source shows you a dataset.</p>
+			<p>A lakehouse lists a dataset once it grants you a read on it.</p>
 		</div>
 	{:else}
-		<ul class="grid gap-3 sm:grid-cols-2" aria-label="Datasets">
-			{#each datasets.current.datasets as dataset (dataset.id)}
-				<li>
-					<!-- The route id resolved by `pageOf`, with the reader's ?project= after it, which the rule cannot see. -->
-					<!-- eslint-disable svelte/no-navigation-without-resolve -->
-					<a
-						href={pageOf(dataset.id)}
-						class="hover:bg-accent focus-visible:ring-ring/50 flex flex-col gap-1 rounded-xl border p-4 outline-none focus-visible:ring-3"
+		{#each sources as source (source.name)}
+			<section class="flex flex-col gap-2" aria-labelledby="source-{source.name}">
+				<header class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+					<h2 id="source-{source.name}" class="text-base font-semibold">
+						{source.title || source.name}
+					</h2>
+					<span class="text-muted-foreground font-mono text-xs">{source.name}</span>
+					<span class="bg-muted rounded px-1.5 py-0.5 text-xs">{KIND_NAMES[source.kind]}</span>
+					{#if source.kind !== 'rask'}
+						<span class="text-muted-foreground text-xs">read-only</span>
+					{/if}
+				</header>
+				{#if source.datasets.length > 0}
+					<ul
+						class="grid gap-3 sm:grid-cols-2"
+						aria-label="Datasets in {source.title || source.name}"
 					>
-						<span class="font-mono text-sm font-medium break-all">{dataset.id}</span>
-						<span class="text-muted-foreground text-xs">
-							{Object.keys(dataset.tables).length} tables · {rows(dataset.tables).toLocaleString()} rows
-						</span>
-						{#if dataset.capabilities.length > 0}
-							<span class="flex flex-wrap gap-1">
-								{#each dataset.capabilities as capability (capability)}
-									<span class="bg-muted rounded px-1.5 py-0.5 text-xs">{capability}</span>
-								{/each}
-							</span>
-						{/if}
-					</a>
-					<!-- eslint-enable svelte/no-navigation-without-resolve -->
-				</li>
-			{/each}
-		</ul>
+						{#each source.datasets as dataset (dataset.id)}
+							<li>
+								<!-- The route id resolved by `pageOf`, with the reader's ?project= after it, which the rule cannot see. -->
+								<!-- eslint-disable svelte/no-navigation-without-resolve -->
+								<a
+									href={pageOf(dataset.id)}
+									class="hover:bg-accent focus-visible:ring-ring/50 flex h-full flex-col gap-1 rounded-xl border p-4 outline-none focus-visible:ring-3"
+								>
+									<span class="flex items-start justify-between gap-2">
+										<span class="font-mono text-sm font-medium break-all"
+											>{nameOf(dataset.id, dataset.tables)}</span
+										>
+										<span
+											class={[
+												'shrink-0 rounded px-1.5 py-0.5 text-xs',
+												dataset.stamped
+													? 'bg-primary/10 text-primary'
+													: 'bg-muted text-muted-foreground',
+											]}>{dataset.stamped ? 'media' : 'table'}</span
+										>
+									</span>
+									<span class="text-muted-foreground text-xs">
+										{counted(Object.keys(dataset.tables).length, 'table')} · {counted(
+											rows(dataset.tables),
+											'row',
+										)}
+									</span>
+									{#if dataset.capabilities.length > 0}
+										<span class="flex flex-wrap gap-1">
+											{#each dataset.capabilities as capability (capability)}
+												<span class="bg-muted rounded px-1.5 py-0.5 text-xs">{capability}</span>
+											{/each}
+										</span>
+									{/if}
+									{#if dataset.problem}
+										<span class="text-muted-foreground text-xs"
+											>Shown as a table: {dataset.problem}</span
+										>
+									{/if}
+									{#each Object.entries(dataset.unreadable) as [table, reason] (table)}
+										<span class="text-muted-foreground text-xs"
+											><span class="font-mono">{table}</span> could not be opened: {reason}</span
+										>
+									{/each}
+								</a>
+								<!-- eslint-enable svelte/no-navigation-without-resolve -->
+							</li>
+						{/each}
+					</ul>
+				{:else if source.unlisted.length === 0}
+					<p class="text-muted-foreground text-sm">This source shows you no dataset.</p>
+				{/if}
+				{#if source.unlisted.length > 0}
+					<ul class="text-muted-foreground flex flex-col gap-0.5 text-xs" aria-label="Not listed">
+						{#each source.unlisted as item (item.id)}
+							<li>
+								<span class="font-mono break-all">{nameOf(item.id)}</span> could not be read: {item.reason}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if source.truncated}
+					<p class="text-muted-foreground text-xs">
+						This source holds more namespaces than one listing walks; not every dataset is shown.
+					</p>
+				{/if}
+			</section>
+		{/each}
 	{/if}
 </div>

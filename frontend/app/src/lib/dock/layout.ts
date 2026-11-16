@@ -29,6 +29,10 @@ export const PANELS = [
 
 export type PanelId = (typeof PANELS)[number]['id'];
 
+/** The panels' names on a dataset shown as a plain table: the same three places in the dock, holding
+ *  the table's rows, the row opened, and the atlas's reason. */
+export const PLAIN_TITLES: Readonly<Record<string, string>> = { results: 'Rows', player: 'Row' };
+
 const PANEL_IDS: ReadonlySet<string> = new Set(PANELS.map((p) => p.id));
 
 export function isPanelId(id: string): id is PanelId {

@@ -11,10 +11,10 @@ from pathlib import Path
 from pydantic import Field
 
 from client_kit.media.config import Settings
-from service_kit.governed.settings import LakehouseTokenSettings, OidcSettings
+from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
-class ViewerSettings(Settings, OidcSettings, LakehouseTokenSettings):
+class ViewerSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     """The viewer's config: the media plane's, the workbench's sign-in, and its client for tokens to the lakehouse.
 
     The viewer reads every corpus as the person asking, on a token it exchanges for them, so the lakehouse decides

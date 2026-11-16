@@ -30,7 +30,7 @@ from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import get_annotator_settings
-from annotator.corpus import input_tables, unheld_versions
+from annotator.corpus import input_tables, not_annotatable, unheld_versions
 from annotator.projects.machines import (
     FROZEN_PROJECT_STATES,
     PROJECT_EDGES,
@@ -44,6 +44,7 @@ from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.projects.publish import publish_namespace, require_in_warehouse
 from annotator.state.store import AnnotatorStore
 from client_kit.media.deps import StateDep
+from client_kit.media.source_gate import require_read
 from client_kit.media.state import AppState
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
@@ -295,6 +296,8 @@ def _refuse_unknown_datasets(state: AppState, payload: SendItemsRequest, caller:
     An UNVERIFIABLE source refuses the send (503): the check is whether the sender may read what they send, and a check
     that did not run proves nothing (zero trust fails closed). The sender tries again once the catalog answers.
     """
+    if read_only := not_annotatable(state, sorted({item.source.where or state.settings.default_dataset or "" for item in payload.items} - {""})):
+        raise ConflictError("nothing was sent: " + "; ".join(read_only))
     names = sorted({item.source.where for item in payload.items if item.source.where})
     if not names:
         return {}  # every item takes the backend default, which resolves by construction
@@ -374,6 +377,8 @@ async def send_items(
     # The roles first: the refusals below say whether the project exists and which state it is in.
     await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
     await _check(checker, subject, "can_send_items", f"project:{project_id}", AnnotatorAuditAction.PROJECT_SEND)
+    named = {item.source.where or state.settings.default_dataset or "" for item in payload.items} - {""}
+    await require_read(state.settings.sources, checker, subject, sorted(named))
     project = await _project(store, project_id)
     if project.state not in PROJECT_SEND_STATES:
         # Checked here as well as in the store so the catalog is not asked about a send that cannot land.

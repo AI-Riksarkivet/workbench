@@ -50,7 +50,7 @@ from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
 
 
-TABLE: str = "acme$bronze$pages"
+TABLE: str = "lake~acme$bronze$pages"
 
 #: 256 KiB per row across 8 rows = a 2 MiB corpus. Large enough that reading all of it to serve one
 #: page is unmistakable in the counter, small enough to stay a unit test.

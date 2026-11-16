@@ -38,7 +38,7 @@ from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
 
 
-TABLE: str = "acme$bronze$pages"
+TABLE: str = "lake~acme$bronze$pages"
 
 #: Real JPEG magic so the sniff is exercised on the fixture — a payload that were not actually a
 #: JPEG would honestly be served as `application/octet-stream` and the content-type assertion below

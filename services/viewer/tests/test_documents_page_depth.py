@@ -37,7 +37,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     `get_state` is overridden rather than monkeypatched because it is a real FastAPI dependency;
     `dataset_handle` is a plain call inside the body, so it is patched at the module that calls it.
     """
+    from client_kit.media.config import MediaSettings
     from client_kit.media.deps import get_state
+    from client_kit.media.state import AppState
     from service_kit.exceptions import register_handlers
     from viewer.api.v1.endpoints import system
 
@@ -50,12 +52,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     class _Handle:
         descriptor = _Descriptor()
+        declared = _Descriptor.declared
 
     monkeypatch.setattr(system, "dataset_handle", lambda *_args, **_kwargs: _Handle())
 
     app = FastAPI()
     app.include_router(system.router)
-    app.dependency_overrides[get_state] = lambda: cast("Any", object())
+    state = AppState(settings=MediaSettings())
+    app.dependency_overrides[get_state] = lambda: state
     register_handlers(app)
     return TestClient(app, raise_server_exceptions=False)
 

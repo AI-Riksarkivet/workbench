@@ -2,7 +2,9 @@
 
 The media services read datasets as catalog namespaces (``warehouse$namespace``) through a namespace client, and the
 same code runs on the ``dir`` catalog as on the catalog's REST door. So a suite builds its datasets here, under
-``tmp_path``, through the same doors, and points the service at the root with ``MEDIA_CATALOG_DIR``.
+``tmp_path``, through the same doors, and declares the root as the deployment's lakehouse source (:func:`lakehouse_dir`,
+named :data:`LAKE`), or a REST catalog as one (:func:`lakehouse_rest`). A dataset's id then carries the source:
+``lake:acme$corpus`` (:func:`lake`).
 """
 
 from __future__ import annotations
@@ -16,6 +18,25 @@ import lance
 import lance_namespace
 import pyarrow as pa
 from lance_namespace import CreateNamespaceRequest, LanceNamespace, NamespaceAlreadyExistsError
+
+
+#: The lakehouse source's name in every suite.
+LAKE = "lake"
+
+
+def lake(identifier: str) -> str:
+    """A dataset's or table's qualified name in the suites' lakehouse source."""
+    return f"{LAKE}~{identifier}"
+
+
+def lakehouse_dir(root: Path | str) -> dict[str, object]:
+    """The settings declaring the directory catalog at ``root`` as the deployment's lakehouse (`client_kit.sources`)."""
+    return {"WORKBENCH_SOURCES": [{"kind": "rask", "name": LAKE, "dir": str(root), "identity": "none"}]}
+
+
+def lakehouse_rest(uri: str) -> dict[str, object]:
+    """The settings declaring the REST catalog at ``uri`` as the deployment's lakehouse, read as the person."""
+    return {"WORKBENCH_SOURCES": [{"kind": "rask", "name": LAKE, "uri": uri}]}
 
 
 def namespace_client(root: Path) -> LanceNamespace:

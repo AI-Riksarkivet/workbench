@@ -27,6 +27,8 @@
 
 	let { data } = $props();
 	const id = $derived(data.id);
+	/** A dataset with no workbench descriptor: the dock holds its plain table (`#lib/plain`). */
+	const isPlain = $derived(data.facts !== null && !data.facts.stamped);
 
 	let layout = $state<LayoutConfig | null>(null);
 	/** Whether the window is below a tablet's width, followed as it is resized. */
@@ -162,9 +164,9 @@
 			<!-- Each dataset mounts its panels afresh: they read the dataset's view when they mount. -->
 			{#key id}
 				{#if narrow.current}
-					<Dock bind:layout={narrowLayout} />
+					<Dock bind:layout={narrowLayout} plain={isPlain} />
 				{:else}
-					<Dock bind:layout />
+					<Dock bind:layout plain={isPlain} />
 				{/if}
 			{/key}
 		{/if}

@@ -45,7 +45,7 @@ def _search_tables(handle: DatasetHandle, table: str | None) -> list[str]:
     tables whatever the caller selected, so two tables' searches collided on one entry and a write
     to the non-default table could never invalidate it. An unknown name degrades to ``[]`` — that is
     unreachable in practice, because ``resolve_target`` 400s the name before anything is stored."""
-    search = handle.descriptor.declared.search_named(table)
+    search = handle.declared.search_named(table)
     if search is None:
         return []
     tables = {search.row_table}
@@ -71,7 +71,7 @@ def version_signature(handle: DatasetHandle, table: str | None = None) -> str | 
     uncached, so no entry is served or stored on a key the catalog was not asked about. The open is the caller's
     reusable one (:meth:`DatasetHandle.dataset`), so the read is a manifest listing, far cheaper than the query it guards.
     """
-    search = handle.descriptor.declared.search_named(table)
+    search = handle.declared.search_named(table)
     name = search.name if search is not None else "?"
     parts: list[str] = []
     for table_name in _search_tables(handle, table):

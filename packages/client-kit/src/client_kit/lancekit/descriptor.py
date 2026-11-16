@@ -193,13 +193,30 @@ class Declared(BaseModel):
 
 
 class DatasetDescriptor(BaseModel):
-    """Merged view served to clients: dataset id + discovered tables + declared roles."""
+    """Merged view served to clients: dataset id + discovered tables + declared roles.
+
+    ``declared`` is ``None`` for a dataset whose writer stamped no descriptor (or an invalid one, said in ``problem``):
+    it is shown from its schema alone, as a plain table, and nothing that needs a declared role is offered on it.
+    """
 
     id: str
+    #: The source the dataset is read from (`client_kit.sources`), and its kind.
+    source: str
+    kind: str
     tables: dict[str, TableInfo]
-    declared: Declared
+    declared: Declared | None
+    #: Why the declared roles could not be used, when a stamp or override exists and is invalid.
+    problem: str | None = None
+    #: The tables the catalog lists here that could not be opened, each with the reason a person can read.
+    unreadable: dict[str, str] = Field(default_factory=dict)
+    #: Why the dataset cannot be annotated (it is not a lakehouse's), or ``None`` when it can.
+    read_only: str | None = None
+    #: A table could not be read right now: the descriptor is not kept, and the next request reads the dataset again.
+    transient: bool = Field(default=False, exclude=True)
 
     def capability_available(self, name: str) -> bool:
+        if self.declared is None:
+            return False
         target = self.declared.capabilities.get(name)
         if target is None:
             return False

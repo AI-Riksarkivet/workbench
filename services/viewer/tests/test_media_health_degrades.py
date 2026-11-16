@@ -5,7 +5,7 @@ before it could answer anything, so a deployment with an empty corpus volume —
 (``explorer.corpus.mode=emptyDir``, because the old unconditional hostPath wedged every fresh cluster)
 answered::
 
-    404 {"detail": "dataset 'acme$corpus' not found under /media-corpus"}
+    404 {"detail": "dataset 'lake~acme$corpus' not found under /media-corpus"}
 
 to the one endpoint the media AND annotator zones poll on every single page load (both zones' `api/**`
 BFF catch-all proxies to the viewer). Measured live through both: a console 404 per page load, and the
@@ -28,6 +28,7 @@ from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
+from tests.media_catalog import lakehouse_dir
 from viewer.api.v1.endpoints.system import router as system_router
 
 
@@ -41,7 +42,7 @@ class _DeadEncoders:
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     """The default dataset names a namespace an empty directory catalog does not hold — an un-seeded corpus."""
-    settings = Settings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path), "MEDIA_DEFAULT_DATASET": "acme$corpus"})
+    settings = Settings.model_validate({**lakehouse_dir(str(tmp_path)), "MEDIA_DEFAULT_DATASET": "lake~acme$corpus"})
     state = AppState(settings=settings, http=_DeadEncoders())
     app = FastAPI()
     register_handlers(app)
@@ -70,4 +71,4 @@ def test_a_dataset_bound_endpoint_on_the_same_app_still_404s(client: TestClient)
     """
     r = client.get("/api/columns")
     assert r.status_code == 404, f"a dataset READ with no dataset must still 404, got {r.status_code}"
-    assert "acme$corpus" in r.text
+    assert "lake~acme$corpus" in r.text

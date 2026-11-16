@@ -33,11 +33,13 @@ export const RETRY_AFTER_S = 10;
 /** The shortest lifetime the viewer signs for (`VIEWER_MEDIA_URL_TTL_SECONDS` is at least 10). */
 export const MIN_LIFETIME_S = 10;
 
-/** One cell to sign, as the viewer's batch door names it: a document's media or thumbnail, or a
- *  chunk's frame (the key fields after the doc key, in the descriptor's order). */
+/** One cell to sign, as the viewer's batch door names it: a document's media or thumbnail, a chunk's
+ *  frame (the key fields after the doc key, in the descriptor's order), or any table's binary cell by
+ *  its qualified table, column, Lance row id and the version its row was read at (a plain table's row). */
 export type MediaItem =
 	| { role: 'media' | 'thumbnail'; doc_id: string }
-	| { role: 'frame'; doc_id: string; keys: number[]; frame_idx: number };
+	| { role: 'frame'; doc_id: string; keys: number[]; frame_idx: number }
+	| { role: 'cell'; table: string; column: string; row: number; version: number };
 
 /** One item's answer: a same-origin link and how many seconds it serves from the answer's arrival, or
  *  why there is none. */

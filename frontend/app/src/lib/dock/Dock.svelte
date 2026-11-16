@@ -19,8 +19,12 @@
 	import AtlasPanel from './panels/AtlasPanel.svelte';
 	import PlayerPanel from './panels/PlayerPanel.svelte';
 	import ResultsPanel from './panels/ResultsPanel.svelte';
+	import PlainAtlasPanel from './panels/PlainAtlasPanel.svelte';
+	import RowPanel from './panels/RowPanel.svelte';
+	import RowsPanel from './panels/RowsPanel.svelte';
 	import {
 		PANELS,
+		PLAIN_TITLES,
 		closePanel,
 		closedPanels,
 		isPanelId,
@@ -29,9 +33,12 @@
 		type PanelId,
 	} from './layout.ts';
 
-	let { layout = $bindable() }: { layout: LayoutConfig } = $props();
+	/** `plain`: the dataset carries no workbench descriptor, so its panels are the plain table's: the
+	 *  rows, one row, and the atlas's reason for being empty (`#lib/plain/plain.svelte.ts`). */
+	let { layout = $bindable(), plain = false }: { layout: LayoutConfig; plain?: boolean } = $props();
 
-	const titleOf = (id: Id): string => PANELS.find((p) => p.id === id)?.title ?? id;
+	const titleOf = (id: Id): string =>
+		(plain ? PLAIN_TITLES[id] : undefined) ?? PANELS.find((p) => p.id === id)?.title ?? id;
 
 	/**
 	 * A popped-out panel is mounted in another document, which carries the page's stylesheets but
@@ -89,13 +96,19 @@
 </script>
 
 {#snippet results()}
-	<div class="dock-panel" {@attach followTheme}><ResultsPanel /></div>
+	<div class="dock-panel" {@attach followTheme}>
+		{#if plain}<RowsPanel />{:else}<ResultsPanel />{/if}
+	</div>
 {/snippet}
 {#snippet player()}
-	<div class="dock-panel" {@attach followTheme}><PlayerPanel /></div>
+	<div class="dock-panel" {@attach followTheme}>
+		{#if plain}<RowPanel />{:else}<PlayerPanel />{/if}
+	</div>
 {/snippet}
 {#snippet atlas()}
-	<div class="dock-panel" {@attach followTheme}><AtlasPanel /></div>
+	<div class="dock-panel" {@attach followTheme}>
+		{#if plain}<PlainAtlasPanel />{:else}<AtlasPanel />{/if}
+	</div>
 {/snippet}
 
 {#snippet closeTab(id: Id)}

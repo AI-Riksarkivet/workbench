@@ -15,7 +15,7 @@ import pyarrow as pa
 from fastapi.testclient import TestClient
 
 from client_kit.media.config import MediaSettings
-from tests.media_catalog import write_table
+from tests.media_catalog import lakehouse_dir, write_table
 from viewer.main import create_viewer_app
 
 
@@ -39,10 +39,10 @@ _ROWS = pa.table(
 
 def test_a_selection_is_one_arrow_stream_in_the_browsers_schema(tmp_path: Path) -> None:
     write_table(tmp_path, ["wh", "corpus", "chunks"], _ROWS, descriptor=_DESCRIPTOR)
-    app = create_viewer_app(MediaSettings.model_validate({"MEDIA_CATALOG_DIR": str(tmp_path)}))
+    app = create_viewer_app(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
 
     with TestClient(app) as client:
-        response = client.post("/api/atlas/chunks", params={"dataset": "wh$corpus"}, json={"rowids": [0, 1]})
+        response = client.post("/api/atlas/chunks", params={"dataset": "lake~wh$corpus"}, json={"rowids": [0, 1]})
 
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/vnd.apache.arrow.stream"
