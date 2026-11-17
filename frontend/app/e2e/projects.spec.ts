@@ -19,7 +19,15 @@ async function annotatorCalls(page: Page, who: MockIdentity): Promise<Call[]> {
 }
 
 const letters = (page: Page) => page.goto('/projects/letters');
-const row = (page: Page, key: string) => page.getByRole('row').filter({ hasText: key });
+/** An item's name in the queue: its document's title and its page, the key only in its tooltip. */
+const NAMES: Record<string, string> = {
+	'letter-001/0': 'A letter from the harbour · page 1',
+	'letter-001/1': 'A letter from the harbour · page 2',
+	'letter-002/0': 'A letter about the harvest · page 1',
+	'map-003/0': 'A map of the harbour · page 1',
+};
+const row = (page: Page, key: string) =>
+	page.getByRole('row').filter({ has: page.locator(`[title^="${key} ·"]`) });
 
 test('the projects of the reader’s organisation are listed with their state and progress, every call proven', async ({
 	page,
@@ -107,6 +115,26 @@ test('a project is created from a template, its whole ontology in one document',
 		title: 'Portraits',
 	});
 	await expect(page.getByRole('link', { name: /Portraits.*draft/s })).toBeVisible();
+
+	// The next project starts from a blank task: the YAML view's task is not carried into it.
+	await page.getByRole('button', { name: 'New project' }).click();
+	await page.getByRole('button', { name: 'Task template' }).click();
+	await page.getByRole('option', { name: 'custom (define in YAML)' }).click();
+	await page.getByLabel('Slug').fill('scratch');
+	await page.getByRole('button', { name: 'Create project' }).click();
+	await expect(page.getByRole('link', { name: /scratch/ })).toBeVisible();
+	await page.getByRole('button', { name: 'New project' }).click();
+	await expect(page.getByRole('button', { name: 'Task template' })).toContainText(
+		'custom (type your own classes)',
+	);
+	await page.getByLabel('Slug').fill('seals');
+	await page.getByRole('textbox', { name: /Label classes/ }).fill('seal');
+	const next = page.waitForRequest(
+		(req) => req.method() === 'POST' && req.url().endsWith('/api/annotator/projects'),
+	);
+	await page.getByRole('button', { name: 'Create project' }).click();
+	const seals = (await next).postDataJSON() as { ontology: { classes: { name: string }[] } };
+	expect(seals.ontology.classes.map((c) => c.name)).toEqual(['seal']);
 });
 
 test('the queue offers the canvas’s events, claim, submit and fix & accept, and opens each item to annotate or to view', async ({
@@ -114,7 +142,19 @@ test('the queue offers the canvas’s events, claim, submit and fix & accept, an
 	context,
 }) => {
 	await as(context, 'Manager');
+	// While the project is still being read, the tab says only where the reader is, never the project's id: a screen
+	// reader announces the title on arrival.
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => (release = resolve));
+	await page.route('**/api/annotator/projects/letters', async (route) => {
+		await held;
+		return route.fallback();
+	});
 	await letters(page);
+	await expect(page).toHaveTitle('Projects · workbench');
+	release();
+	// The tab names the project by its title, as its breadcrumb does.
+	await expect(page).toHaveTitle('Letters · Projects · workbench');
 	await expect(row(page, 'letter-001/0').getByRole('button', { name: /^Claim/ })).toBeVisible();
 	await expect(row(page, 'letter-001/1').getByRole('button', { name: /^Submit/ })).toBeVisible();
 	await expect(
@@ -122,10 +162,10 @@ test('the queue offers the canvas’s events, claim, submit and fix & accept, an
 	).toBeVisible();
 	// The item the reader holds opens to annotate; one nobody holds opens to view.
 	await expect(
-		row(page, 'letter-001/1').getByRole('link', { name: 'Annotate letter-001/1' }),
+		row(page, 'letter-001/1').getByRole('link', { name: `Annotate ${NAMES['letter-001/1']}` }),
 	).toHaveAttribute('href', '/projects/letters/tasks/letters-t2?project=letters');
 	await expect(
-		row(page, 'letter-001/0').getByRole('link', { name: 'View letter-001/0' }),
+		row(page, 'letter-001/0').getByRole('link', { name: `View ${NAMES['letter-001/0']}` }),
 	).toHaveAttribute('href', '/projects/letters/tasks/letters-t1?project=letters');
 });
 
@@ -322,7 +362,8 @@ test('adjudication: a manager picks the canonical replica, the pick is PUT, and 
 
 	await adjudication.getByRole('button', { name: 'Pick' }).first().click();
 
-	await expect(adjudication.getByText('canonical')).toBeVisible();
+	// The chip, not the panel's instruction, which also says the word.
+	await expect(adjudication.getByText('canonical', { exact: true })).toBeVisible();
 	await expect(adjudication.getByRole('button', { name: 'Pick', exact: true })).toHaveCount(0);
 	await expect(adjudication.getByRole('button', { name: 'Re-pick' })).toHaveCount(1);
 	await page.getByTestId('tab-labeling').click();

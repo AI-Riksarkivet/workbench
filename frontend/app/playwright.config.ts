@@ -30,10 +30,10 @@ export default defineConfig({
 	// screenshots composite a WebGPU canvas (the headless shell's show it blank, measured 2026-11-14), so a
 	// spec reads what the renderer drew. The labeling canvas (`canvas.spec.ts`, and the write `auth.spec.ts` makes on it) and the player's page viewer (`player.spec.ts`) draw with WebGPU too, and so do a plain table's set-up views (`setup.spec.ts`).
 	projects: [
-		{ name: 'chromium', testIgnore: /(webgpu|canvas|player|auth|setup)\.spec\.ts$/ },
+		{ name: 'chromium', testIgnore: /(webgpu|canvas|player|auth|setup|temporal)\.spec\.ts$/ },
 		{
 			name: 'webgpu',
-			testMatch: /(webgpu|canvas|player|auth|setup)\.spec\.ts$/,
+			testMatch: /(webgpu|canvas|player|auth|setup|temporal)\.spec\.ts$/,
 			// Every frame here is drawn on the CPU, page transitions included: measured 2026-11-16 at 8 workers on a
 			// loaded host, a 0.25 s view transition took 2.4 s to finish and the labeling canvas was ready 5-6 s
 			// after the page load, past the 5 s default. An assertion in this project waits up to 10 s.

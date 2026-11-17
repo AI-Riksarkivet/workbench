@@ -17,6 +17,7 @@ from annotator.projects.ontology import (
     OutputAttr,
     RelationClass,
     ShapeLike,
+    membership_violation,
     validate_against_ontology,
 )
 
@@ -53,10 +54,28 @@ def test_a_label_outside_the_taxonomy_is_refused() -> None:
     assert "asdf" in violation and "portrait" in violation
 
 
-def test_an_unlabelled_shape_is_not_forced_into_the_taxonomy() -> None:
-    """Drawing before choosing a class is a normal intermediate state, not a violation."""
+def test_an_unlabelled_region_is_a_member_but_blocks_a_submission_naming_it() -> None:
+    """Drawing before choosing a class is a normal state of a draft (an import passes it); a submission claims the item
+    is done, so every region still without a class is refused, by id."""
     ontology = LabelOntology(classes=[LabelClass(name="portrait")])
-    assert validate_against_ontology(ontology, [_shape(label=None)]) is None
+    shapes = [_shape("a", label=None), _shape("b", label="portrait"), _shape("c", shape_type="segment", label=None)]
+    assert membership_violation(ontology, shapes) is None
+    assert validate_against_ontology(ontology, shapes) == "2 shape(s) carry no class: a, c; this task's classes are ['portrait']"
+
+
+@pytest.mark.parametrize(
+    ("t_start", "t_end", "message"),
+    [
+        pytest.param(9.0, 3.0, "shape s1 ends at 3.0, before it starts at 9.0", id="reversed"),
+        pytest.param(-1.0, 3.0, "shape s1 has a time that is not a moment of the media (-1.0, 3.0)", id="before-the-media"),
+        pytest.param(1.0, float("inf"), "shape s1 has a time that is not a moment of the media (1.0, inf)", id="infinite"),
+    ],
+)
+def test_an_impossible_stretch_of_time_blocks_a_submission(t_start: float, t_end: float, message: str) -> None:
+    """A region of a recording is a stretch of its media: one that runs backwards or off the media is no region."""
+    ontology = LabelOntology(kind="segments", classes=[LabelClass(name="speech", tools=["segment"])])
+    shape = ShapeLike(shape_id="s1", shape_type="segment", label="speech", t_start=t_start, t_end=t_end)
+    assert validate_against_ontology(ontology, [shape]) == message
 
 
 # ── required is per class, and explicit ───────────────────────────────────────────────────────────

@@ -41,32 +41,3 @@ export function spanAt(spans: readonly Span[], t: number): number {
 	}
 	return before;
 }
-
-/**
- * Where time sits on a horizontal axis drawn over a recording's length, for a layer over the scrubber (a
- * labeling layer's spans): a time's fraction of the width, and the time at a fraction or a pointer's x.
- */
-export interface TimeAxis {
-	readonly duration: number;
-	/** `t`'s place along the axis, from 0 at its start to 1 at its end. */
-	fractionOf(t: number): number;
-	/** The time at a place along the axis. */
-	timeAt(fraction: number): number;
-	/** The time under a pointer's `clientX`, read off the axis as it is laid out now. */
-	timeAtClientX(clientX: number): number;
-}
-
-/** The axis of a recording `duration` long, laid out where `box()` says. */
-export function timeAxis(duration: number, box: () => DOMRect | null): TimeAxis {
-	const clamp = (f: number) => Math.min(1, Math.max(0, f));
-	return {
-		duration,
-		fractionOf: (t) => (duration > 0 ? clamp(t / duration) : 0),
-		timeAt: (fraction) => clamp(fraction) * duration,
-		timeAtClientX(clientX) {
-			const rect = box();
-			if (!rect || rect.width <= 0) return 0;
-			return clamp((clientX - rect.left) / rect.width) * duration;
-		},
-	};
-}

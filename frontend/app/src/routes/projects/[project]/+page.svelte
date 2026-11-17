@@ -31,6 +31,7 @@
 	import type { LegalEvent } from '#lib/projects/types.ts';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { titleOf } from '#lib/nav.ts';
+	import { nameCrumb } from '#lib/shell/crumb-names.svelte.ts';
 
 	let { data } = $props();
 
@@ -89,6 +90,14 @@
 	}
 
 	const name = $derived(detail ? detail.project.title || detail.project.slug : projectId);
+	// The breadcrumb names the project by its title, its id the tooltip.
+	$effect(() => {
+		if (!detail) return;
+		return nameCrumb(`/projects/${encodeURIComponent(projectId)}`, {
+			label: name,
+			title: projectId,
+		});
+	});
 	// Back keeps this project as the reader's (`?project=`), as every in-app link does.
 	const back = $derived(linkWith(projectId)('/projects'));
 
@@ -103,7 +112,8 @@
 	});
 </script>
 
-<svelte:head><title>{titleOf(name, 'Projects')}</title></svelte:head>
+<!-- The tab names the project once it is read, never by its id: a screen reader announces the title on arrival. -->
+<svelte:head><title>{detail ? titleOf(name, 'Projects') : titleOf('Projects')}</title></svelte:head>
 
 {#key projectId}
 	{#if answer === undefined}

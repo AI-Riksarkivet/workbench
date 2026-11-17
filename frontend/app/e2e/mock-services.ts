@@ -171,6 +171,7 @@ const DATASETS = {
 			display: {
 				title: ['title'],
 				body: 'text',
+				caption: 'caption',
 				metadata: [{ field: 'collection', label: 'Collection' }],
 			},
 			atlas: [
@@ -561,7 +562,7 @@ function nodePage(rowids: number[], params: URLSearchParams): unknown {
 // ── the demo's plain tables, as the viewer itself answers them (`tests/derived_recording.py`) ────────────
 
 /** One answer the viewer gave: JSON, or an Arrow IPC stream in base64. */
-type Recorded = { json: unknown } | { arrow: string };
+type Recorded = { json: unknown } | { arrow: string } | { bytes: string };
 
 /** An answer's key: its path and its query's parameters, decoded and sorted, as the recording keys it. */
 const seededKey = (path: string, params: URLSearchParams): string =>
@@ -579,6 +580,48 @@ const SEEDED = new Map(
 		return [seededKey(path, new URLSearchParams(query)), answer] as const;
 	}),
 );
+/** The demo's recording and film the canvas specs label: their media, served by the signed link as the viewer serves
+ *  it. The film is its recorded WebM; the recording a WAV of tones of its own six seconds (the recording records the
+ *  waveform the viewer decodes, `/peaks`, not the recording's bytes). */
+const TIMED_MEDIA: Record<string, () => { body: Uint8Array; type: string }> = {
+	c41f0e2a9b7d3e15: () => ({ body: toneWav(6), type: 'audio/wav' }),
+	f1a07c3e9d2b4e68: () => {
+		const answer = SEEDED.get(seededKey('/__media/f1a07c3e9d2b4e68', new URLSearchParams()));
+		const bytes = answer && 'bytes' in answer ? String(answer.bytes) : '';
+		return { body: Uint8Array.from(Buffer.from(bytes, 'base64')), type: 'video/webm' };
+	},
+};
+
+/** A mono 16-bit WAV of a 220 Hz tone swelling and fading, `seconds` long, at 8 kHz. */
+function toneWav(seconds: number): Uint8Array {
+	const rate = 8000;
+	const count = rate * seconds;
+	const wav = Buffer.alloc(44 + count * 2);
+	wav.write('RIFF', 0);
+	wav.writeUInt32LE(36 + count * 2, 4);
+	wav.write('WAVEfmt ', 8);
+	wav.writeUInt32LE(16, 16);
+	wav.writeUInt16LE(1, 20);
+	wav.writeUInt16LE(1, 22);
+	wav.writeUInt32LE(rate, 24);
+	wav.writeUInt32LE(rate * 2, 28);
+	wav.writeUInt16LE(2, 32);
+	wav.writeUInt16LE(16, 34);
+	wav.write('data', 36);
+	wav.writeUInt32LE(count * 2, 40);
+	for (let i = 0; i < count; i += 1) {
+		const t = i / rate;
+		wav.writeInt16LE(
+			Math.round(9000 * Math.sin(2 * Math.PI * 220 * t) * (0.5 + 0.5 * Math.sin(2 * Math.PI * t))),
+			44 + i * 2,
+		);
+	}
+	return Uint8Array.from(wav);
+}
+
+/** The links signed for the timed media, by token. */
+const signedTimed = new Map<string, { doc: string; exp: number }>();
+
 /** The recorded datasets: a read of theirs the recording lacks is refused, not answered by another mock. */
 const SEEDED_DATASETS = ['seeded~field$survey', 'loose~'];
 
@@ -612,6 +655,8 @@ const chunkRow = ({ doc, chunk_id }: Chunk, score?: number) => ({
 	doc_id: doc.doc_id,
 	chunk_id,
 	title: doc.title,
+	// Where in its document the chunk is, in the words a person reads: what names an item in a project's queue.
+	caption: `${doc.title} · page ${chunk_id + 1}`,
 	text: doc.chunks[chunk_id] ?? `Passage ${chunk_id} of ${doc.title.toLowerCase()}.`,
 	collection: doc.collection,
 	...(score === undefined ? {} : { _score: score }),
@@ -799,6 +844,27 @@ Bun.serve({
 
 		// The signed link: no token, its own permission.
 		const link = /^\/api\/signed-media\/([\w-]+)$/.exec(url.pathname);
+		const timedLink = link ? signedTimed.get(link[1] ?? '') : undefined;
+		if (link && req.method === 'GET' && timedLink) {
+			// The media's bytes, in the ranges the element asks for, as the viewer serves a cell.
+			const media = TIMED_MEDIA[timedLink.doc]?.();
+			if (!media) return json({ detail: 'no such media' }, 404);
+			const range = /bytes=(\d+)-(\d*)/.exec(req.headers.get('range') ?? '');
+			const headers = {
+				'content-type': media.type,
+				'accept-ranges': 'bytes',
+				'cache-control': 'no-store',
+			};
+			if (!range) return new Response(Buffer.from(media.body), { headers });
+			const from = Number(range[1]);
+			const to = range[2]
+				? Math.min(Number(range[2]), media.body.length - 1)
+				: media.body.length - 1;
+			return new Response(Buffer.from(media.body.subarray(from, to + 1)), {
+				status: 206,
+				headers: { ...headers, 'content-range': `bytes ${from}-${to}/${media.body.length}` },
+			});
+		}
 		if (link && req.method === 'GET') {
 			const held = signed.get(link[1] ?? '');
 			if (!held) return json({ detail: 'the media URL is not this viewer’s signature' }, 403);
@@ -894,6 +960,7 @@ Bun.serve({
 			req.method === 'GET' ? SEEDED.get(seededKey(url.pathname, url.searchParams)) : undefined;
 		if (seeded) {
 			ok(200);
+			if ('bytes' in seeded) return json({ detail: 'the media is served by its signed link' }, 404);
 			return 'arrow' in seeded
 				? arrow(Uint8Array.from(atob(seeded.arrow), (c) => c.charCodeAt(0)))
 				: json(seeded.json);
@@ -988,6 +1055,12 @@ Bun.serve({
 			return json(
 				{
 					urls: body.items.map((item) => {
+						if (item.role === 'media' && TIMED_MEDIA[item.doc_id]) {
+							const token = crypto.randomUUID();
+							const exp = Date.now() / 1000 + 300;
+							signedTimed.set(token, { doc: item.doc_id, exp });
+							return { url: `/api/signed-media/${token}`, expires_at: exp };
+						}
 						const doc = DOCS.find((d) => d.doc_id === item.doc_id);
 						if (!doc) return { detail: 'doc_id not found' };
 						if (item.role === 'frame' && doc.chunks[item.keys?.[0] ?? -1] === undefined) {
@@ -1117,6 +1190,28 @@ Bun.serve({
 				rows: built ? pointsOf(dataset).length : 0,
 				space: 'umap',
 				spaces: { umap: built },
+			});
+		}
+		// A task's rows by key, as the viewer's by-key door answers them: the rows found, unordered, with the key fields.
+		if (url.pathname === '/api/atlas/chunks/by-key' && req.method === 'POST') {
+			const { keys } = (await req.json()) as { keys: { doc_id: string; keys: number[] }[] };
+			ok(200);
+			// A recorded dataset's row, as the viewer answered it for that unit (`seeded-answers.json`).
+			const recorded = keys.map((k) =>
+				SEEDED.get(
+					seededKey(
+						'/api/atlas/chunks/by-key',
+						new URLSearchParams({ dataset: dataset ?? '', unit: [k.doc_id, ...k.keys].join('/') }),
+					),
+				),
+			);
+			const [first] = recorded;
+			if (first && 'json' in first) return json(first.json);
+			return json({
+				rows: CHUNKS.filter((c) =>
+					keys.some((k) => k.doc_id === c.doc.doc_id && k.keys[0] === c.chunk_id),
+				).map((c) => chunkRow(c)),
+				key_fields: ['doc_id', 'chunk_id'],
 			});
 		}
 		if (url.pathname === '/api/atlas/chunks' && req.method === 'POST') {

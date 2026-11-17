@@ -5,7 +5,7 @@
 	import { Badge } from '@workbench/ui/badge';
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
-	import { statusVariant } from './statusStyle.ts';
+	import { STATUS_MEANING, statusVariant, statusWord } from './statusStyle.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let { controller }: { controller: AnnotatorController } = $props();
@@ -31,8 +31,14 @@
 {#if row}
 	<div class="flex flex-col gap-3 p-3" data-testid="annotation-detail">
 		<div class="flex items-center justify-between gap-2">
-			<span class="text-muted-foreground text-xs font-medium">Annotation #{row.index}</span>
-			<Badge variant={statusVariant(row.status)}>{row.status || '—'}</Badge>
+			<span class="text-muted-foreground text-xs font-medium"
+				>{row.shape || 'Annotation'} {controller.queuePos.at > 0
+					? `#${controller.queuePos.at}`
+					: ''}</span
+			>
+			<Badge variant={statusVariant(row.status)} title={STATUS_MEANING}
+				>{statusWord(row.status)}</Badge
+			>
 		</div>
 
 		<div class="text-muted-foreground flex items-center justify-between text-xs">
@@ -75,17 +81,47 @@
 			</label>
 		{/if}
 
-		<label class="flex flex-col gap-1.5 text-xs">
-			<span class="text-muted-foreground">Label</span>
-			<Input
-				disabled={readOnly}
-				value={row.label}
-				placeholder="—"
-				oninput={(e) => controller.updateField(row.index, 'label', e.currentTarget.value)}
-			/>
-		</label>
+		{#if controller.classDefs.length > 0}
+			<!-- A task with classes: the class is one of them, picked by its button or its number key, never typed. -->
+			<div class="flex flex-col gap-1.5 text-xs" role="group" aria-labelledby="detail-class">
+				<span id="detail-class" class="text-muted-foreground">Class</span>
+				<div class="flex flex-wrap gap-1" data-testid="class-chips">
+					{#each controller.classesForRow(row.index) as c, i (c.name)}
+						<Button
+							variant={row.label === c.name ? 'secondary' : 'outline'}
+							size="xs"
+							disabled={readOnly}
+							aria-pressed={row.label === c.name}
+							aria-keyshortcuts={i < 9 ? String(i + 1) : undefined}
+							onclick={() => controller.pickClass(c.name)}
+						>
+							<span
+								class="size-2.5 rounded-sm"
+								style:background-color={controller.classColour.get(c.name)}
+								aria-hidden="true"
+							></span>
+							{c.name}
+							{#if i < 9}<kbd class="text-muted-foreground font-mono">{i + 1}</kbd>{/if}
+						</Button>
+					{/each}
+				</div>
+				{#if !row.label}<span class="text-destructive"
+						>No class yet: pick one to submit the item.</span
+					>{/if}
+			</div>
+		{:else}
+			<label class="flex flex-col gap-1.5 text-xs">
+				<span class="text-muted-foreground">Label</span>
+				<Input
+					disabled={readOnly}
+					value={row.label}
+					placeholder="—"
+					oninput={(e) => controller.updateField(row.index, 'label', e.currentTarget.value)}
+				/>
+			</label>
+		{/if}
 
-		{#if controller.labelClasses.length && !readOnly}
+		{#if controller.classDefs.length === 0 && controller.labelClasses.length && !readOnly}
 			<!-- Quick-label chips ARE buttons, so they get the estate's button primitive (xs outline,
 			     secondary while it is the row's current label) rather than a hand-rolled span. -->
 			<div class="flex flex-wrap gap-1" title="Quick label (applies to the selection)">

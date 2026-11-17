@@ -15,7 +15,9 @@ const FIGURE = { x: 35, y: 30 };
 const CAPTION = { x: 120, y: 120 };
 /** The caption's box, a little larger, so its outline is inside. */
 const CAPTION_BOX = { x: 86, y: 96, width: 68, height: 48 };
-const CANVAS = `Labeling canvas: ${UNIT}`;
+/** The item's name, read off its row and its dataset's declaration: its document's title. */
+const NAME = 'A letter from the harbour · page 1';
+const CANVAS = `Labeling canvas: ${NAME}`;
 
 async function as(context: BrowserContext, name: string): Promise<MockIdentity> {
 	const who = person(name);
@@ -88,13 +90,15 @@ async function drawBox(
 	from: { x: number; y: number },
 	to: { x: number; y: number },
 ): Promise<void> {
-	await page.keyboard.press('4');
+	await page.keyboard.press('b');
 	const a = await onScreen(page, from);
 	const b = await onScreen(page, to);
 	await page.mouse.move(a.x, a.y);
 	await page.mouse.down();
 	await page.mouse.move(b.x, b.y, { steps: 4 });
 	await page.mouse.up();
+	// The class picker opens on the drawn box; the task's first class.
+	await page.getByTestId('class-picker').getByRole('option').first().click();
 }
 
 /** The canvas's pixels over an image rectangle, as the renderer drew them (a WebGPU canvas's frame is read from a
@@ -150,7 +154,7 @@ test('an item opens on the canvas from its queue, drawn by WebGPU under the CSP,
 	});
 	await page.goto('/projects/pages');
 
-	await page.getByRole('link', { name: `Annotate ${UNIT}` }).click();
+	await page.getByRole('link', { name: `Annotate ${NAME}` }).click();
 
 	await expect(page).toHaveURL(/\/projects\/pages\/tasks\/pages-t1\?project=pages$/);
 	await expect(page.getByTestId('annotate-status')).toContainText('2 annotations');
@@ -202,15 +206,15 @@ test('every tool is chosen from the keyboard, by its hotkey and by its focused b
 	await openItem(page);
 	const toolbar = page.getByRole('toolbar', { name: 'Labeling tools' });
 	const tools: [string, string][] = [
-		['Select', '1'],
-		['Pan', '2'],
-		['Lasso (select)', '3'],
-		['Rectangle', '4'],
-		['Polygon', '5'],
-		['Point', '6'],
-		['Line', '7'],
-		['Pencil (freehand)', '8'],
-		['Brush', '9'],
+		['Select', 'v'],
+		['Pan', 'h'],
+		['Lasso', 'l'],
+		['Rectangle', 'b'],
+		['Polygon', 'g'],
+		['Point', 'd'],
+		['Line', 'n'],
+		['Pencil (freehand)', 'f'],
+		['Brush', 'u'],
 		['Magnetic (corner-snap)', 'm'],
 	];
 	for (const [name, key] of tools) {
@@ -229,11 +233,22 @@ test('every tool is chosen from the keyboard, by its hotkey and by its focused b
 	}
 	// The canvas is reached by Tab, and shows that it has the focus.
 	const region = page.getByRole('application', { name: CANVAS });
-	await toolbar.getByRole('button', { name: 'Delete selected' }).focus();
+	await toolbar.getByRole('button', { name: 'Delete', exact: true }).focus();
 	for (let i = 0; i < 20 && !(await region.evaluate((el) => el === document.activeElement)); i++)
 		await page.keyboard.press('Tab');
 	await expect(region).toBeFocused();
-	await expect(region).not.toHaveCSS('box-shadow', 'none');
+	// The focus ring is one unbroken outline over the picture: a layer above the canvas carries it, so no part of it is
+	// painted under the picture.
+	const ring = await region.evaluate((el) => {
+		const after = getComputedStyle(el, '::after');
+		return {
+			shadow: after.boxShadow,
+			z: after.zIndex,
+			inset: [after.top, after.left, after.right, after.bottom],
+		};
+	});
+	expect(ring.shadow).not.toBe('none');
+	expect(ring).toMatchObject({ z: '10', inset: ['0px', '0px', '0px', '0px'] });
 
 	await page.keyboard.press('?');
 	const help = page.getByRole('dialog', { name: 'Canvas keys' });
@@ -255,13 +270,22 @@ test('a box, a point, a polygon and a line are drawn from the keyboard alone, co
 		for (const key of keys) await page.keyboard.press(key);
 	};
 
-	// A box: Space anchors it at the cursor, the arrows stretch it, Space commits it.
-	await press('4', 'Space', 'Shift+ArrowRight', 'Shift+ArrowRight', 'Shift+ArrowDown', 'Space');
+	// A box: Space anchors it at the cursor, the arrows stretch it, Space commits it; the class picker opens on it and
+	// its number key gives it a class, which hands the keys back to the canvas.
+	await press(
+		'b',
+		'Space',
+		'Shift+ArrowRight',
+		'Shift+ArrowRight',
+		'Shift+ArrowDown',
+		'Space',
+		'1',
+	);
 	// A point where the cursor is.
-	await press('6', 'Shift+ArrowLeft', 'Space');
+	await press('d', 'Shift+ArrowLeft', 'Space', '1');
 	// A polygon: a vertex per Space, Enter closes it.
 	await press(
-		'5',
+		'g',
 		'Shift+ArrowUp',
 		'Space',
 		'Shift+ArrowRight',
@@ -269,9 +293,10 @@ test('a box, a point, a polygon and a line are drawn from the keyboard alone, co
 		'Shift+ArrowDown',
 		'Space',
 		'Enter',
+		'1',
 	);
 	// A line, held from one Space to the next.
-	await press('7', 'Shift+ArrowLeft', 'Space', 'Shift+ArrowLeft', 'Shift+ArrowLeft', 'Space');
+	await press('n', 'Shift+ArrowLeft', 'Space', 'Shift+ArrowLeft', 'Shift+ArrowLeft', 'Space', '1');
 	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(6);
 	await expect(page.getByTestId('annotate-status')).toContainText('6 annotations');
 
@@ -302,15 +327,17 @@ test('a point and a line read back from the service are drawn as a point and a l
 	const corner = { x: 139, y: 54, width: 9, height: 9 };
 	const dotBefore = await settledPixels(page, dot);
 	const cornerBefore = await settledPixels(page, corner);
-	await page.keyboard.press('6');
+	await page.keyboard.press('d');
 	await clickImage(page, POINT);
-	await page.keyboard.press('7');
+	await page.keyboard.press('1');
+	await page.keyboard.press('n');
 	const from = await onScreen(page, { x: 110, y: 60 });
 	const to = await onScreen(page, { x: 145, y: 25 });
 	await page.mouse.move(from.x, from.y);
 	await page.mouse.down();
 	await page.mouse.move(to.x, to.y, { steps: 5 });
 	await page.mouse.up();
+	await page.keyboard.press('1');
 	const save = saved(page);
 	await page.getByRole('button', { name: 'Save', exact: true }).click();
 	await save;
@@ -342,7 +369,7 @@ test('a box drawn with the mouse is saved and read back after a reload', async (
 	await expect(page.getByTestId('annotate-status')).toContainText('3 annotations');
 });
 
-test('an edit made while a save is in flight survives it, and is the next save’s', async ({
+test('an edit made while a save is in flight, or while its reload is, survives it, and is the next save’s', async ({
 	page,
 	context,
 }) => {
@@ -350,8 +377,19 @@ test('an edit made while a save is in flight survives it, and is the next save�
 	await openItem(page);
 	let release: () => void = () => {};
 	const held = new Promise<void>((resolve) => (release = resolve));
+	let releaseReload: () => void = () => {};
+	const reloadHeld = new Promise<void>((resolve) => (releaseReload = resolve));
+	let posted = false;
+	let reloading: () => void = () => {};
+	const reloadAsked = new Promise<void>((resolve) => (reloading = resolve));
 	await page.route(`**/api/annotations/${UNIT}?*`, async (route) => {
-		if (route.request().method() === 'POST') await held;
+		if (route.request().method() === 'POST') {
+			posted = true;
+			await held;
+		} else if (posted) {
+			reloading();
+			await reloadHeld;
+		}
 		await route.continue();
 	});
 	await drawBox(page, { x: 70, y: 60 }, { x: 85, y: 80 });
@@ -362,14 +400,21 @@ test('an edit made while a save is in flight survives it, and is the next save�
 	await drawBox(page, { x: 100, y: 60 }, { x: 115, y: 80 });
 	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(4);
 	release();
-	await expect(page.getByTestId('canvas-notice')).toHaveText('Annotations saved');
+	// The save landed and its reload of the rows is held; meanwhile a third box.
+	await reloadAsked;
+	await drawBox(page, { x: 130, y: 60 }, { x: 145, y: 80 });
+	const reloaded = page.waitForResponse(
+		(res) => res.request().method() === 'GET' && res.url().includes(`/api/annotations/${UNIT}?`),
+	);
+	releaseReload();
+	await reloaded;
 
-	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(4);
+	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(5);
 	await page.unroute(`**/api/annotations/${UNIT}?*`);
 	const second = saved(page);
 	await page.getByRole('button', { name: 'Save', exact: true }).click();
 	const body = (await second).postDataJSON() as { inserts: { x: number }[] };
-	expect(body.inserts.map((i) => Math.round(i.x))).toEqual([100]);
+	expect(body.inserts.map((i) => Math.round(i.x))).toEqual([100, 130]);
 });
 
 test('leaving an item saves it first, and a save that fails keeps the person on it', async ({
@@ -581,7 +626,7 @@ test('the brush offers its size and output, and the image adjustments reset to n
 	await as(context, 'Annotator');
 	await openItem(page);
 	await expect(page.getByTestId('brush-controls')).toHaveCount(0);
-	await page.keyboard.press('9');
+	await page.keyboard.press('u');
 	await expect(page.getByTestId('brush-controls')).toContainText('20');
 	const output = page.getByTestId('brush-output');
 	await expect(output).toHaveText(/mask/i);
@@ -639,13 +684,13 @@ for (const { who, task, key, reason } of [
 	{
 		who: 'Viewer',
 		task: 'pages-t1',
-		key: UNIT,
+		key: NAME,
 		reason: 'You view this project: the canvas is read-only.',
 	},
 	{
 		who: 'Annotator',
 		task: 'pages-held',
-		key: 'letter-002/0',
+		key: 'A letter about the harvest · page 1',
 		reason: 'This item is held by user:someone-else: the canvas is read-only.',
 	},
 ]) {
@@ -674,7 +719,7 @@ test('a task that names several units opens its first, and says so', async ({ pa
 	await page.goto('/projects/pages/tasks/pages-multi?project=pages');
 
 	await expect(page.getByTestId('canvas-one-unit')).toHaveText(
-		`This item names 2 units. A task's draft holds one unit's shapes, so the canvas opens its first: ${UNIT}.`,
+		`This item names 2 units. A task's draft holds one unit's shapes, so the canvas opens its first: ${NAME}.`,
 	);
 	await expect(page.getByRole('application', { name: CANVAS })).toBeVisible();
 });
@@ -756,7 +801,7 @@ test('a picture the viewer could not sign is signed again by Try again', async (
 	await fault(page, who, '/api/signed-media', 'fail');
 	await page.goto('/projects/pages/tasks/pages-t1?project=pages');
 	await expect(page.getByText('The picture could not be signed.')).toBeVisible();
-	await expect(page.getByText('The viewer signs the pictures')).toBeVisible();
+	await expect(page.getByText('The viewer signs the media')).toBeVisible();
 
 	await fault(page, who, '/api/signed-media', 'clear');
 	await page.getByRole('button', { name: /try again/i }).click();
@@ -782,10 +827,88 @@ test('the queue’s next claimed item is one step away, in the stream and the fi
 	});
 	await stream.getByRole('link', { name: 'Next item in your queue' }).click();
 	await expect(page).toHaveURL(/\/projects\/pages\/tasks\/pages-t2\?project=pages$/);
-	const region = page.getByRole('application', { name: 'Labeling canvas: map-003/0' });
+	const region = page.getByRole('application', {
+		name: 'Labeling canvas: A map of the harbour · page 1',
+	});
 	await expect(page.getByTestId('annotate-status')).toContainText(/\d+ annotations?/);
 	await expect(region).toHaveAttribute('aria-busy', 'true');
 	await expect(region).toHaveAttribute('data-ready', 'true');
 	await expect(region).toHaveAttribute('aria-busy', 'false');
 	await expect(stream).toContainText('item 2 / 2');
+});
+
+test('a drawn box opens the class picker at the shape: its keys class it, Escape discards it, and the panel names what keeps the item from being submitted', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await openItem(page);
+	await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Pages');
+	await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText(NAME);
+	// The tab says the same names, not the ids the URL carries.
+	await expect(page).toHaveTitle(`${NAME} · Pages · workbench`);
+	const panel = page.getByTestId('task-panel');
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('Labeling');
+
+	// Escape on a region just drawn: this task's classes are closed, so the box is not kept unclassed.
+	await page.keyboard.press('b');
+	const a = await onScreen(page, { x: 70, y: 60 });
+	const b = await onScreen(page, { x: 100, y: 90 });
+	await page.mouse.move(a.x, a.y);
+	await page.mouse.down();
+	await page.mouse.move(b.x, b.y, { steps: 4 });
+	await page.mouse.up();
+	const picker = page.getByTestId('class-picker');
+	await expect(picker.getByRole('option')).toHaveText([/figure\s+1/, /caption\s+2/]);
+	await page.keyboard.press('Escape');
+	await expect(picker).toBeHidden();
+	await expect(page.getByTestId('canvas-notice')).toContainText(
+		'every region on this task needs a class',
+	);
+	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(2);
+
+	// Drawn again, typed for: the class shows in the list with its colour, and one key changes it.
+	await page.mouse.move(a.x, a.y);
+	await page.mouse.down();
+	await page.mouse.move(b.x, b.y, { steps: 4 });
+	await page.mouse.up();
+	// Unclassed, it keeps the item from being submitted, and the panel says which region it is.
+	await expect(panel.getByTestId('submit-check')).toContainText('1 region without a class: #');
+	await expect(panel.getByTestId('task-submit')).toBeDisabled();
+	await page.keyboard.type('cap');
+	await page.keyboard.press('Enter');
+	const list = page.getByTestId('annotation-list');
+	await list.getByRole('button', { name: /^caption kept/ }).click();
+	await page.keyboard.press('1');
+	await expect(page.getByTestId('canvas-notice')).toHaveText('Labeled “figure”');
+
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(panel.getByTestId('task-submit')).toBeEnabled();
+	// The shapes' own status is worded as theirs, under the item's state, which is still "Labeling".
+	await expect(page.getByTestId('shape-status')).toHaveText(/^Shapes\s*2 kept\s*1 proposed$/);
+});
+
+test('a reviewer opens someone’s submission, reads it as theirs to review, and sends it back with a note', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/pages/tasks/pages-review?project=pages');
+	const panel = page.getByTestId('task-panel');
+	await expect(panel.getByTestId('task-panel-title')).toHaveText(
+		/^Reviewing .*someone-else’s work$/,
+	);
+	await expect(panel.getByTestId('task-submit')).toHaveCount(0);
+
+	const fired = page.waitForRequest((req) => req.url().includes('/tasks/pages-review/events'));
+	await panel.getByTestId('task-request_changes').click();
+	const dialog = page.getByTestId('send-back-dialog');
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the legend too.');
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+	expect((await fired).postDataJSON()).toEqual({
+		event: 'request_changes',
+		message: 'Box the legend too.',
+	});
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('Changes requested');
+	await expect(panel.getByTestId('review-note')).toContainText('Box the legend too.');
 });

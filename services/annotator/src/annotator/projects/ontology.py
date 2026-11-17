@@ -33,6 +33,7 @@ lives in the classes and relations below.
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -223,6 +224,9 @@ class ShapeLike(BaseModel):
     parent_id: str | None = None
     char_start: int | None = None
     char_end: int | None = None
+    #: The temporal facet, in seconds — a region of a recording or a keyframe of a video. See `_time_violation`.
+    t_start: float | None = None
+    t_end: float | None = None
 
 
 class LinkLike(BaseModel):
@@ -269,6 +273,46 @@ def _span_violation(shapes: list[ShapeLike]) -> str | None:
         if end > len(parent.text or ""):
             return f"text span {shape.shape_id} ends at {end}, past the end of {shape.parent_id} ({len(parent.text or '')} characters)"
     return None
+
+
+def _time_violation(shapes: list[ShapeLike]) -> str | None:
+    """A shape's moments are finite, not before the media's start, and its end not before its start.
+
+    The save door refuses such times, but a submission is also built from an import and from a draft another path
+    wrote, and a reversed stretch publishes a region no player can seek to."""
+    for shape in shapes:
+        times = [t for t in (shape.t_start, shape.t_end) if t is not None]
+        if any(not math.isfinite(t) or t < 0 for t in times):
+            return f"shape {shape.shape_id} has a time that is not a moment of the media ({shape.t_start}, {shape.t_end})"
+        if shape.t_start is not None and shape.t_end is not None and shape.t_end < shape.t_start:
+            return f"shape {shape.shape_id} ends at {shape.t_end}, before it starts at {shape.t_start}"
+    return None
+
+
+#: The shapes that stand for a region of the item, and so must say what they are once the ontology names classes. A
+#: `text` shape is exempt: a free-standing text (a typed question) is its own content, and a span is judged by
+#: `_span_violation`.
+_REGION_SHAPES = frozenset({"bbox", "polygon", "mask", "keypoint", "polyline", "segment"})
+
+#: How many unlabelled shapes a refusal names before it says how many more there are.
+_NAMED_SHAPES = 10
+
+
+def _unlabelled(ontology: LabelOntology, shapes: list[ShapeLike]) -> str | None:
+    """A completed item whose ontology names classes carries a class on every region it marks.
+
+    Drawing before choosing a class is a normal state of a draft, and an import may carry unclassed regions for someone
+    to classify (`membership_violation` lets both through); a SUBMISSION is the claim that the item is done, and a region
+    with no class publishes a row no reader can use. Every offending shape is named, so the canvas can point at them.
+    """
+    if not ontology.classes:
+        return None
+    ids = [s.shape_id for s in shapes if s.shape_type in _REGION_SHAPES and not s.label]
+    if not ids:
+        return None
+    named = ", ".join(ids[:_NAMED_SHAPES])
+    more = f" and {len(ids) - _NAMED_SHAPES} more" if len(ids) > _NAMED_SHAPES else ""
+    return f"{len(ids)} shape(s) carry no class: {named}{more}; this task's classes are {sorted(c.name for c in ontology.classes)}"
 
 
 def membership_violation(ontology: LabelOntology, shapes: list[ShapeLike]) -> str | None:
@@ -367,6 +411,14 @@ def validate_against_ontology(
     span_problem = _span_violation(shapes)
     if span_problem is not None:
         return span_problem
+
+    time_problem = _time_violation(shapes)
+    if time_problem is not None:
+        return time_problem
+
+    unlabelled = _unlabelled(ontology, shapes)
+    if unlabelled is not None:
+        return unlabelled
 
     present = {s.label for s in shapes if s.label}
     missing = [c.name for c in ontology.classes if c.required and c.name not in present]

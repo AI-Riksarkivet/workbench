@@ -61,13 +61,16 @@ async function at(
 /** A box dragged across the middle of the labeling canvas, once it says it takes input. */
 async function drawABox(page: Page): Promise<void> {
 	await expect(page.getByTestId('canvas-region')).toHaveAttribute('data-ready', 'true');
-	await page.keyboard.press('4');
+	await page.keyboard.press('b');
 	const box = await page.getByTestId('pixi-canvas').boundingBox();
 	if (!box) throw new Error('the canvas has no box: the engine never rendered');
 	await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.2);
 	await page.mouse.down();
 	await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.4, { steps: 4 });
 	await page.mouse.up();
+	// The class picker opens on the drawn box: the task's first class.
+	await page.keyboard.press('1');
+	await expect(page.getByTestId('class-picker')).toBeHidden();
 }
 
 test('a discovery document naming another issuer is refused before any of its endpoints is used', async ({

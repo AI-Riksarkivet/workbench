@@ -85,6 +85,17 @@ describe('what the set-up forms offer and fill in', () => {
 			label: undefined,
 		});
 
+		// The ends named by a prefix, before the name they share.
+		const prefixed = suggest(
+			profile([column('out_node', 'integer'), column('in_node', 'integer')]),
+		);
+		expect(prefixed.graph.links).toEqual([
+			{
+				value: { shape: 'edges', source: 'out_node', target: 'in_node' },
+				reason: 'named as the two ends of an edge',
+			},
+		]);
+
 		const self = suggest(
 			profile([
 				column('id', 'integer'),

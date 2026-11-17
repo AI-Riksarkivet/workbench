@@ -1,4 +1,4 @@
-import { ColorMatrixFilter, Sprite, Texture, type Application } from 'pixi.js';
+import { ColorMatrixFilter, ImageSource, Sprite, Texture, type Application } from 'pixi.js';
 
 /** The part of the picture the view shows, in image pixels. */
 export interface ViewportBounds {
@@ -156,32 +156,65 @@ export class ImagePlugin {
 		}
 	}
 
+	/** The video drawn as the picture, when the stage shows one. */
+	private video: HTMLVideoElement | null = null;
+
 	/**
-	 * Snapshot a video's CURRENT frame as the backdrop, so spatial shapes are drawn on
-	 * the exact frame via the SAME PixiJS overlay as images. Uses `createImageBitmap`
-	 * (a decoded still) — NOT a Pixi VideoSource, which drives itself off a running
-	 * ticker; this engine renders on demand (`app.ticker.stop()`), so a VideoSource would
-	 * freeze on a paused frame anyway. Re-callable per seek/frame; keeps the current
-	 * zoom/pan across frames (only the first frame fits-to-viewport).
+	 * Show a video as the picture: its decoded frame is the sprite's texture, through a pixi `ImageSource` over the element,
+	 * whose WebGPU upload copies the element's current frame into the texture (`copyExternalImageToTexture`, the same upload
+	 * pixi's `VideoSource` makes), so zoom, pan and every layer over the stage work on the frame as on a still. Not a
+	 * `VideoSource`: its `destroy` pauses the element, empties its `src` and reloads it, and the element is the holder's,
+	 * which outlives this stage (a new link to the same video, a stage mounted again). The stage renders on demand (its
+	 * ticker is stopped): the holder calls `showVideoFrame` for each frame it presents (`requestVideoFrameCallback`) and
+	 * after each seek. Resolves once the frame size is known.
 	 */
-	async loadFromVideoFrame(video: HTMLVideoElement): Promise<void> {
-		if (video.readyState < 2 || video.videoWidth === 0) return; // no frame decoded yet
-		const bitmap = await createImageBitmap(video);
-		const first = this.sprite === null;
+	async attachVideo(video: HTMLVideoElement): Promise<void> {
+		const seq = ++this.loadSeq;
+		if (video.readyState < 1 || video.videoWidth === 0) {
+			await new Promise<void>((resolve, reject) => {
+				const done = () => {
+					video.removeEventListener('loadeddata', done);
+					video.removeEventListener('error', fail);
+					resolve();
+				};
+				const fail = () => {
+					video.removeEventListener('loadeddata', done);
+					video.removeEventListener('error', fail);
+					reject(
+						new Error(
+							`the video could not be read (${video.error?.message || `code ${video.error?.code ?? '?'}`})`,
+						),
+					);
+				};
+				video.addEventListener('loadeddata', done);
+				video.addEventListener('error', fail);
+			});
+		}
+		if (seq !== this.loadSeq) return;
 		if (this.sprite) {
 			this.app.stage.removeChild(this.sprite);
-			const old = this.sprite.texture;
-			this.sprite.destroy();
-			old.destroy(true); // frees the previous frame's GPU texture + source
+			this.sprite.destroy({ texture: true, textureSource: true });
 		}
-
-		this.sprite = new Sprite(Texture.from(bitmap));
+		const source = new ImageSource({
+			resource: video,
+			width: video.videoWidth,
+			height: video.videoHeight,
+			alphaMode: 'premultiply-alpha-on-upload',
+		});
+		this.sprite = new Sprite(new Texture({ source }));
+		this.video = video;
 		this.imageWidth = video.videoWidth;
 		this.imageHeight = video.videoHeight;
-		this._imageElement = null; // a video frame — the CV tools' still-image source doesn't apply
+		this._imageElement = null; // a video frame: the corner tools' still-image source does not apply
 		this.app.stage.addChildAt(this.sprite, 0);
-		if (first) this.fitToViewport();
-		else this.applyTransform(); // stable view while scrubbing
+		this.fitToViewport();
+	}
+
+	/** Upload the video's current frame to the picture's texture and draw it. */
+	showVideoFrame(): void {
+		if (!this.video || !this.sprite) return;
+		this.sprite.texture.source.update();
+		this.app.render();
 	}
 
 	/** True once the person zoomed or panned away from the fit: a resize then keeps their view instead of refitting. */

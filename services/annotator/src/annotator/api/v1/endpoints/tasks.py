@@ -28,7 +28,7 @@ from starlette.concurrency import run_in_threadpool
 
 from annotator.api.dependencies import StoreDep, get_store
 from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep, require_view, unseen_task
-from annotator.api.v1.responses import DraftImport
+from annotator.api.v1.responses import DraftImport, LegalEvent, TaskDetail
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.projects.imports import shapes_from_ipc
 from annotator.projects.machines import (
@@ -39,6 +39,7 @@ from annotator.projects.machines import (
     IllegalTransition,
     edit_violation,
     identity_violation,
+    legal_task_events,
     task_transition,
 )
 from annotator.projects.models import Draft, DraftOrigin, Link, Shape, Task, TaskState
@@ -146,7 +147,9 @@ async def require_editable(store: AnnotatorStore, task: Task, checker: Checker, 
 
 
 @router.post("/{task_id}/events", status_code=status.HTTP_200_OK)
-async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: CheckerDep, subject: CurrentSubject, settings: SettingsDep, store: StoreDep) -> Task:
+async def fire_task_event(
+    task_id: TaskId, payload: FireRequest, checker: CheckerDep, subject: CurrentSubject, settings: SettingsDep, store: StoreDep
+) -> TaskDetail:
     """Drive one task transition.
 
     The permission comes from the transition table, so adding an edge to `TASK_EDGES` automatically
@@ -206,14 +209,23 @@ async def fire_task_event(task_id: TaskId, payload: FireRequest, checker: Checke
         raise ConflictError(str(exc)) from exc
 
     audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.SUCCESS, event=payload.event, subject=subject, resource=task_id)
-    return updated
+    return await with_legal_events(store, updated)
+
+
+async def with_legal_events(store: AnnotatorStore, task: Task) -> TaskDetail:
+    """The task with the edges out of its state, as the queue's details carry them: none while its project is past
+    labeling, when every transition is refused (§5.2 rule 5). The canvas offers exactly these, and the door decides."""
+    project = await store.get_project(task.project_id)
+    frozen = project is not None and project.state in FROZEN_PROJECT_STATES
+    events = [] if frozen else [LegalEvent.model_validate(e) for e in legal_task_events(task.state)]
+    return TaskDetail.model_validate({**task.model_dump(), "legal_events": events})
 
 
 @router.get("/{task_id}")
-async def get_task(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject, store: StoreDep) -> Task:
-    """Read one task. The task is fetched FIRST to learn which project to authorize against, then the
-    check runs before anything is returned — the fetch is not the disclosure, the return is."""
-    return await viewed_task(store, task_id, checker, subject)
+async def get_task(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject, store: StoreDep) -> TaskDetail:
+    """Read one task, with the edges out of its state. The task is fetched FIRST to learn which project to authorize
+    against, then the check runs before anything is returned — the fetch is not the disclosure, the return is."""
+    return await with_legal_events(store, await viewed_task(store, task_id, checker, subject))
 
 
 @router.put("/{task_id}/draft", status_code=status.HTTP_200_OK)

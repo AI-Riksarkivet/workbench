@@ -322,6 +322,59 @@ function seed(sub: string): World {
 		}),
 	])
 		tasks.set(t.task_id, t);
+	// A pages item someone else submitted, for a reviewer's verdict on the canvas.
+	tasks.set(
+		'pages-review',
+		task('pages', 'pages-review', 'in_review', 'map-003/0', {
+			submitted_by: 'user:someone-else',
+			ontology: pagesOntology,
+		}),
+	);
+	// The canvas over a recording and a video: the demo's own, whose answers the viewer recorded (`seeded-answers.json`).
+	const soundOntology = {
+		kind: 'audio-classification',
+		modality: 'audio',
+		classes: [
+			{ name: 'question', tools: ['segment'], required: true, transcribe: true, attributes: [] },
+			{ name: 'answer', tools: ['segment'], required: false, transcribe: true, attributes: [] },
+			{ name: 'noise', tools: ['segment'], required: false, transcribe: false, attributes: [] },
+		],
+		relations: [],
+		allow_empty: false,
+	};
+	const filmOntology = {
+		kind: 'object-tracking',
+		modality: 'video',
+		classes: [
+			{ name: 'boat', tools: ['bbox'], required: false, transcribe: false, attributes: [] },
+			{ name: 'cart', tools: ['bbox'], required: false, transcribe: false, attributes: [] },
+		],
+		relations: [],
+		allow_empty: false,
+	};
+	for (const [id, title, ontology, key, where, kind] of [
+		[
+			'sounds',
+			'Interview turns',
+			soundOntology,
+			'c41f0e2a9b7d3e15/0/1',
+			'lake~demo$recordings',
+			'audio',
+		],
+		['films', 'Moving objects', filmOntology, 'f1a07c3e9d2b4e68/0/0', 'lake~demo$films', 'video'],
+	] as const) {
+		projects.set(id, project(id, { title, ontology }));
+		tasks.set(
+			`${id}-t1`,
+			task(id, `${id}-t1`, 'claimed', key, {
+				assignee: sub,
+				lease_expires_at: later(),
+				ontology,
+				source: { kind: 'chunks', keys: [key], where, dataset_version: 1 },
+				media: { kind, image_url: null, media_url: null },
+			}),
+		);
+	}
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);

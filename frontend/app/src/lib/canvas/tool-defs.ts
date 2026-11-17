@@ -21,7 +21,8 @@ export interface ToolDef {
 	tool: Tool;
 	icon: typeof MousePointer2;
 	label: string;
-	/** Hotkey (single char; letters lowercase in the keymap, shown uppercase). */
+	/** Hotkey (single char; letters lowercase in the keymap, shown uppercase). Letters, never digits: the digits pick a
+	 *  task's classes, as in the labeling tools people know (Label Studio, CVAT). */
 	key: string;
 	/** A drawing tool (hidden outside edit mode / for non-spatial units). */
 	drawing: boolean;
@@ -48,7 +49,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'select',
 		icon: MousePointer2,
 		label: 'Select',
-		key: '1',
+		key: 'V',
 		drawing: false,
 		gesture: 'click',
 		group: 'navigate',
@@ -57,7 +58,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'pan',
 		icon: Hand,
 		label: 'Pan',
-		key: '2',
+		key: 'H',
 		drawing: false,
 		gesture: 'view',
 		group: 'navigate',
@@ -65,8 +66,8 @@ export const TOOL_DEFS: ToolDef[] = [
 	{
 		tool: 'lasso',
 		icon: Lasso,
-		label: 'Lasso (select)',
-		key: '3',
+		label: 'Lasso',
+		key: 'L',
 		drawing: true,
 		gesture: 'drag',
 		group: 'navigate',
@@ -77,7 +78,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'rect',
 		icon: Square,
 		label: 'Rectangle',
-		key: '4',
+		key: 'B',
 		drawing: true,
 		gesture: 'drag',
 		group: 'draw',
@@ -86,7 +87,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'polygon',
 		icon: Pentagon,
 		label: 'Polygon',
-		key: '5',
+		key: 'G',
 		drawing: true,
 		gesture: 'click',
 		group: 'draw',
@@ -95,7 +96,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'point',
 		icon: Crosshair,
 		label: 'Point',
-		key: '6',
+		key: 'D',
 		drawing: true,
 		gesture: 'click',
 		group: 'draw',
@@ -104,7 +105,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'line',
 		icon: Minus,
 		label: 'Line',
-		key: '7',
+		key: 'N',
 		drawing: true,
 		gesture: 'drag',
 		group: 'draw',
@@ -113,7 +114,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'pencil',
 		icon: PenLine,
 		label: 'Pencil (freehand)',
-		key: '8',
+		key: 'F',
 		drawing: true,
 		gesture: 'drag',
 		group: 'draw',
@@ -122,7 +123,7 @@ export const TOOL_DEFS: ToolDef[] = [
 		tool: 'brush',
 		icon: Paintbrush,
 		label: 'Brush',
-		key: '9',
+		key: 'U',
 		drawing: true,
 		gesture: 'drag',
 		group: 'draw',

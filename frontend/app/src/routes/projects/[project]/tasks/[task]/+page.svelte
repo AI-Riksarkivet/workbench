@@ -9,12 +9,23 @@
 	 * the task and the dataset on every call (`#lib/api/annotations.api.ts`). The browser holds no store credential.
 	 *
 	 * ONE UNIT. A task's draft holds one unit's shapes, which the publish stamps with the task's first key, so the canvas
-	 * opens that unit and says so when the item names more.
+	 * opens that unit and says so when the item names more. A unit of a recording or a video opens its whole document
+	 * on one time line, on the unit's own stretch: its regions and tracks are in seconds of the document.
+	 *
+	 * NAMES. The page reads the item's row and its dataset's declaration to call it by its document's title and where
+	 * in it the item is, and names the breadcrumb's project and item so, the ids kept as their tooltips.
 	 *
 	 * WHO EDITS. The reader's permissions on the project and the task's state and holder decide whether the canvas takes
 	 * edits (`readOnlyReason`); otherwise it opens read-only and says why. The doors decide on their own.
 	 */
 	import { untrack } from 'svelte';
+	import { corpusRows, fetchProject, fetchTask, listTasks } from '#lib/api/projects.api.ts';
+	import { datasetView } from '#lib/api/explore.api.ts';
+	import { documentParts, documentTurns } from '#lib/api/timeline.api.ts';
+	import { itemName } from '#lib/projects/item-name.ts';
+	import { nameCrumb } from '#lib/shell/crumb-names.svelte.ts';
+	import type { CanvasMedia, Part } from '#lib/canvas/media.ts';
+	import type { TaskDetail } from '#lib/projects/types.ts';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { linkWith } from '#lib/project.ts';
@@ -22,7 +33,6 @@
 	import { annotationsUrl } from '#lib/api/annotations.api.ts';
 	import { mediaLinks } from '#lib/api/media.api.ts';
 	import type { MediaItem } from '#lib/api/media-links.svelte.ts';
-	import { fetchProject, fetchTask, listTasks } from '#lib/api/projects.api.ts';
 	import { gpuUnsupportedReason } from '#lib/gpu/gpu-support.ts';
 	import { rowKeyFor } from '#lib/projects/corpus-rows.ts';
 	import { ANNOTATOR_HINT } from '#lib/projects/presentation.ts';
@@ -45,7 +55,14 @@
 
 	const taskRead = $derived(fetchTask({ taskId }));
 	const answer = $derived(taskRead.current);
-	const task = $derived(answer?.ok ? answer.data : null);
+	/** A transition the side panel made answers the task as it is now, shown until the next read of it. */
+	let changed = $state<TaskDetail | null>(null);
+	const task = $derived(changed?.task_id === taskId ? changed : answer?.ok ? answer.data : null);
+	function ontaskchange(next: TaskDetail): void {
+		changed = next;
+		void taskRead.refresh().then(() => (changed = null));
+		void listingRead.refresh();
+	}
 	const elsewhere = $derived(task !== null && task.project_id !== projectId);
 
 	// A URL naming another project than the task's: the task's own page, so its queue and permissions are its project's.
@@ -74,6 +91,64 @@
 
 	const unitKey = $derived(task?.source.keys[0] ?? null);
 	const dataset = $derived(task?.source.where ?? null);
+	const kind = $derived(task?.media.kind ?? 'image');
+	const temporal = $derived(kind === 'audio' || kind === 'video');
+	const rowKey = $derived(unitKey === null ? null : rowKeyFor([unitKey]));
+
+	// The item's own row and its dataset's declaration: its name, and on a recording or a video its own stretch.
+	const viewRead = $derived(dataset ? datasetView(dataset) : null);
+	const view = $derived(viewRead?.current ?? null);
+	const rowsRead = $derived(dataset && rowKey ? corpusRows({ dataset, keys: [rowKey] }) : null);
+	const row = $derived(rowsRead?.current?.rows[0] ?? null);
+	const partsRead = $derived(
+		dataset && rowKey ? documentParts({ dataset, docId: rowKey.doc_id }) : null,
+	);
+	const docParts = $derived(partsRead?.current?.ok ? partsRead.current.data : []);
+	const turnsRead = $derived(
+		dataset && rowKey && temporal ? documentTurns({ dataset, docId: rowKey.doc_id }) : null,
+	);
+	const name = $derived(view && row ? itemName(view, row) : (unitKey ?? taskId));
+
+	const projectRead = $derived(task && !elsewhere ? fetchProject({ projectId }) : null);
+	const projectName = $derived(
+		projectRead?.current?.ok
+			? projectRead.current.data.project.title || projectRead.current.data.project.slug
+			: null,
+	);
+	// The breadcrumb names the project and the item, each by its path; the ids stay as their tooltips.
+	$effect(() => {
+		if (!projectName) return;
+		return nameCrumb(`/projects/${encodeURIComponent(projectId)}`, {
+			label: projectName,
+			title: projectId,
+		});
+	});
+	$effect(() => {
+		if (!view || !row) return;
+		return nameCrumb(
+			`/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+			{ label: name, title: `task ${taskId} · ${unitKey ?? ''}` },
+		);
+	});
+
+	/** On a recording or a video: its parts, its speakers and the item's own stretch, on the canvas's time line. */
+	const timeParts = $derived.by<Part[]>(() => {
+		if (!view || !temporal) return [];
+		const out: Part[] = [];
+		const own = view && row ? view.time(row) : null;
+		for (const p of docParts) {
+			const t = view.time(p);
+			if (t)
+				out.push({
+					start: t.start,
+					end: t.end,
+					text: view.body(p),
+					own: own !== null && t.start === own.start && t.end === own.end,
+				});
+		}
+		return out;
+	});
+	const focus = $derived(view && row ? view.time(row) : null);
 
 	/** The unit's picture: a frame (or a document's thumbnail) signed for this reader; `signing` signs it afresh. */
 	let signing = $state(0);
@@ -82,13 +157,28 @@
 		if (!dataset || unitKey === null) return null;
 		const key = rowKeyFor([unitKey]);
 		if (key === null) return null;
-		const item: MediaItem =
-			key.keys.length === 0
+		// A recording or a video plays its whole document; a picture is the unit's own frame.
+		const item: MediaItem = temporal
+			? { role: 'media', doc_id: key.doc_id }
+			: key.keys.length === 0
 				? { role: 'thumbnail', doc_id: key.doc_id }
 				: { role: 'frame', doc_id: key.doc_id, keys: key.keys, frame_idx: 0 };
 		// Untracked: the loader's held links are reactive, and their answer must not re-run this and sign again.
 		return untrack(() => mediaLinks.resolve(dataset, item, fresh));
 	});
+
+	function mediaOf(url: string): CanvasMedia {
+		if (!temporal || !rowKey || !dataset) return { kind: 'image', url };
+		return {
+			kind: kind === 'video' ? 'video' : 'audio',
+			url,
+			dataset,
+			docId: rowKey.doc_id,
+			parts: timeParts,
+			turns: turnsRead?.current?.ok ? turnsRead.current.data : [],
+			focus,
+		};
+	}
 
 	// A 401 is a session that ended: the reader signs in again and comes back here, once. Refused again right after,
 	// the page says so rather than sending them round in a loop.
@@ -101,9 +191,16 @@
 	});
 </script>
 
-<svelte:head><title>{titleOf(taskId, 'Projects')}</title></svelte:head>
+<!-- The tab names the item once it is read, never by its ids: a screen reader announces the title on arrival. -->
+<svelte:head>
+	<title
+		>{view && row
+			? titleOf(name, projectName ?? 'Projects')
+			: titleOf(projectName ?? 'Projects')}</title
+	>
+</svelte:head>
 
-<h1 class="sr-only">Label {taskId}</h1>
+<h1 class="sr-only">Label {name}</h1>
 {#if gpuReason}
 	<div
 		class="text-muted-foreground flex flex-col items-center justify-center gap-1 p-6 text-center text-sm"
@@ -137,9 +234,13 @@
 		onretry={() => void taskRead.refresh()}
 	/>
 {:else if task && !elsewhere}
-	{#if task.media.kind !== 'image'}
+	{#if kind !== 'image' && kind !== 'audio' && kind !== 'video'}
 		<p class="p-6 text-sm" data-testid="canvas-unsupported">
-			This item is {task.media.kind}; its canvas is not in this app yet.
+			This item is {kind}; its canvas is not in this app yet.
+		</p>
+	{:else if temporal && (!view || !partsRead?.current || (turnsRead && !turnsRead.current))}
+		<p class="text-muted-foreground p-6 text-sm" role="status">
+			Reading the {kind === 'video' ? 'video' : 'recording'}'s time line…
 		</p>
 	{:else if !dataset || unitKey === null || picture === null}
 		<p class="p-6 text-sm" data-testid="canvas-unsupported">
@@ -149,27 +250,33 @@
 		<p class="text-muted-foreground p-6 text-sm" role="status">Reading your role on the project…</p>
 	{:else}
 		{#await picture}
-			<p class="text-muted-foreground p-6 text-sm" role="status">Signing the picture…</p>
+			<p class="text-muted-foreground p-6 text-sm" role="status">
+				Signing the {temporal ? kind : 'picture'}…
+			</p>
 		{:then signed}
 			{#if signed.url === null}
 				<LoadFailure
-					what="The picture could not be signed."
+					what={`The ${temporal ? kind : 'picture'} could not be signed.`}
 					detail={signed.detail}
-					hint="The viewer signs the pictures: check that it is running and that you may read this dataset."
+					hint="The viewer signs the media: check that it is running and that you may read this dataset."
 					onretry={() => (signing += 1)}
 				/>
 			{:else}
 				{#if task.source.keys.length > 1}
 					<p class="border-b px-3 py-1 text-xs" role="note" data-testid="canvas-one-unit">
 						This item names {task.source.keys.length} units. A task's draft holds one unit's shapes, so
-						the canvas opens its first: {unitKey}.
+						the canvas opens its first: {name}.
 					</p>
 				{/if}
 				{#key task.task_id}
 					<CanvasShell
 						{task}
 						{unitKey}
-						imageUrl={signed.url}
+						media={mediaOf(signed.url)}
+						itemName={name}
+						{permissions}
+						{me}
+						{ontaskchange}
 						annotationsUrl={annotationsUrl({
 							project: task.project_id,
 							task: task.task_id,

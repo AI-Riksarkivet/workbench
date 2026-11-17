@@ -14,7 +14,7 @@ declares three (`scripts/local-sources.json`), one of each kind, and this writes
 - ``<root>/loose/scans.lance``: a bare Lance table read by path (text, numbers, a timestamp, a vector, an image blob, the
   collection each scan is filed under as a path and the scan it cites), no index and no descriptor.
 
-The two stamped datasets, in one warehouse:
+The three stamped datasets, in one warehouse:
 
 - ``<warehouse>$corpus``: page images. Three volumes of a few pages each, every page a drawn PNG with distinct prose and
   an FTS index, a thumbnail per volume, an atlas projection, a two-layer topic tree over the pages, and a small knowledge
@@ -23,8 +23,9 @@ The two stamped datasets, in one warehouse:
   voices, cut into timed segments with an FTS index, word alignments (the transcript window) and speaker turns (the
   speakers timeline).
 
-There is no video dataset: a browser's ``<video>`` plays H.264, VP8/9 or AV1, and no encoder for any of them is in the
-lockfile, so a video could only be a binary shipped beside this script.
+- ``<warehouse>$films``: video. Two short films synthesized here, each a few seconds of a shape moving across a plain
+  ground (an object to follow through keyframes) with a tone that swells and fades as its sound, encoded as WebM (VP8 and
+  Opus, which every browser's ``<video>`` plays) by PyAV, cut into timed shots with an FTS index.
 
 **Why a corpus and not one row.** A dataset that declared no `search` answered every query with zero hits and looked
 broken while being "correct". So: several documents, several rows each, distinct prose per row, and an FTS index, so a
@@ -50,11 +51,14 @@ import struct
 import sys
 import wave
 from collections.abc import Sequence
+from fractions import Fraction
 
+import av
 import lance
 import lance_namespace
 import lancedb
 import lancedb.index
+import numpy as np
 import pyarrow as pa
 from lance_namespace import (
     CreateNamespaceRequest,
@@ -75,6 +79,7 @@ DEFAULT_WAREHOUSE = "demo"
 #: The two datasets' namespaces inside the warehouse.
 PAGES = "corpus"
 RECORDINGS = "recordings"
+FILMS = "films"
 
 #: The page fixture: three volumes, each a handful of pages. The prose is deliberately OVERLAPPING (every page mentions
 #: the archive and most a protokoll) so a one-word query returns hits across several documents, and DIFFERENT enough
@@ -312,7 +317,7 @@ def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespa
                     "frame_idx": 0,
                     "image": page_image(document["title"], page_no),
                     "image_mime": "image/png",
-                    "caption": f"{document['title']} · page {page_no}",
+                    "caption": f"{document['title']} · page {page_no + 1}",
                     "text": prose,
                     "title": document["title"],
                     "atlas_x": x,
@@ -578,12 +583,132 @@ def seed_recordings(client: LanceNamespace, connection: lancedb.DBConnection, na
     _index_and_stamp(client, connection, namespace, "segments", declared)
 
 
+#: The video fixture: two films, each shot by shot, every shot :data:`SHOT_SECONDS` long with a line saying what it shows.
+#: The shape each film follows moves on a path of its own, so a track drawn on it has somewhere to go.
+FILMS_FIXTURE: list[dict] = [
+    {
+        "doc_id": "f1a07c3e9d2b4e68",
+        "title": "Lastbåten lägger till 1958",
+        "colour": (230, 180, 40),
+        "ground": (30, 60, 90),
+        "shots": ["Lastbåten glider in mot kajen.", "Båten saktar in och lägger till vid hamnen."],
+    },
+    {
+        "doc_id": "a93e5d1f0c7b2846",
+        "title": "Vagnen över bron 1964",
+        "colour": (200, 70, 60),
+        "ground": (70, 90, 50),
+        "shots": ["En vagn rullar ut på bron.", "Vagnen når andra sidan och stannar."],
+    },
+]
+SHOT_SECONDS = 3.0
+FILM_FPS = 25
+FILM_SIZE = (320, 240)
+FILM_AUDIO_RATE = 48_000
+
+
+def film(colour: tuple[int, int, int], ground: tuple[int, int, int], seconds: float, seed: int) -> bytes:
+    """A WebM of ``seconds``: a box of ``colour`` crossing a plain ``ground`` on a gentle curve (each film its own), and
+    a tone that swells and fades, VP8 and Opus through PyAV, encoded for speed rather than size."""
+    width, height = FILM_SIZE
+    frames = int(seconds * FILM_FPS)
+    out_buffer = io.BytesIO()
+    with av.open(out_buffer, mode="w", format="webm") as out:
+        video = out.add_stream("libvpx", rate=FILM_FPS)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        video.options = {"deadline": "realtime", "cpu-used": "8", "b": "400k"}
+        sound = out.add_stream("libopus", rate=FILM_AUDIO_RATE)
+        sound.layout = "mono"
+        for i in range(frames):
+            t = i / FILM_FPS
+            picture = np.empty((height, width, 3), np.uint8)
+            picture[:] = ground
+            x = int(16 + (width - 96) * t / seconds)
+            y = int(height / 2 - 30 + 40 * math.sin(t * (1.5 + seed)))
+            picture[y : y + 50, x : x + 64] = colour
+            for packet in video.encode(av.VideoFrame.from_ndarray(picture, format="rgb24")):
+                out.mux(packet)
+        for packet in video.encode(None):
+            out.mux(packet)
+        count = int(seconds * FILM_AUDIO_RATE)
+        tt = np.arange(count) / FILM_AUDIO_RATE
+        samples = (0.3 * np.sin(2 * np.pi * (260 + 70 * seed) * tt) * (0.5 + 0.5 * np.sin(2 * np.pi * 0.8 * tt))).astype(np.float32)
+        chunk = 960
+        for start in range(0, count, chunk):
+            frame = av.AudioFrame.from_ndarray(samples[start : start + chunk][None, :], format="flt", layout="mono")
+            frame.sample_rate, frame.pts, frame.time_base = FILM_AUDIO_RATE, start, Fraction(1, FILM_AUDIO_RATE)
+            for packet in sound.encode(frame):
+                out.mux(packet)
+        for packet in sound.encode(None):
+            out.mux(packet)
+    return out_buffer.getvalue()
+
+
+def seed_films(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:
+    """The video dataset: ``shots`` (one timed row per shot), ``films`` (one row per film, its WebM) and the
+    descriptor."""
+    _namespace(client, namespace)
+    shots = [
+        {
+            "doc_id": f["doc_id"],
+            "speech_id": 0,
+            "chunk_id": index,
+            "start": index * SHOT_SECONDS,
+            "end": (index + 1) * SHOT_SECONDS,
+            "text": text,
+            "title": f["title"],
+        }
+        for f in FILMS_FIXTURE
+        for index, text in enumerate(f["shots"])
+    ]
+    shot_schema = pa.schema(
+        [
+            pa.field("doc_id", pa.utf8()),
+            pa.field("speech_id", pa.int64()),
+            pa.field("chunk_id", pa.int64()),
+            pa.field("start", pa.float64()),
+            pa.field("end", pa.float64()),
+            pa.field("text", pa.utf8()),
+            pa.field("title", pa.utf8()),
+        ]
+    )
+    _fresh_table(client, [*namespace, "shots"], pa.Table.from_pylist(shots, schema=shot_schema))
+    film_schema = pa.schema(
+        [
+            pa.field("doc_id", pa.utf8()),
+            pa.field("title", pa.utf8()),
+            pa.field("duration", pa.float64()),
+            lance.blob_field("video"),
+            pa.field("mime", pa.utf8()),
+        ]
+    )
+    films = {
+        "doc_id": [f["doc_id"] for f in FILMS_FIXTURE],
+        "title": [f["title"] for f in FILMS_FIXTURE],
+        "duration": [len(f["shots"]) * SHOT_SECONDS for f in FILMS_FIXTURE],
+        "video": lance.blob_array([film(f["colour"], f["ground"], len(f["shots"]) * SHOT_SECONDS, i) for i, f in enumerate(FILMS_FIXTURE)]),
+        "mime": ["video/webm"] * len(FILMS_FIXTURE),
+    }
+    _fresh_table(client, [*namespace, "films"], pa.table(films, schema=film_schema))
+    declared = Declared.model_validate(
+        {
+            "identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"], "doc_key": "doc_id"},
+            "document": {"table": "films", "media_blob": "video", "kind": "video", "mime": "mime"},
+            "time": {"start": "start", "end": "end"},
+            "display": {"title": ["title"], "body": "text", "metadata": [{"field": "duration", "label": "Seconds"}]},
+            "search": {"row_table": "shots", "fts": {"table": "shots", "column": "text"}, "filterable": ["doc_id"]},
+        }
+    )
+    _index_and_stamp(client, connection, namespace, "shots", declared)
+
+
 def seed(client: LanceNamespace, connection: lancedb.DBConnection, warehouse: str) -> list[str]:
-    """Write both stamped datasets into ``warehouse``; their ids in the catalog."""
-    pages, recordings = [warehouse, PAGES], [warehouse, RECORDINGS]
+    """Write the three stamped datasets into ``warehouse``; their ids in the catalog."""
+    pages, recordings, films = [warehouse, PAGES], [warehouse, RECORDINGS], [warehouse, FILMS]
     seed_pages(client, connection, pages)
     seed_recordings(client, connection, recordings)
-    return [CATALOG_DELIMITER.join(pages), CATALOG_DELIMITER.join(recordings)]
+    seed_films(client, connection, films)
+    return [CATALOG_DELIMITER.join(pages), CATALOG_DELIMITER.join(recordings), CATALOG_DELIMITER.join(films)]
 
 
 #: The unstamped fixture's namespace in the archive catalog, two levels deep, and its table.

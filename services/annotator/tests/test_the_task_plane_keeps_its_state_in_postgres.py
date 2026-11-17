@@ -92,6 +92,9 @@ def test_a_task_is_labelled_from_claim_to_review_and_the_state_survives_a_restar
     listing = restarted.get(f"/projects/{project}/tasks").json()
 
     assert (read["state"], read["submitted_by"], read["reviewed_by"], read["review_action"]) == ("accepted", "alice", "bob", "accepted")
+    # Each answer carries the edges out of its state, which the canvas offers.
+    assert [e["event"] for e in claimed.json()["legal_events"]] == ["release", "save_draft", "skip", "submit"]
+    assert [(e["event"], e["permission"]) for e in read["legal_events"]] == [("reopen", "can_manage")]
     assert [(t["event"], t["by"]) for t in read["transitions"]] == [("claim", "alice"), ("submit", "alice"), ("accept", "bob")]
     assert (draft["revision"], draft["author"], [(s["shape_type"], s["label"]) for s in draft["shapes"]]) == (1, "alice", [("bbox", "seal")])
     assert (listing["tasks"], listing["terminal"], listing["may_publish"]) == ({"t1": "accepted"}, 1, True)

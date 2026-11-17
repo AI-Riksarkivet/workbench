@@ -24,6 +24,10 @@ dependencies = [
     "lance-graph>=0.5.4",
     "pyarrow",
     "numpy",
+    # PyAV: FFmpeg's demuxers and decoders as a library (its wheels carry them), so a recording's waveform peaks are
+    # decoded from its blob as a stream, packet by packet, with no ffmpeg binary in the image and no file on disk
+    # (`viewer.services.peaks`).
+    "av>=19.0.2",
 ]
 
 [build-system]

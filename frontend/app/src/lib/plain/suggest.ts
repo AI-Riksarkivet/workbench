@@ -86,6 +86,10 @@ const PROJECTION = /umap|tsne|t_sne|pca|proj|embed/;
 /** The two ends of an edge as a column names them, after a stem the pair shares (`shipped_from`, `shipped_to`). */
 const EDGE_FROM = /^(.*?)_?(src|source|from|head|subject|start|origin|sender)(_id)?$/;
 const EDGE_TO = /^(.*?)_?(dst|dest|target|to|tail|object|end|destination|receiver)(_id)?$/;
+/** The same ends as a prefix, before a name the pair shares: `out_node` and `in_node` (a graph store's out- and
+ *  in-vertex), `from_station` and `to_station`. */
+const EDGE_FROM_PREFIX = /^(out|from|src|source)_(.+?)(_id)?$/;
+const EDGE_TO_PREFIX = /^(in|to|dst|target)_(.+?)(_id)?$/;
 const REFERENCE =
 	/^(parent|parent_id|points_to|ref|refs|broader|reports_to|manager|manager_id|up|of)$/;
 const PATH_SEPARATORS = new Set(['/', ' > ', '>', '\\']);
@@ -212,7 +216,12 @@ function links(profile: Profile): Candidate<GraphLinks>[] {
 			if (a.name === b.name || a.kind !== b.kind) continue;
 			const from = EDGE_FROM.exec(a.name.toLowerCase());
 			const to = EDGE_TO.exec(b.name.toLowerCase());
-			if (from && to && from[1] === to[1]) {
+			const fromPrefix = EDGE_FROM_PREFIX.exec(a.name.toLowerCase());
+			const toPrefix = EDGE_TO_PREFIX.exec(b.name.toLowerCase());
+			if (
+				(from && to && from[1] === to[1]) ||
+				(fromPrefix && toPrefix && fromPrefix[2] === toPrefix[2])
+			) {
 				out.push({
 					value: { shape: 'edges', source: a.name, target: b.name },
 					reason: 'named as the two ends of an edge',

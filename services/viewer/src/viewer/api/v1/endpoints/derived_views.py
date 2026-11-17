@@ -5,7 +5,8 @@ suggest from; ``atlas`` the points the picked columns place (one Arrow IPC strea
 the nodes and edges they link and ``tree`` the hierarchy they nest, each with what the read saw and cut;
 ``graph/check`` and ``tree/check`` what the picked columns hold in the profile's sample alone, which the form shows
 before anything is drawn; and ``graph/rows`` and ``tree/rows`` the rows one node stands for, decided by the same code
-that counted them.
+that counted them. ``/api/datasets/{id}/documents/{doc}/peaks`` is a stamped dataset's document's waveform, decoded
+from its media blob (`viewer.services.peaks`): kept and bounded the same way, a heavy build like a whole view.
 
 Each is a read of the table as the caller, behind the same gate as the plain rows (`READS_DATASET`: a verified person
 who may read the source; a lakehouse decides on the person's own token), at the version named or the latest. The table
@@ -21,20 +22,25 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Callable
+from http import HTTPStatus
 from typing import Annotated
 
+import av
 import lance
 import numpy as np
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
+from client_kit.lancekit.blobs import is_blob_field
 from client_kit.lancekit.introspect import TableInfo
+from client_kit.lancekit.keys import validate_doc_key
+from client_kit.lancekit.predicate import eq
 from client_kit.media.cache_bounds import keep_shared
 from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState, dataset_handle
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
-from service_kit.exceptions import ServiceUnavailableError
+from service_kit.exceptions import DomainError, NotFoundError, ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep, SettingsDep
 from viewer.api.v1.endpoints.datasets import TableParam, table_at
@@ -66,6 +72,7 @@ from viewer.services.derived_views import (
     tree_json,
     tree_members,
 )
+from viewer.services.peaks import peaks_of
 from viewer.services.plain_rows import ColumnView, columns_of, page_of_rowids
 
 
@@ -103,6 +110,14 @@ class _Opened(BaseModel):
     columns: list[ColumnView]
     qualified: str
     dataset: str
+
+
+class UnreadableMedia(DomainError):
+    """A document's media is not where a waveform can be decoded from, or is in no container FFmpeg reads."""
+
+    status_code = HTTPStatus.UNPROCESSABLE_ENTITY
+    title = "Unprocessable Content"
+    problem_type = "about:blank#unreadable-media"
 
 
 class _Gone(ServiceUnavailableError):
@@ -343,3 +358,52 @@ async def table_tree_rows(
 
     body = await _answer(request, state, settings, opened, "tree-rows", f"{spec.structure_key()}\x00{key.encoded()}", members, heavy=True)
     return await _page(opened, body, query.offset, query.limit)
+
+
+@router.get("/{dataset_id}/documents/{doc_id}/peaks", dependencies=[READS_DATASET])
+async def document_peaks(
+    request: Request,
+    caller: CallerDep,
+    state: StateDep,
+    settings: SettingsDep,
+    dataset_id: str,
+    doc_id: Annotated[str, Path(min_length=1, max_length=256)],
+) -> Response:
+    """The waveform of a document's sound (a recording, or a video's soundtrack): each bucket's min and max, decoded once
+    from the document's media blob as a stream and kept per (dataset, documents table, version, document)
+    (`viewer.services.peaks`). Read as the caller like every door here, the document id checked against the dataset's
+    identity before any read. Answers ``Peaks``; 404 for a dataset with no documents table, a document it does not hold
+    or an empty media cell, 422 for media in a plain binary column or in no container FFmpeg reads, 503 with Retry-After
+    while every build slot is taken."""
+
+    def located() -> tuple[str, str, str, str]:
+        handle = dataset_handle(state, dataset_id, caller)
+        binding = handle.declared.document
+        if binding is None:
+            raise NotFoundError("the dataset declares no documents table")
+        return binding.table, binding.media_blob, handle.declared.identity.doc_key, validate_doc_key(handle.declared, doc_id)
+
+    table, column, doc_key, doc = await run_in_threadpool(located)
+    opened = await _open(state, caller, dataset_id, table, None)
+
+    def build(ds: lance.LanceDataset, _columns: list[ColumnView], within: Budget) -> bytes:
+        if not is_blob_field(ds.schema.field(column)):
+            raise UnreadableMedia(f"the media column {column!r} is not a blob column: a waveform is decoded from a blob, read in ranges")
+        found = ds.to_table(columns=[], filter=eq(doc_key, doc), with_row_id=True, limit=1)
+        if found.num_rows == 0:
+            raise NotFoundError(f"no document {doc!r}")
+        blob = ds.take_blobs(column, ids=[int(found.column("_rowid")[0].as_py())])[0]
+        if blob is None:
+            raise NotFoundError(f"document {doc!r} holds no {column!r} payload")
+
+        def still_wanted() -> None:
+            if within.cancelled.is_set():
+                raise Abandoned
+
+        try:
+            with blob:
+                return peaks_of(blob, check=still_wanted).model_dump_json().encode()
+        except av.FFmpegError as exc:
+            raise UnreadableMedia(f"document {doc!r}'s media could not be decoded: {exc}") from exc
+
+    return _json(await _answer(request, state, settings, opened, "peaks", doc, build, heavy=True))

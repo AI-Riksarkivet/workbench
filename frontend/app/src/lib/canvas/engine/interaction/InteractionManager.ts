@@ -184,6 +184,12 @@ export class InteractionManager {
 		}
 	}
 
+	/** A shape is being moved or resized under the pointer now: a reload of the rows would take it from under the
+	 *  person's hand, so a save waits for the release. */
+	get gesturing(): boolean {
+		return this.capturedPointerId !== null || this.activeEditor?.isDragging() === true;
+	}
+
 	/** Set edit mode — when false, no editing, no handles, view only */
 	setEditMode(enabled: boolean): void {
 		this._editMode = enabled;

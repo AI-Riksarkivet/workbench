@@ -1,11 +1,12 @@
 <script lang="ts">
-	// Right inspector pane: the review list or the single-annotation detail, the layers and the history.
-	// Controlled by the controller.
+	// Right inspector pane: what the person is doing with the item (`head`, the task panel), then its annotations as a
+	// list or the one selected, the layers and the history. Controlled by the controller.
+	import type { Snippet } from 'svelte';
 	import { ChevronLeft, List, Table } from '@lucide/svelte';
 	import { Badge } from '@workbench/ui/badge';
 	import { Button } from '@workbench/ui/button';
 	import { cn } from '@workbench/ui/utils';
-	import { statusDot } from './statusStyle.ts';
+	import { STATUS_MEANING, statusDot, statusWord } from './statusStyle.ts';
 	import AnnotationDetail from './AnnotationDetail.svelte';
 	import AnnotationList from './AnnotationList.svelte';
 	import AnnotationTable from './AnnotationTable.svelte';
@@ -14,14 +15,14 @@
 	import VersionHistoryPanel from './VersionHistoryPanel.svelte';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
-	let { controller }: { controller: AnnotatorController } = $props();
+	let { controller, head }: { controller: AnnotatorController; head?: Snippet } = $props();
 
 	// browse mode when nothing is selected: compact list vs full sortable table
 	let view = $state<'list' | 'table'>('list');
 
 	const summary = $derived.by(() => {
 		const counts = new Map<string, number>();
-		for (const r of controller.rows) counts.set(r.status, (counts.get(r.status) ?? 0) + 1);
+		for (const r of controller.shapes) counts.set(r.status, (counts.get(r.status) ?? 0) + 1);
 		return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 	});
 </script>
@@ -30,8 +31,9 @@
 	class="border-border bg-card flex h-full w-full min-w-0 flex-col border-l"
 	data-testid="annotation-sidebar"
 >
+	{@render head?.()}
 	<header class="border-border flex items-center justify-between gap-2 border-b px-3 py-2">
-		<h2 class="text-sm font-medium">Review queue</h2>
+		<h2 class="text-sm font-medium">Annotations</h2>
 		<div class="flex items-center gap-2">
 			<!-- A segmented list/table switch: one bordered group, ghost buttons inside, so it reads
 			     like the estate's other view toggles rather than two loose icon buttons. -->
@@ -55,18 +57,29 @@
 					<Table class="size-3.5" />
 				</Button>
 			</div>
-			<Badge variant="outline" class="tabular-nums" title="Annotations on this unit">
-				{controller.count}
+			<Badge
+				variant="outline"
+				class="tabular-nums"
+				title="Shapes on this item (a track counts once)"
+				data-testid="shape-count"
+			>
+				{controller.shapes.length}
 			</Badge>
 		</div>
 	</header>
 
-	<!-- status summary -->
-	<div class="border-border flex flex-wrap gap-x-3 gap-y-1.5 border-b px-3 py-2">
+	<!-- Each shape's own status, worded so it is not read as the item's review (the panel above says that). -->
+	<div
+		class="border-border flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-3 py-2"
+		title={STATUS_MEANING}
+		data-testid="shape-status"
+	>
+		{#if summary.length > 0}<span class="text-muted-foreground text-xs">Shapes</span>{/if}
 		{#each summary as [status, n] (status)}
 			<span class="text-muted-foreground flex items-center gap-1.5 text-xs">
 				<span class={cn('size-2 rounded-full', statusDot(status))}></span>
-				{status || '—'} <span class="text-foreground tabular-nums">{n}</span>
+				<span class="text-foreground tabular-nums">{n}</span>
+				{statusWord(status)}
 			</span>
 		{/each}
 	</div>

@@ -49,6 +49,8 @@
 	import { afterVerdict } from './quick-view.ts';
 	import LeaseChip from './LeaseChip.svelte';
 	import { corpusRows, dropTask, fireTaskEvent } from '#lib/api/projects.api.ts';
+	import { datasetView } from '#lib/api/explore.api.ts';
+	import { itemName } from './item-name.ts';
 	import { EVENT_LABELS, taskStateVariant } from './presentation.ts';
 	import type { Adjudication, TaskDetail } from './types.ts';
 
@@ -137,6 +139,21 @@
 			]),
 		),
 	);
+	// Each dataset's declaration, to call an item by its document's title and where in it it is (`itemName`).
+	const viewReads = $derived(
+		new Map(
+			[...new Set(tasks.map((t) => t.source.where).filter((w): w is string => !!w))].map((w) => [
+				w,
+				datasetView(w),
+			]),
+		),
+	);
+	/** An item's name, once its row and its dataset's declaration are read; null until then. */
+	function nameOf(task: TaskDetail): string | null {
+		const row = rowFor(task, rowIndex);
+		const view = task.source.where ? viewReads.get(task.source.where)?.current : undefined;
+		return row && view ? itemName(view, row) : null;
+	}
 	const rowKeyFields = $derived([
 		...new Set(rowReads.flatMap((read) => read.current?.keyFields ?? [])),
 	]);
@@ -311,7 +328,8 @@
 				assignee: to,
 				projectId,
 			});
-			if (!result.ok) failures.push(`${task.source.keys[0] ?? task.task_id}: ${result.detail}`);
+			if (!result.ok)
+				failures.push(`${nameOf(task) ?? task.source.keys[0] ?? task.task_id}: ${result.detail}`);
 		}
 		bulkBusy = false;
 		rowSelection = {};
@@ -354,7 +372,8 @@
 		const failures: string[] = [];
 		for (const task of targets) {
 			const result = await fireTaskEvent({ taskId: task.task_id, event, projectId });
-			if (!result.ok) failures.push(`${task.source.keys[0] ?? task.task_id}: ${result.detail}`);
+			if (!result.ok)
+				failures.push(`${nameOf(task) ?? task.source.keys[0] ?? task.task_id}: ${result.detail}`);
 		}
 		bulkBusy = false;
 		rowSelection = {};
@@ -389,7 +408,8 @@
 		const failures: string[] = [];
 		for (const task of targets) {
 			const result = await dropTask({ projectId, taskId: task.task_id });
-			if (!result.ok) failures.push(`${task.source.keys[0] ?? task.task_id}: ${result.detail}`);
+			if (!result.ok)
+				failures.push(`${nameOf(task) ?? task.source.keys[0] ?? task.task_id}: ${result.detail}`);
 		}
 		bulkBusy = false;
 		rowSelection = {};
@@ -556,9 +576,15 @@
 	<!-- The chip sits UNDER the key, not beside it: the cell is whitespace-nowrap, and an inline
 	     chip widened it until the actions column clipped (seen on the consensus screenshot). -->
 	<div class="flex flex-col items-start gap-0.5">
-		<span class="font-mono text-xs" title={task.task_id}
-			>{task.source.keys.join(', ') || task.task_id}</span
-		>
+		{#if nameOf(task)}
+			<span class="text-sm" title={`${task.source.keys.join(', ')} · task ${task.task_id}`}
+				>{nameOf(task)}</span
+			>
+		{:else}
+			<span class="font-mono text-xs" title={task.task_id}
+				>{task.source.keys.join(', ') || task.task_id}</span
+			>
+		{/if}
 		{#if replicaLabel(task)}
 			<span class="flex items-center gap-1">
 				<Badge
@@ -629,7 +655,7 @@
 				size="icon-sm"
 				disabled={busy !== null}
 				data-testid="drop-task"
-				aria-label="Remove {task.source.keys[0] ?? task.task_id} from the project"
+				aria-label="Remove {nameOf(task) ?? task.source.keys[0] ?? task.task_id} from the project"
 				title="Remove this item from the project (it cannot be completed)"
 				onclick={() => void remove(task)}
 			>
@@ -642,7 +668,7 @@
 			variant="ghost"
 			size="sm"
 			data-testid="row-quick-view"
-			aria-label="Review {task.source.keys[0] ?? task.task_id} beside the queue"
+			aria-label="Review {nameOf(task) ?? task.source.keys[0] ?? task.task_id} beside the queue"
 			title="Review this item beside the queue"
 			onclick={() => openQuick(task)}
 		>
@@ -652,7 +678,7 @@
 			variant="outline"
 			size="sm"
 			href={canvasHref(task)}
-			aria-label="{canvasVerb(task)} {task.source.keys[0] ?? task.task_id}"
+			aria-label="{canvasVerb(task)} {nameOf(task) ?? task.source.keys[0] ?? task.task_id}"
 			title="Open this item on the labeling canvas"
 		>
 			<ExternalLink class="size-3.5" />

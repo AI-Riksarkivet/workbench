@@ -35,8 +35,16 @@
 	import { panesFor, shownTab } from '#lib/explore/pane-capabilities.ts';
 	import DiarizationTimeline from '#lib/explore/components/diarization-timeline.svelte';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
-	import ImageStage, { type ImageStageFailure } from '#lib/media/image/ImageStage.svelte';
+	import ImageStage, {
+		type ImageStageContext,
+		type ImageStageFailure,
+	} from '#lib/media/image/ImageStage.svelte';
 	import MediaTransport from '#lib/media/time/MediaTransport.svelte';
+	import TimeStrip from '#lib/media/time/TimeStrip.svelte';
+	import { rgba } from '#lib/gpu/rects.ts';
+	import type { StripRow } from '#lib/media/time/strip.ts';
+	import { wholeView } from '#lib/media/time/view.ts';
+	import { documentPeaks } from '#lib/api/timeline.api.ts';
 	import TranscriptView, { type TranscriptLine } from '#lib/media/time/TranscriptView.svelte';
 	import { spanAt, type Span } from '#lib/media/time/timeline.ts';
 	import { on } from 'svelte/events';
@@ -199,6 +207,60 @@
 		return hitPart >= 0 ? hitPart : 0;
 	});
 	const currentSegment = $derived(timed.findIndex((s) => s.part === currentPart));
+
+	// ── the time strip: the recording's waveform and its segments on one axis, the labeling canvas's own, read-only ──
+	const peaksRead = $derived(
+		hit && plays ? documentPeaks({ dataset: view.id, docId: view.docId(hit) }) : null,
+	);
+	const wave = $derived(peaksRead?.current?.ok ? peaksRead.current.data : null);
+	const waveNote = $derived(
+		!peaksRead || peaksRead.current === undefined
+			? 'Reading the waveform…'
+			: !peaksRead.current.ok
+				? `No waveform: ${peaksRead.current.detail}`
+				: !peaksRead.current.data.audio
+					? `This ${noun} has no sound.`
+					: null,
+	);
+	let stripView = $state(wholeView(0));
+	const stripRows = $derived.by<StripRow[]>(() => {
+		if (timed.length === 0) return [];
+		const ink = rgba('#94a3b8', 0.8);
+		return [
+			{
+				id: 'parts',
+				label: mediaKind === 'video' ? 'Shots' : 'Segments',
+				height: 16,
+				spans: timed.map((s, i) => ({
+					key: `part:${s.part}`,
+					start: s.start,
+					end: s.end,
+					colour: ink,
+					selected: i === currentSegment,
+				})),
+			},
+		];
+	});
+
+	// ── a video's frames, drawn by the shared image stage from the hidden element ──
+	let videoStage: ImageStageContext | null = null;
+	function onVideoStage(stage: ImageStageContext): () => void {
+		videoStage = stage;
+		const el = mediaEl;
+		let alive = true;
+		if (el instanceof HTMLVideoElement && 'requestVideoFrameCallback' in el) {
+			const onframe = () => {
+				if (!alive) return;
+				stage.image.showVideoFrame();
+				el.requestVideoFrameCallback(onframe);
+			};
+			el.requestVideoFrameCallback(onframe);
+		}
+		return () => {
+			alive = false;
+			videoStage = null;
+		};
+	}
 
 	// The playing segment's span, for the speakers' segment zoom; the opened row's before the parts are read.
 	const segmentSpan = $derived.by((): Span | null => {
@@ -519,7 +581,8 @@
 					]}
 					data-testid="viewer-media"
 				>
-					<!-- A press on the picture plays and pauses it; the transport is the keyboard's way. -->
+					<!-- The frames are drawn by the shared image stage, as the labeling canvas draws them, so the picture
+					     zooms and pans like a page; the element itself is hidden. -->
 					<video
 						bind:this={mediaEl}
 						bind:currentTime
@@ -528,13 +591,34 @@
 						bind:volume
 						bind:muted
 						bind:playbackRate
-						preload="metadata"
+						preload="auto"
+						crossorigin="anonymous"
 						src={mediaSrc}
-						class="absolute inset-0 h-full w-full object-contain"
-						onclick={() => (paused = !paused)}
+						class="hidden"
+						onseeked={() => videoStage?.image.showVideoFrame()}
 					>
 						<track kind="captions" />
 					</video>
+					{#if mediaEl instanceof HTMLVideoElement && gpuFailure === null}
+						<!-- Remounted per source: another video's frame size is another sprite. -->
+						{#key mediaSrc}
+							<ImageStage
+								video={mediaEl}
+								label={title}
+								keyboard
+								fitPadding={8}
+								onready={onVideoStage}
+								onerror={onStageError}
+							/>
+						{/key}
+					{:else if gpuFailure !== null}
+						<div
+							class="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-sm"
+						>
+							{gpuFailure}: the video's frames are drawn with WebGPU. Its sound and transcript work
+							without it.
+						</div>
+					{/if}
 					{#if isFullscreen && shown === 'transcript'}
 						<div
 							class="bg-card/85 text-card-foreground absolute inset-x-0 bottom-4 mx-auto w-[min(92%,60rem)] rounded-xl px-6 py-3 shadow-lg backdrop-blur"
@@ -571,6 +655,21 @@
 					{@render failure("This item's media could not be played.", mediaError)}
 				</div>
 			{/if}
+			<div class="border-border shrink-0 border-t px-3 pt-1.5">
+				<TimeStrip
+					{duration}
+					{currentTime}
+					bind:view={stripView}
+					waveform={wave}
+					{waveNote}
+					waveHeight={mediaKind === 'audio' ? 72 : 40}
+					rows={stripRows}
+					playing={!paused}
+					clock={() => mediaEl?.currentTime ?? 0}
+					onseek={(t) => (currentTime = t)}
+					label={`Time line of the ${noun}`}
+				/>
+			</div>
 			<MediaTransport
 				bind:currentTime
 				bind:paused
@@ -579,9 +678,7 @@
 				bind:playbackRate
 				{duration}
 				{noun}
-				segments={timed}
-				{currentSegment}
-				class="border-border shrink-0 border-t"
+				class="shrink-0"
 			/>
 		{/if}
 

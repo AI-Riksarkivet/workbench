@@ -99,7 +99,16 @@ def test_a_stored_document_that_has_drifted_does_not_reach_the_client(client: Te
 
     body = client.get("/tasks/g1-r1").json()
 
-    assert body == _full_task().model_dump(mode="json")
+    events = [
+        {"event": e, "to": t, "permission": p}
+        for e, t, p in [
+            ("release", "unassigned", "can_annotate"),
+            ("save_draft", "claimed", "can_annotate"),
+            ("skip", "skipped", "can_annotate"),
+            ("submit", "in_review", "can_annotate"),
+        ]
+    ]
+    assert body == {**_full_task().model_dump(mode="json"), "legal_events": events}
 
 
 def test_the_plain_task_listing_publishes_its_five_keys_and_no_details(client: TestClient) -> None:

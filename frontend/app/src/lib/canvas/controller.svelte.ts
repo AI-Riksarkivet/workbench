@@ -35,12 +35,28 @@ import { type AnnoRow, effectiveField, projectRows, rawField } from './annotatio
 import { syncTaskDraft } from './draft-sync.ts';
 import type { PendingEdits } from './pending.ts';
 import { ontologyTools, type TaskDetail } from '#lib/projects/types.ts';
+import {
+	type ClassDef,
+	classColours,
+	classesFor,
+	classForKey,
+	matchClasses,
+	regionClasses,
+	submitBlockers,
+} from './classes.ts';
+import { boxAt, newTrackId, tracksFrom, type Track, type TrackRow } from './temporal/tracks.ts';
 
 type TaskOntology = TaskDetail['ontology'];
 
 export type { AnnoRow } from './annotation-rows.ts';
 
 export type Mode = 'view' | 'edit';
+
+/** One entry of the sidebar's list: a row, or a track standing for all its keyframes through one of them. */
+export interface ListEntry {
+	row: AnnoRow;
+	track: Track | null;
+}
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -128,7 +144,22 @@ interface LinkEdit {
 	created: boolean;
 }
 
-type UndoOp = FieldEdit | InsertEdit | DeleteEdit | GeometryEdit | LinkEdit;
+/** A region's or a keyframe's times moved or resized. `before` is null when the row had no pending time edit yet. */
+interface TemporalEdit {
+	kind: 'temporal';
+	index: number;
+	before: { t_start: number; t_end: number } | null;
+	after: { t_start: number; t_end: number };
+}
+
+type UndoOp = FieldEdit | InsertEdit | DeleteEdit | GeometryEdit | LinkEdit | TemporalEdit;
+
+/** The class picker: open over one row, because it was just drawn (Escape then decides whether it stays unlabelled) or
+ *  because the person asked to relabel it. */
+export interface ClassPicker {
+	index: number;
+	reason: 'drawn' | 'relabel';
+}
 
 /** One typed edge between two shapes, addressed by shape ID.
  *
@@ -227,6 +258,9 @@ export class AnnotatorController implements Zoomable {
 	// (offsets are deliberately not editable fields; a free-form edit of one is a corruption
 	// vector). Display overlay and Save channel in one.
 	private readonly _spanEdits = new SvelteMap<number, { char_start: number; char_end: number }>();
+	// Moved or resized TIMES of existing rows (a region dragged on the time axis, a keyframe retimed), keyed by row index:
+	// the display overlay and the Save's `temporal` channel in one, as the span edits are for offsets.
+	private readonly _temporalEdits = new SvelteMap<number, { t_start: number; t_end: number }>();
 
 	private _detachViewport: (() => void) | null = null;
 	// POST target for Save (same URL the annotations are GET from). Null ⇒ read-only.
@@ -257,18 +291,21 @@ export class AnnotatorController implements Zoomable {
 		// The span-offset overlay (the transcription-edit remap) wins over the table, exactly as
 		// the field overlay does inside projectRows — a remapped span must RENDER remapped, or the
 		// highlight sits on the wrong characters until the save round-trips.
-		if (this._spanEdits.size === 0) return projected;
+		if (this._spanEdits.size === 0 && this._temporalEdits.size === 0) return projected;
 		return projected.map((r) => {
 			const edit = this._spanEdits.get(r.index);
-			return edit ? { ...r, charStart: edit.char_start, charEnd: edit.char_end } : r;
+			const time = this._temporalEdits.get(r.index);
+			let out = edit ? { ...r, charStart: edit.char_start, charEnd: edit.char_end } : r;
+			if (time) out = { ...out, tStart: time.t_start, tEnd: time.t_end };
+			return out;
 		});
 	});
 
-	/** Distinct groups for the current group-by column, with counts. */
+	/** Distinct groups for the current group-by column, with counts: a track counts once, not once per keyframe. */
 	readonly groups = $derived.by<{ name: string; count: number }[]>(() => {
 		const col = this.groupByColumn;
 		const counts = new Map<string, number>();
-		for (const r of this.rows) {
+		for (const r of this.shapes) {
 			const key = (r as unknown as Record<string, string>)[col] ?? '';
 			counts.set(key, (counts.get(key) ?? 0) + 1);
 		}
@@ -296,6 +333,40 @@ export class AnnotatorController implements Zoomable {
 		}),
 	);
 
+	/** The rows of the item as a person counts them: a track's keyframes are one object, so they are one entry, at the
+	 *  position of the track's first keyframe; every other row is its own. */
+	readonly shapes = $derived.by<AnnoRow[]>(() => {
+		if (this.tracks.length === 0) return this.rows;
+		const first = new Set(this.tracks.map((tr) => tr.keyframes[0]?.index));
+		const keyframe = new Set(this.tracks.flatMap((tr) => tr.keyframes.map((k) => k.index)));
+		return this.rows.filter((r) => !keyframe.has(r.index) || first.has(r.index));
+	});
+
+	/** The sidebar's list: the review queue with each track folded into one entry, whose row is its keyframe at the
+	 *  playhead (so selecting it selects the box drawn there) or else its first, and which says how many keyframes it
+	 *  has over what stretch. */
+	readonly listEntries = $derived.by<ListEntry[]>(() => {
+		const byIndex = new Map<number, Track>();
+		for (const tr of this.tracks) for (const k of tr.keyframes) byIndex.set(k.index, tr);
+		const seen = new Set<string>();
+		const out: ListEntry[] = [];
+		for (const r of this.reviewQueue) {
+			const track = byIndex.get(r.index);
+			if (!track) {
+				out.push({ row: r, track: null });
+				continue;
+			}
+			if (seen.has(track.group)) continue;
+			seen.add(track.group);
+			const at = track.keyframes.find(
+				(k) => Math.abs(k.t - this.timeCursor) <= this.frameTolerance,
+			);
+			const index = (at ?? track.keyframes[0])?.index;
+			out.push({ row: this.rows.find((x) => x.index === index) ?? r, track });
+		}
+		return out;
+	});
+
 	/** 1-based position of the selection in the review queue (0 if none) + the total. */
 	readonly queuePos = $derived.by<{ at: number; of: number }>(() => {
 		const of = this.reviewQueue.length;
@@ -309,16 +380,173 @@ export class AnnotatorController implements Zoomable {
 	// The quick-label palette — drawn-shape classes only. Chunk TAG rows (shape_type=
 	// "tag", zero geometry) are annotations too but not a drawing class, so they'd just
 	// pollute the palette; excluded here (they still show in the review list/table).
+	// A task whose ontology names classes offers exactly those a region may take, in the ontology's order (what the
+	// number keys pick); an unconstrained canvas offers the labels already on the item, since no list says otherwise.
 	readonly labelClasses = $derived.by<string[]>(() =>
-		[
-			...new Set(
-				this.rows
-					.filter((r) => r.shape !== 'tag')
-					.map((r) => r.label)
-					.filter(Boolean),
-			),
-		].sort((a, b) => a.localeCompare(b)),
+		this.classDefs.length > 0
+			? regionClasses(this.classDefs).map((c) => c.name)
+			: [
+					...new Set(
+						this.rows
+							.filter((r) => r.shape !== 'tag')
+							.map((r) => r.label)
+							.filter(Boolean),
+					),
+				].sort((a, b) => a.localeCompare(b)),
 	);
+
+	/** The task's classes as its captured ontology declares them; empty on an unconstrained canvas. */
+	classDefs = $state.raw<ClassDef[]>([]);
+	/** Whether the ontology accepts an item with no annotation (`allow_empty`). */
+	allowEmpty = $state(false);
+	/** Each class's colour, its own or the palette's: the canvas's shapes, the picker and the lists draw with it. */
+	readonly classColour = $derived(classColours(this.classDefs));
+	/** A region may stay unlabelled only on a canvas whose ontology names no class; the submit refuses one otherwise
+	 *  (`submitBlockers`, and the annotator's own check). */
+	readonly allowsUnlabelled = $derived(this.classDefs.length === 0);
+	/** The class the picker starts on: the one last chosen, while it is still one the region may take. */
+	lastClass = $state<string | null>(null);
+	/** The class picker, open over a row, or null. */
+	picker = $state<ClassPicker | null>(null);
+	/** What keeps the item from being submitted, read from the rows as they are now. */
+	readonly blockers = $derived(
+		submitBlockers(
+			this.classDefs,
+			this.rows.map((r) => ({ index: r.index, shape: r.shape, label: r.label })),
+			this.allowEmpty,
+		),
+	);
+
+	/** The classes the picker offers for a row: those its shape may take, or every label offered when the ontology names
+	 *  none. */
+	classesForRow(index: number): ClassDef[] {
+		const shape = this.rows.find((r) => r.index === index)?.shape ?? '';
+		if (this.classDefs.length > 0) return classesFor(regionClasses(this.classDefs), shape);
+		return this.labelClasses.map((name) => ({ name, colour: null, tools: [], required: false }));
+	}
+
+	/** What has been typed into the open picker: the classes it narrows to. */
+	pickerQuery = $state('');
+	/** Which of the classes the typed text narrows to Enter picks. */
+	pickerHighlight = $state(0);
+	/** The classes the open picker shows: its row's, narrowed by what was typed. */
+	readonly pickerShown = $derived(
+		this.picker ? matchClasses(this.classesForRow(this.picker.index), this.pickerQuery) : [],
+	);
+
+	/** Open the picker over a row: after it is drawn, or to change its class. It starts on the row's own class, else the
+	 *  one picked last. */
+	openPicker(index: number, reason: ClassPicker['reason'] = 'relabel'): void {
+		if (this.readOnly !== null) return;
+		const offered = this.classesForRow(index);
+		if (offered.length === 0) return;
+		const own = this.rows.find((r) => r.index === index)?.label || this.lastClass;
+		this.pickerQuery = '';
+		this.pickerHighlight = Math.max(
+			0,
+			offered.findIndex((c) => c.name === own),
+		);
+		this.picker = { index, reason };
+	}
+
+	/** A key while the picker is open, wherever the focus is (a key pressed the moment a shape is drawn may arrive before
+	 *  the picker's field has it): a digit picks its class, a letter narrows the list, the arrows move through it, Enter
+	 *  picks, Escape closes it. True when the picker took the key. */
+	pickerKey(key: string): boolean {
+		const open = this.picker;
+		if (!open) return false;
+		const offered = this.classesForRow(open.index);
+		const shown = this.pickerShown;
+		if (/^[1-9]$/.test(key) && this.pickerQuery === '') {
+			const c = offered[Number(key) - 1];
+			if (c) this.pickClass(c.name);
+			return true;
+		}
+		if (key === 'ArrowDown' || key === 'ArrowUp') {
+			if (shown.length > 0)
+				this.pickerHighlight =
+					(this.pickerHighlight + (key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length;
+			return true;
+		}
+		if (key === 'Enter') {
+			const c = shown[Math.min(this.pickerHighlight, shown.length - 1)];
+			if (c) this.pickClass(c.name);
+			return true;
+		}
+		if (key === 'Escape') {
+			this.dismissPicker();
+			return true;
+		}
+		if (key === 'Backspace') {
+			this.pickerQuery = this.pickerQuery.slice(0, -1);
+			this.pickerHighlight = 0;
+			return true;
+		}
+		if (key.length === 1 && key !== ' ') {
+			this.pickerQuery += key;
+			this.pickerHighlight = 0;
+			return true;
+		}
+		return false;
+	}
+
+	/** Give the picker's row (or the selection, from the keys) a class, and remember it as the next default. */
+	pickClass(name: string): void {
+		const drawn = this.picker?.reason === 'drawn';
+		const target = this.picker?.index ?? this.selectedIndex;
+		this.picker = null;
+		// On a video a box just drawn and classed is the track worked on next: selected, so the next drag (at another
+		// moment) moves it into a keyframe at once; a region of a recording is selected for its transcription. On a still
+		// the list stays in front, to draw the next shape.
+		const segment = this.rows.find((r) => r.index === target)?.shape === 'segment';
+		if (drawn && (this.trackMode || segment) && target !== null && target !== undefined)
+			this._selectRow(target);
+		this.lastClass = name;
+		if (target === null || target === undefined) return;
+		const picked = [...this.selectedSet];
+		if (picked.length > 1 && picked.includes(target)) {
+			this.applyLabel(name);
+			return;
+		}
+		this.updateField(target, 'label', name);
+		this.notice = { tone: 'success', text: `Labeled “${name}”` };
+	}
+
+	/** Close the picker without a class. A region just drawn on a task whose classes are closed is not kept unlabelled:
+	 *  its drawing is undone, and the live region says why. */
+	dismissPicker(): void {
+		const open = this.picker;
+		this.picker = null;
+		if (!open || open.reason !== 'drawn' || this.allowsUnlabelled) return;
+		const last = this._undo.at(-1);
+		if (last?.kind === 'insert' && last.index === open.index) {
+			this.undo();
+			this._redo = this._redo.slice(0, -1);
+			// The undo reselects the row it hid; nothing is selected now, so the next press draws rather than grabbing
+			// the hidden shape's handles.
+			this._selectRow(null);
+			this.notice = {
+				tone: 'error',
+				text: 'Not kept: every region on this task needs a class. Draw it again and pick one.',
+			};
+		}
+	}
+
+	/** Relabel the selection with the class a number key names; true when the key named one. */
+	classByKey(key: string): boolean {
+		const index = this.selectedIndex;
+		const classes = index === null ? regionClasses(this.classDefs) : this.classesForRow(index);
+		const picked = classForKey(classes, key);
+		if (!picked || this.readOnly !== null) return false;
+		if (index === null) {
+			// Nothing selected: the key chooses the class the next region starts with.
+			this.lastClass = picked.name;
+			this.notice = { tone: 'success', text: `Next region: “${picked.name}”` };
+			return true;
+		}
+		this.pickClass(picked.name);
+		return true;
+	}
 
 	/** The annotations endpoint for this unit (GET/POST/versions) — null when read-only.
 	 *  The compare-versions panel reads history + historical snapshots from it. */
@@ -395,7 +623,8 @@ export class AnnotatorController implements Zoomable {
 			this._geoDirty ||
 			this._inserts.length > 0 ||
 			this._deletes.length > 0 ||
-			this._spanEdits.size > 0,
+			this._spanEdits.size > 0 ||
+			this._temporalEdits.size > 0,
 	);
 	/** Why this reader may not edit this item (their role, the task's state, another's claim), or null when they may.
 	 *  While set the canvas shows the item and takes no edit: no drawing, no field, tag, link or delete, no save. */
@@ -406,8 +635,17 @@ export class AnnotatorController implements Zoomable {
 	);
 
 	setReadOnly(reason: string | null): void {
+		const was = this.readOnly;
 		this.readOnly = reason;
-		if (reason === null) return;
+		if (reason === null) {
+			// The item became editable (claimed, or taken up for review): drawing comes back with it.
+			if (was !== null) {
+				this.mode = 'edit';
+				this.ctx?.plugins.interaction.setEditMode(true);
+			}
+			return;
+		}
+		this.picker = null;
 		this.mode = 'view';
 		this.ctx?.plugins.interaction.setEditMode(false);
 		this.setTool('select');
@@ -450,6 +688,8 @@ export class AnnotatorController implements Zoomable {
 			if (hasDirty) this._geoDirty = true;
 		};
 		im.onChange = (index, geo) => {
+			// On a video, a box moved off its keyframe's moment is a new keyframe of its track at the playhead.
+			if (this.trackMode && this._keyframeAt(index, geo)) return;
 			// drag-end geometry of an existing shape → queue for Save (canvas already updated)
 			// `before` is what a redo/undo must restore: the PENDING edit if one exists, else null
 			// meaning "the row's own geometry from the table".
@@ -465,7 +705,8 @@ export class AnnotatorController implements Zoomable {
 		im.onCommit = (shape) => {
 			// The tools commit every gesture, clicks included; a sub-5×5 rect is an accidental click.
 			if (shape.type !== 'rect' || shape.width * shape.height > MANUAL_MIN_AREA) {
-				this._appendInsert(this._buildInsert(shape));
+				const index = this._appendInsert(this._buildInsert(shape));
+				if (index >= 0) this.openPicker(index, 'drawn');
 			}
 		};
 
@@ -483,6 +724,7 @@ export class AnnotatorController implements Zoomable {
 		};
 		this.scale = img.scale;
 		this._syncLayerConfig();
+		this._syncTracks();
 	}
 
 	/** Undo `attach()` — every hook it installed, not just the viewport chain.
@@ -871,12 +1113,22 @@ export class AnnotatorController implements Zoomable {
 			this.count = this._inserts.length;
 		}
 		this._geoDirty = true;
+		this._syncTracks();
 		return index;
 	}
 
 	/** Map a committed engine shape → the queued insert row (backend NewAnnotation). */
 	private _buildInsert(shape: CommitShape): InsertRow {
+		// On a video a drawn box is the first keyframe of a new track at the playhead; any other shape is pinned to the
+		// one frame it was drawn on (`./temporal/tracks.ts`).
+		const pinned = { t_start: this.timeCursor, t_end: this.timeCursor };
+		const temporal = !this.trackMode
+			? {}
+			: shape.type === 'rect'
+				? { group: newTrackId(), ...pinned }
+				: pinned;
 		return makeInsertRow({
+			...temporal,
 			// ONE seam into the SERVICE vocabulary (`bbox`, `keypoint`, `polyline`): the names the
 			// draft's submit check accepts, whatever the engine's tools call their shapes.
 			shape_type: canonicalShapeType(shape.type) ?? shape.type,
@@ -1135,6 +1387,15 @@ export class AnnotatorController implements Zoomable {
 				this._geoDirty = true;
 				break;
 			}
+			case 'temporal': {
+				const time = direction === 'undo' ? op.before : op.after;
+				if (time === null) this._temporalEdits.delete(op.index);
+				else this._temporalEdits.set(op.index, time);
+				this._patchInsert(op.index, time ?? this._tableTime(op.index));
+				this._geoDirty = true;
+				this._syncTracks();
+				break;
+			}
 			case 'geometry': {
 				const geo = direction === 'undo' ? op.before : op.after;
 				if (geo === null) {
@@ -1164,6 +1425,11 @@ export class AnnotatorController implements Zoomable {
 	 *  re-render) and the sidebar overlay. The single write path for edit/undo/redo. */
 	private _setField(index: number, field: EditableField, value: string): void {
 		this._overrides.set(`${index}:${field}`, value);
+		// A row drawn since the last save travels as an insert, whose own fields are what the save sends: an edit's
+		// field overlay names an id the server's patch has no row for yet.
+		const id = this.table ? rawField(this.table, 'id', index) : null;
+		if (id !== null && this._inserts.some((r) => r.id === id))
+			this._inserts = this._inserts.map((r) => (r.id === id ? { ...r, [field]: value } : r));
 		this.ctx?.plugins.arrow.setFieldOverride(index, field, value);
 		this.ctx?.plugins.arrow.sync();
 	}
@@ -1241,8 +1507,22 @@ export class AnnotatorController implements Zoomable {
 		if (!this.canSave) return;
 		this._autosaveTimer = setTimeout(() => {
 			this._autosaveTimer = null;
+			// A save reloads the rows; one landing while a shape or a region is held would drop the gesture, so it waits
+			// for the release (measured on a video: a keyframe dragged across an autosave's reload was lost).
+			if (this.gesturing()) {
+				this.scheduleAutosave();
+				return;
+			}
 			void this.save({ auto: true });
 		}, this.autosaveIdleMs);
+	}
+
+	/** Whether the temporal canvas holds a region of time under the pointer: it answers while it is open. */
+	timeGesture: (() => boolean) | null = null;
+
+	/** Whether a person holds a shape or a region under the pointer now. */
+	gesturing(): boolean {
+		return this.timeGesture?.() === true || this.ctx?.plugins.interaction.gesturing === true;
 	}
 
 	/** Called after a save lands. */
@@ -1259,7 +1539,7 @@ export class AnnotatorController implements Zoomable {
 		const payload = buildSavePayload({
 			overrides: this._overrides,
 			geoEdits: this._geoEdits,
-			temporalEdits: new Map(),
+			temporalEdits: this._temporalEdits,
 			spanEdits: this._spanEdits,
 			inserts: this._inserts,
 			deletes: this._deletes,
@@ -1302,8 +1582,12 @@ export class AnnotatorController implements Zoomable {
 				// An autosave is silent on success: a message every four idle seconds is noise.
 				this.notice = { tone: 'success', text: 'Annotations saved' };
 			}
-			const later = this.pendingEdits(sent);
-			await this._reload();
+			// What was edited since this save was sent, read again once the rows are fetched and just before they replace
+			// the table: an edit made while the reload was in flight is kept too.
+			let later = this.pendingEdits(sent);
+			await this._reload(() => {
+				later = this.pendingEdits(sent);
+			});
 			this._resetOverlays();
 			const saved = this.table;
 			this.applyPending(later);
@@ -1333,6 +1617,7 @@ export class AnnotatorController implements Zoomable {
 		const sentFields = new Map(except?.fields.map((f) => [`${f.id}:${f.field}`, f.value]));
 		const sentGeometry = new Map(except?.geometry.map((g) => [g.id, JSON.stringify(g.geo)]));
 		const sentSpans = new Map(except?.spans.map((s) => [s.id, `${s.char_start}:${s.char_end}`]));
+		const sentTimes = new Map(except?.times.map((s) => [s.id, `${s.t_start}:${s.t_end}`]));
 		const fields: PendingEdits['fields'] = [];
 		for (const [key, value] of this._overrides) {
 			const sep = key.indexOf(':');
@@ -1354,12 +1639,19 @@ export class AnnotatorController implements Zoomable {
 			if (id !== null && sentSpans.get(id) !== `${span.char_start}:${span.char_end}`)
 				spans.push({ id, ...span });
 		}
+		const times: PendingEdits['times'] = [];
+		for (const [index, time] of this._temporalEdits) {
+			const id = idOf(index);
+			if (id !== null && sentTimes.get(id) !== `${time.t_start}:${time.t_end}`)
+				times.push({ id, ...time });
+		}
 		return {
 			inserts: this._inserts.filter((r) => !sentInserts.has(r.id)).map((r) => ({ ...r })),
 			deletes: this._deletes.filter((id) => !sentDeletes.has(id)),
 			fields,
 			geometry,
 			spans,
+			times,
 		};
 	}
 
@@ -1388,6 +1680,10 @@ export class AnnotatorController implements Zoomable {
 		for (const { id, char_start, char_end } of edits.spans) {
 			const index = indexOf.get(id);
 			if (index !== undefined) this._spanEdits.set(index, { char_start, char_end });
+		}
+		for (const { id, t_start, t_end } of edits.times) {
+			const index = indexOf.get(id);
+			if (index !== undefined) this._temporalEdits.set(index, { t_start, t_end });
 		}
 		for (const id of edits.deletes) {
 			const index = indexOf.get(id);
@@ -1418,6 +1714,15 @@ export class AnnotatorController implements Zoomable {
 				]),
 		);
 		this.classTranscribe = Object.fromEntries(classes.map((c) => [c.name, c.transcribe]));
+		this.classDefs = classes.map((c) => ({
+			name: c.name,
+			colour: c.colour ?? null,
+			tools: c.tools,
+			required: c.required,
+		}));
+		this.allowEmpty = ontology?.allow_empty ?? false;
+		// The shapes are coloured by their class (the layers group by `label`), each class its own colour.
+		for (const [name, hex] of this.classColour) this.layers.setColor(name, hexToNum(hex));
 		this.draftTaskId = draftTaskId;
 	}
 
@@ -1450,12 +1755,13 @@ export class AnnotatorController implements Zoomable {
 		this._suppressed.clear();
 		this._geoEdits.clear();
 		this._spanEdits.clear();
+		this._temporalEdits.clear();
 		this._geoDirty = false;
 	}
 
 	/** Re-fetch the persisted annotations into the canvas + controller, clearing the
 	 *  now-flushed overlay. merge_insert reorders rows, so selection is dropped. */
-	private async _reload(): Promise<void> {
+	private async _reload(beforeSwap?: () => void): Promise<void> {
 		const url = this._saveUrl;
 		if (!url) return;
 		// A refused reload returns silently: the write already committed, so save() still clears the
@@ -1467,6 +1773,7 @@ export class AnnotatorController implements Zoomable {
 			return;
 		}
 		const { table, version } = loaded.data;
+		beforeSwap?.();
 		this._version = version;
 		this._overrides.clear();
 		const ctx = this.ctx;
@@ -1484,7 +1791,326 @@ export class AnnotatorController implements Zoomable {
 		// table. Re-pushing here is what stops a reload — which renumbers every row — from leaving
 		// each edge pointing at whatever now happens to sit at its old index.
 		this._pushLinksToCanvas();
+		this._syncTracks();
 		this.select(null);
+	}
+
+	// ── time: a recording's regions and a video's tracks ─────────────────────────────────────────────────────────────
+
+	/** Called by a temporal viewer (a recording has no picture to draw on) once its annotations are read: the rows, and
+	 *  the door a save writes to with the version they were read at. */
+	attachTable(table: Table, saveUrl: string, version: number): void {
+		this.table = table;
+		this.count = table.numRows;
+		this._saveUrl = saveUrl;
+		this._version = version;
+	}
+
+	/** Release what `attachTable` took. */
+	detachTable(): void {
+		if (this.ctx !== null) return;
+		this.table = null;
+	}
+
+	/** Whether this canvas takes an edit of time now: an editable item, in edit mode, its rows read. */
+	readonly canEditTime = $derived(
+		this.readOnly === null && this.mode === 'edit' && this.table !== null,
+	);
+
+	/** A row's own times from the table, before any pending edit. */
+	private _tableTime(index: number): { t_start: number; t_end: number } {
+		const t = this.table;
+		const at = (field: string): number => {
+			const v = t?.getChild(field)?.get(index);
+			return typeof v === 'number' ? v : 0;
+		};
+		return { t_start: at('t_start'), t_end: at('t_end') };
+	}
+
+	/** Keep a pending insert's own times in step with its time overlay: an insert's row is what its save sends. */
+	private _patchInsert(index: number, time: { t_start: number; t_end: number }): void {
+		const id = this.table ? rawField(this.table, 'id', index) : null;
+		if (id !== null && this._inserts.some((r) => r.id === id))
+			this._inserts = this._inserts.map((r) => (r.id === id ? { ...r, ...time } : r));
+	}
+
+	/** Add a region of the recording from `start` to `end` seconds, and open the class picker on it. Its index, or -1. */
+	addSegment(start: number, end: number, init: Partial<InsertRow> = {}): number {
+		if (!this.canEditTime || !(end > start)) return -1;
+		const index = this._appendInsert(
+			makeInsertRow({ shape_type: 'segment', t_start: start, t_end: end, ...init }),
+		);
+		if (index >= 0 && init.label === undefined) this.openPicker(index, 'drawn');
+		return index;
+	}
+
+	/** Move or resize a row's times: an edit on the undo stack like any other, saved on the `temporal` channel. */
+	updateSegmentTime(index: number, t_start: number, t_end: number): void {
+		if (!this.canEditTime || !(t_end >= t_start)) return;
+		const before = this._temporalEdits.get(index) ?? null;
+		const current = before ?? this._tableTime(index);
+		if (current.t_start === t_start && current.t_end === t_end) return;
+		const after = { t_start, t_end };
+		this._pushUndo({ kind: 'temporal', index, before, after });
+		this._temporalEdits.set(index, after);
+		this._patchInsert(index, after);
+		this._geoDirty = true;
+		this._syncTracks();
+	}
+
+	/** Where the playhead is, in seconds: a shape drawn on a video is pinned to it, and its tracks are drawn at it. */
+	timeCursor = $state(0);
+	/** On a video the rows sharing a `group` are one object's keyframes (`./temporal/tracks.ts`): the canvas draws each
+	 *  track's box at the playhead, interpolated between its keyframes. Off for a still, where every row sits at 0. */
+	trackMode = $state(false);
+
+	setTrackMode(on: boolean): void {
+		this.trackMode = on;
+		this._syncTracks();
+	}
+
+	setTimeCursor(seconds: number): void {
+		if (seconds === this.timeCursor) return;
+		this.timeCursor = seconds;
+		this._syncTracks();
+	}
+
+	/** The rows as tracks: every group with a time, its keyframes in time order. */
+	readonly tracks = $derived.by<Track[]>(() => {
+		if (!this.trackMode) return [];
+		const t = this.table;
+		const rows: TrackRow[] = [];
+		for (const r of this.rows) {
+			if (!r.group || r.tStart === null) continue;
+			const geo = this._geoEdits.get(r.index);
+			const num = (field: string): number | null => {
+				const v = t?.getChild(field)?.get(r.index);
+				return typeof v === 'number' ? v : null;
+			};
+			rows.push({
+				id: r.id,
+				index: r.index,
+				group: r.group,
+				tStart: r.tStart,
+				x: geo ? geo.x : num('x'),
+				y: geo ? geo.y : num('y'),
+				width: geo ? geo.w : num('width'),
+				height: geo ? geo.h : num('height'),
+				label: r.label,
+				shape: r.shape,
+			});
+		}
+		return tracksFrom(rows);
+	});
+
+	/** The keyframe of the row's track at the playhead, within half a frame, or null. */
+	private _keyframeNear(group: string, at: number): { index: number } | null {
+		const track = this.tracks.find((tr) => tr.group === group);
+		const kf = track?.keyframes.find((k) => Math.abs(k.t - at) <= this.frameTolerance);
+		return kf ? { index: kf.index } : null;
+	}
+
+	/** Half a frame at the video's rate: two moments closer than this are one frame. Set by the video viewer. */
+	frameTolerance = 0.02;
+
+	/** The time canvas's keys, while an item with time is open: the page hands them every key the focus did not take, so
+	 *  the frame a box was just drawn on steps and plays as the strip does. True when the key was one of them. */
+	timeKeys = $state.raw<((e: KeyboardEvent) => boolean) | null>(null);
+
+	/** A box of a track moved at the playhead. On its keyframe's own moment it is that keyframe's edit (false: the
+	 *  caller queues it as a geometry edit); elsewhere it becomes a new keyframe at the playhead (true). */
+	private _keyframeAt(index: number, geo: GeometryUpdate): boolean {
+		const row = this.rows.find((r) => r.index === index);
+		if (!row || !row.group) return false;
+		const at = this.timeCursor;
+		const near = this._keyframeNear(row.group, at);
+		const arrow = this.ctx?.plugins.arrow;
+		if (near !== null && near.index === index) return false;
+		// The drag moved the track's representative row on the canvas; the moved box belongs to the new keyframe, so the
+		// representative keeps its own geometry.
+		arrow?.setOverride(index, { ...this._geometryOf(index), polygon: [] });
+		if (near !== null) {
+			this._pushUndo({
+				kind: 'geometry',
+				index: near.index,
+				before: this._geoEdits.get(near.index) ?? null,
+				after: geo,
+			});
+			this._geoEdits.set(near.index, geo);
+			this._geoDirty = true;
+			this._syncTracks();
+			return true;
+		}
+		this._appendInsert(
+			makeInsertRow({
+				shape_type: row.shape || 'bbox',
+				x: geo.x,
+				y: geo.y,
+				width: geo.w,
+				height: geo.h,
+				polygon: geo.polygon ?? [],
+				t_start: at,
+				t_end: at,
+				label: row.label,
+				group: row.group,
+			}),
+		);
+		this._syncTracks();
+		return true;
+	}
+
+	/** A row's geometry: its pending edit, else the table's. */
+	private _geometryOf(index: number): { x: number; y: number; w: number; h: number } {
+		const geo = this._geoEdits.get(index);
+		if (geo) return { x: geo.x, y: geo.y, w: geo.w, h: geo.h };
+		const t = this.table;
+		const at = (field: string): number => {
+			const v = t?.getChild(field)?.get(index);
+			return typeof v === 'number' ? v : 0;
+		};
+		return { x: at('x'), y: at('y'), w: at('width'), h: at('height') };
+	}
+
+	/** Draw every track at the playhead: each live track's box on one of its rows, every other keyframe hidden, and a
+	 *  track outside its lifespan not drawn at all (`boxAt`). */
+	private _syncTracks(): void {
+		const arrow = this.ctx?.plugins.arrow;
+		if (!arrow) return;
+		if (!this.trackMode) {
+			arrow.setTrackDisplay(new Map(), new Set());
+			arrow.sync();
+			return;
+		}
+		const overrides = new Map<number, { x: number; y: number; w: number; h: number }>();
+		const hidden = new Set<number>();
+		for (const track of this.tracks) {
+			const box = boxAt(track, this.timeCursor, this.frameTolerance);
+			// The row that stands for the track: its keyframe at the playhead when there is one, so a drag there edits it.
+			const near = track.keyframes.find(
+				(k) => Math.abs(k.t - this.timeCursor) <= this.frameTolerance,
+			);
+			const shown = near ?? track.keyframes[0];
+			for (const kf of track.keyframes) if (kf !== shown || box === null) hidden.add(kf.index);
+			if (shown && box)
+				overrides.set(shown.index, { x: box.x, y: box.y, w: box.width, h: box.height });
+		}
+		// A shape pinned to one frame (a polygon, a point) is drawn on that frame alone.
+		const tracked = new Set(this.tracks.flatMap((tr) => tr.keyframes.map((k) => k.index)));
+		for (const r of this.rows) {
+			if (tracked.has(r.index) || r.tStart === null || r.shape === 'segment' || r.shape === 'tag')
+				continue;
+			if (Math.abs(r.tStart - this.timeCursor) > this.frameTolerance) hidden.add(r.index);
+		}
+		arrow.setTrackDisplay(overrides, hidden);
+		arrow.sync();
+	}
+
+	/** Copy the selected track's box at the playhead to the frame `step` seconds on, as a keyframe there. */
+	copyToNextFrame(step: number): void {
+		const index = this.selectedIndex;
+		if (index === null || !this.trackMode || this.readOnly !== null) return;
+		const row = this.rows.find((r) => r.index === index);
+		const track = row ? this.tracks.find((tr) => tr.group === row.group) : undefined;
+		const box = track ? boxAt(track, this.timeCursor, this.frameTolerance) : null;
+		if (!row || !track || !box) return;
+		const at = this.timeCursor + step;
+		const near = this._keyframeNear(track.group, at);
+		const geo = { x: box.x, y: box.y, w: box.width, h: box.height, polygon: null };
+		if (near !== null) {
+			this._pushUndo({
+				kind: 'geometry',
+				index: near.index,
+				before: this._geoEdits.get(near.index) ?? null,
+				after: geo,
+			});
+			this._geoEdits.set(near.index, geo);
+			this._geoDirty = true;
+		} else {
+			this._appendInsert(
+				makeInsertRow({
+					shape_type: row.shape || 'bbox',
+					x: box.x,
+					y: box.y,
+					width: box.width,
+					height: box.height,
+					t_start: at,
+					t_end: at,
+					label: row.label,
+					group: track.group,
+				}),
+			);
+		}
+		this._syncTracks();
+	}
+
+	/** A row's box on the screen, in CSS pixels of the canvas, at the view as it is now (a track's box at the playhead);
+	 *  null without a canvas or a box. Reads `viewport`, so a caller deriving from it follows zoom and pan. */
+	screenBoxOf(index: number): { x: number; y: number; width: number; height: number } | null {
+		void this.viewport;
+		const ctx = this.ctx;
+		if (!ctx) return null;
+		// A region of the time line has no box on the picture: its picker opens on the time line.
+		if (this.rows.find((r) => r.index === index)?.shape === 'segment') return null;
+		const track = this.tracks.find((tr) => tr.keyframes.some((k) => k.index === index));
+		const box = track ? boxAt(track, this.timeCursor, this.frameTolerance) : null;
+		const g = box ? { x: box.x, y: box.y, w: box.width, h: box.height } : this._geometryOf(index);
+		const a = ctx.plugins.interaction.worldToScreen(g.x, g.y);
+		const b = ctx.plugins.interaction.worldToScreen(g.x + g.w, g.y + g.h);
+		return {
+			x: Math.min(a.x, b.x),
+			y: Math.min(a.y, b.y),
+			width: Math.abs(b.x - a.x),
+			height: Math.abs(b.y - a.y),
+		};
+	}
+
+	/** Mark the selected track as leaving the picture at the playhead (an outside keyframe: a box of no area, the
+	 *  track absent from here to its next keyframe), or, on one already outside, bring it back as the box before it. */
+	toggleOutside(): void {
+		const index = this.selectedIndex;
+		if (index === null || !this.trackMode || this.readOnly !== null) return;
+		const row = this.rows.find((r) => r.index === index);
+		const track = row ? this.tracks.find((tr) => tr.group === row.group) : undefined;
+		if (!row || !track) return;
+		const at = this.timeCursor;
+		const near = this._keyframeNear(track.group, at);
+		const before = [...track.keyframes].reverse().find((k) => k.t < at && !k.outside);
+		if (near !== null) {
+			const kf = track.keyframes.find((k) => k.index === near.index);
+			const back = kf?.outside && before ? before : null;
+			const geo = back
+				? { x: back.x, y: back.y, w: back.width, h: back.height, polygon: null }
+				: { x: kf?.x ?? 0, y: kf?.y ?? 0, w: 0, h: 0, polygon: null };
+			this._pushUndo({
+				kind: 'geometry',
+				index: near.index,
+				before: this._geoEdits.get(near.index) ?? null,
+				after: geo,
+			});
+			this._geoEdits.set(near.index, geo);
+			this._geoDirty = true;
+		} else {
+			const box = boxAt(track, at, this.frameTolerance);
+			this._appendInsert(
+				makeInsertRow({
+					shape_type: row.shape || 'bbox',
+					x: box?.x ?? 0,
+					y: box?.y ?? 0,
+					width: 0,
+					height: 0,
+					t_start: at,
+					t_end: at,
+					label: row.label,
+					group: track.group,
+				}),
+			);
+		}
+		this._syncTracks();
+	}
+
+	/** Move a keyframe to another moment (its lane's drag), on the undo stack. */
+	retimeKeyframe(index: number, at: number): void {
+		this.updateSegmentTime(index, at, at);
 	}
 
 	// ── zoom ──

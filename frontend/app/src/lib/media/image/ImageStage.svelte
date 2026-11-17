@@ -36,7 +36,8 @@
 	import type { Zoomable } from './zoom.ts';
 
 	let {
-		url,
+		url = '',
+		video = null,
 		label,
 		canPan,
 		keyboard = false,
@@ -49,7 +50,10 @@
 		children,
 	}: {
 		/** The picture's address: a signed link, which serves without a token. */
-		url: string;
+		url?: string;
+		/** A video to show instead of a picture: its frames are the picture (`ImagePlugin.attachVideo`), and its holder
+		 *  draws each one it presents through the stage `onready` hands over (`image.showVideoFrame`). */
+		video?: HTMLVideoElement | null;
 		/** The picture's accessible name; without one the stage is decoration of a region that names itself. */
 		label?: string;
 		/** Whether a drag pans now; always, unless a layer over the stage takes the pointer for its own gestures. */
@@ -174,7 +178,17 @@
 				onviewport?.(bounds);
 			};
 			plugin = image;
-			if (!(await show(image, url)) || destroyed) return;
+			if (video) {
+				try {
+					await image.attachVideo(video);
+				} catch (err) {
+					if (!destroyed)
+						onerror?.({ kind: 'load', message: err instanceof Error ? err.message : String(err) });
+					return;
+				}
+				loading = false;
+				if (destroyed) return;
+			} else if (!(await show(image, url)) || destroyed) return;
 			layerCleanup = onready?.({ app, image });
 		}
 
@@ -203,7 +217,7 @@
 	$effect(() => {
 		const next = url;
 		const image = plugin;
-		if (image === null) return;
+		if (image === null || video) return;
 		if (shownUrl === '') {
 			shownUrl = next;
 			return;

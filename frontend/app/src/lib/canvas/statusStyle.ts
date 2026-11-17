@@ -34,3 +34,22 @@ export function statusVariant(status: string): BadgeVariant {
 			return 'outline';
 	}
 }
+
+/** What a shape's own status says, in the words the sidebar uses. A shape's status is not its item's review: a shape a
+ *  person drew is kept from the moment it is drawn, while the item it is on may still be labeled or in review. */
+export function statusWord(status: string): string {
+	switch (status) {
+		case 'accepted':
+			return 'kept';
+		case 'prediction':
+			return 'proposed';
+		case '':
+			return '—';
+		default:
+			return status;
+	}
+}
+
+/** The sentence a status summary's tooltip gives. */
+export const STATUS_MEANING =
+	'Each shape’s own status: kept (drawn by a person, or a proposal someone kept), proposed (a model’s, not yet looked at), rejected. The item’s review is in the panel above.';

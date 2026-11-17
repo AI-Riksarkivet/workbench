@@ -9,16 +9,41 @@ dataset matches, so the schema cannot silently drift across its consumers.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Self
 
 import pyarrow as pa
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 if TYPE_CHECKING:
     from client_kit.lancekit.descriptor import Declared
 
 ANNOTATIONS_TABLE = "annotations"
+
+#: An annotation's id: the canvas mints ids of a few dozen characters, and a chunk tag's id names its document, its keys
+#: and its percent-encoded label (`annotator.annotations.tags.tag_id`), a few hundred at most.
+MAX_ID_LENGTH = 1024
+
+#: A track's group: the canvas mints a dozen characters (`trk-` and a base-36 number).
+MAX_GROUP_LENGTH = 128
+
+#: The rows one save may name, every list counted: an autosave carries what changed since the last one, a few dozen
+#: rows, and a bulk load is an import, which has its own door. Bounds the merge one request has the catalog commit.
+MAX_SAVE_ROWS = 5000
+
+RowId = Annotated[str, Field(min_length=1, max_length=MAX_ID_LENGTH)]
+Group = Annotated[str, Field(max_length=MAX_GROUP_LENGTH)]
+#: A moment in the item's media, in seconds from its start.
+Seconds = Annotated[float, Field(ge=0.0)]
+
+#: Every number a saved row carries is finite: a NaN or an infinity read back breaks every reader of the table.
+FINITE = ConfigDict(allow_inf_nan=False)
+
+
+def _ends_after_it_starts(t_start: float, t_end: float) -> None:
+    if t_end < t_start:
+        raise ValueError(f"t_end {t_end} is before t_start {t_start}")
+
 
 #: The fields a reviewer may edit — the local-first review overlay flushed on save.
 #: Only these are patched; geometry + provenance columns are carried forward from the
@@ -31,11 +56,11 @@ EDITABLE_FIELDS = ("label", "status", "text", "group", "reviewer", "metadata")
 class AnnotationEdit(BaseModel):
     """One reviewed annotation: its id + only the fields that changed."""
 
-    id: str
+    id: RowId
     label: str | None = None
     status: str | None = None
     text: str | None = None
-    group: str | None = None
+    group: Group | None = None
     reviewer: str | None = None
     metadata: str | None = None
 
@@ -47,7 +72,9 @@ class NewAnnotation(BaseModel):
     defaults are ALSO the row defaults for server-minted rows (chunk tags), so the
     contract lives in one model."""
 
-    id: str
+    model_config = FINITE
+
+    id: RowId
     shape_type: str
     x: float = 0.0
     y: float = 0.0
@@ -55,13 +82,13 @@ class NewAnnotation(BaseModel):
     height: float = 0.0
     rotation: float = 0.0
     polygon: list[float] = Field(default_factory=list)
-    t_start: float = 0.0
-    t_end: float = 0.0
+    t_start: Seconds = 0.0
+    t_end: Seconds = 0.0
     text: str = ""
     label: str = ""
     status: str = "accepted"
     source: str = "human"
-    group: str = ""
+    group: Group = ""
     mask: str = ""
     #: The TEXTUAL facet — a span INTO another row's ``text`` (token classification, the value half
     #: of KIE). Sentinels match the client's ``makeInsertRow``: empty/-1 on every non-span row, so a
@@ -83,11 +110,18 @@ class NewAnnotation(BaseModel):
     confidence: float | None = None
     uncertainty: float | None = None
 
+    @model_validator(mode="after")
+    def _a_stretch_ends_after_it_starts(self) -> Self:
+        _ends_after_it_starts(self.t_start, self.t_end)
+        return self
+
 
 class GeometryEdit(BaseModel):
     """A moved/resized EXISTING shape — spatial geometry only, keyed by id (canvas drag)."""
 
-    id: str
+    model_config = FINITE
+
+    id: RowId
     x: float
     y: float
     width: float
@@ -98,9 +132,16 @@ class GeometryEdit(BaseModel):
 class TemporalEdit(BaseModel):
     """A resized audio/video SEGMENT — its times only, keyed by id (waveform region drag)."""
 
-    id: str
-    t_start: float
-    t_end: float
+    model_config = FINITE
+
+    id: RowId
+    t_start: Seconds
+    t_end: Seconds
+
+    @model_validator(mode="after")
+    def _a_stretch_ends_after_it_starts(self) -> Self:
+        _ends_after_it_starts(self.t_start, self.t_end)
+        return self
 
 
 class SpanEdit(BaseModel):
@@ -111,7 +152,7 @@ class SpanEdit(BaseModel):
     Offsets are deliberately NOT in `EDITABLE_FIELDS` — a free-form field edit of a char offset
     is a corruption vector; this channel is the one legal writer, mirroring `TemporalEdit`."""
 
-    id: str
+    id: RowId
     char_start: int
     char_end: int
 
@@ -130,8 +171,18 @@ class SaveAnnotations(BaseModel):
     geometry: list[GeometryEdit] = Field(default_factory=list)
     temporal: list[TemporalEdit] = Field(default_factory=list)
     spans: list[SpanEdit] = Field(default_factory=list)
-    deletes: list[str] = Field(default_factory=list)
+    deletes: list[RowId] = Field(default_factory=list)
     base_version: int | None = None
+
+    @model_validator(mode="after")
+    def _bounded(self) -> Self:
+        rows = len(self.edits) + len(self.inserts) + len(self.geometry) + len(self.temporal) + len(self.spans) + len(self.deletes)
+        if rows > MAX_SAVE_ROWS:
+            raise ValueError(f"a save names {rows} rows, and one names at most {MAX_SAVE_ROWS}: save more often, or import")
+        ids = [i.id for i in self.inserts]
+        if len(set(ids)) != len(ids):
+            raise ValueError("two new shapes in one save carry the same id")
+        return self
 
 
 class SaveResult(BaseModel):

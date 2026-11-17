@@ -13,6 +13,7 @@
 	import type { ActivityFeed, NavUser, PageNav } from './nav-config.ts';
 	import { collapseCrumbs, pathCrumbs, type Crumb } from './breadcrumb.ts';
 	import { rememberOpen, rememberedOpen, sidebarKey } from './sidebar-memory.ts';
+	import { crumbNames } from './crumb-names.svelte.ts';
 
 	// Subtle content settle-in. Runs once when the shell MOUNTS — i.e. on a fresh
 	// document load, which is every full-page landing — so the page gently
@@ -88,15 +89,18 @@
 		pathname === '/' && pages?.has('/') ? [{ id: '', label: pages.get('/') ?? '', href: '/' }] : [],
 	);
 	const crumbs = $derived(
-		[...rootCrumb, ...pathCrumbs(pathname, routeId)].map((crumb): ShellCrumb =>
-			pages === null
-				? { ...crumb, page: true }
+		[...rootCrumb, ...pathCrumbs(pathname, routeId)].map((crumb): ShellCrumb => {
+			// A segment a page named (a project's title, an item's name) reads as that name, its id the tooltip.
+			const named = crumbNames.get(crumb.href);
+			const base = named ? { ...crumb, label: named.label, title: named.title } : crumb;
+			return pages === null
+				? { ...base, page: true }
 				: {
-						...crumb,
-						label: pages.get(crumb.href) ?? groups?.get(crumb.href) ?? crumb.label,
+						...base,
+						label: named?.label ?? pages.get(crumb.href) ?? groups?.get(crumb.href) ?? crumb.label,
 						page: pages.has(crumb.href),
-					},
-		),
+					};
+		}),
 	);
 	// A deep path does not fit a narrow row, so the MIDDLE of the trail folds behind an ellipsis menu
 	// rather than squeezing every crumb into illegibility — and the current page, the one crumb worth
@@ -110,7 +114,7 @@
 	const firstCrumbId = $derived(crumbs[0]?.id);
 
 	/** A crumb, and whether its path is a page a link can open. */
-	type ShellCrumb = Crumb & { page: boolean };
+	type ShellCrumb = Crumb & { page: boolean; title?: string };
 
 	// Bound, so the trigger and cmd/ctrl+b open and close the rail. It starts as the collapsed icon rail and
 	// opens as the person last left it in this browser (`sidebar-memory.ts`); on a phone the sidebar is the
@@ -138,10 +142,13 @@
 	{#if crumb.page === false}
 		<!-- A path that is no page of its own (a group such as Catalog): naming it places the reader,
 		     linking it would send them somewhere else. -->
-		<span class="text-muted-foreground truncate" data-slot="breadcrumb-group">{crumb.label}</span>
+		<span class="text-muted-foreground truncate" data-slot="breadcrumb-group" title={crumb.title}
+			>{crumb.label}</span
+		>
 	{:else}
 		<a
 			href={link(crumb.href)}
+			title={crumb.title}
 			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 truncate rounded-sm transition-colors outline-none focus-visible:ring-3"
 			>{crumb.label}</a
 		>
@@ -217,6 +224,7 @@
 								<span
 									aria-current="page"
 									class="text-foreground truncate font-medium"
+									title={crumb.title}
 									data-slot="breadcrumb-page">{crumb.label}</span
 								>
 							{:else}

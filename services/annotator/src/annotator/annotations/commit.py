@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from annotator.annotations.lineage import emit_save
 from annotator.annotations.schema import SaveResult
 from annotator.core.config import AnnotatorSettings
-from client_kit.lancekit.predicate import isin
+from client_kit.lancekit.predicate import and_, isin
 from service_kit.exceptions import ConflictError, NotFoundError
 
 
@@ -65,9 +65,12 @@ def check_base_version_value(current: int, base_version: int | None, *, required
         raise ConflictError(f"annotations changed on the server (loaded v{base_version}, now v{current})")
 
 
-def delete_by_ids(writer: NamespaceCatalogWriteTransport, ids: Sequence[str]) -> None:
-    """Delete rows by id through the catalog's delete door — quoted, injection-guarded."""
-    writer.delete(isin("id", ids))
+def delete_by_ids(writer: NamespaceCatalogWriteTransport, ids: Sequence[str], *, within: str = "") -> None:
+    """Delete rows by id through the catalog's delete door — quoted, injection-guarded.
+
+    ``within`` (a unit's predicate) bounds the delete itself, so a row that is not that unit's is never removed, even
+    one written between the caller's check and this commit."""
+    writer.delete(and_(within, isin("id", ids)))
 
 
 def finalize_commit(
@@ -90,8 +93,19 @@ def finalize_commit(
     return SaveResult(saved=touched, version=int(fresh.version))
 
 
-def refuse_unknown_ids(ds: lance.LanceDataset, ids: Sequence[str]) -> None:
-    """Refuse a delete naming any id the project's table does not hold: such an id is another project's row, or none."""
-    held = set(ds.to_table(columns=["id"], filter=isin("id", list(ids))).column("id").to_pylist())
+def refuse_unknown_ids(ds: lance.LanceDataset, ids: Sequence[str], *, within: str) -> None:
+    """Refuse a delete naming any id the unit ``within`` selects does not hold: such an id is another task's row,
+    another project's, or none. The project's table is one table for every task, so its ids alone do not bound a save."""
+    held = set(ds.to_table(columns=["id"], filter=and_(within, isin("id", list(ids)))).column("id").to_pylist())
     if unknown := sorted(set(ids) - held):
-        raise NotFoundError(f"annotation(s) {unknown[:20]} are not this project's")
+        raise NotFoundError(f"annotation(s) {unknown[:20]} are not this unit's")
+
+
+def refuse_held_ids(ds: lance.LanceDataset, ids: Sequence[str]) -> None:
+    """Refuse a new shape whose id the project's table already holds.
+
+    The save commits one merge keyed by id over the project's whole table, so a new shape naming a row of another
+    task's unit would update that row in place: a write into a unit the caller was never checked against. A drawn
+    shape's id is minted fresh by the canvas, so a held one is never a new shape."""
+    if held := sorted(set(ds.to_table(columns=["id"], filter=isin("id", list(ids))).column("id").to_pylist())):
+        raise ConflictError(f"annotation(s) {held[:20]} already exist: a new shape takes an id of its own")

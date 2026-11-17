@@ -10,6 +10,7 @@ acme: olga administers it, alice belongs to it; mallory belongs nowhere.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -248,6 +249,52 @@ def test_a_save_is_an_edit_the_named_task_takes_from_its_caller_now(
         assert response.json()["detail"] == detail
     if status != 422:  # that task's own unit is the key no read can name either
         assert _rows(door, project) == (["n1"] if status == 200 else [])
+
+
+_LONG_GROUP = "g" * 129
+_MANY = ",".join(f'{{"id":"d{i}","t_start":0,"t_end":1}}' for i in range(5001))
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        pytest.param('{"temporal":[{"id":"held","t_start":NaN,"t_end":1}]}', 422, id="a-time-that-is-not-a-number"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"segment","t_start":0,"t_end":Infinity}]}', 422, id="an-infinite-end"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"segment","t_start":9,"t_end":3}]}', 422, id="an-end-before-its-start"),
+        pytest.param('{"temporal":[{"id":"held","t_start":-1,"t_end":1}]}', 422, id="a-moment-before-the-media"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"bbox","x":NaN}]}', 422, id="a-box-at-no-place"),
+        pytest.param(f'{{"inserts":[{{"id":"n","shape_type":"bbox","group":"{_LONG_GROUP}"}}]}}', 422, id="a-group-past-its-bound"),
+        pytest.param(f'{{"temporal":[{_MANY}]}}', 422, id="more-rows-than-one-save-names"),
+        # Ids are one key over the project's table: an insert naming another task's row would update it in place.
+        pytest.param('{"inserts":[{"id":"held","shape_type":"bbox","label":"taken"}]}', 409, id="a-new-shape-with-another-tasks-id"),
+        # A delete is held to the task's own unit too: another task's row is not this save's to remove.
+        pytest.param('{"deletes":["held"]}', 404, id="a-delete-of-another-tasks-row"),
+    ],
+)
+def test_a_save_of_impossible_times_or_another_tasks_row_is_refused_and_writes_nothing(
+    door: _Door, openfga_store: OpenFgaStore, body: str, status: int
+) -> None:
+    """Fay saves a segment on task t1's unit, then a save through task t2, of the same project, names something no row
+    may hold: the save is refused, and t1's row is as it was."""
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(("user:keycloak~fay", "annotator", f"project:{project}"))
+    _task(door, project)
+    _task(door, project, "t2", source={"kind": "chunks", "keys": [OTHER_UNIT], "where": DATASET})
+    first = _save(door, "fay", project, inserts=[{"id": "held", "shape_type": "segment", "t_start": 1.0, "t_end": 2.0, "label": "kept"}])
+    assert first.status_code == 200, first.text
+    payload = {**json.loads(body.replace("NaN", '"nan"').replace("Infinity", '"inf"')), "base_version": first.json()["version"]}
+    raw = json.dumps(payload).replace('"nan"', "NaN").replace('"inf"', "Infinity")
+
+    refused = door.as_("fay").post(
+        f"/annotations/{OTHER_UNIT}",
+        params={"project": project, "task": "t2", "dataset": DATASET},
+        content=raw,
+        headers={"content-type": "application/json"},
+    )
+
+    assert refused.status_code == status, refused.text
+    rows = pa.ipc.open_stream(_read(door, "fay", project).content).read_all().select(["id", "label", "t_start", "t_end"]).to_pylist()
+    assert rows == [{"id": "held", "label": "kept", "t_start": 1.0, "t_end": 2.0}]
 
 
 def test_a_tag_batch_tags_only_the_units_of_the_task_it_names(door: _Door, openfga_store: OpenFgaStore) -> None:

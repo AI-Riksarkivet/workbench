@@ -26,9 +26,12 @@
 	// The annotations read is awaited after the stage handed over, and can outlive this component: a stale
 	// continuation must not attach the controller after its owner is gone. Checked after the await.
 	let alive = true;
+	/** The engine this viewer attached the controller to: a viewer mounted again (the page's layout changing) attaches
+	 *  its own, and this one, destroyed after, must not take that away. */
+	let attached: PixiContext | null = null;
 	onDestroy(() => {
 		alive = false;
-		controller.detach();
+		if (attached !== null && controller.ctx === attached) controller.detach();
 	});
 
 	let interaction: InteractionManager | undefined;
@@ -66,6 +69,7 @@
 			ctx.plugins.arrow.load(table);
 			ctx.plugins.arrow.sync();
 			controller.attach(ctx, table, annotationsUrl, version);
+			attached = ctx;
 			onload?.(table.numRows);
 		} catch (e) {
 			onerror?.(e instanceof Error ? e.message : String(e));

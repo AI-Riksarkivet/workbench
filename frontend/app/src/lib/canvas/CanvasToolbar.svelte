@@ -21,6 +21,7 @@
 	import { cn } from '@workbench/ui/utils';
 	import { COMMITS_SHAPE } from '@workbench/labeling/shape-types';
 	import { TOOL_DEFS, bandsOf } from './tool-defs.ts';
+	import { TIME_LETTERS } from './temporal/time-keys.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let {
@@ -42,6 +43,11 @@
 	} = $props();
 
 	const editing = $derived(controller.readOnly === null);
+
+	/** A tool's key, or null where the item has time and that letter is the time's (`time-keys.ts`). */
+	function keyOf(key: string): string | null {
+		return controller.timeKeys !== null && TIME_LETTERS.has(key.toLowerCase()) ? null : key;
+	}
 
 	// A DRAWING tool is offered only when the open task's ontology permits the shape it commits, so an annotator never
 	// draws with a tool the task would refuse at submit. `allowedTools` is null when unconstrained. Select, pan and lasso
@@ -115,8 +121,8 @@
 				variant={controller.activeTool === t.tool ? 'default' : 'ghost'}
 				size="icon-sm"
 				aria-label={t.label}
-				aria-keyshortcuts={t.key}
-				title={`${t.label} (${t.key})${cvLoading ? ' — detecting corners…' : ''}`}
+				aria-keyshortcuts={keyOf(t.key) ?? undefined}
+				title={`${t.label}${keyOf(t.key) ? ` (${t.key})` : ''}${cvLoading ? ' — detecting corners…' : ''}`}
 				aria-pressed={controller.activeTool === t.tool}
 				disabled={!controller.canDraw && COMMITS_SHAPE.has(t.tool)}
 				data-cvready={t.cv ? controller.cvReady.has(t.tool) : undefined}
@@ -292,9 +298,9 @@
 		<Button
 			variant="ghost"
 			size="icon-sm"
-			aria-label="Delete selected"
+			aria-label="Delete"
 			aria-keyshortcuts="Delete"
-			title="Delete selected (Del)"
+			title="Delete the selection (Del)"
 			disabled={controller.selectedIndex == null}
 			onclick={() => controller.deleteSelected()}
 		>
@@ -307,8 +313,8 @@
 			class={cn('size-2 rounded-full', controller.dirty ? 'bg-warning' : 'bg-transparent')}
 			title={controller.dirty ? 'Unsaved edits' : 'No pending edits'}
 		></span>
-		<span class="text-muted-foreground text-[10px] tabular-nums" title="Annotation count">
-			{controller.count}
+		<span class="text-muted-foreground text-[10px] tabular-nums" title="Shapes on this item">
+			{controller.shapes.length}
 		</span>
 	</div>
 </div>

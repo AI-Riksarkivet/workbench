@@ -225,6 +225,13 @@
 			createOpen = false;
 			slug = title = description = instructions = '';
 			consensusN = 1;
+			// The next project starts from a blank task too: a template or YAML left from this one would be created again
+			// under the next title, whatever its own fields say.
+			classesText = '';
+			shapeKind = 'bbox';
+			classesRequired = false;
+			taskKind = 'free';
+			pickTemplate('custom');
 		} else {
 			// 403 is a permission fact, not a form mistake — say which door closed.
 			createError = result.detail;

@@ -5,8 +5,9 @@ the editable fields onto the current rows (geometry/provenance carried forward) 
 ``merge_insert("id")`` commits them as ONE atomic new version — the lakehouse
 "version IS the handshake". The rows are the project's own (`annotator.annotations.store`): the
 write goes through the catalog's doors as the workbench's own identity, after the person's
-`can_annotate` on the project, naming the person as the commit's originator. A delete naming a row
-the project's table does not hold is refused, never applied.
+`can_annotate` on the project, naming the person as the commit's originator. A save stays inside its
+task's unit: a delete naming a row the unit does not hold is refused, never applied, and so is a new shape naming
+a row the project's table holds; an edit naming another unit's row patches nothing.
 """
 
 import logging
@@ -17,7 +18,7 @@ import pyarrow as pa
 from fastapi import APIRouter
 
 from annotator.annotations.access import MAY_EDIT_UNIT, UnitKey
-from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit, refuse_unknown_ids
+from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit, refuse_held_ids, refuse_unknown_ids
 from annotator.annotations.schema import (
     EDITABLE_FIELDS,
     NewAnnotation,
@@ -79,10 +80,12 @@ def save_annotations(
     # not yet made is version 0, the version the wire GET serves for it.
     check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version, required=True)
     if body.deletes:
-        # Only this project's rows can be deleted: an id its table does not hold is refused before anything is written.
+        # Only this unit's rows can be deleted: an id it does not hold is refused before anything is written.
         if existing is None:
-            raise NotFoundError(f"annotation(s) {sorted(body.deletes)[:20]} are not this project's")
-        refuse_unknown_ids(existing, body.deletes)
+            raise NotFoundError(f"annotation(s) {sorted(body.deletes)[:20]} are not this unit's")
+        refuse_unknown_ids(existing, body.deletes, within=unit.where)
+    if body.inserts and existing is not None:
+        refuse_held_ids(existing, [i.id for i in body.inserts])
     ds = existing if existing is not None else table.open_or_create(declared, author)
 
     current = ds.to_table(filter=unit.where)
@@ -125,7 +128,7 @@ def save_annotations(
         writer.merge_upsert(delta, "id")
         touched += delta.num_rows
     if body.deletes:
-        delete_by_ids(writer, body.deletes)
+        delete_by_ids(writer, body.deletes, within=unit.where)
         touched += len(body.deletes)
 
     result = finalize_commit(

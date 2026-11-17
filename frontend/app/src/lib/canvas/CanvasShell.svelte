@@ -32,6 +32,10 @@
 	import AnnotationSidebar from './AnnotationSidebar.svelte';
 	import CanvasToolbar from './CanvasToolbar.svelte';
 	import ClassificationBar from './ClassificationBar.svelte';
+	import ClassPicker from './ClassPicker.svelte';
+	import TaskPanel from './TaskPanel.svelte';
+	import TemporalCanvas from './temporal/TemporalCanvas.svelte';
+	import type { CanvasMedia } from './media.ts';
 	import Filmstrip from './Filmstrip.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import TaskStreamNav from './TaskStreamNav.svelte';
@@ -40,11 +44,12 @@
 	import { canvasSettings } from './settings.ts';
 	import type { StreamPosition } from './task-stream.ts';
 	import { TOOL_DEFS, TOOL_KEYS, gestureOf, isCvTool } from './tool-defs.ts';
+	import { TIME_KEYS, TIME_LETTERS } from './temporal/time-keys.ts';
 
 	let {
 		task,
 		unitKey,
-		imageUrl,
+		media,
 		annotationsUrl,
 		readOnly,
 		person,
@@ -52,12 +57,16 @@
 		claimed,
 		exitHref,
 		link,
+		permissions,
+		me,
+		ontaskchange,
+		itemName,
 	}: {
 		task: TaskDetail;
 		/** The open unit's key path. */
 		unitKey: string;
-		/** The unit's picture, a signed link. */
-		imageUrl: string;
+		/** What is labelled: the unit's picture, or the recording or video its unit is part of, each a signed link. */
+		media: CanvasMedia;
 		/** The unit's annotations door, its project, task and dataset on it. */
 		annotationsUrl: string;
 		/** Why this reader may not edit the item, or null when they may. */
@@ -69,6 +78,14 @@
 		claimed: TaskDetail[];
 		exitHref: string;
 		link: (path: string) => string;
+		/** The reader's permissions on the project: which of the task's transitions the side panel offers. */
+		permissions: readonly string[];
+		/** Who is signed in, as the annotator names principals; null with sign-in off. */
+		me: string | null;
+		/** The task after a transition the side panel made. */
+		ontaskchange: (task: TaskDetail) => void;
+		/** What the item is called (its document and page, or its recording), for the canvas's name. */
+		itemName: string;
 	} = $props();
 
 	const controller = new AnnotatorController();
@@ -80,7 +97,10 @@
 		untrack(() => task.ontology),
 		untrack(() => task.task_id),
 	);
-	controller.setReadOnly(untrack(() => readOnly));
+	// Who may edit follows the task: a claim, a submit or a review changes it while the canvas stays open.
+	$effect.pre(() => {
+		controller.setReadOnly(readOnly);
+	});
 	const keptUnder = untrack(() => `${task.task_id}/${unitKey}`);
 
 	onMount(() => {
@@ -91,13 +111,17 @@
 			if (alive && draft.ok && draft.data !== null && draft.data.links.length > 0)
 				controller.restoreLinks(draft.data.links);
 		});
-		// Autosave, run from here because a component has a lifecycle and the controller does not: the timer dies with
-		// the canvas. A reader who may not edit gets none.
-		if (controller.readOnly === null) controller.startAutosave();
 		return () => {
 			alive = false;
 			controller.stopAutosave();
 		};
+	});
+
+	// Autosave, run from here because a component has a lifecycle and the controller does not: the timer dies with
+	// the canvas. A reader who may not edit gets none, and gets it once the item becomes theirs to edit.
+	$effect(() => {
+		if (readOnly === null) controller.startAutosave();
+		else controller.stopAutosave();
 	});
 
 	// Every edit restarts the debounce (`edits`), so the autosave waits from the last one.
@@ -166,7 +190,10 @@
 				: `${count} annotation${count === 1 ? '' : 's'}`,
 	);
 
-	let width = $state(1440);
+	// Measured by the layout below; until then the window's width, so a narrow page lays the canvas out stacked from its
+	// first frame rather than mounting the picture in the split and again under it (measured at 390 px: two stages
+	// built and the canvas ready after 3.9 s, against 1.9 s at 1440).
+	let width = $state(window.innerWidth);
 	/** Below the split's two minimums (420 + 320 px) the inspector goes under the image. */
 	const narrow = $derived(width < 740);
 	let helpOpen = $state(false);
@@ -260,6 +287,18 @@
 		}
 	}
 
+	/** Where the class picker opens: by the region it labels, on the screen as the view is now. */
+	const pickerAnchor = $derived(
+		controller.picker ? controller.screenBoxOf(controller.picker.index) : null,
+	);
+	let regionEl = $state<HTMLDivElement | null>(null);
+	/** Back to the canvas once the picker closes, so the next key draws or moves rather than going nowhere. */
+	function refocus(): void {
+		// The image canvas's region, or on a recording or a video the temporal canvas, whose keys play and step.
+		(regionEl ?? viewerEl?.querySelector<HTMLElement>('[data-testid="temporal-canvas"]'))?.focus();
+	}
+	let viewerEl = $state<HTMLDivElement | null>(null);
+
 	const keyHelp = $derived(
 		gestureOf(controller.activeTool) === 'view'
 			? 'Arrow keys move the view. Plus, minus and 0 zoom.'
@@ -270,6 +309,13 @@
 
 	function onKeydown(e: KeyboardEvent): void {
 		const el = e.target as HTMLElement | null;
+		// Ctrl+S saves from anywhere on the page, a transcription being typed included; every other key in a field is
+		// the field's (its own undo, its letters).
+		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+			e.preventDefault();
+			void controller.save();
+			return;
+		}
 		if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
 		const k = e.key.toLowerCase();
 		if (e.ctrlKey || e.metaKey) {
@@ -291,6 +337,33 @@
 			helpOpen = true;
 			return;
 		}
+		// An open class picker takes the keys, even one pressed before its field had the focus.
+		if (controller.picker) {
+			if (controller.pickerKey(e.key)) {
+				e.preventDefault();
+				if (!controller.picker) refocus();
+			}
+			return;
+		}
+		// The digits pick a class: the selection's, or the next region's when nothing is selected; C opens the picker on
+		// the selection.
+		if (/^[1-9]$/.test(e.key) && controller.classByKey(e.key)) {
+			e.preventDefault();
+			return;
+		}
+		if (k === 'c' && controller.selectedIndex !== null) {
+			e.preventDefault();
+			controller.openPicker(controller.selectedIndex, 'relabel');
+			return;
+		}
+		// An item with time: its keys play, step and edit from wherever the focus is on the page, and a letter it takes is
+		// not also a tool's. A focused button keeps its own Space and Enter.
+		const pressesButton =
+			(e.key === ' ' || e.key === 'Enter') &&
+			el !== null &&
+			(el.tagName === 'BUTTON' || el.tagName === 'SELECT' || el.tagName === 'A');
+		if (controller.timeKeys && !pressesButton && controller.timeKeys(e)) return;
+		if (controller.timeKeys && TIME_LETTERS.has(k)) return;
 		const tool = TOOL_KEYS[k];
 		if (tool) {
 			// A drawing hotkey needs a live engine; a phantom tool with no canvas behind it would swallow the review keys.
@@ -346,32 +419,21 @@
 <svelte:window onkeydown={onKeydown} />
 
 {#snippet viewer()}
-	<div class="flex h-full w-full flex-col">
+	<div class="flex h-full w-full flex-col" bind:this={viewerEl}>
 		<ClassificationBar {controller} />
 		<div class="relative min-h-0 w-full flex-1">
-			<!-- The canvas region: focusable, named, and described by what its keys do. The shapes on it are also reached
-			     as rows of the review list beside it. `application` is the WAI-ARIA role of a widget that takes its own
-			     keys, which Svelte's a11y check counts as non-interactive. -->
-			<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-			<div
-				class="focus-visible:ring-ring absolute inset-0 outline-none focus-visible:ring-2 focus-visible:ring-inset"
-				role="application"
-				aria-label={`Labeling canvas: ${unitKey}`}
-				aria-describedby="canvas-keys"
-				aria-roledescription="drawing canvas"
-				tabindex="0"
-				data-testid="canvas-region"
-				aria-busy={!ready}
-				data-ready={ready ? 'true' : 'false'}
-				data-pressed={pressed ? 'true' : 'false'}
-				onfocus={onCanvasFocus}
-				onblur={onCanvasBlur}
-				onkeydown={onCanvasKeydown}
-			>
-				<ImageViewer
-					{imageUrl}
-					{annotationsUrl}
+			{#if media.kind !== 'image'}
+				<TemporalCanvas
 					{controller}
+					kind={media.kind}
+					mediaUrl={media.url}
+					{annotationsUrl}
+					dataset={media.dataset}
+					docId={media.docId}
+					parts={media.parts}
+					turns={media.turns}
+					focus={media.focus}
+					{itemName}
 					onload={() => {
 						status = 'loaded';
 						onLoaded();
@@ -382,19 +444,57 @@
 						if (code === 422) refusal = message;
 					}}
 				/>
-				{#if focused && cursorOnScreen}
-					<span
-						class={cn(
-							'pointer-events-none absolute z-10 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2',
-							pressed ? 'border-primary bg-primary/30' : 'border-primary',
-						)}
-						style:left={`${cursorOnScreen.x}px`}
-						style:top={`${cursorOnScreen.y}px`}
-						data-testid="canvas-cursor"
-					></span>
-				{/if}
-			</div>
-			<p id="canvas-keys" class="sr-only">{keyHelp}</p>
+			{:else}
+				<!-- The canvas region: focusable, named, and described by what its keys do. The shapes on it are also reached
+			     as rows of the review list beside it. `application` is the WAI-ARIA role of a widget that takes its own
+			     keys, which Svelte's a11y check counts as non-interactive. -->
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+				<!-- The focus ring is drawn on a layer over the picture: a ring on the region itself is painted under its
+				     canvas, and showed only where the picture left the canvas clear. -->
+				<div
+					class="after:ring-ring absolute inset-0 outline-none after:pointer-events-none after:absolute after:inset-0 after:z-10 after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-inset"
+					bind:this={regionEl}
+					role="application"
+					aria-label={`Labeling canvas: ${itemName}`}
+					aria-describedby="canvas-keys"
+					aria-roledescription="drawing canvas"
+					tabindex="0"
+					data-testid="canvas-region"
+					aria-busy={!ready}
+					data-ready={ready ? 'true' : 'false'}
+					data-pressed={pressed ? 'true' : 'false'}
+					onfocus={onCanvasFocus}
+					onblur={onCanvasBlur}
+					onkeydown={onCanvasKeydown}
+				>
+					<ImageViewer
+						imageUrl={media.url}
+						{annotationsUrl}
+						{controller}
+						onload={() => {
+							status = 'loaded';
+							onLoaded();
+						}}
+						onerror={(message, code) => {
+							status = 'failed';
+							failure = message;
+							if (code === 422) refusal = message;
+						}}
+					/>
+					{#if focused && cursorOnScreen}
+						<span
+							class={cn(
+								'pointer-events-none absolute z-10 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2',
+								pressed ? 'border-primary bg-primary/30' : 'border-primary',
+							)}
+							style:left={`${cursorOnScreen.x}px`}
+							style:top={`${cursorOnScreen.y}px`}
+							data-testid="canvas-cursor"
+						></span>
+					{/if}
+				</div>
+				<p id="canvas-keys" class="sr-only">{keyHelp}</p>
+			{/if}
 			{#if refusal}
 				<div
 					class="bg-background/95 absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 p-6 text-center text-sm"
@@ -404,7 +504,11 @@
 					<p class="text-muted-foreground break-words">{refusal}</p>
 				</div>
 			{/if}
+			{#if pickerAnchor}
+				<ClassPicker {controller} anchor={pickerAnchor} onclose={refocus} />
+			{/if}
 			<Badge
+				hidden={media.kind !== 'image' && status !== 'failed'}
 				variant={status === 'failed' ? 'destructive' : 'secondary'}
 				class="pointer-events-none absolute bottom-2 left-2 z-10 max-w-[calc(100%-1rem)] truncate font-mono shadow-sm backdrop-blur"
 				data-testid="annotate-status"
@@ -412,9 +516,15 @@
 				{statusText}{controller.saveStatus ? ` · ${controller.saveStatus}` : ''}
 			</Badge>
 			<TaskStreamNav {stream} />
-			<ZoomControls target={controller} class={narrow ? 'bottom-10' : undefined} />
+			{#if media.kind === 'image'}
+				<ZoomControls target={controller} class={narrow ? 'bottom-10' : undefined} />
+			{/if}
 		</div>
 	</div>
+{/snippet}
+
+{#snippet taskPanel()}
+	<TaskPanel {controller} {task} {permissions} {me} onchanged={ontaskchange} />
 {/snippet}
 
 <div
@@ -435,7 +545,7 @@
 		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
 			<div class="h-[60vh] min-h-64 shrink-0">{@render viewer()}</div>
 			<div class="border-t">
-				<AnnotationSidebar {controller} />
+				<AnnotationSidebar {controller} head={taskPanel} />
 			</div>
 		</div>
 	{:else}
@@ -447,7 +557,7 @@
 						{@render viewer()}
 					{/snippet}
 					{#snippet right()}
-						<AnnotationSidebar {controller} />
+						<AnnotationSidebar {controller} head={taskPanel} />
 					{/snippet}
 				</ResizableSplit>
 			</div>
@@ -486,9 +596,23 @@
 			<dt class="font-mono">+ · − · 0</dt>
 			<dd>Zoom in · zoom out · fit the picture</dd>
 			{#each TOOL_DEFS as t (t.tool)}
-				<dt class="font-mono">{t.key}</dt>
-				<dd>{t.label}</dd>
+				{#if !(media.kind !== 'image' && TIME_LETTERS.has(t.key.toLowerCase()))}
+					<dt class="font-mono">{t.key}</dt>
+					<dd>{t.label}</dd>
+				{/if}
 			{/each}
+			{#if media.kind !== 'image'}
+				{#each TIME_KEYS.filter((k) => media.kind === 'video' || !k.video) as k (k.keys)}
+					<dt class="font-mono">{k.keys}</dt>
+					<dd>{k.does}</dd>
+				{/each}
+			{/if}
+			<dt class="font-mono">1 – 9</dt>
+			<dd>
+				Give the selected region the task's first nine classes (nothing selected: the next region's)
+			</dd>
+			<dt class="font-mono">C</dt>
+			<dd>Open the class picker on the selected region</dd>
 			<dt class="font-mono">Del</dt>
 			<dd>Delete the selected annotation</dd>
 			<dt class="font-mono">A · R</dt>

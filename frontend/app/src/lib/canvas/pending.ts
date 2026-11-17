@@ -24,11 +24,22 @@ export const PendingEditsSchema = v.object({
 	fields: v.array(v.object({ id: v.string(), field: v.string(), value: v.string() })),
 	geometry: v.array(v.object({ id: v.string(), geo: GeometrySchema })),
 	spans: v.array(v.object({ id: v.string(), char_start: v.number(), char_end: v.number() })),
+	/** Times moved on the time axis: a region's start and end, a keyframe's moment. */
+	times: v.optional(
+		v.array(v.object({ id: v.string(), t_start: v.number(), t_end: v.number() })),
+		[],
+	),
 });
 export type PendingEdits = v.InferOutput<typeof PendingEditsSchema>;
 
 export const isEmpty = (p: PendingEdits): boolean =>
-	p.inserts.length + p.deletes.length + p.fields.length + p.geometry.length + p.spans.length === 0;
+	p.inserts.length +
+		p.deletes.length +
+		p.fields.length +
+		p.geometry.length +
+		p.spans.length +
+		p.times.length ===
+	0;
 
 const PREFIX = 'workbench.canvas.unsaved:';
 

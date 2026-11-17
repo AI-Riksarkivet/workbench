@@ -108,6 +108,9 @@ const SEEDED: Record<string, Row[]> = {
 const IDENTITY: Record<string, string[]> = {
 	'lake~acme$letters': ['doc_id', 'chunk_id'],
 	'lake~acme$maps': ['doc_id', 'chunk_id'],
+	// The demo's recordings and films, as `scripts/seed_demo_corpus.py` declares them.
+	'lake~demo$recordings': ['doc_id', 'speech_id', 'chunk_id'],
+	'lake~demo$films': ['doc_id', 'speech_id', 'chunk_id'],
 };
 
 /** The service's refusal of a key its dataset's identity cannot name (`annotator.annotations.unit.parse_unit`). */
@@ -116,9 +119,9 @@ function keyRefusal(dataset: string, key: string): string | null {
 	const parts = key.split('/');
 	if (parts.length !== fields.length)
 		return `unit key '${key}' has ${parts.length} part(s), and this dataset names a unit by ${fields.length}: ${fields.join('/')}`;
-	const [, chunk = ''] = parts;
-	if (!/^-?\d{1,19}$/.test(chunk))
-		return `unit key '${key}': chunk_id is an integer, not '${chunk}'`;
+	for (const [i, part] of parts.slice(1).entries())
+		if (!/^-?\d{1,19}$/.test(part))
+			return `unit key '${key}': ${fields[i + 1]} is an integer, not '${part}'`;
 	return null;
 }
 
@@ -159,6 +162,7 @@ interface SaveBody {
 		polygon: number[];
 	}[];
 	spans: { id: string; char_start: number; char_end: number }[];
+	temporal: { id: string; t_start: number; t_end: number }[];
 	deletes: string[];
 	base_version: number | null;
 }
@@ -255,7 +259,8 @@ export async function annotationsDoor(
 			const edit = b.edits.find((e) => e.id === r.id);
 			const geo = b.geometry.find((g) => g.id === r.id);
 			const span = b.spans.find((s) => s.id === r.id);
-			return { ...r, ...edit, ...geo, ...span, reviewer: sub };
+			const time = b.temporal.find((t) => t.id === r.id);
+			return { ...r, ...edit, ...geo, ...span, ...time, reviewer: sub };
 		});
 	rows.push(...b.inserts.map((r) => ({ ...r, reviewer: sub })));
 	unit.version += 1;

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { textContrast } from './contrast';
 import { serveRecording } from './recording';
@@ -81,6 +82,15 @@ async function asRecording(
 		await route.fulfill({ response: answer, json: body });
 	});
 	await serveRecording(page);
+	// The waveform, as the viewer answered it for one of the demo's recordings (`seeded-answers.json`).
+	const recorded = JSON.parse(
+		readFileSync(new URL('./seeded-answers.json', import.meta.url), 'utf8'),
+	) as Record<string, { json?: unknown }>;
+	const peaks =
+		recorded['/api/datasets/lake~demo$recordings/documents/c41f0e2a9b7d3e15/peaks']?.json;
+	await page.route('**/api/viewer/api/datasets/*/documents/*/peaks', (route) =>
+		route.fulfill({ json: peaks }),
+	);
 }
 
 test('a document’s pages are turned with the buttons and the keys, and each page’s own picture is drawn', async ({
@@ -190,7 +200,7 @@ for (const { kind, noun } of [
 	{ kind: 'audio', noun: 'recording' },
 	{ kind: 'video', noun: 'video' },
 ] as const) {
-	test(`a ${noun} plays from the design system's transport: play, the keys, speed, mute, and its segments marked`, async ({
+	test(`a ${noun} plays from the design system's transport: play, the keys, speed, mute, and its waveform and segments on the time strip`, async ({
 		page,
 		context,
 	}) => {
@@ -205,9 +215,10 @@ for (const { kind, noun } of [
 		// The transport is the page's own: the element draws no controls of its own.
 		expect(await element.getAttribute('controls')).toBeNull();
 		const transport = viewer.getByRole('group', { name: 'Playback' });
-		// Two three-second segments: one boundary marked, the playing one shaded.
-		await expect(transport.getByTestId('segment-mark')).toHaveCount(1);
-		await expect(transport.getByTestId('segment-current')).toHaveCount(1);
+		// The time strip above it: the waveform the viewer decodes, and the two three-second segments on their lane.
+		const strip = viewer.getByTestId('time-strip');
+		await expect(strip).toHaveAttribute('data-ready', 'true');
+		await expect(strip.locator('[data-row="parts"]')).toHaveAttribute('data-spans', '2');
 
 		// Opened, it plays from the row's start; Pause stops it where it is.
 		await transport.getByRole('button', { name: 'Pause' }).click();
@@ -243,6 +254,74 @@ for (const { kind, noun } of [
 		await expect(transport.getByRole('button', { name: 'Unmute' })).toBeVisible();
 	});
 }
+
+test('a video whose link stops serving plays on from a renewed link, which the closing stage leaves on the element', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await asRecording(page, 'video');
+	// Every time the page empties a media element's source (`src = ""`, which stops and unloads it) is recorded.
+	await page.addInitScript(() => {
+		const emptied: string[] = [];
+		Object.assign(window, { emptied });
+		const src = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+		Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+			...src,
+			set(this: HTMLMediaElement, value: string) {
+				if (value === '') emptied.push(this.currentSrc);
+				src?.set?.call(this, value);
+			},
+		});
+	});
+	// A real film (the demo's, as the viewer served it: `seeded-answers.json`), so the stage draws its frames. The first
+	// link of the element serves the film's start and then stops serving, as a link that expires mid-play does; every
+	// later link serves it whole.
+	const recorded = JSON.parse(
+		readFileSync(new URL('./seeded-answers.json', import.meta.url), 'utf8'),
+	) as Record<string, { bytes?: string }>;
+	const film = Buffer.from(recorded['/__media/f1a07c3e9d2b4e68']?.bytes ?? '', 'base64');
+	let first: string | null = null;
+	await page.route('**/api/viewer/api/signed-media/*', async (route) => {
+		const url = route.request().url();
+		const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers()['range'] ?? '');
+		// The element asks in byte ranges; a picture's link (the row's thumbnail) does not, and is the stand-in's.
+		if (!range) return route.fallback();
+		first ??= url;
+		const from = Number(range[1]);
+		if (url === first && from > 0) {
+			// Refused once the first frames are drawn, as a link expires while the film plays.
+			await new Promise((done) => setTimeout(done, 1500));
+			return route.fulfill({ status: 403, json: { detail: 'the media URL expired' } });
+		}
+		const to = url === first ? Math.min(film.length, 81920) - 1 : film.length - 1;
+		return route.fulfill({
+			status: 206,
+			body: film.subarray(from, to + 1),
+			contentType: 'video/webm',
+			headers: { 'accept-ranges': 'bytes', 'content-range': `bytes ${from}-${to}/${film.length}` },
+		});
+	});
+	await page.goto('/datasets/lake~acme%24letters');
+	await open(page, /A letter from the harbour/);
+
+	const element = player(page).locator('video');
+	// A fresh link is signed and the element plays from it.
+	await expect
+		.poll(() =>
+			element.evaluate((el: HTMLVideoElement, old) => (el.src !== old ? el.src : ''), first),
+		)
+		.toMatch(/\/api\/signed-media\//);
+	await expect
+		.poll(() => element.evaluate((el: HTMLVideoElement) => el.readyState), { timeout: 10_000 })
+		.toBeGreaterThanOrEqual(2);
+	await expect(element).toHaveAttribute('src', /\/api\/signed-media\//);
+	await expect(player(page).getByRole('alert')).toHaveCount(0);
+	// Nothing emptied the element on the way: the stage drawing its frames leaves the element's source to its holder.
+	expect(await page.evaluate(() => (window as unknown as { emptied: string[] }).emptied)).toEqual(
+		[],
+	);
+});
 
 test('the transcript follows the playhead, a line seeks, and no line is clipped at the narrow width', async ({
 	page,
