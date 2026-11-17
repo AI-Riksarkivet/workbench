@@ -78,10 +78,16 @@
 							<span
 								class={cn(
 									'truncate text-sm font-medium',
-									!r.label && 'text-muted-foreground italic',
+									!r.label &&
+										!(r.shape === 'text' && r.parentId === '') &&
+										'text-muted-foreground italic',
 								)}
 								>{r.label ||
-									(controller.allowsUnlabelled ? r.shape || 'annotation' : 'No class yet')}</span
+									(r.shape === 'text' && r.parentId === ''
+										? 'Text'
+										: controller.allowsUnlabelled
+											? r.shape || 'annotation'
+											: 'No class yet')}</span
 							>
 							<span
 								class={cn('size-2 shrink-0 rounded-full', statusDot(r.status))}

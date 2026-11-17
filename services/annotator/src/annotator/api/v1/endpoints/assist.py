@@ -16,10 +16,12 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam
+from annotator.annotations.access import UnitKey, require_task_units
+from annotator.annotations.unit import parse_unit
+from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam, unseen_task
 from annotator.api.v1.endpoints.serve_discovery import discovered_backends
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AssistBackend
@@ -28,10 +30,10 @@ from annotator.projects.generation_schema import generation_schema
 from annotator.projects.machines import UnreadableOntology
 from annotator.projects.ontology import LabelOntology
 from annotator.state.store import AnnotatorStore
-from client_kit.lancekit.keys import validate_doc_key
 from client_kit.media.deps import StateDep
+from client_kit.media.frames import chunk_frame_path
 from client_kit.media.state import AppState
-from service_kit.exceptions import ForbiddenError, ServiceUnavailableError
+from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 
 
@@ -80,8 +82,16 @@ async def require_assist(caller: CallerDep, request: Request, state: StateDep, s
 router = APIRouter(prefix="/api", tags=["assist"], dependencies=[Depends(require_assist)])
 
 
+#: The most clicks one segmenter session sends: a person refines an object with a handful.
+MAX_POINTS = 64
+#: The longest prompt a model is asked with: a detector's is a few words, a recipe's a sentence or two.
+MAX_PROMPT = 2000
+
+
 class Region(BaseModel):
     """The drawn box the assist runs within (image coords). Omitted ⇒ whole image."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
 
     x: float
     y: float
@@ -95,6 +105,8 @@ class Point(BaseModel):
     "not this". Points ACCUMULATE across a refinement session; each request carries the
     full set so the backend is stateless."""
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     x: float
     y: float
     positive: bool = True
@@ -106,17 +118,17 @@ class AssistRequest(BaseModel):
     text-prompt backend reads ``prompt``. Everything is optional so one wire shape serves
     every producer family."""
 
-    producer: str = "grounding-dino"
-    prompt: str | None = None
+    producer: str = Field(default="grounding-dino", min_length=1, max_length=128)
+    prompt: str | None = Field(default=None, max_length=MAX_PROMPT)
     region: Region | None = None
     #: The interactive point-prompt session: every point clicked so far, in order. The
     #: request is the whole session state — re-running with one more point REFINES the
     #: same object rather than predicting a new one.
-    points: list[Point] = Field(default_factory=list)
-    #: The labeling task this assist is for, when there is one. The SERVER reads that task's
-    #: captured ontology — the client does not send the rules it is judged by, same posture as
-    #: `review_required` and the submit-time contract check.
-    task_id: str | None = None
+    points: list[Point] = Field(default_factory=list, max_length=MAX_POINTS)
+    #: The labeling task this assist is for: the unit must be one of its item's, and the SERVER reads its captured
+    #: ontology — the client does not send the rules it is judged by, same posture as `review_required` and the
+    #: submit-time contract check. Optional on the model, which the producers' own tests build; the door requires it.
+    task_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 #: Producer tool-name -> the canonical vocabulary the draft, ontology and published table speak.
@@ -350,23 +362,32 @@ async def generation_contract(request: Request, project: ProjectParam, task_id: 
     return GenerationContract(output_schema=generation_schema(await _task_ontology(_store(request), project, task_id)))
 
 
-@router.post("/assist/{doc_id}/{speech_id}/{chunk_id}", dependencies=[READS_DATASET])
+@router.post("/assist/{key:path}", dependencies=[READS_DATASET])
 async def assist(
     request: Request,
     state: StateDep,
     project: ProjectParam,
-    doc_id: str,
-    speech_id: int,
-    chunk_id: int,
+    key: UnitKey,
     body: AssistRequest,
 ) -> AssistResult:
-    """Run an interactive producer over one media unit and return predicted shapes."""
-    # Off the loop: dataset resolution is blocking Lance/S3 under a threading.Lock — inline it
-    # froze the whole loop for the duration of a cold S3 open (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" ANN-01); the
-    # sibling `def` routes get the threadpool for free.
-    # The router's gate resolved this dataset for this request (`require_assist`).
+    """Run an interactive producer over one media unit and return predicted shapes.
+
+    The unit is named as the annotations doors name it: its key path, one segment per identity field of its dataset
+    (`annotator.annotations.unit`)."""
+    # The router's gate resolved this dataset for this request, off the loop (`require_assist`).
     corpus: Corpus = request.state.corpus
-    doc_id = validate_doc_key(corpus.declared, doc_id)
+    unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
+    # The unit is the named task's, in the project the gate checked: a person who may annotate one task cannot spend a
+    # model on units no task of theirs holds.
+    store = _store(request)
+    if body.task_id is None:
+        raise ValidationError("an assist names the task whose unit it runs over (task_id)")
+    if store is None:
+        raise ServiceUnavailableError("assist reads the task it runs for, and the annotator names no state database")
+    task = await store.get_project_task(project, body.task_id)
+    if task is None:
+        raise NotFoundError(unseen_task(body.task_id))
+    require_task_units(task, [unit.key], request.query_params.get("dataset"))
     source = f"model:{body.producer}"
     url = backend_for(state.settings, body.producer, await _discovered(state))
     # ONE task read serves both halves of the contract: the schema a constrained decoder
@@ -374,7 +395,8 @@ async def assist(
     ontology = await _task_ontology(_store(request), project, body.task_id) if body.task_id else None
     # The producer call uses a SYNC httpx client, so it rides the threadpool rather than blocking
     # the event loop — the endpoint is async only because reading the task's template is.
-    shapes = await run_in_threadpool(_remote, state, url, (doc_id, speech_id, chunk_id), body, generation_schema(ontology)) if url else _mock(body)
+    frame = chunk_frame_path(unit.key, corpus.id)
+    shapes = await run_in_threadpool(_remote, state, url, frame, body, generation_schema(ontology)) if url else _mock(body)
     for shape in shapes:
         shape.shape_type = _CANONICAL_SHAPE.get(shape.shape_type, shape.shape_type)
     shapes, dropped = _within_contract(shapes, ontology)
@@ -587,7 +609,7 @@ def _diamond(x: float, y: float, w: float, h: float) -> list[float]:
 def _remote(
     state: AppState,
     url: str,
-    key: tuple[str, int, int],
+    frame: str,
     body: AssistRequest,
     output_schema: dict[str, Any] | None = None,
 ) -> list[AssistShape]:
@@ -601,12 +623,11 @@ def _remote(
     to its structured decoder (``guided_json``) so an off-contract annotation cannot be
     GENERATED, rather than merely being filtered after. Null when the task constrains nothing;
     a non-LLM backend is free to ignore it."""
-    doc_id, speech_id, chunk_id = key
     http = state.http
     if http is None:
         raise ServiceUnavailableError("assist: HTTP client unavailable")
     payload = {
-        "image_url": f"/api/chunk-frame/{doc_id}/{speech_id}/{chunk_id}",
+        "image_url": frame,
         "prompt": body.prompt,
         "region": body.region.model_dump() if body.region else None,
         "points": [p.model_dump() for p in body.points],

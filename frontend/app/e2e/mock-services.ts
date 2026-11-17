@@ -35,7 +35,7 @@ import {
 import { athOf, readToken, verifyProof, type TokenClaims } from './dpop';
 import { lakehouseCallsOf, readAsPerson, writeAsService } from './mock-lakehouse';
 import { SHAPES, shapeOf } from './providers';
-import { annotationsDoor } from './mock-annotations';
+import { annotationsDoor, assistDoor } from './mock-annotations';
 import { orgsOf, permissionsOn, projectsDoor, taskOf } from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
@@ -1442,6 +1442,8 @@ Bun.serve({
 			() => writeAsService(who, who.host),
 		);
 		if (annotations) return annotations;
+		const assist = await assistDoor(req, url, (projectId) => permissionsOn(who.sub, projectId), ok);
+		if (assist) return assist;
 		const projects = await projectsDoor(
 			req,
 			url,

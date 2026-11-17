@@ -40,8 +40,13 @@ class Unit(BaseModel):
 
     @property
     def where(self) -> str:
-        """The predicate selecting this unit's rows (values are escaped by `eq`)."""
+        """The predicate selecting this unit's rows of every task (values are escaped by `eq`)."""
         return and_(*(eq(field, value) for field, value in self.values.items()))
+
+    def of_task(self, task: str) -> str:
+        """The predicate selecting this unit's rows that are `task`'s work: a unit several tasks hold (a consensus item's
+        replicas) keeps each one's rows apart."""
+        return and_(self.where, eq("task_id", task))
 
 
 def _column_type(declared: Declared, tables: dict[str, TableInfo], field: str) -> str | None:

@@ -322,6 +322,20 @@ function seed(sub: string): World {
 		}),
 	])
 		tasks.set(t.task_id, t);
+	// A consensus item of the pages project: two replicas of one unit, each its annotator's own rows; the first in
+	// review, the second accepted, for a reviewer to compare and take from.
+	for (const [id, state, by] of [
+		['pagesg-r1', 'in_review', 'user:alpha'],
+		['pagesg-r2', 'accepted', 'user:beta'],
+	] as const)
+		tasks.set(
+			id,
+			task('pages', id, state, 'letter-002/0', {
+				replica_of: 'pagesg',
+				submitted_by: by,
+				ontology: pagesOntology,
+			}),
+		);
 	// A pages item someone else submitted, for a reviewer's verdict on the canvas.
 	tasks.set(
 		'pages-review',
@@ -375,11 +389,85 @@ function seed(sub: string): World {
 			}),
 		);
 	}
+	// A consensus project where the reader holds one replica and another annotator the other: the reader may not
+	// see the other's work, so no replica is offered to compare.
+	projects.set(
+		'pairs',
+		project('pairs', { title: 'Pairs', consensus_n: 2, ontology: pagesOntology }),
+	);
+	for (const [id, holder] of [
+		['pairs-g1-r1', sub],
+		['pairs-g1-r2', 'user:other-annotator'],
+	] as const)
+		tasks.set(
+			id,
+			task('pairs', id, 'claimed', 'letter-001/0', {
+				replica_of: 'pairs-g1',
+				assignee: holder,
+				lease_expires_at: later(),
+				ontology: pagesOntology,
+			}),
+		);
+	// A text to mark entities in: the item is its row's text, the classes closed and drawn as text only.
+	const notesOntology = {
+		kind: 'token-classification',
+		modality: 'text',
+		classes: [
+			{ name: 'person', tools: ['text'], required: false, transcribe: false, attributes: [] },
+			{ name: 'place', tools: ['text'], required: false, transcribe: false, attributes: [] },
+		],
+		relations: [],
+		allow_empty: false,
+	};
+	projects.set('notes', project('notes', { title: 'Entities', ontology: notesOntology }));
+	tasks.set(
+		'notes-t1',
+		task('notes', 'notes-t1', 'claimed', 'letter-001/0', {
+			assignee: sub,
+			lease_expires_at: later(),
+			ontology: notesOntology,
+			media: { kind: 'text', image_url: null, media_url: null },
+		}),
+	);
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
-	return { role, projects, tasks, grants, drafts: new Map() };
+	// The second replica's work, in its task's draft: the figure where the first has it, the caption called a figure, and
+	// a box the first has not.
+	const box = (shape_id: string, x: number, y: number, width: number, height: number) => ({
+		shape_id,
+		shape_type: 'bbox',
+		x,
+		y,
+		width,
+		height,
+		label: 'figure',
+		source: 'human',
+	});
+	const drafts = new Map<string, Draft>([
+		[
+			'pagesg-r2',
+			{
+				shapes: [
+					box('r2-fig', 11, 10, 50, 40),
+					box('r2-cap', 90, 100, 60, 40),
+					box('r2-new', 100, 10, 40, 30),
+				],
+				links: [],
+				revision: 1,
+			},
+		],
+	]);
+	return { role, projects, tasks, grants, drafts };
 }
+
+/** Whether `sub` may read a task's work: any task they may view, but a consensus replica only when it is theirs or
+ *  they may review it (`annotator.api.v1.endpoints.tasks.require_work_readable`). */
+export const mayReadWork = (t: Task, sub: string, perms: string[]): boolean =>
+	t.replica_of === null ||
+	t.assignee === sub ||
+	t.submitted_by === sub ||
+	perms.includes('can_review');
 
 /** One task of `sub`'s world, as the annotations door reads it to judge a unit. */
 export const taskOf = (sub: string, taskId: string): Task | undefined =>
@@ -711,6 +799,14 @@ export async function projectsDoor(
 			...d,
 			origin: 'human',
 		});
+		// A consensus replica's work is its annotator's and its reviewers' (`tasks.require_work_readable`).
+		if (req.method === 'GET' && !mayReadWork(t, sub, perms))
+			return answer(
+				{
+					detail: `${sub.replace(/^user:/, '')} may not read replica ${id}'s work: only its annotator, or someone who may review it`,
+				},
+				403,
+			);
 		// No draft yet is an answer, null, as the service gives it.
 		if (req.method === 'GET') return answer(current ? doc(current) : null);
 		if (!perms.includes('can_annotate')) {

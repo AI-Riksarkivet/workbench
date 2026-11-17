@@ -21,6 +21,7 @@
 	import { cn } from '@workbench/ui/utils';
 	import { COMMITS_SHAPE } from '@workbench/labeling/shape-types';
 	import { TOOL_DEFS, bandsOf } from './tool-defs.ts';
+	import AssistPanel from './AssistPanel.svelte';
 	import { TIME_LETTERS } from './temporal/time-keys.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
@@ -30,6 +31,7 @@
 		narrow = false,
 		unreadable = false,
 		onhelp,
+		kind = null,
 	}: {
 		controller: AnnotatorController;
 		/** The way back: the project's queue. */
@@ -40,6 +42,8 @@
 		unreadable?: boolean;
 		/** Opens the list of the canvas's keys. */
 		onhelp: () => void;
+		/** What the item is, for the assist panel; null where no unit is labelled (no assist). */
+		kind?: 'image' | 'audio' | 'video' | 'text' | null;
 	} = $props();
 
 	const editing = $derived(controller.readOnly === null);
@@ -66,6 +70,8 @@
 	/** The bar in BANDS: navigate · draw · assist, in reading order. Empty bands are dropped, so a separator never
 	 *  stands beside nothing. */
 	const bands = $derived(bandsOf(visible));
+	/** A text item has no picture: no drawing tool, adjustment or polygon applies to it. */
+	const pictured = $derived(kind !== 'text');
 </script>
 
 <!-- `overflow-x-auto` because a wide ontology can outrun a narrow canvas, and a bar that WRAPS moves the canvas down
@@ -109,7 +115,7 @@
 
 	<div class="bg-sidebar-border mx-1 h-6 w-px shrink-0"></div>
 
-	{#each bands as band, i (band.group)}
+	{#each pictured ? bands : [] as band, i (band.group)}
 		{#if i > 0}
 			<div class="bg-sidebar-border mx-1 h-6 w-px shrink-0" data-testid="tool-band-sep"></div>
 		{/if}
@@ -178,55 +184,57 @@
 
 	<div class="bg-sidebar-border mx-1 h-6 w-px shrink-0"></div>
 	<!-- Display-only adjustments for the page image: they theme the view, never the data. -->
-	<Popover.Root>
-		<Popover.Trigger>
-			{#snippet child({ props })}
-				<Button
-					{...props}
-					variant={controller.imageAdjusted ? 'default' : 'ghost'}
-					size="icon-sm"
-					aria-label="Image adjustments"
-					title={controller.imageAdjusted
-						? 'Image adjustments (active — not saved with annotations)'
-						: 'Image adjustments (brightness · contrast · saturation)'}
-					data-testid="image-adjust-trigger"
-				>
-					<SlidersHorizontal class="size-4" />
-				</Button>
-			{/snippet}
-		</Popover.Trigger>
-		<Popover.Content class="w-64 p-3" data-testid="image-adjust">
-			<div class="flex flex-col gap-3">
-				{#each [['brightness', 'Brightness'], ['contrast', 'Contrast'], ['saturation', 'Saturation']] as const as [key, label] (key)}
-					<div class="flex items-center gap-2">
-						<span class="text-muted-foreground w-20 shrink-0 text-xs">{label}</span>
-						<Slider
-							class="flex-1"
-							min={0.2}
-							max={2}
-							step={0.05}
-							value={controller.imageAdjust[key]}
-							aria-label={label}
-							onValueChange={(value) => controller.setImageAdjust({ [key]: value })}
-						/>
-						<span class="text-muted-foreground w-8 shrink-0 text-right text-[10px] tabular-nums">
-							{controller.imageAdjust[key].toFixed(2)}
-						</span>
-					</div>
-				{/each}
-				<Button
-					variant="ghost"
-					size="sm"
-					class="self-end"
-					disabled={!controller.imageAdjusted}
-					data-testid="image-adjust-reset"
-					onclick={() => controller.resetImageAdjust()}
-				>
-					Reset
-				</Button>
-			</div>
-		</Popover.Content>
-	</Popover.Root>
+	{#if pictured}
+		<Popover.Root>
+			<Popover.Trigger>
+				{#snippet child({ props })}
+					<Button
+						{...props}
+						variant={controller.imageAdjusted ? 'default' : 'ghost'}
+						size="icon-sm"
+						aria-label="Image adjustments"
+						title={controller.imageAdjusted
+							? 'Image adjustments (active — not saved with annotations)'
+							: 'Image adjustments (brightness · contrast · saturation)'}
+						data-testid="image-adjust-trigger"
+					>
+						<SlidersHorizontal class="size-4" />
+					</Button>
+				{/snippet}
+			</Popover.Trigger>
+			<Popover.Content class="w-64 p-3" data-testid="image-adjust">
+				<div class="flex flex-col gap-3">
+					{#each [['brightness', 'Brightness'], ['contrast', 'Contrast'], ['saturation', 'Saturation']] as const as [key, label] (key)}
+						<div class="flex items-center gap-2">
+							<span class="text-muted-foreground w-20 shrink-0 text-xs">{label}</span>
+							<Slider
+								class="flex-1"
+								min={0.2}
+								max={2}
+								step={0.05}
+								value={controller.imageAdjust[key]}
+								aria-label={label}
+								onValueChange={(value) => controller.setImageAdjust({ [key]: value })}
+							/>
+							<span class="text-muted-foreground w-8 shrink-0 text-right text-[10px] tabular-nums">
+								{controller.imageAdjust[key].toFixed(2)}
+							</span>
+						</div>
+					{/each}
+					<Button
+						variant="ghost"
+						size="sm"
+						class="self-end"
+						disabled={!controller.imageAdjusted}
+						data-testid="image-adjust-reset"
+						onclick={() => controller.resetImageAdjust()}
+					>
+						Reset
+					</Button>
+				</div>
+			</Popover.Content>
+		</Popover.Root>
+	{/if}
 
 	{#if unreadable}
 		<!-- Said where the tools are: the annotations could not be read, so nothing drawn here could be saved. -->
@@ -237,6 +245,11 @@
 		>
 			read-only — annotations unavailable
 		</span>
+	{/if}
+
+	{#if editing && kind !== null}
+		<div class="bg-sidebar-border mx-1 h-6 w-px shrink-0"></div>
+		<AssistPanel {controller} {kind} />
 	{/if}
 
 	{#if editing}
@@ -284,17 +297,19 @@
 
 		<div class="bg-sidebar-border mx-1 h-6 w-px shrink-0"></div>
 
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			aria-label="Convert to polygon"
-			aria-keyshortcuts="P"
-			title="Convert to polygon (P)"
-			disabled={controller.selectedIndex == null}
-			onclick={() => controller.convertToPolygon()}
-		>
-			<Spline class="size-4" />
-		</Button>
+		{#if pictured}
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				aria-label="Convert to polygon"
+				aria-keyshortcuts="P"
+				title="Convert to polygon (P)"
+				disabled={controller.selectedIndex == null}
+				onclick={() => controller.convertToPolygon()}
+			>
+				<Spline class="size-4" />
+			</Button>
+		{/if}
 		<Button
 			variant="ghost"
 			size="icon-sm"

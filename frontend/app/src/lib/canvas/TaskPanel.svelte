@@ -74,6 +74,14 @@
 		request_changes: 'Send back…',
 		claim: 'Claim',
 	};
+	/** What the unclassed marks are called: spans of a text, regions of a picture or a recording, marks when both. */
+	const unlabelledNoun = $derived.by(() => {
+		const spans = blockers.unlabelled.filter((index) => {
+			const row = controller.rows.find((r) => r.index === index);
+			return row?.shape === 'text' && row.parentId !== '';
+		}).length;
+		return spans === 0 ? 'region' : spans === blockers.unlabelled.length ? 'span' : 'mark';
+	});
 </script>
 
 <section
@@ -106,11 +114,16 @@
 			aria-label="Before submitting"
 		>
 			{#if blockers.empty}
-				<li class="text-destructive">Nothing is labeled yet: draw the item's regions first.</li>
+				<li class="text-destructive">
+					{task.media.kind === 'text'
+						? "Nothing is marked yet: mark the item's spans first."
+						: "Nothing is labeled yet: draw the item's regions first."}
+				</li>
 			{/if}
 			{#if blockers.unlabelled.length > 0}
 				<li class="text-destructive">
-					{blockers.unlabelled.length} region{blockers.unlabelled.length === 1 ? '' : 's'} without a class:
+					{blockers.unlabelled.length}
+					{unlabelledNoun}{blockers.unlabelled.length === 1 ? '' : 's'} without a class:
 					{#each blockers.unlabelled.slice(0, 8) as index, i (index)}
 						{i > 0 ? ', ' : ''}<button
 							type="button"

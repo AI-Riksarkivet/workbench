@@ -80,8 +80,9 @@ export function rowsToShapes(table: Table): DraftShape[] {
 		}
 		for (const field of SPAN_OFFSETS) {
 			const value = row[field];
-			// `Number.isInteger`, not truthiness: char 0 is the first character, not "absent".
-			if (typeof value === 'number' && Number.isInteger(value)) shape[field] = value;
+			// `Number.isInteger`, not truthiness: char 0 is the first character, not "absent"; -1 is a row that is no span
+			// (`makeInsertRow`), which the submit would read as a range naming no parent.
+			if (typeof value === 'number' && Number.isInteger(value) && value >= 0) shape[field] = value;
 		}
 		const polygon = row['polygon'];
 		if (polygon != null) {

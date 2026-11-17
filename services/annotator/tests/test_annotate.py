@@ -78,7 +78,7 @@ def test_schema_single_source_of_truth(tmp_path: Path) -> None:
     spec.loader.exec_module(seed_mod)
 
     client = namespace_client(tmp_path)
-    table_id = seed_mod.seed(client, ["workbench", "annotations"], "p1__demo", "a" * 16)
+    table_id = seed_mod.seed(client, ["workbench", "annotations"], "p1__demo", "a" * 16, "t1")
     seeded = lance.dataset(namespace_client=client, table_id=table_id).schema
     expected = pa.schema(
         [
@@ -105,17 +105,19 @@ def test_new_rows_stamps_the_author_as_reviewer() -> None:
 
 
 def test_tag_id_is_deterministic_namespaced_and_collision_safe() -> None:
-    a = tag_id("d1", [0, 19], "speech")
-    assert a == tag_id("d1", [0, 19], "speech")  # deterministic → re-tag is idempotent
+    a = tag_id("t1", "d1", [0, 19], "speech")
+    assert a == tag_id("t1", "d1", [0, 19], "speech")  # deterministic → re-tag is idempotent
     assert a.startswith("tag:")  # the guard: never equals a drawn shape's random id
-    assert tag_id("d1", [0, 19], "a:b") != tag_id("d1", [0, 19], "a")  # label sep can't collide
-    assert tag_id("d1", [0, 19], "x") != tag_id("d1", [0, 20], "x")  # per-chunk
+    assert tag_id("t1", "d1", [0, 19], "a:b") != tag_id("t1", "d1", [0, 19], "a")  # label sep can't collide
+    assert tag_id("t1", "d1", [0, 19], "x") != tag_id("t1", "d1", [0, 20], "x")  # per-chunk
+    assert tag_id("t1", "d1", [0, 19], "x") != tag_id("t2", "d1", [0, 19], "x")  # per-task: a replica tags its own
 
 
 def test_tag_rows_stamp_identity_shape_and_author() -> None:
     tbl = tag_rows(
         [TagWrite(doc_id="d1", keys=[0, 19], labels=["speech", "music"])],
         _MEDIA_DECLARED,
+        task="t1",
         author="gabriel",
         schema=_full_schema(),
     )
@@ -128,7 +130,8 @@ def test_tag_rows_stamp_identity_shape_and_author() -> None:
     assert r["reviewer"] == "gabriel"  # server author, not client-claimed
     assert (r["x"], r["y"], r["width"], r["height"]) == (0.0, 0.0, 0.0, 0.0)  # geometry zeroed
     assert r["confidence"] is None  # unlisted column → null
-    assert r["id"] == tag_id("d1", [0, 19], "speech")  # deterministic id
+    assert r["id"] == tag_id("t1", "d1", [0, 19], "speech")  # deterministic id
+    assert r["task_id"] == "t1"  # the task whose work it is
 
 
 def test_tag_rows_dedupes_duplicate_labels() -> None:
@@ -140,6 +143,7 @@ def test_tag_rows_dedupes_duplicate_labels() -> None:
             TagWrite(doc_id="d1", keys=[0, 19], labels=["cat"]),
         ],
         _MEDIA_DECLARED,
+        task="t1",
         author="gabriel",
         schema=_full_schema(),
     )

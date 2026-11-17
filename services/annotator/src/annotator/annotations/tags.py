@@ -36,12 +36,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["annotate"])
 
 
-def tag_id(doc_id: str, keys: Sequence[int], label: str) -> str:
-    """Deterministic id for a chunk-level TAG row — ``tag:{doc}:{keys}:{enc(label)}``.
+def tag_id(task: str, doc_id: str, keys: Sequence[int], label: str) -> str:
+    """Deterministic id for a chunk-level TAG row — ``tag:{task}:{doc}:{keys}:{enc(label)}``.
     Idempotent (re-tagging the same chunk maps to the same id, so no duplicates); the
     ``tag:`` prefix + percent-encoded label guarantee it can never collide with a drawn
-    shape's random id (so a tag merge_insert never clobbers a shape's geometry)."""
-    parts = [doc_id, *(str(k) for k in keys), quote(label, safe="")]
+    shape's random id (so a tag merge_insert never clobbers a shape's geometry). The task is in it because two tasks
+    may hold one unit (a consensus item's replicas), each tagging it as its own work."""
+    parts = [task, doc_id, *(str(k) for k in keys), quote(label, safe="")]
     return "tag:" + ":".join(parts)
 
 
@@ -58,7 +59,7 @@ def check_keys_arity(declared: Declared, writes: Sequence[TagWrite]) -> None:
             raise ValidationError(f"tag keys arity {len(w.keys)} != descriptor identity arity {expected}")
 
 
-def tag_rows(adds: Sequence[TagWrite], declared: Declared, *, author: str, schema: pa.Schema) -> pa.Table:
+def tag_rows(adds: Sequence[TagWrite], declared: Declared, *, task: str, author: str, schema: pa.Schema) -> pa.Table:
     """Full annotation rows for chunk tags: per-row identity stamped, ``shape_type='tag'``,
     label carried, server author; every OTHER field comes from ``NewAnnotation``'s
     defaults (human provenance, geometry/temporal zeroed) — the one row contract, not a
@@ -72,12 +73,13 @@ def tag_rows(adds: Sequence[TagWrite], declared: Declared, *, author: str, schem
         doc = validate_doc_key(declared, w.doc_id)
         ident = {
             **identity_values(declared, doc, w.keys),
+            "task_id": task,
             "reviewer": author,
             "created_at": now,
             "updated_at": now,
         }
         for label in w.labels:
-            tid = tag_id(doc, w.keys, label)
+            tid = tag_id(task, doc, w.keys, label)
             if tid in by_id:
                 continue  # first wins — every row for a given id is identical anyway
             row = NewAnnotation(id=tid, shape_type="tag", label=label).model_dump()
@@ -114,7 +116,7 @@ def apply_tags(
     check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version)
     ds = existing if existing is not None else table.open_or_create(declared, author)
 
-    delta = tag_rows(body.adds, declared, author=author, schema=ds.schema)
+    delta = tag_rows(body.adds, declared, task=task.task_id, author=author, schema=ds.schema)
     writer = table.writer(author)
     touched = 0
     if delta.num_rows:
@@ -124,7 +126,7 @@ def apply_tags(
         writer.merge_insert_only(delta, "id")
         touched += delta.num_rows
 
-    remove_ids = [tag_id(validate_doc_key(declared, w.doc_id), w.keys, label) for w in body.removes for label in w.labels]
+    remove_ids = [tag_id(task.task_id, validate_doc_key(declared, w.doc_id), w.keys, label) for w in body.removes for label in w.labels]
     if remove_ids:
         delete_by_ids(writer, remove_ids)
         touched += len(remove_ids)

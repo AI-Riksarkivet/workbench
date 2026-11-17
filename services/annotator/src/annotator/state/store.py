@@ -635,14 +635,17 @@ class AnnotatorStore:
             _refuse_if_frozen(project, task, event)
 
             # Consensus v1: one replica per annotator per group, against the group's rows this transaction holds, so two
-            # claims of two replicas by one person cannot both land.
+            # claims of two replicas by one person cannot both land. A sibling counts once its recipient ever held it,
+            # not only while they hold it: a release does not unsee the work.
+            recipient = (assignee or actor) if event == "assign" else actor
             if event in {"claim", "assign"} and task.replica_of:
-                recipient = (assignee or actor) if event == "assign" else actor
                 for sibling in siblings:
-                    if recipient in (sibling.assignee, sibling.submitted_by):
+                    if recipient in (sibling.assignee, sibling.submitted_by, *sibling.holders):
                         raise ConflictError(
-                            f"one replica per annotator per group: {recipient} already holds or worked replica {sibling.task_id} of group {task.replica_of}"
+                            f"one replica per annotator per group: {recipient} holds, held or worked replica {sibling.task_id} of group {task.replica_of}"
                         )
+            if event in {"claim", "assign"} and recipient not in task.holders:
+                task.holders.append(recipient)
 
             if event == "submit":
                 # Read from the TASK, captured at send from the project, never from the request: a caller-supplied

@@ -6,7 +6,7 @@ the editable fields onto the current rows (geometry/provenance carried forward) 
 "version IS the handshake". The rows are the project's own (`annotator.annotations.store`): the
 write goes through the catalog's doors as the workbench's own identity, after the person's
 `can_annotate` on the project, naming the person as the commit's originator. A save stays inside its
-task's unit: a delete naming a row the unit does not hold is refused, never applied, and so is a new shape naming
+task's rows of its unit: a delete naming a row they do not hold is refused, never applied, and so is a new shape naming
 a row the project's table holds; an edit naming another unit's row patches nothing.
 """
 
@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 import pyarrow as pa
 from fastapi import APIRouter
 
-from annotator.annotations.access import MAY_EDIT_UNIT, UnitKey
+from annotator.annotations.access import MAY_EDIT_UNIT, TaskParam, UnitKey
 from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit, refuse_held_ids, refuse_unknown_ids
 from annotator.annotations.schema import (
     EDITABLE_FIELDS,
@@ -63,6 +63,7 @@ def save_annotations(
     author: CurrentSubject,
     annotations: AnnotationsDep,
     key: UnitKey,
+    task: TaskParam,
     body: SaveAnnotations,
     dataset: DatasetParam = None,
 ) -> SaveResult:
@@ -70,6 +71,8 @@ def save_annotations(
     corpus = resolve(state, dataset, caller)
     declared = corpus.declared
     unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
+    # The task's own rows of the unit: another task holding the same unit (a consensus replica) keeps its rows.
+    scope = unit.of_task(task)
     # The version check AND the carry-forward read are of the table the wire GET served, the project's own, so the 409
     # compares the version the client loaded against the same source. A project's first save creates it.
     table = annotations(corpus.id)
@@ -80,15 +83,15 @@ def save_annotations(
     # not yet made is version 0, the version the wire GET serves for it.
     check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version, required=True)
     if body.deletes:
-        # Only this unit's rows can be deleted: an id it does not hold is refused before anything is written.
+        # Only this task's rows of the unit can be deleted: an id they do not hold is refused before anything is written.
         if existing is None:
-            raise NotFoundError(f"annotation(s) {sorted(body.deletes)[:20]} are not this unit's")
-        refuse_unknown_ids(existing, body.deletes, within=unit.where)
+            raise NotFoundError(f"annotation(s) {sorted(body.deletes)[:20]} are not this task's rows of its unit")
+        refuse_unknown_ids(existing, body.deletes, within=scope)
     if body.inserts and existing is not None:
         refuse_held_ids(existing, [i.id for i in body.inserts])
     ds = existing if existing is not None else table.open_or_create(declared, author)
 
-    current = ds.to_table(filter=unit.where)
+    current = ds.to_table(filter=scope)
 
     # edits (patch existing) + inserts (new shapes) commit in ONE merge_insert; the
     # source is the union, keyed by id — matched ⇒ update, unmatched ⇒ insert.
@@ -113,6 +116,7 @@ def save_annotations(
     if body.inserts:
         ident = {
             **unit.values,
+            "task_id": task,
             "reviewer": author,
             "created_at": now,
             "updated_at": now,
@@ -128,7 +132,7 @@ def save_annotations(
         writer.merge_upsert(delta, "id")
         touched += delta.num_rows
     if body.deletes:
-        delete_by_ids(writer, body.deletes, within=unit.where)
+        delete_by_ids(writer, body.deletes, within=scope)
         touched += len(body.deletes)
 
     result = finalize_commit(

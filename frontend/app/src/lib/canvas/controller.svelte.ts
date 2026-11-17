@@ -24,6 +24,7 @@ import { PRODUCERS } from '@workbench/labeling/producers';
 import type { Zoomable } from '#lib/media/image/zoom.ts';
 import { rowSignature } from '@workbench/labeling/history';
 import { remapSpans } from './span-remap.ts';
+import { pointLength, pointSlice } from './text/codepoints.ts';
 import {
 	type InsertRow,
 	buildSavePayload,
@@ -45,6 +46,8 @@ import {
 	submitBlockers,
 } from './classes.ts';
 import { boxAt, newTrackId, tracksFrom, type Track, type TrackRow } from './temporal/tracks.ts';
+import { type CompareShape, type DiffEntry, diffVersions } from './compare/compare.ts';
+import { type AssistPoint, type AssistUnit, requestAssist } from '#lib/api/assist.api.ts';
 
 type TaskOntology = TaskDetail['ontology'];
 
@@ -57,6 +60,10 @@ export interface ListEntry {
 	row: AnnoRow;
 	track: Track | null;
 }
+
+/** A model's proposal waiting for a person: a `prediction` row from `model:<name>`. */
+const isProposal = (r: AnnoRow): boolean =>
+	r.status === 'prediction' && r.source.startsWith('model:');
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -152,7 +159,39 @@ interface TemporalEdit {
 	after: { t_start: number; t_end: number };
 }
 
-type UndoOp = FieldEdit | InsertEdit | DeleteEdit | GeometryEdit | LinkEdit | TemporalEdit;
+/** A text span's edges moved (a drag of an edge, its keys, or the re-anchoring a text edit makes). `before` is null when
+ *  the row had no pending offset edit yet. */
+interface SpanRangeEdit {
+	kind: 'span';
+	index: number;
+	before: { char_start: number; char_end: number } | null;
+	after: { char_start: number; char_end: number };
+}
+
+/** Several edits made as one action (a span labelled into text no row held yet, a text edit and the spans it
+ *  re-anchors, a version's shape taken in place of one's own): one undo reverses them all, last first. */
+interface GroupEdit {
+	kind: 'group';
+	ops: UndoOp[];
+}
+
+type UndoOp =
+	| FieldEdit
+	| InsertEdit
+	| DeleteEdit
+	| GeometryEdit
+	| LinkEdit
+	| TemporalEdit
+	| SpanRangeEdit
+	| GroupEdit;
+
+/** A version of the item beside the reader's own, for comparing: another replica's rows, or the model's proposals. */
+export interface CompareVersion {
+	/** What the panel calls it: "r2 · beta", "Model proposals". */
+	name: string;
+	/** Another task's rows of the unit, read from its own door; null for the proposals on this item's own rows. */
+	table: Table | null;
+}
 
 /** The class picker: open over one row, because it was just drawn (Escape then decides whether it stays unlabelled) or
  *  because the person asked to relabel it. */
@@ -336,7 +375,10 @@ export class AnnotatorController implements Zoomable {
 	/** The rows of the item as a person counts them: a track's keyframes are one object, so they are one entry, at the
 	 *  position of the track's first keyframe; every other row is its own. */
 	readonly shapes = $derived.by<AnnoRow[]>(() => {
-		if (this.tracks.length === 0) return this.rows;
+		// The item's own text, held in a row once a span is marked in it, is its content, not a shape on it.
+		const own = (r: AnnoRow) => r.shape === 'text' && r.parentId === '' && r.source === 'dataset';
+		if (this.tracks.length === 0)
+			return this.rows.some(own) ? this.rows.filter((r) => !own(r)) : this.rows;
 		const first = new Set(this.tracks.map((tr) => tr.keyframes[0]?.index));
 		const keyframe = new Set(this.tracks.flatMap((tr) => tr.keyframes.map((k) => k.index)));
 		return this.rows.filter((r) => !keyframe.has(r.index) || first.has(r.index));
@@ -412,7 +454,12 @@ export class AnnotatorController implements Zoomable {
 	readonly blockers = $derived(
 		submitBlockers(
 			this.classDefs,
-			this.rows.map((r) => ({ index: r.index, shape: r.shape, label: r.label })),
+			this.rows.map((r) => ({
+				index: r.index,
+				shape: r.shape,
+				label: r.label,
+				parentId: r.parentId,
+			})),
 			this.allowEmpty,
 		),
 	);
@@ -421,7 +468,11 @@ export class AnnotatorController implements Zoomable {
 	 *  none. */
 	classesForRow(index: number): ClassDef[] {
 		const shape = this.rows.find((r) => r.index === index)?.shape ?? '';
-		if (this.classDefs.length > 0) return classesFor(regionClasses(this.classDefs), shape);
+		// A text span takes the classes that may be drawn as text; a region those that may mark it.
+		if (this.classDefs.length > 0)
+			return shape === 'text'
+				? classesFor(this.classDefs, 'text')
+				: classesFor(regionClasses(this.classDefs), shape);
 		return this.labelClasses.map((name) => ({ name, colour: null, tools: [], required: false }));
 	}
 
@@ -498,7 +549,9 @@ export class AnnotatorController implements Zoomable {
 		// On a video a box just drawn and classed is the track worked on next: selected, so the next drag (at another
 		// moment) moves it into a keyframe at once; a region of a recording is selected for its transcription. On a still
 		// the list stays in front, to draw the next shape.
-		const segment = this.rows.find((r) => r.index === target)?.shape === 'segment';
+		// A text span is selected too, so its edges can be moved and its class changed at once.
+		const shape = this.rows.find((r) => r.index === target)?.shape;
+		const segment = shape === 'segment' || shape === 'text';
 		if (drawn && (this.trackMode || segment) && target !== null && target !== undefined)
 			this._selectRow(target);
 		this.lastClass = name;
@@ -518,8 +571,11 @@ export class AnnotatorController implements Zoomable {
 		const open = this.picker;
 		this.picker = null;
 		if (!open || open.reason !== 'drawn' || this.allowsUnlabelled) return;
+		// The drawing is the last action: an insert, or a group ending in one (a span and the row of text it was the first in).
 		const last = this._undo.at(-1);
-		if (last?.kind === 'insert' && last.index === open.index) {
+		const drawn = last?.kind === 'group' ? last.ops.at(-1) : last;
+		if (drawn?.kind === 'insert' && drawn.index === open.index) {
+			const span = drawn.row.shape_type === 'text';
 			this.undo();
 			this._redo = this._redo.slice(0, -1);
 			// The undo reselects the row it hid; nothing is selected now, so the next press draws rather than grabbing
@@ -527,13 +583,25 @@ export class AnnotatorController implements Zoomable {
 			this._selectRow(null);
 			this.notice = {
 				tone: 'error',
-				text: 'Not kept: every region on this task needs a class. Draw it again and pick one.',
+				text: span
+					? 'Not kept: every span on this task needs a class. Mark it again and pick one.'
+					: 'Not kept: every region on this task needs a class. Draw it again and pick one.',
 			};
 		}
 	}
 
 	/** Relabel the selection with the class a number key names; true when the key named one. */
 	classByKey(key: string): boolean {
+		// Text selected in a line, and no annotation selected: the key labels that stretch as a new span. A selected
+		// annotation takes the key first: selecting one drops a pending text selection (`_selectRow`).
+		const chosen = this.textSelection;
+		if (chosen !== null && this.selectedIndex === null && this.readOnly === null) {
+			const picked = classForKey(classesFor(this.classDefs, 'text'), key);
+			if (!picked) return false;
+			this.textSelection = null;
+			this.addTextSpan(chosen.line, chosen.start, chosen.end, picked.name);
+			return true;
+		}
 		const index = this.selectedIndex;
 		const classes = index === null ? regionClasses(this.classDefs) : this.classesForRow(index);
 		const picked = classForKey(classes, key);
@@ -703,6 +771,20 @@ export class AnnotatorController implements Zoomable {
 			this._geoDirty = true;
 		};
 		im.onCommit = (shape) => {
+			// An armed assist model takes the gesture as its prompt: a click is a segmenter's point, a drawn box the region
+			// it looks in. Nothing is drawn by hand while it is armed.
+			if (this.assistProducer !== null) {
+				const click = shape.type !== 'rect' || shape.width * shape.height <= MANUAL_MIN_AREA;
+				if (click && this.assistProducer.startsWith('sam'))
+					this.addAssistPoint(shape.x + shape.width / 2, shape.y + shape.height / 2);
+				else {
+					this.finishAssistSession();
+					void this.assist({
+						region: { x: shape.x, y: shape.y, width: shape.width, height: shape.height },
+					});
+				}
+				return;
+			}
 			// The tools commit every gesture, clicks included; a sub-5×5 rect is an accidental click.
 			if (shape.type !== 'rect' || shape.width * shape.height > MANUAL_MIN_AREA) {
 				const index = this._appendInsert(this._buildInsert(shape));
@@ -796,6 +878,8 @@ export class AnnotatorController implements Zoomable {
 	/** Selection WITHOUT the link interception. Undo/redo must reach this directly: routing an
 	 *  internal reselect through `select()` would feed the undone row into a half-drawn link. */
 	private _selectRow(index: number | null): void {
+		// Choosing an annotation leaves any text selected in a line: a class key now relabels the annotation.
+		if (index !== null) this.textSelection = null;
 		this.multiSelect = false;
 		this.selectedIndex = index;
 		const im = this.ctx?.plugins.interaction;
@@ -1153,13 +1237,13 @@ export class AnnotatorController implements Zoomable {
 		if (!t) return;
 		const before = effectiveField(t, this._overrides, field, index) ?? '';
 		if (before === value) return;
-		this._pushUndo({ kind: 'field', index, field, before, after: value });
-		this._setField(index, field, value);
-		// A TEXT edit shifts the text under every span anchored to this row — re-anchor them or
-		// they silently point at the wrong characters (§8d.1). Known limitation, said out loud:
-		// undoing the text edit restores the text but not the offsets; before this existed the
-		// offsets were wrong after EVERY edit, undone or not.
-		if (field === 'text') this._remapChildSpans(index, before, value);
+		// A TEXT edit shifts the text under every span anchored to this row: they are re-anchored in the same action, so
+		// an undo puts the text and the spans back together.
+		this._group(() => {
+			this._pushUndo({ kind: 'field', index, field, before, after: value });
+			this._setField(index, field, value);
+			if (field === 'text') this._remapChildSpans(index, before, value);
+		});
 	}
 
 	/** Re-anchor `parentIndex`'s child spans for an `oldText → newText` edit: shifted/stretched
@@ -1182,13 +1266,127 @@ export class AnnotatorController implements Zoomable {
 			}
 			const original = spans.find((sp) => sp.index === s.index);
 			if (original && original.start === s.start && original.end === s.end) continue;
-			this._spanEdits.set(s.index, { char_start: s.start, char_end: s.end });
-			const insert = this._inserts.find((ins) => ins.id === row.id);
-			if (insert) {
-				insert.char_start = s.start;
-				insert.char_end = s.end;
+			this._setSpan(s.index, { char_start: s.start, char_end: s.end });
+		}
+	}
+
+	/** Move a span's edges, on the undo stack: the offset overlay (display and the save's `spans` channel), and the
+	 *  pending insert's own offsets for a span drawn since the last save. */
+	private _setSpan(index: number, range: { char_start: number; char_end: number }): void {
+		this._pushUndo({
+			kind: 'span',
+			index,
+			before: this._spanEdits.get(index) ?? null,
+			after: range,
+		});
+		this._spanEdits.set(index, range);
+		this._patchInsertRow(index, range);
+		this._geoDirty = true;
+	}
+
+	/** A row's own offsets from the table, before any pending edit. */
+	private _tableSpan(index: number): { char_start: number; char_end: number } {
+		const at = (field: string): number => {
+			const v = this.table?.getChild(field)?.get(index);
+			return typeof v === 'number' ? v : -1;
+		};
+		return { char_start: at('char_start'), char_end: at('char_end') };
+	}
+
+	/** Keep a pending insert's own fields in step with an overlay: an insert's row is what its save sends. */
+	private _patchInsertRow(index: number, fields: Partial<InsertRow>): void {
+		const id = this.table ? rawField(this.table, 'id', index) : null;
+		if (id !== null && this._inserts.some((r) => r.id === id))
+			this._inserts = this._inserts.map((r) => (r.id === id ? { ...r, ...fields } : r));
+	}
+
+	// ── text spans ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+	/** Text the person has selected in a line, which a class key labels as a new span; null when none is. */
+	textSelection = $state<{ line: number | { text: string }; start: number; end: number } | null>(
+		null,
+	);
+
+	/** The row holding the item's own text, writing one when no row holds it yet (an item whose text is its dataset
+	 *  row's, before anything was labelled in it). Its index. */
+	ensureDocument(text: string): number {
+		const held = this.rows.find(
+			(r) => r.shape === 'text' && r.parentId === '' && r.source === 'dataset',
+		);
+		if (held) return held.index;
+		return this._appendInsert(
+			makeInsertRow({ shape_type: 'text', text, source: 'dataset', status: 'accepted' }),
+		);
+	}
+
+	/**
+	 * A span over `start`..`end` of a line's text, labelled `label` or, without one, with the class picker opened on it.
+	 * `line` is the row holding the text, or the item's own text when no row holds it yet (written with the span, as one
+	 * action). Refused rather than clamped when the range is not inside the text: a clamped span is a range nobody asked
+	 * for. Its index, or -1.
+	 *
+	 * The span stores its offsets and, beside them, the text they cover, so the row reads sensibly in a list; the offsets
+	 * are what count, since a word can repeat within a line.
+	 */
+	addTextSpan(line: number | { text: string }, start: number, end: number, label?: string): number {
+		if (this.readOnly !== null || this.table === null) return -1;
+		const text =
+			typeof line === 'number' ? (this.rows.find((r) => r.index === line)?.text ?? '') : line.text;
+		if (start < 0 || end <= start || end > pointLength(text)) return -1;
+		const index = this._group(() => {
+			const parent = typeof line === 'number' ? line : this.ensureDocument(line.text);
+			const parentId = this.rows.find((r) => r.index === parent)?.id;
+			if (parentId === undefined) return -1;
+			return this._appendInsert(
+				makeInsertRow({
+					shape_type: 'text',
+					parent_id: parentId,
+					char_start: start,
+					char_end: end,
+					text: pointSlice(text, start, end),
+					label: label ?? '',
+				}),
+			);
+		});
+		if (index >= 0) {
+			if (label === undefined) this.openPicker(index, 'drawn');
+			else {
+				this.lastClass = label;
+				this._selectRow(index);
+				this.notice = { tone: 'success', text: `Labeled “${label}”` };
 			}
 		}
+		return index;
+	}
+
+	/** Move an edge of the selected span by `delta` characters (its keys); true when the selection is a span. */
+	nudgeSpan(edge: 'start' | 'end', delta: number): boolean {
+		const row = this.selected;
+		if (
+			!row ||
+			row.shape !== 'text' ||
+			!row.parentId ||
+			row.charStart === null ||
+			row.charEnd === null
+		)
+			return false;
+		const start = edge === 'start' ? row.charStart + delta : row.charStart;
+		const end = edge === 'end' ? row.charEnd + delta : row.charEnd;
+		if (end > start) this.resizeSpan(row.index, start, end);
+		return true;
+	}
+
+	/** Move a span's edges to `start`..`end` of its line, on the undo stack; refused outside the line. */
+	resizeSpan(index: number, start: number, end: number): void {
+		if (this.readOnly !== null) return;
+		const row = this.rows.find((r) => r.index === index);
+		const parent = row ? this.rows.find((r) => r.id === row.parentId) : undefined;
+		if (!row || !parent || start < 0 || end <= start || end > pointLength(parent.text)) return;
+		if (row.charStart === start && row.charEnd === end) return;
+		this._group(() => {
+			this._setSpan(index, { char_start: start, char_end: end });
+			this.updateField(index, 'text', pointSlice(parent.text, start, end));
+		});
 	}
 	setStatus(index: number, status: string): void {
 		// Manual mode = ONE instance of the LabelOp abstraction (human · verdict ·
@@ -1306,11 +1504,32 @@ export class AnnotatorController implements Zoomable {
 	/** Counts every edit, undo and redo: what the autosave's debounce restarts on, so it waits from the LAST edit. */
 	edits = $state(0);
 
+	/** Ops pushed while a group is being made (`_group`), which go on the stack as one. */
+	private _collecting: UndoOp[] | null = null;
+
 	/** Push an op and drop the redo branch — a new action invalidates any undone future. */
 	private _pushUndo(op: UndoOp): void {
+		if (this._collecting !== null) {
+			this._collecting.push(op);
+			return;
+		}
 		this._undo = [...this._undo, op];
 		this._redo = [];
 		this.edits += 1;
+	}
+
+	/** Run `make`, its edits one action on the undo stack. Nested, the inner edits join the outer action. */
+	private _group<T>(make: () => T): T {
+		if (this._collecting !== null) return make();
+		const ops: UndoOp[] = [];
+		this._collecting = ops;
+		try {
+			return make();
+		} finally {
+			this._collecting = null;
+			if (ops.length === 1 && ops[0]) this._pushUndo(ops[0]);
+			else if (ops.length > 1) this._pushUndo({ kind: 'group', ops });
+		}
 	}
 
 	/** Revert the last action — field edit, draw, delete or geometry drag alike. */
@@ -1337,6 +1556,18 @@ export class AnnotatorController implements Zoomable {
 	private _apply(op: UndoOp, direction: 'undo' | 'redo'): void {
 		const arrow = this.ctx?.plugins.arrow;
 		switch (op.kind) {
+			case 'group': {
+				const ops = direction === 'undo' ? op.ops.toReversed() : op.ops;
+				for (const each of ops) this._apply(each, direction);
+				return;
+			}
+			case 'span': {
+				const range = direction === 'undo' ? op.before : op.after;
+				if (range === null) this._spanEdits.delete(op.index);
+				else this._spanEdits.set(op.index, range);
+				this._patchInsertRow(op.index, range ?? this._tableSpan(op.index));
+				break;
+			}
 			case 'field':
 				this._setField(op.index, op.field, direction === 'undo' ? op.before : op.after);
 				break;
@@ -2049,8 +2280,9 @@ export class AnnotatorController implements Zoomable {
 		void this.viewport;
 		const ctx = this.ctx;
 		if (!ctx) return null;
-		// A region of the time line has no box on the picture: its picker opens on the time line.
-		if (this.rows.find((r) => r.index === index)?.shape === 'segment') return null;
+		// A region of the time line and a text span have no box on the picture: their pickers open where they are drawn.
+		const shape = this.rows.find((r) => r.index === index)?.shape;
+		if (shape === 'segment' || shape === 'text') return null;
 		const track = this.tracks.find((tr) => tr.keyframes.some((k) => k.index === index));
 		const box = track ? boxAt(track, this.timeCursor, this.frameTolerance) : null;
 		const g = box ? { x: box.x, y: box.y, w: box.width, h: box.height } : this._geometryOf(index);
@@ -2111,6 +2343,281 @@ export class AnnotatorController implements Zoomable {
 	/** Move a keyframe to another moment (its lane's drag), on the undo stack. */
 	retimeKeyframe(index: number, at: number): void {
 		this.updateSegmentTime(index, at, at);
+	}
+
+	// ── assist: a model's proposals on the item ─────────────────────────────────────────────────────────────────────────
+
+	/** The unit the canvas labels, which the assist doors name: set by the shell. */
+	unit: AssistUnit | null = null;
+	/** The model armed on the canvas: its next click or box is its prompt rather than a drawn shape. Null when none. */
+	assistProducer = $state<string | null>(null);
+	/** What a text-prompted model is asked to find (a detector's prompt). */
+	assistPrompt = $state('');
+	/** An interactive segmenter's session: every click so far, each request carrying them all (the service keeps no
+	 *  session), so one more click refines the same object. */
+	assistPoints = $state<AssistPoint[]>([]);
+	/** Whether the next click says "this" (true) or "not this" (false). */
+	assistPointPositive = $state(true);
+	/** Proposals scored below this never reach the item (0 keeps every one); how many it held back is said. */
+	assistMinConfidence = $state(0);
+	/** A request to the model is on its way. */
+	assistBusy = $state(false);
+	/** The rows the session's last answer added, which the next answer replaces. */
+	private _assistSessionRows: { id: string; index: number }[] = [];
+
+	/** Arm a model (its clicks and boxes become its prompts) or, with null, put it away. Changing it ends a session,
+	 *  keeping its last answer. */
+	setAssistProducer(producer: string | null): void {
+		if (producer !== this.assistProducer) this.finishAssistSession();
+		this.assistProducer = producer;
+		if (producer !== null) this.setTool('rect');
+	}
+
+	/** One more click of the session, and the model asked again with every click so far. */
+	addAssistPoint(x: number, y: number): void {
+		if (this.assistProducer === null) return;
+		this.assistPoints = [...this.assistPoints, { x, y, positive: this.assistPointPositive }];
+		void this.assist({ points: this.assistPoints });
+	}
+
+	/** End the session, keeping its last answer: the next click starts a new object. */
+	finishAssistSession(): void {
+		this.assistPoints = [];
+		this.assistPointPositive = true;
+		this._assistSessionRows = [];
+	}
+
+	/**
+	 * Ask the armed model (or `producer`) for proposals on the unit. They arrive as `prediction` rows from
+	 * `model:<name>`, on the item's undo stack and saved like any shape, for the person to keep (A) or reject (R). On a
+	 * video they are pinned to the playhead, a box as a new track's first keyframe. A refinement of a session replaces
+	 * the session's previous answer, once the new one is in hand.
+	 */
+	async assist(
+		opts: {
+			producer?: string;
+			region?: { x: number; y: number; width: number; height: number };
+			points?: AssistPoint[];
+		} = {},
+	): Promise<void> {
+		const producer = opts.producer ?? this.assistProducer;
+		const unit = this.unit;
+		if (producer === null || unit === null || this.readOnly !== null || this.assistBusy) return;
+		this.assistBusy = true;
+		try {
+			const answer = await requestAssist(unit, {
+				producer,
+				prompt: this.assistPrompt.trim(),
+				region: opts.region ?? null,
+				points: opts.points ?? [],
+			});
+			if (!answer.ok) {
+				this.notice = { tone: 'error', text: `The model did not answer: ${answer.detail}` };
+				return;
+			}
+			const { shapes, source, dropped } = answer.data;
+			const kept = shapes.filter(
+				(s) => this.assistMinConfidence <= 0 || s.confidence >= this.assistMinConfidence,
+			);
+			const refining = (opts.points?.length ?? 0) > 0;
+			const added = this._group(() => {
+				if (refining) this._retractSessionRows();
+				return kept.map((s) => {
+					const shapeType = canonicalShapeType(s.shape_type) ?? s.shape_type;
+					const temporal = !this.trackMode
+						? {}
+						: {
+								t_start: this.timeCursor,
+								t_end: this.timeCursor,
+								...(shapeType === 'bbox' ? { group: newTrackId() } : {}),
+							};
+					const row = makeInsertRow({
+						...temporal,
+						shape_type: shapeType,
+						x: s.x,
+						y: s.y,
+						width: s.width,
+						height: s.height,
+						polygon: s.polygon,
+						label: s.label || this.assistPrompt.trim(),
+						text: s.text,
+						status: 'prediction',
+						source,
+						confidence: s.confidence,
+						uncertainty: s.uncertainty,
+					});
+					return { id: row.id, index: this._appendInsert(row) };
+				});
+			});
+			if (refining) this._assistSessionRows = added;
+			const below = shapes.length - kept.length;
+			const said = [
+				`${kept.length} proposal${kept.length === 1 ? '' : 's'} from ${producer}: A keeps, R rejects`,
+				below > 0 ? `${below} below the ${this.assistMinConfidence.toFixed(2)} threshold` : '',
+				dropped.length > 0 ? `${dropped.length} outside this task's classes (${dropped[0]})` : '',
+			].filter(Boolean);
+			this.notice = { tone: kept.length > 0 ? 'success' : 'error', text: said.join(' · ') };
+		} finally {
+			this.assistBusy = false;
+		}
+	}
+
+	/** Take back the rows the session's last answer added, as an undone draw is: never saved, so nothing reaches the
+	 *  wire. */
+	private _retractSessionRows(): void {
+		const arrow = this.ctx?.plugins.arrow;
+		const ids = new Set(this._assistSessionRows.map((r) => r.id));
+		if (ids.size === 0) return;
+		this._inserts = this._inserts.filter((r) => !ids.has(r.id));
+		for (const row of this._assistSessionRows) {
+			this._suppressed.add(row.id);
+			arrow?.setDeleted(row.index);
+		}
+		arrow?.sync();
+		this._assistSessionRows = [];
+	}
+
+	// ── compare: another version of the item beside the reader's own ────────────────────────────────────────────────
+
+	/** The version shown beside the item's own rows, or null. */
+	compare = $state.raw<CompareVersion | null>(null);
+
+	/** A row of a table as the comparison reads it. */
+	private _compareShape(table: Table, row: AnnoRow, texts: Map<string, string>): CompareShape {
+		const num = (field: string): number => {
+			const v = table.getChild(field)?.get(row.index);
+			return typeof v === 'number' ? v : 0;
+		};
+		const own = table === this.table ? this._geoEdits.get(row.index) : undefined;
+		const box =
+			row.shape === 'segment' || row.shape === 'tag' || row.shape === 'text'
+				? null
+				: own
+					? { x: own.x, y: own.y, w: own.w, h: own.h }
+					: { x: num('x'), y: num('y'), w: num('width'), h: num('height') };
+		const parentText = texts.get(row.parentId);
+		return {
+			index: row.index,
+			id: row.id,
+			shape: row.shape,
+			label: row.label,
+			box,
+			time: row.tStart !== null && row.tEnd !== null ? { start: row.tStart, end: row.tEnd } : null,
+			span:
+				row.shape === 'text' &&
+				parentText !== undefined &&
+				row.charStart !== null &&
+				row.charEnd !== null
+					? { text: parentText, start: row.charStart, end: row.charEnd }
+					: null,
+		};
+	}
+
+	/** The rows the other version holds, as the canvas shows them. */
+	readonly compareRows = $derived.by<AnnoRow[]>(() => {
+		const version = this.compare;
+		if (version === null) return [];
+		if (version.table === null) return this.rows.filter((r) => isProposal(r));
+		return projectRows(version.table, new Map(), []);
+	});
+
+	/** The item's own rows paired with the other version's, each pair saying how it stands. */
+	readonly compareDiff = $derived.by<DiffEntry[]>(() => {
+		const version = this.compare;
+		const table = this.table;
+		if (version === null || table === null) return [];
+		const marks = (r: AnnoRow) => !(r.shape === 'text' && r.parentId === '');
+		const textsOf = (rows: readonly AnnoRow[]) => new Map(rows.map((r) => [r.id, r.text]));
+		const mineRows = (
+			version.table === null ? this.rows.filter((r) => !isProposal(r)) : this.rows
+		).filter(marks);
+		const theirTable = version.table ?? table;
+		const theirRows = this.compareRows.filter(marks);
+		const mine = mineRows.map((r) => this._compareShape(table, r, textsOf(this.rows)));
+		const theirs = theirRows.map((r) =>
+			this._compareShape(
+				theirTable,
+				r,
+				textsOf(version.table === null ? this.rows : this.compareRows),
+			),
+		);
+		return diffVersions(mine, theirs);
+	});
+
+	/**
+	 * Take the other version's shape into the item, in place of the item's own where the two are one shape differing.
+	 * A proposal on the item's own rows is kept (accepted); another replica's shape is copied in as the reader's own
+	 * accepted row, its source kept, a span re-anchored into the item's text holding the same words. One action on the
+	 * undo stack. True when something was taken.
+	 */
+	takeFromCompare(entry: DiffEntry): boolean {
+		const version = this.compare;
+		const table = this.table;
+		const theirs = entry.theirs;
+		if (version === null || table === null || theirs === null || this.readOnly !== null)
+			return false;
+		return this._group(() => {
+			if (version.table === null) {
+				this.updateField(theirs.index, 'status', 'accepted');
+			} else if (!this._copyIn(version.table, theirs)) return false;
+			if (entry.kind === 'changed' && entry.mine !== null) this.deleteRow(entry.mine.index);
+			this.notice = {
+				tone: 'success',
+				text: `Took ${theirs.label || theirs.shape} from ${version.name}`,
+			};
+			return true;
+		});
+	}
+
+	/** Copy a row of another version's table into the item as an accepted row of the reader's. */
+	private _copyIn(from: Table, shape: CompareShape): boolean {
+		const row = from.get(shape.index) as Record<string, unknown> | null;
+		if (!row) return false;
+		const str = (field: string): string =>
+			typeof row[field] === 'string' ? (row[field] as string) : '';
+		const num = (field: string): number =>
+			typeof row[field] === 'number' ? (row[field] as number) : 0;
+		const polygon =
+			row['polygon'] == null ? [] : Array.from(row['polygon'] as ArrayLike<number>, Number);
+		let parent = '';
+		if (shape.span !== null) {
+			const words = shape.span.text;
+			const line = this.rows.find(
+				(r) => r.parentId === '' && r.shape !== 'tag' && r.text === words,
+			);
+			if (!line) {
+				this.notice = {
+					tone: 'error',
+					text: 'Not taken: this item holds no text with the same words for the span to range into.',
+				};
+				return false;
+			}
+			parent = line.id;
+		}
+		const index = this._appendInsert(
+			makeInsertRow({
+				shape_type: shape.shape,
+				x: num('x'),
+				y: num('y'),
+				width: num('width'),
+				height: num('height'),
+				rotation: num('rotation'),
+				polygon,
+				t_start: num('t_start'),
+				t_end: num('t_end'),
+				text: str('text'),
+				label: shape.label,
+				group: str('group'),
+				mask: str('mask'),
+				parent_id: parent,
+				char_start: shape.span?.start ?? -1,
+				char_end: shape.span?.end ?? -1,
+				status: 'accepted',
+				source: str('source') || 'human',
+				metadata: str('metadata') || '{}',
+			}),
+		);
+		return index >= 0;
 	}
 
 	// ── zoom ──

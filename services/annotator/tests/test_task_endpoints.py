@@ -443,6 +443,21 @@ def test_assigning_a_second_replica_to_the_same_recipient_is_409(door: Callable[
     assert d.task("g1-r2").assignee is None
 
 
+def test_a_replica_once_held_and_released_still_bars_its_siblings(door: Callable[..., _Door]) -> None:
+    """Releasing a replica clears its holder but not what its holder saw: a person who held one replica of a group is
+    refused every sibling, or a release-and-claim hop would read another annotator's work and come back."""
+    d = door(allow=True)
+    d.seed(_task(task_id="g1-r1", replica_of="g1"), _task(task_id="g1-r2", replica_of="g1"), consensus_n=2)
+    assert d.client.post("/tasks/g1-r1/events", json={"event": "claim"}).status_code == 200
+    assert d.client.post("/tasks/g1-r1/events", json={"event": "release"}).status_code == 200
+
+    r = d.client.post("/tasks/g1-r2/events", json={"event": "claim"})
+
+    assert r.status_code == 409, r.text
+    assert "g1-r1" in r.json()["detail"], "the refusal must name the replica once held"
+    assert d.task("g1-r2").state is TaskState.UNASSIGNED
+
+
 # --------------------------------------------------------------------------------------------------
 # Import (#39) — Arrow IPC into the draft
 # --------------------------------------------------------------------------------------------------

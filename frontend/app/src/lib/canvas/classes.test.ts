@@ -58,17 +58,20 @@ describe('the picker’s keys', () => {
 });
 
 describe('what blocks a submit', () => {
-	it('names each region without a class and each required class missing', () => {
+	it('names each region and text span without a class and each required class missing', () => {
 		const blockers = submitBlockers(
 			ONTOLOGY,
 			[
 				{ index: 0, shape: 'bbox', label: '' },
 				{ index: 1, shape: 'tag', label: '' },
 				{ index: 2, shape: 'polygon', label: 'line' },
+				// The item's text is its content, not a mark; a span in it is a mark.
+				{ index: 3, shape: 'text', label: '', parentId: '' },
+				{ index: 4, shape: 'text', label: '', parentId: 'doc' },
 			],
 			false,
 		);
-		expect(blockers).toEqual({ unlabelled: [0], missing: ['seal'], empty: false });
+		expect(blockers).toEqual({ unlabelled: [0, 4], missing: ['seal'], empty: false });
 		expect(submittable(blockers)).toBe(false);
 	});
 

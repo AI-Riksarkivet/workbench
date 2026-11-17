@@ -35,6 +35,10 @@
 	import ClassPicker from './ClassPicker.svelte';
 	import TaskPanel from './TaskPanel.svelte';
 	import TemporalCanvas from './temporal/TemporalCanvas.svelte';
+	import TextCanvas from './text/TextCanvas.svelte';
+	import TextLane from './text/TextLane.svelte';
+	import { textLines } from './text/spans.ts';
+	import ComparePanel from './compare/ComparePanel.svelte';
 	import type { CanvasMedia } from './media.ts';
 	import Filmstrip from './Filmstrip.svelte';
 	import ImageViewer from './ImageViewer.svelte';
@@ -61,6 +65,7 @@
 		me,
 		ontaskchange,
 		itemName,
+		replicas = [],
 	}: {
 		task: TaskDetail;
 		/** The open unit's key path. */
@@ -86,6 +91,8 @@
 		ontaskchange: (task: TaskDetail) => void;
 		/** What the item is called (its document and page, or its recording), for the canvas's name. */
 		itemName: string;
+		/** The item's other replicas (its consensus group), for comparing. */
+		replicas?: readonly TaskDetail[];
 	} = $props();
 
 	const controller = new AnnotatorController();
@@ -102,6 +109,19 @@
 		controller.setReadOnly(readOnly);
 	});
 	const keptUnder = untrack(() => `${task.task_id}/${unitKey}`);
+	// The unit the assist doors name.
+	controller.unit = untrack(() => ({
+		project: task.project_id,
+		task: task.task_id,
+		dataset: task.source.where ?? '',
+		key: unitKey,
+	}));
+	/** The item's lines of text a span can range into, under a picture or a recording: shown when the task marks text. */
+	const lane = $derived(
+		media.kind !== 'text' && controller.textSpanClasses.length > 0
+			? textLines(controller.rows)
+			: [],
+	);
 
 	onMount(() => {
 		// Links live on the task's draft, not in the annotations table: read back once at open, so the next draft save
@@ -295,7 +315,12 @@
 	/** Back to the canvas once the picker closes, so the next key draws or moves rather than going nowhere. */
 	function refocus(): void {
 		// The image canvas's region, or on a recording or a video the temporal canvas, whose keys play and step.
-		(regionEl ?? viewerEl?.querySelector<HTMLElement>('[data-testid="temporal-canvas"]'))?.focus();
+		(
+			regionEl ??
+			viewerEl?.querySelector<HTMLElement>(
+				'[data-testid="temporal-canvas"], [data-testid="text-canvas"]',
+			)
+		)?.focus();
 	}
 	let viewerEl = $state<HTMLDivElement | null>(null);
 
@@ -309,6 +334,11 @@
 
 	function onKeydown(e: KeyboardEvent): void {
 		const el = e.target as HTMLElement | null;
+		// Escape lets go of text selected in a line too, so no later class key makes a span of it.
+		if (e.key === 'Escape') {
+			controller.textSelection = null;
+			window.getSelection()?.removeAllRanges();
+		}
 		// Ctrl+S saves from anywhere on the page, a transcription being typed included; every other key in a field is
 		// the field's (its own undo, its letters).
 		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -354,6 +384,24 @@
 		if (k === 'c' && controller.selectedIndex !== null) {
 			e.preventDefault();
 			controller.openPicker(controller.selectedIndex, 'relabel');
+			return;
+		}
+		// A selected text span: Alt+←/→ move its end, Alt+Shift+←/→ its start, a character at a time.
+		if (
+			e.altKey &&
+			(e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+			controller.nudgeSpan(e.shiftKey ? 'start' : 'end', e.key === 'ArrowLeft' ? -1 : 1)
+		) {
+			e.preventDefault();
+			return;
+		}
+		// Text selected in a line: Enter makes a span of it and opens the class picker.
+		if (e.key === 'Enter' && controller.textSelection !== null && controller.readOnly === null) {
+			const chosen = controller.textSelection;
+			controller.textSelection = null;
+			window.getSelection()?.removeAllRanges();
+			e.preventDefault();
+			controller.addTextSpan(chosen.line, chosen.start, chosen.end);
 			return;
 		}
 		// An item with time: its keys play, step and edit from wherever the focus is on the page, and a letter it takes is
@@ -422,7 +470,23 @@
 	<div class="flex h-full w-full flex-col" bind:this={viewerEl}>
 		<ClassificationBar {controller} />
 		<div class="relative min-h-0 w-full flex-1">
-			{#if media.kind !== 'image'}
+			{#if media.kind === 'text'}
+				<TextCanvas
+					{controller}
+					{annotationsUrl}
+					documentText={media.text}
+					{itemName}
+					onload={() => {
+						status = 'loaded';
+						onLoaded();
+					}}
+					onerror={(message, code) => {
+						status = 'failed';
+						failure = message;
+						if (code === 422) refusal = message;
+					}}
+				/>
+			{:else if media.kind !== 'image'}
 				<TemporalCanvas
 					{controller}
 					kind={media.kind}
@@ -520,11 +584,17 @@
 				<ZoomControls target={controller} class={narrow ? 'bottom-10' : undefined} />
 			{/if}
 		</div>
+		{#if lane.length > 0}
+			<TextLane {controller} lines={lane} />
+		{/if}
 	</div>
 {/snippet}
 
 {#snippet taskPanel()}
 	<TaskPanel {controller} {task} {permissions} {me} onchanged={ontaskchange} />
+	<!-- Another replica's work is offered only to someone who may review the item: the replicas are independent until
+	     then (`require_work_readable`). -->
+	<ComparePanel {controller} replicas={permissions.includes('can_review') ? replicas : []} />
 {/snippet}
 
 <div
@@ -538,6 +608,7 @@
 		{narrow}
 		unreadable={status === 'failed'}
 		onhelp={() => (helpOpen = true)}
+		kind={media.kind}
 	/>
 
 	{#if narrow}
@@ -611,6 +682,16 @@
 			<dd>
 				Give the selected region the task's first nine classes (nothing selected: the next region's)
 			</dd>
+			{#if media.kind === 'text' || lane.length > 0}
+				<dt class="font-mono">Select text · Enter</dt>
+				<dd>
+					Mark the selected text as a span and pick its class; a digit gives it that class at once
+				</dd>
+				<dt class="font-mono">Alt+← → · Alt+Shift+← →</dt>
+				<dd>Move the selected span's end · its start</dd>
+				<dt class="font-mono">✎ · Enter · Shift+Enter</dt>
+				<dd>Correct a line's text · apply it · a new line in it</dd>
+			{/if}
 			<dt class="font-mono">C</dt>
 			<dd>Open the class picker on the selected region</dd>
 			<dt class="font-mono">Del</dt>

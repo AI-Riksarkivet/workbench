@@ -341,6 +341,36 @@
 						};
 					}),
 			});
+		// The compared version's regions where they differ from the item's own: one only it has, or one placed or
+		// classed otherwise, on lanes of their own under the item's.
+		const compared = controller.compareDiff.filter(
+			(e) => e.kind !== 'same' && e.theirs?.time && e.theirs.shape === 'segment',
+		);
+		if (compared.length > 0) {
+			const spans = compared.map((e) => ({
+				index: e.theirs?.index ?? 0,
+				start: e.theirs?.time?.start ?? 0,
+				end: e.theirs?.time?.end ?? 0,
+			}));
+			const comparedLanes = laneOf(spans);
+			const count = Math.max(1, ...[...comparedLanes.values()].map((l) => l + 1));
+			for (let lane = 0; lane < count; lane += 1)
+				out.push({
+					id: `compared:${lane}`,
+					label: lane === 0 ? (controller.compare?.name ?? 'Compared') : '',
+					height: 20,
+					spans: compared
+						.filter((e) => comparedLanes.get(e.theirs?.index ?? 0) === lane)
+						.map((e) => ({
+							key: `compared:${e.theirs?.index}`,
+							start: e.theirs?.time?.start ?? 0,
+							end: e.theirs?.time?.end ?? 0,
+							colour: colour(e.kind === 'theirs' ? '#f59e0b' : '#db2777'),
+							label: e.theirs?.label ?? '',
+							hollow: true,
+						})),
+				});
+		}
 		return out;
 	});
 

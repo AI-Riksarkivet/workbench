@@ -6,7 +6,7 @@
 // words: a key whose parts are not the dataset's identity (422), a project the caller may not view (404), a task that is
 // not that project's (404), a unit that is not the task's (404), and a save the task takes no edit for (409 for its
 // state, 403 for the caller).
-import type { Task } from './mock-projects';
+import { mayReadWork, type Task } from './mock-projects';
 import {
 	Field,
 	Float32,
@@ -104,6 +104,37 @@ const SEEDED: Record<string, Row[]> = {
 	],
 };
 
+/** The first replica of a consensus item on the `pages` project, its own annotator's rows of one unit; the second's
+ *  work is its task's draft (`mock-projects.ts`). */
+const BY_TASK: Record<string, Row[]> = {
+	'pagesg-r1': [
+		{
+			id: 'r1-fig',
+			shape_type: 'bbox',
+			x: 10,
+			y: 10,
+			width: 50,
+			height: 40,
+			polygon: [],
+			label: 'figure',
+			status: 'accepted',
+			source: 'human',
+		},
+		{
+			id: 'r1-cap',
+			shape_type: 'bbox',
+			x: 90,
+			y: 100,
+			width: 60,
+			height: 40,
+			polygon: [],
+			label: 'caption',
+			status: 'accepted',
+			source: 'human',
+		},
+	],
+};
+
 /** Each mock dataset's identity, as its descriptor declares it (`mock-services.ts`): a doc key and an integer chunk. */
 const IDENTITY: Record<string, string[]> = {
 	'lake~acme$letters': ['doc_id', 'chunk_id'],
@@ -128,6 +159,7 @@ function keyRefusal(dataset: string, key: string): string | null {
 /** Each person's units, so no spec sees another's saves. */
 const worlds = new Map<string, Map<string, Unit>>();
 
+/** A unit's rows are its task's (`annotator.annotations.unit.Unit.of_task`): `id` is `project|task|dataset|key`. */
 function unitOf(sub: string, id: string): Unit {
 	let units = worlds.get(sub);
 	if (!units) {
@@ -136,7 +168,10 @@ function unitOf(sub: string, id: string): Unit {
 	}
 	let unit = units.get(id);
 	if (!unit) {
-		const rows = structuredClone(SEEDED[id] ?? []);
+		const [project, task, dataset, key] = id.split('|');
+		const rows = structuredClone(
+			BY_TASK[task ?? ''] ?? SEEDED[`${project}|${dataset}|${key}`] ?? [],
+		);
 		unit = {
 			version: rows.length > 0 ? 1 : 0,
 			rows,
@@ -201,6 +236,13 @@ export async function annotationsDoor(
 	const key = decodeURIComponent(match[1] ?? '');
 	if (task.source.where !== dataset || !task.source.keys.includes(key))
 		return answer({ detail: `unit ${key} of dataset ${dataset} is not task ${taskId}'s` }, 404);
+	if (req.method === 'GET' && !mayReadWork(task, sub, held))
+		return answer(
+			{
+				detail: `${sub.replace(/^user:/, '')} may not read replica ${taskId}'s work: only its annotator, or someone who may review it`,
+			},
+			403,
+		);
 	if (req.method !== 'GET') {
 		const edits: Record<string, string> = { claimed: 'can_annotate', in_review: 'can_review' };
 		const relation = edits[task.state];
@@ -221,7 +263,7 @@ export async function annotationsDoor(
 	}
 	const refused = keyRefusal(dataset, key);
 	if (refused) return answer({ detail: refused }, 422);
-	const unit = unitOf(sub, `${project}|${dataset}|${key}`);
+	const unit = unitOf(sub, `${project}|${taskId}|${dataset}|${key}`);
 
 	if (match[2] && req.method === 'GET') {
 		return answer(
@@ -267,4 +309,108 @@ export async function annotationsDoor(
 	unit.rows = rows;
 	unit.history.push({ version: unit.version, timestamp: new Date().toISOString(), rows });
 	return answer({ version: unit.version, inserted: b.inserts.length, deleted: gone.size });
+}
+
+/** The models the annotator's mock answers for (`annotator.api.v1.endpoints.assist`): the detector and the segmenter,
+ *  interactive, no server configured; a batch family listed as such. */
+const PRODUCERS = [
+	{
+		name: 'grounding-dino',
+		configured: false,
+		returns: ['bbox'],
+		inputs: [],
+		compatible: null,
+		interactive: true,
+	},
+	{
+		name: 'htr',
+		configured: false,
+		returns: ['text'],
+		inputs: [],
+		compatible: null,
+		interactive: false,
+	},
+	{
+		name: 'sam',
+		configured: false,
+		returns: ['polygon'],
+		inputs: [],
+		compatible: null,
+		interactive: true,
+	},
+];
+
+interface AssistBody {
+	producer: string;
+	prompt: string | null;
+	region: { x: number; y: number; width: number; height: number } | null;
+	points: { x: number; y: number; positive: boolean }[];
+	task_id: string | null;
+}
+
+/** The annotator's in-repo stand-in for a model (`assist._mock`), shape for shape: a detector's box at the drawn region
+ *  (or its default), labelled with the prompt; a segmenter's diamond over its positive clicks' box, padded by half a
+ *  120-pixel patch, its scores rising with each click. */
+function proposals(body: AssistBody): Record<string, unknown>[] {
+	const label = (body.prompt ?? '').trim();
+	if (body.producer.startsWith('sam')) {
+		const anchors = body.points.filter((p) => p.positive);
+		const at = anchors.length > 0 ? anchors : body.points;
+		const pad = 60;
+		const xs = at.map((p) => p.x);
+		const ys = at.map((p) => p.y);
+		const [x, y] = [Math.min(...xs) - pad, Math.min(...ys) - pad];
+		const [w, h] = [
+			Math.max(...xs) - Math.min(...xs) + 2 * pad,
+			Math.max(...ys) - Math.min(...ys) + 2 * pad,
+		];
+		const n = body.points.length;
+		return [
+			{
+				shape_type: 'polygon',
+				x,
+				y,
+				width: w,
+				height: h,
+				polygon: [x + w / 2, y, x + w, y + h / 2, x + w / 2, y + h, x, y + h / 2],
+				label: label || 'object',
+				confidence: Math.min(0.95, 0.7 + 0.05 * n),
+				uncertainty: Math.max(0.05, 0.3 - 0.04 * n),
+			},
+		];
+	}
+	const r = body.region ?? { x: 100, y: 100, width: 200, height: 80 };
+	return [
+		{
+			shape_type: 'bbox',
+			...r,
+			polygon: [],
+			label: label || 'region',
+			confidence: 0.7,
+			uncertainty: 0.45,
+		},
+	];
+}
+
+/** Answer one call to `/api/assist/…`, or null when the path is not that door. Its gate is the service's: the
+ *  annotating role on the project the request names (`assist.require_assist`). */
+export async function assistDoor(
+	req: Request,
+	url: URL,
+	perms: (projectId: string) => string[],
+	record: (status: number) => void,
+): Promise<Response | null> {
+	if (!url.pathname.startsWith('/api/assist/')) return null;
+	const answer = (body: unknown, status = 200): Response => {
+		record(status);
+		return json(body, status);
+	};
+	const project = url.searchParams.get('project') ?? '';
+	if (!perms(project).includes('can_annotate'))
+		return answer({ detail: `the caller lacks can_annotate on project:${project}` }, 403);
+	if (url.pathname === '/api/assist/producers' && req.method === 'GET')
+		return answer({ producers: PRODUCERS, default_configured: false, urls_redacted: true });
+	if (req.method !== 'POST') return null;
+	const body = (await req.json()) as AssistBody;
+	return answer({ shapes: proposals(body), source: `model:${body.producer}`, dropped: [] });
 }

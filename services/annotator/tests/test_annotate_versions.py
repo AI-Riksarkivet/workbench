@@ -27,7 +27,7 @@ from tests.media_catalog import lakehouse_dir, namespace_client, write_table
 
 DOC = "a" * 16
 DECLARED = {"identity": {"key_fields": ["doc_id", "speech_id", "chunk_id"]}}
-SCHEMA = pa.schema([("doc_id", pa.string()), ("speech_id", pa.int64()), ("chunk_id", pa.int64()), ("id", pa.string())])
+SCHEMA = pa.schema([("doc_id", pa.string()), ("speech_id", pa.int64()), ("chunk_id", pa.int64()), ("id", pa.string()), ("task_id", pa.string())])
 UNIT = {"doc_id": DOC, "speech_id": 0, "chunk_id": 19}
 OTHER = {"doc_id": DOC, "speech_id": 0, "chunk_id": 99}
 #: Project p1's annotations on dataset acme$proj1, in the workbench's own namespace.
@@ -74,9 +74,11 @@ def two_versions(tmp_path: Path, client_of: Callable[[Path], TestClient]) -> Tes
     """Project p1's annotations on ``acme$proj1`` at two versions: v1 holds one row of the unit, v2 adds one more and
     another unit's."""
     write_table(tmp_path, ["acme", "proj1", "chunks"], CHUNKS, descriptor=DECLARED)
-    write_table(tmp_path, TABLE, pa.Table.from_pylist([{**UNIT, "id": "a1"}], schema=SCHEMA), descriptor=DECLARED)
+    write_table(tmp_path, TABLE, pa.Table.from_pylist([{**UNIT, "id": "a1", "task_id": "t1"}], schema=SCHEMA), descriptor=DECLARED)
     ds = lance.dataset(namespace_client=namespace_client(tmp_path), table_id=TABLE)
-    ds.merge_insert("id").when_not_matched_insert_all().execute(pa.Table.from_pylist([{**UNIT, "id": "a2"}, {**OTHER, "id": "b1"}], schema=SCHEMA))
+    ds.merge_insert("id").when_not_matched_insert_all().execute(
+        pa.Table.from_pylist([{**UNIT, "id": "a2", "task_id": "t1"}, {**OTHER, "id": "b1", "task_id": "t1"}], schema=SCHEMA)
+    )
     return client_of(tmp_path)
 
 

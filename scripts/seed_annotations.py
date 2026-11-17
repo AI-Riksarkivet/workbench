@@ -10,7 +10,9 @@ The catalog is the one the media plane reads: ``MEDIA_CATALOG_DIR`` (lance-names
 stack) or ``MEDIA_CATALOG_URI`` (the catalog's REST door, as ``MEDIA_CATALOG_TOKEN``'s bearer), where the table's
 maintenance policy is set too.
 
-    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_annotations.py <annotations warehouse>$<namespace> <project> <dataset> [doc_id]
+    MEDIA_CATALOG_DIR=<root> uv run python scripts/seed_annotations.py <annotations warehouse>$<namespace> <project> <dataset> <task> [doc_id]
+
+The rows are the named task's work (`task_id`): a unit's rows are read and written per task.
 """
 
 from __future__ import annotations
@@ -44,8 +46,8 @@ SCHEMA = pa.schema(
 )
 
 
-def sample_table(doc_id: str) -> pa.Table:
-    """3 sample rows: 2 model predictions (varying confidence/uncertainty) + 1 human-accepted."""
+def sample_table(doc_id: str, task: str) -> pa.Table:
+    """3 sample rows of ``task``'s: 2 model predictions (varying confidence/uncertainty) + 1 human-accepted."""
     now = datetime.now(UTC)
     rows = {
         "doc_id": [doc_id] * 3,
@@ -53,6 +55,7 @@ def sample_table(doc_id: str) -> pa.Table:
         "chunk_id": [19] * 3,
         "frame_idx": [0] * 3,
         "id": ["a1", "a2", "a3"],
+        "task_id": [task] * 3,
         "shape_type": ["rectangle", "rectangle", "polygon"],
         "x": [40.0, 210.0, 0.0],
         "y": [40.0, 150.0, 0.0],
@@ -89,13 +92,13 @@ def sample_table(doc_id: str) -> pa.Table:
     return pa.table(rows, schema=SCHEMA)
 
 
-def seed(client: LanceNamespace, namespace: list[str], table: str, doc_id: str) -> list[str]:
+def seed(client: LanceNamespace, namespace: list[str], table: str, doc_id: str, task: str) -> list[str]:
     """OVERWRITE ``table`` in ``namespace`` with the sample rows, creating the namespace's levels the catalog lacks; returns
     the table's id."""
     for depth in range(1, len(namespace) + 1):
         with contextlib.suppress(NamespaceAlreadyExistsError):
             client.create_namespace(CreateNamespaceRequest(id=namespace[:depth]))
-    rows = sample_table(doc_id)
+    rows = sample_table(doc_id, task)
     body = io.BytesIO()
     with pa.ipc.new_stream(body, rows.schema) as writer:
         writer.write_table(rows)
@@ -133,14 +136,14 @@ def _client() -> LanceNamespace:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        raise SystemExit("usage: seed_annotations.py <annotations warehouse>$<namespace> <project> <dataset> [doc_id]")
+    if len(sys.argv) < 5:
+        raise SystemExit("usage: seed_annotations.py <annotations warehouse>$<namespace> <project> <dataset> <task> [doc_id]")
     namespace = sys.argv[1].split("$")
     if len(namespace) < 2 or not all(namespace):
         raise SystemExit("name the annotations namespace as <warehouse>$<namespace>: a name's first segment is its warehouse")
-    doc = sys.argv[4] if len(sys.argv) > 4 else "fe00cd746463ad2c"
+    doc = sys.argv[5] if len(sys.argv) > 5 else "fe00cd746463ad2c"
     client = _client()
-    table_id = seed(client, namespace, table_name(sys.argv[2], sys.argv[3]), doc)
+    table_id = seed(client, namespace, table_name(sys.argv[2], sys.argv[3]), doc, sys.argv[4])
     if uri := os.environ.get("MEDIA_CATALOG_URI"):
         set_maintenance_policy(uri, table_id, os.environ.get("MEDIA_CATALOG_TOKEN"))
     ds = lance.dataset(namespace_client=client, table_id=table_id)

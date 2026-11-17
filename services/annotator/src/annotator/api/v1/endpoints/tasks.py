@@ -119,6 +119,22 @@ async def viewed_task(store: AnnotatorStore, task_id: str, checker: Checker, sub
     return task
 
 
+async def require_work_readable(task: Task, checker: Checker, subject: str) -> None:
+    """The caller may read this viewed task's work (its draft, its rows of its unit), or 403.
+
+    A consensus replica's work is its own annotator's until a reviewer compares it: the replicas of an item are made to
+    be independent, so a fellow annotator of the group, who may view the task as everyone on the project may, is refused
+    it. Its holder and its submitter read it, and so does whoever may review the task (`can_review`: a reviewer, a
+    manager or the owner, the roles the model chains above it), who adjudicates between replicas. Any other task's work
+    is read by whoever may view it."""
+    if task.replica_of is None or subject in (task.assignee, task.submitted_by):
+        return
+    edge = Grant(user=f"project:{task.project_id}", relation="project", object=f"task:{task.task_id}")
+    if not await checker(user=subject, relation="can_review", obj=f"task:{task.task_id}", contextual=[edge]):
+        audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=f"task:{task.task_id}", relation="can_review")
+        raise ForbiddenError(f"{subject} may not read replica {task.task_id}'s work: only its annotator, or someone who may review it")
+
+
 async def _refuse_if_frozen(store: AnnotatorStore, task: Task, event: str) -> None:
     """§5.2 rule 5 — nothing escapes a published project — answered before the transition so the 409 names it; the
     store answers it again on the project row its transaction holds."""
@@ -314,5 +330,5 @@ async def import_annotations(
 async def get_draft(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject, store: StoreDep) -> Draft | None:
     """The task's draft, or null when none is written yet: an answer, not a failure, so a client tells "start the first
     draft" from a read that failed without a refusal on the wire."""
-    await viewed_task(store, task_id, checker, subject)
+    await require_work_readable(await viewed_task(store, task_id, checker, subject), checker, subject)
     return await store.get_draft(task_id)

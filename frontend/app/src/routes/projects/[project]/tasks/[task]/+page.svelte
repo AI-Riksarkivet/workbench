@@ -93,6 +93,7 @@
 	const dataset = $derived(task?.source.where ?? null);
 	const kind = $derived(task?.media.kind ?? 'image');
 	const temporal = $derived(kind === 'audio' || kind === 'video');
+	const textual = $derived(kind === 'text');
 	const rowKey = $derived(unitKey === null ? null : rowKeyFor([unitKey]));
 
 	// The item's own row and its dataset's declaration: its name, and on a recording or a video its own stretch.
@@ -154,7 +155,8 @@
 	let signing = $state(0);
 	const picture = $derived.by(() => {
 		const fresh = signing > 0;
-		if (!dataset || unitKey === null) return null;
+		// A text is its row's own text: nothing to sign.
+		if (!dataset || unitKey === null || textual) return null;
 		const key = rowKeyFor([unitKey]);
 		if (key === null) return null;
 		// A recording or a video plays its whole document; a picture is the unit's own frame.
@@ -180,6 +182,15 @@
 		};
 	}
 
+	// The item's other replicas (its consensus group), whose versions the canvas compares with its own.
+	const replicas = $derived(
+		task?.replica_of
+			? (listingRead.current?.ok ? (listingRead.current.data.details ?? []) : []).filter(
+					(t) => t.replica_of === task.replica_of && t.task_id !== task.task_id,
+				)
+			: [],
+	);
+
 	// A 401 is a session that ended: the reader signs in again and comes back here, once. Refused again right after,
 	// the page says so rather than sending them round in a loop.
 	const returnTo = $derived(page.url.pathname + page.url.search);
@@ -199,6 +210,35 @@
 			: titleOf(projectName ?? 'Projects')}</title
 	>
 </svelte:head>
+
+{#snippet shell(media: CanvasMedia)}
+	{#if task && dataset && unitKey !== null && permissions !== null}
+		{#key task.task_id}
+			<CanvasShell
+				{task}
+				{unitKey}
+				{media}
+				itemName={name}
+				{permissions}
+				{me}
+				{ontaskchange}
+				annotationsUrl={annotationsUrl({
+					project: task.project_id,
+					task: task.task_id,
+					dataset,
+					key: unitKey,
+				})}
+				readOnly={readOnlyReason(task, permissions, me)}
+				person={me ?? 'anonymous'}
+				{stream}
+				{claimed}
+				{exitHref}
+				{link}
+				{replicas}
+			/>
+		{/key}
+	{/if}
+{/snippet}
 
 <h1 class="sr-only">Label {name}</h1>
 {#if gpuReason}
@@ -234,10 +274,16 @@
 		onretry={() => void taskRead.refresh()}
 	/>
 {:else if task && !elsewhere}
-	{#if kind !== 'image' && kind !== 'audio' && kind !== 'video'}
+	{#if kind !== 'image' && kind !== 'audio' && kind !== 'video' && kind !== 'text'}
 		<p class="p-6 text-sm" data-testid="canvas-unsupported">
 			This item is {kind}; its canvas is not in this app yet.
 		</p>
+	{:else if textual && (!view || !rowsRead?.current)}
+		<p class="text-muted-foreground p-6 text-sm" role="status">Reading the item's text…</p>
+	{:else if textual && permissions === null}
+		<p class="text-muted-foreground p-6 text-sm" role="status">Reading your role on the project…</p>
+	{:else if textual && dataset && unitKey !== null}
+		{@render shell({ kind: 'text', text: view && row ? view.body(row) : '' })}
 	{:else if temporal && (!view || !partsRead?.current || (turnsRead && !turnsRead.current))}
 		<p class="text-muted-foreground p-6 text-sm" role="status">
 			Reading the {kind === 'video' ? 'video' : 'recording'}'s time line…
@@ -268,29 +314,7 @@
 						the canvas opens its first: {name}.
 					</p>
 				{/if}
-				{#key task.task_id}
-					<CanvasShell
-						{task}
-						{unitKey}
-						media={mediaOf(signed.url)}
-						itemName={name}
-						{permissions}
-						{me}
-						{ontaskchange}
-						annotationsUrl={annotationsUrl({
-							project: task.project_id,
-							task: task.task_id,
-							dataset,
-							key: unitKey,
-						})}
-						readOnly={readOnlyReason(task, permissions, me)}
-						person={me ?? 'anonymous'}
-						{stream}
-						{claimed}
-						{exitHref}
-						{link}
-					/>
-				{/key}
+				{@render shell(mediaOf(signed.url))}
 			{/if}
 		{/await}
 	{/if}

@@ -371,21 +371,23 @@ def thumbnail(caller: CallerDep, doc_id: str, state: StateDep, dataset: DatasetP
     return blob_response(blob, mime=mime, empty_detail="no thumbnail for doc_id")
 
 
-@router.get("/chunk-frame/{doc_id}/{group_id}/{chunk_id}", dependencies=[READS_DATASET])
+@router.get("/chunk-frame/{doc_id}/{keys:path}", dependencies=[READS_DATASET])
 def chunk_frame(
     caller: CallerDep,
     doc_id: str,
-    group_id: int,
-    chunk_id: int,
+    keys: str,
     state: StateDep,
     frame_idx: Annotated[int, Query(ge=0)] = 0,
     dataset: DatasetParam = None,
 ) -> Response:
     """A chunk's frame from the frames table; 404 until frames are extracted.
     ``frame_idx`` selects which frame when a chunk was sampled multiple times
-    (0 = the representative frame). The path params map positionally onto the
-    descriptor's identity key fields (doc key first)."""
-    frame = frame_row(dataset_handle(state, dataset, caller), doc_id, (group_id, chunk_id), frame_idx)
+    (0 = the representative frame). The path is the unit's key: its segments map positionally onto the
+    descriptor's identity key fields (doc key first), however many it has (`client_kit.media.frames`)."""
+    segments = keys.split("/")
+    if not all(re.fullmatch(r"-?\d{1,19}", segment) for segment in segments):
+        raise ValidationError(f"a frame's key fields after the doc key are integers, not {keys!r}")
+    frame = frame_row(dataset_handle(state, dataset, caller), doc_id, tuple(int(segment) for segment in segments), frame_idx)
     ds, blob_column, rowid, mime = frame.ds, frame.column, frame.row, frame.mime
     try:
         blob = ds.take_blobs(blob_column, ids=[rowid])[0]

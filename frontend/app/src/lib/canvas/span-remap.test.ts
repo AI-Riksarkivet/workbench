@@ -6,21 +6,18 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { editedRegion, remapSpans } from './span-remap.ts';
+import { editedRegions, remapSpans } from './span-remap.ts';
 
 // 'Gustaf Eriksson Vasa reste till Dalarna' — span 'Vasa' at [16, 20), 'Dalarna' at [32, 39).
 const TEXT = 'Gustaf Eriksson Vasa reste till Dalarna';
 
-describe('editedRegion', () => {
-	it('recovers the single replaced region from prefix + suffix', () => {
+describe('editedRegions', () => {
+	it('recovers each replaced region, and none for equal strings', () => {
 		// 'Eriksson' → 'Erikson': one char deleted inside.
-		expect(editedRegion(TEXT, TEXT.replace('Eriksson', 'Erikson'))).toMatchObject({ from: 12 });
-	});
-
-	it('equal strings yield an empty region', () => {
-		const r = editedRegion(TEXT, TEXT);
-		expect(r.from).toBe(r.toOld);
-		expect(r.toOld).toBe(r.toNew);
+		expect(editedRegions(TEXT, TEXT.replace('Eriksson', 'Erikson'))).toEqual([
+			{ from: 12, toOld: 13, delta: -1 },
+		]);
+		expect(editedRegions(TEXT, TEXT)).toEqual([]);
 	});
 });
 
@@ -46,6 +43,25 @@ describe('remapSpans', () => {
 		const edited = TEXT.replace('Dalarna', 'Dalecarlia');
 		const [, dalarna] = remapSpans(TEXT, edited, SPANS);
 		expect(dalarna).toEqual({ index: 2, start: 32, end: 42 });
+	});
+
+	it('a line corrected at once, words moved, keeps each span on the words it marked', () => {
+		// 'Vasa' moves behind a new opening, and the ending is rewritten: two regions, one before both spans.
+		const moved = 'Kung Gustaf Eriksson Vasa reste till Dalarna år 1520';
+		expect(remapSpans(TEXT, moved, SPANS)).toEqual([
+			{ index: 1, start: 21, end: 25 },
+			{ index: 2, start: 37, end: 44 },
+		]);
+	});
+
+	it('counts code points, so a character outside the BMP is one character before the spans it moves', () => {
+		// '𝔄' (U+1D504) is two UTF-16 units and one code point; 'Vasa' moves by one.
+		expect(remapSpans(TEXT, `𝔄${TEXT}`, SPANS)[0]).toEqual({ index: 1, start: 17, end: 21 });
+	});
+
+	it('a span whose every word is deleted is dropped, not kept empty', () => {
+		const gone = TEXT.replace('Vasa', '');
+		expect(remapSpans(TEXT, gone, SPANS)[0]).toEqual({ index: 1, start: null, end: null });
 	});
 
 	it('a span whose anchored text is PARTIALLY edited away is dropped, never guessed', () => {

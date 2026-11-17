@@ -20,7 +20,7 @@ import lance
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from annotator.annotations.access import MAY_READ_UNIT, UnitKey
+from annotator.annotations.access import MAY_READ_UNIT, TaskParam, UnitKey
 from annotator.annotations.unit import parse_unit
 from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep
 from annotator.corpus import resolve
@@ -76,11 +76,12 @@ def annotation_versions(
     state: StateDep,
     annotations: AnnotationsDep,
     key: UnitKey,
+    task: TaskParam,
     dataset: DatasetParam = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
 ) -> list[AnnotationVersion]:
     """The unit's edit history (most-recent first, capped): each Lance version + its
-    timestamp + the count of THIS unit's annotations at it. Powers the compare-versions
+    timestamp + the count of THIS task's annotations of the unit at it. Powers the compare-versions
     panel — the read-side of the write-plane provenance story (who=reviewer, when=version,
     what=lineage)."""
     corpus = resolve(state, dataset, caller)
@@ -88,7 +89,7 @@ def annotation_versions(
     ds = annotations(corpus.id).open()
     if ds is None:
         return []
-    return table_annotation_versions(ds, unit.where, limit=limit)
+    return table_annotation_versions(ds, unit.of_task(task), limit=limit)
 
 
 def table_annotation_versions(ds: lance.LanceDataset, where: str, *, limit: int) -> list[AnnotationVersion]:

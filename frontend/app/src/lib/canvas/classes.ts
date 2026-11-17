@@ -67,11 +67,18 @@ export interface CheckedRow {
 	index: number;
 	shape: string;
 	label: string;
+	/** The row whose text a text span ranges into; empty for every other row. */
+	parentId?: string;
 }
+
+/** Whether a row marks the item and so takes a class: a region, or a text span (a `text` row naming a parent). A text
+ *  that names none is the item's own content (its text, a typed question), as the annotator's submit reads it. */
+const marks = (r: CheckedRow): boolean =>
+	REGION_SHAPES.has(r.shape) || (r.shape === 'text' && Boolean(r.parentId));
 
 /** What keeps an item from being submitted, in the words the panel shows, with the rows to point at. */
 export interface SubmitBlockers {
-	/** Regions that carry no class, while the task's ontology names classes. */
+	/** Regions and text spans that carry no class, while the task's ontology names classes. */
 	unlabelled: number[];
 	/** Required classes no row carries. */
 	missing: string[];
@@ -89,7 +96,7 @@ export function submitBlockers(
 	if (classes.length === 0) return { unlabelled: [], missing: [], empty: false };
 	const present = new Set(rows.map((r) => r.label).filter(Boolean));
 	return {
-		unlabelled: rows.filter((r) => REGION_SHAPES.has(r.shape) && !r.label).map((r) => r.index),
+		unlabelled: rows.filter((r) => marks(r) && !r.label).map((r) => r.index),
 		missing: classes.filter((c) => c.required && !present.has(c.name)).map((c) => c.name),
 		empty: rows.length === 0 && !allowEmpty,
 	};

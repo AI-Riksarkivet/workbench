@@ -35,6 +35,10 @@ RowId = Annotated[str, Field(min_length=1, max_length=MAX_ID_LENGTH)]
 Group = Annotated[str, Field(max_length=MAX_GROUP_LENGTH)]
 #: A moment in the item's media, in seconds from its start.
 Seconds = Annotated[float, Field(ge=0.0)]
+#: The largest offset the table's `char_start`/`char_end` (int32) holds.
+INT32_MAX = 2**31 - 1
+#: A character of a row's text, in code points from its start: what the canvas sends and Python slices by.
+Offset = Annotated[int, Field(ge=0, le=INT32_MAX)]
 
 #: Every number a saved row carries is finite: a NaN or an infinity read back breaks every reader of the table.
 FINITE = ConfigDict(allow_inf_nan=False)
@@ -43,6 +47,11 @@ FINITE = ConfigDict(allow_inf_nan=False)
 def _ends_after_it_starts(t_start: float, t_end: float) -> None:
     if t_end < t_start:
         raise ValueError(f"t_end {t_end} is before t_start {t_start}")
+
+
+def _a_range(char_start: int, char_end: int) -> None:
+    if char_end < char_start:
+        raise ValueError(f"char_end {char_end} is before char_start {char_start}")
 
 
 #: The fields a reviewer may edit — the local-first review overlay flushed on save.
@@ -97,8 +106,8 @@ class NewAnnotation(BaseModel):
     #: undeclared field is not a 422 — it is a column that silently lands null. Text spans shipped
     #: exactly that way: rendered from the client overlay, saved, and read back pointing at nothing.
     parent_id: str = ""
-    char_start: int = -1
-    char_end: int = -1
+    char_start: Annotated[int, Field(ge=-1, le=INT32_MAX)] = -1
+    char_end: Annotated[int, Field(ge=-1, le=INT32_MAX)] = -1
     #: Per-row ATTRIBUTES — the ontology's typed per-class fields (`reading order`, `script`,
     #: `damaged`…), as a JSON object of string values (the submit validator parses int/bool/enum
     #: from strings). ``{}`` rather than ``""``: the column is `pa.json_()` and an empty string is
@@ -113,6 +122,11 @@ class NewAnnotation(BaseModel):
     @model_validator(mode="after")
     def _a_stretch_ends_after_it_starts(self) -> Self:
         _ends_after_it_starts(self.t_start, self.t_end)
+        # -1 on both ends is a row that is no span; a span's range is two offsets, the end not before the start.
+        if (self.char_start, self.char_end) != (-1, -1):
+            if self.char_start < 0 or self.char_end < 0:
+                raise ValueError(f"a span's range is two offsets, not ({self.char_start}, {self.char_end})")
+            _a_range(self.char_start, self.char_end)
         return self
 
 
@@ -153,8 +167,13 @@ class SpanEdit(BaseModel):
     is a corruption vector; this channel is the one legal writer, mirroring `TemporalEdit`."""
 
     id: RowId
-    char_start: int
-    char_end: int
+    char_start: Offset
+    char_end: Offset
+
+    @model_validator(mode="after")
+    def _a_range_ends_after_it_starts(self) -> Self:
+        _a_range(self.char_start, self.char_end)
+        return self
 
 
 class SaveAnnotations(BaseModel):
@@ -230,6 +249,10 @@ class TagBatch(BaseModel):
 EMPTY_SCHEMA = pa.schema(
     [
         ("id", pa.string()),
+        # The task whose work the row is. Several tasks may hold one unit (a consensus item's replicas, each an
+        # annotator's own), so a unit's rows are its task's: every door reads and writes the unit AND the task, and the
+        # server stamps it on every row it inserts.
+        ("task_id", pa.string()),
         ("shape_type", pa.string()),
         ("x", pa.float32()),
         ("y", pa.float32()),

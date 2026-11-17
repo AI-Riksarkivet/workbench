@@ -39,7 +39,9 @@ def _signed(client: TestClient, dataset: str, item: dict[str, object]) -> tuple[
 
 def test_the_seeded_pages_recordings_and_films_open_as_the_player_reads_them(tmp_path: Path) -> None:
     properties = {"root": str(tmp_path / "catalog")}
-    pages, recordings, films = (lake(d) for d in seed(lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties), "demo"))
+    pages, recordings, films, letters = (
+        lake(d) for d in seed(lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties), "demo")
+    )
     key = tmp_path / "media-url-key"
     key.write_text(base64.b64encode(secrets.token_bytes(32)).decode())
     settings = ViewerSettings.model_validate({**lakehouse_dir(properties["root"]), "VIEWER_MEDIA_URL_KEY_FILE": str(key)})
@@ -48,7 +50,7 @@ def test_the_seeded_pages_recordings_and_films_open_as_the_player_reads_them(tmp
 
     with TestClient(app) as client:
         listed = sorted(d["id"] for source in client.get("/api/datasets").json()["sources"] for d in source["datasets"])
-        described = {d: client.get(f"/api/datasets/{d}/descriptor") for d in (pages, recordings, films)}
+        described = {d: client.get(f"/api/datasets/{d}/descriptor") for d in (pages, recordings, films, letters)}
         frame = _signed(client, pages, {"role": "frame", "doc_id": "fe00cd746463ad2c", "keys": [1, 1], "frame_idx": 0})
         cover = _signed(client, pages, {"role": "media", "doc_id": "fe00cd746463ad2c"})
         thumb = _signed(client, pages, {"role": "thumbnail", "doc_id": "fe00cd746463ad2c"})
@@ -65,9 +67,10 @@ def test_the_seeded_pages_recordings_and_films_open_as_the_player_reads_them(tmp
         [archive] = client.get("/api/graph/search", params={"dataset": pages, "q": "riksarkiv"}).json()["matches"]
         entity = client.get(f"/api/graph/entity/{archive['entity_id']}", params={"dataset": pages}).json()
 
-    assert listed == ["lake~demo$corpus", "lake~demo$films", "lake~demo$recordings"]
-    kinds = {d: (r.status_code, r.json().get("declared", {}).get("document", {}).get("kind")) for d, r in described.items()}
-    assert kinds == {pages: (200, "image"), recordings: (200, "audio"), films: (200, "video")}
+    assert listed == ["lake~demo$corpus", "lake~demo$films", "lake~demo$letters", "lake~demo$recordings"]
+    kinds = {d: (r.status_code, (r.json().get("declared", {}).get("document") or {}).get("kind")) for d, r in described.items()}
+    # The letters declare no document: an item of theirs is its text.
+    assert kinds == {pages: (200, "image"), recordings: (200, "audio"), films: (200, "video"), letters: (200, None)}
     for status, media_type, body in (frame, cover, thumb):
         assert (status, media_type, body[:8]) == (200, "image/png", b"\x89PNG\r\n\x1a\n")
     assert (audio[0], audio[1], audio[2][:4], audio[2][8:12]) == (200, "audio/wav", b"RIFF", b"WAVE")

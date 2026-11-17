@@ -290,16 +290,21 @@ def _time_violation(shapes: list[ShapeLike]) -> str | None:
 
 
 #: The shapes that stand for a region of the item, and so must say what they are once the ontology names classes. A
-#: `text` shape is exempt: a free-standing text (a typed question) is its own content, and a span is judged by
-#: `_span_violation`.
+#: `text` shape is one only when it is a span (`_is_span`): a free-standing text (a typed question, a document's text)
+#: is its own content.
 _REGION_SHAPES = frozenset({"bbox", "polygon", "mask", "keypoint", "polyline", "segment"})
 
 #: How many unlabelled shapes a refusal names before it says how many more there are.
 _NAMED_SHAPES = 10
 
 
+def _is_span(shape: ShapeLike) -> bool:
+    """A `text` shape that ranges into another's text: a mark on the item, where a free-standing text is its content."""
+    return shape.shape_type == "text" and bool(shape.parent_id)
+
+
 def _unlabelled(ontology: LabelOntology, shapes: list[ShapeLike]) -> str | None:
-    """A completed item whose ontology names classes carries a class on every region it marks.
+    """A completed item whose ontology names classes carries a class on every region and every text span it marks.
 
     Drawing before choosing a class is a normal state of a draft, and an import may carry unclassed regions for someone
     to classify (`membership_violation` lets both through); a SUBMISSION is the claim that the item is done, and a region
@@ -307,7 +312,7 @@ def _unlabelled(ontology: LabelOntology, shapes: list[ShapeLike]) -> str | None:
     """
     if not ontology.classes:
         return None
-    ids = [s.shape_id for s in shapes if s.shape_type in _REGION_SHAPES and not s.label]
+    ids = [s.shape_id for s in shapes if (s.shape_type in _REGION_SHAPES or _is_span(s)) and not s.label]
     if not ids:
         return None
     named = ", ".join(ids[:_NAMED_SHAPES])

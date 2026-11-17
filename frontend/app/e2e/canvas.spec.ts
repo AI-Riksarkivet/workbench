@@ -1,4 +1,11 @@
-import { expect, test, type BrowserContext, type Page, type Request } from '@playwright/test';
+import {
+	expect,
+	test,
+	type BrowserContext,
+	type Locator,
+	type Page,
+	type Request,
+} from '@playwright/test';
 import { callsOf, person, signIn, watchCsp } from './session';
 import { EDGE } from './ports';
 import type { MockIdentity } from './mock-oidc';
@@ -911,4 +918,329 @@ test('a reviewer opens someone’s submission, reads it as theirs to review, and
 	});
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Changes requested');
 	await expect(panel.getByTestId('review-note')).toContainText('Box the legend too.');
+});
+
+/** Where `word` (its `nth` occurrence) is drawn in `line`, as a page point at its middle. */
+async function wordAt(
+	line: Locator,
+	word: string,
+	nth = 0,
+): Promise<{ x: number; y: number; left: number; right: number }> {
+	const box = await line.evaluate(
+		(el, [w, n]) => {
+			// The line's own text: its stretches, without the class tags drawn between them.
+			const text = [...el.querySelectorAll('[data-offset]')].map((x) => x.textContent).join('');
+			let at = -1;
+			for (let i = 0; i <= Number(n); i += 1) at = text.indexOf(String(w), at + 1);
+			if (at < 0) return null;
+			// Walk the line's stretches (`data-offset`) for the text node holding the word.
+			for (const stretch of el.querySelectorAll<HTMLElement>('[data-offset]')) {
+				const start = Number(stretch.dataset.offset);
+				const node = stretch.firstChild;
+				const length = node?.textContent?.length ?? 0;
+				const local = at - start;
+				if (node && local >= 0 && local < length) {
+					const range = document.createRange();
+					range.setStart(node, local);
+					range.setEnd(node, Math.min(length, local + String(w).length));
+					const r = range.getBoundingClientRect();
+					return { x: r.x, y: r.y, width: r.width, height: r.height };
+				}
+			}
+			return null;
+		},
+		[word, nth] as const,
+	);
+	if (!box) throw new Error(`“${word}” is not drawn in the line`);
+	return {
+		x: box.x + box.width / 2,
+		y: box.y + box.height / 2,
+		left: box.x,
+		right: box.x + box.width,
+	};
+}
+
+test('a text item is labelled by selecting its words: the picker classes a span, overlapping spans sit on lanes, an edge moves and comes back, a correction re-anchors them and is saved and read back in code points, and a class key relabels the chosen span', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const violations = await watchCsp(page);
+	await page.goto('/projects/notes/tasks/notes-t1?project=notes');
+	await expect(page.getByTestId('text-canvas')).toHaveAttribute('data-ready', 'true');
+	await expect(page).toHaveTitle(`${NAME} · Entities · workbench`);
+	const line = page.getByTestId('text-document-line-0');
+	await expect(line).toHaveText('The ships came into the harbour at dawn.');
+	const picker = page.getByTestId('class-picker');
+	const notice = page.getByTestId('canvas-notice');
+	// The side panel speaks of spans on a text.
+	await expect(page.getByTestId('submit-check')).toContainText(
+		"Nothing is marked yet: mark the item's spans first.",
+	);
+
+	// A word double-clicked is a span with its picker open; Escape on a task whose classes are closed discards it.
+	let at = await wordAt(line, 'harbour');
+	await page.mouse.dblclick(at.x, at.y);
+	await expect(picker.getByRole('option')).toHaveText([/person\s+1/, /place\s+2/]);
+	await page.keyboard.press('Escape');
+	await expect(notice).toContainText('every span on this task needs a class');
+	await expect(page.getByTestId('span-tag')).toHaveCount(0);
+
+	// Its digit classes it.
+	at = await wordAt(line, 'ships');
+	await page.mouse.dblclick(at.x, at.y);
+	await page.keyboard.press('1');
+	await expect(notice).toHaveText('Labeled “person”');
+	// A stretch dragged across it is a second span over the same word, on a lane of its own.
+	const from = await wordAt(line, 'ships');
+	const to = await wordAt(line, 'came');
+	await page.mouse.move(from.left + 1, from.y);
+	await page.mouse.down();
+	await page.mouse.move(to.right - 1, to.y, { steps: 6 });
+	await page.mouse.up();
+	await picker.getByRole('option', { name: /place/ }).click();
+	await expect(page.getByTestId('span-tag')).toHaveText(['person', 'place']);
+	const stretch = (text: string) =>
+		line.getByTestId('span-stretch').filter({ hasText: new RegExp(`^${text}$`) });
+	await expect(line.getByTestId('span-stretch')).toHaveText(['ships', 'came']);
+	await expect(stretch('ships')).toHaveAttribute('title', 'person · place');
+
+	// The selected span's start moves a character with Alt+Shift+→, and an undo puts it back.
+	await page.keyboard.press('Alt+Shift+ArrowRight');
+	await expect(stretch('hips')).toHaveAttribute('title', 'person · place');
+	await expect(stretch('s')).toHaveAttribute('title', 'person');
+	await page.keyboard.press('Control+z');
+	await expect(stretch('ships')).toHaveAttribute('title', 'person · place');
+
+	const saved = () =>
+		page.waitForRequest(
+			(req) => req.method() === 'POST' && req.url().includes(`/api/annotations/${UNIT}?`),
+		);
+	type Save = {
+		inserts: {
+			id: string;
+			shape_type: string;
+			text: string;
+			source: string;
+			label: string;
+			parent_id: string;
+			char_start: number;
+			char_end: number;
+		}[];
+		edits: { id: string; text?: string }[];
+		spans: { id: string; char_start: number; char_end: number }[];
+	};
+	let save = saved();
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	const first = (await save).postDataJSON() as Save;
+	const doc = first.inserts.find((i) => i.parent_id === '');
+	expect(doc).toMatchObject({
+		shape_type: 'text',
+		source: 'dataset',
+		text: 'The ships came into the harbour at dawn.',
+	});
+	expect(
+		first.inserts
+			.filter((i) => i.parent_id !== '')
+			.map((i) => [i.label, i.parent_id === doc?.id, i.char_start, i.char_end]),
+	).toEqual([
+		['person', true, 4, 9],
+		['place', true, 4, 14],
+	]);
+
+	// A correction moves the words, Enter applies it, and each span follows the words it marked. The new opening is a
+	// character outside the BMP: one code point, two UTF-16 units, and a span's offsets are code points.
+	const correct = page.getByRole('button', { name: 'Correct the text of line 1' });
+	const editor = page.getByRole('textbox', { name: 'Correct line 1' });
+	await correct.click();
+	await editor.fill('𝔄t dawn the ships came into the harbour.');
+	await editor.press('Enter');
+	await expect(line).toHaveText(/^𝔄t dawn the ships/);
+	await expect(stretch('ships')).toHaveAttribute('title', 'person · place');
+	// Ctrl+S with a correction open applies it before it saves.
+	await correct.click();
+	await editor.fill('𝔄t dawn the ships came into the harbour. Then they left.');
+	save = saved();
+	await editor.press('Control+s');
+	const second = (await save).postDataJSON() as Save;
+	expect(second.edits.map((e) => e.text)).toEqual([
+		'𝔄t dawn the ships came into the harbour. Then they left.',
+	]);
+	expect(second.spans.map((e) => [e.char_start, e.char_end])).toEqual([
+		[12, 17],
+		[12, 22],
+	]);
+
+	// Read back: the corrected text and its spans where their words are.
+	await page.reload();
+	await expect(page.getByTestId('text-canvas')).toHaveAttribute('data-ready', 'true');
+	await expect
+		.poll(() =>
+			line.evaluate((el) =>
+				[...el.querySelectorAll('[data-offset]')].map((x) => x.textContent).join(''),
+			),
+		)
+		.toBe('𝔄t dawn the ships came into the harbour. Then they left.');
+	await expect(stretch('ships')).toHaveAttribute('title', 'person · place');
+
+	// Text selected and let go of with Escape is not what the next class key labels, nor is it once an annotation is
+	// chosen in the list: the key relabels that annotation.
+	await line.evaluate((el) => {
+		const stretch = [...el.querySelectorAll('[data-offset]')].find((s) =>
+			s.textContent?.includes('harbour'),
+		);
+		const node = stretch?.firstChild;
+		const text = node?.textContent ?? '';
+		if (!node) return;
+		const range = document.createRange();
+		range.setStart(node, text.indexOf('harbour'));
+		range.setEnd(node, text.indexOf('harbour') + 'harbour'.length);
+		window.getSelection()?.removeAllRanges();
+		window.getSelection()?.addRange(range);
+	});
+	await page.keyboard.press('Escape');
+	expect(await page.evaluate(() => String(window.getSelection()))).toBe('');
+	await page
+		.getByTestId('annotation-list')
+		.getByRole('button', { name: /^person/ })
+		.click();
+	await page.keyboard.press('2');
+	await expect(notice).toHaveText('Labeled “place”');
+	await expect(page.getByTestId('span-tag')).toHaveText(['place', 'place']);
+	await expect(page.getByTestId('task-panel').getByTestId('task-submit')).toBeEnabled();
+	expect(await violations()).toEqual([]);
+});
+
+test('a reviewer compares a consensus item with its other replica’s draft on the picture, takes its shapes into the item, and an undo gives one back', async ({
+	page,
+	context,
+	browser,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/pages/tasks/pagesg-r1?project=pages');
+	await ready(page);
+	const extra = { x: 96, y: 6, width: 48, height: 38 };
+	const before = await settledPixels(page, extra);
+
+	// The other replica's work is read from its own task's draft, never from rows two replicas could share.
+	const draft = page.waitForRequest(
+		(req) =>
+			req.method() === 'GET' && new URL(req.url()).pathname.endsWith('/tasks/pagesg-r2/draft'),
+	);
+	await page.getByTestId('compare-version').selectOption('pagesg-r2');
+	await draft;
+	const summary = page.getByTestId('compare-summary');
+	await expect(summary).toHaveText('2 differences · 1 alike');
+	const differences = page.getByTestId('compare-differences').getByRole('listitem');
+	await expect(differences).toHaveText([/differs: caption → figure/, /only theirs: figure · bbox/]);
+	// The other replica's box only it has is drawn on the picture, where the item has none.
+	expect(Buffer.compare(await settledPixels(page, extra), before)).not.toBe(0);
+
+	await differences
+		.filter({ hasText: 'only theirs' })
+		.getByRole('button', { name: 'Take' })
+		.click();
+	await expect(summary).toHaveText('1 difference · 2 alike');
+	await differences.filter({ hasText: 'differs' }).getByRole('button', { name: 'Take' }).click();
+	await expect(summary).toHaveText('0 differences · 3 alike');
+	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(3);
+	await page.keyboard.press('Control+z');
+	await expect(summary).toHaveText('1 difference · 2 alike');
+
+	const save = page.waitForRequest(
+		(req) => req.method() === 'POST' && req.url().includes('/api/annotations/letter-002/0?'),
+	);
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	const request = await save;
+	expect(new URL(request.url()).searchParams.get('task')).toBe('pagesg-r1');
+	const body = request.postDataJSON() as {
+		inserts: { label: string; x: number; y: number; status: string }[];
+		deletes: string[];
+	};
+	expect(body.inserts.map((i) => [i.label, i.x, i.y, i.status])).toEqual([
+		['figure', 100, 10, 'accepted'],
+	]);
+	expect(body.deletes).toEqual([]);
+
+	// The holder of a replica of another consensus item, who may not review it, is offered no other replica to compare
+	// (nor could read one: the annotator's door refuses it).
+	const other = await browser.newContext();
+	await as(other, 'Annotator');
+	const holder = await other.newPage();
+	await holder.goto(`${EDGE}/projects/pairs/tasks/pairs-g1-r1?project=pairs`);
+	await ready(holder);
+	await expect(holder.getByTestId('task-panel')).toBeVisible();
+	await expect(holder.getByTestId('compare-panel')).toHaveCount(0);
+	await other.close();
+});
+
+test('a model asked from the canvas proposes shapes to keep or reject: a detector by its prompt, a segmenter by clicks that refine one proposal', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await openItem(page);
+	const asked: Request[] = [];
+	page.on('request', (req) => {
+		if (
+			new URL(req.url()).pathname.startsWith('/api/annotator/api/assist/') &&
+			req.method() === 'POST'
+		)
+			asked.push(req);
+	});
+	await page.getByTestId('assist-open').click();
+	const panel = page.getByTestId('assist-panel');
+	await expect(panel.getByTestId('assist-producer')).toHaveText([/grounding-dino/, /sam/]);
+	await expect(panel).toContainText('stand-in');
+	await panel.getByTestId('assist-prompt').fill('stamp');
+	await panel
+		.getByTestId('assist-producer')
+		.filter({ hasText: 'grounding-dino' })
+		.getByRole('button', { name: 'Find' })
+		.click();
+
+	await expect(page.getByTestId('canvas-notice')).toContainText('1 proposal from grounding-dino');
+	expect(asked[0]?.postDataJSON()).toEqual({
+		producer: 'grounding-dino',
+		prompt: 'stamp',
+		region: null,
+		points: [],
+		task_id: 'pages-t1',
+	});
+	expect(new URL(asked[0]?.url() ?? '').pathname).toBe(`/api/annotator/api/assist/${UNIT}`);
+	const list = page.getByTestId('annotation-list');
+	await list.getByRole('button', { name: /^stamp/ }).click();
+	await page.keyboard.press('r');
+	await expect(page.getByTestId('shape-status')).toHaveText(/1 rejected/);
+	// A verdict moves on to the next proposal; Escape leaves it, for the list.
+	await page.keyboard.press('Escape');
+
+	// The segmenter is armed: each click is a point of its session, the − sign marks the next "not this", and each
+	// answer replaces the last, so one proposal stands.
+	await page.getByTestId('assist-open').click();
+	// With no prompt, the segmenter names what it found as it does.
+	await panel.getByTestId('assist-prompt').fill('');
+	await panel
+		.getByTestId('assist-producer')
+		.filter({ hasText: 'sam' })
+		.getByTestId('assist-arm')
+		.click();
+	await expect(page.getByTestId('assist-armed')).toContainText('sam');
+	// Clicks off the item's shapes, which a press would otherwise select.
+	await clickImage(page, { x: 75, y: 70 });
+	await expect.poll(() => asked.length).toBe(2);
+	await page.getByTestId('assist-sign').click();
+	await clickImage(page, { x: 140, y: 60 });
+	await expect.poll(() => asked.length).toBe(3);
+	const third = asked[2];
+	if (!third) throw new Error('the third assist request was not sent');
+	const points = (third.postDataJSON() as { points: { positive: boolean }[] }).points;
+	expect(points.map((p) => p.positive)).toEqual([true, false]);
+	await expect(page.getByTestId('assist-armed')).toContainText('2 points');
+	await expect(list.getByRole('button', { name: /^object/ })).toHaveCount(1);
+	await page.getByTestId('assist-done').click();
+	await page.getByTestId('assist-disarm').click();
+	await list.getByRole('button', { name: /^object/ }).click();
+	await page.keyboard.press('a');
+	await expect(page.getByTestId('shape-status')).toHaveText(/2 kept\s*1 proposed\s*1 rejected/);
 });

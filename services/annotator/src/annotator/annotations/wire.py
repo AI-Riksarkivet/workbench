@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Query, Response
 
-from annotator.annotations.access import MAY_READ_UNIT, UnitKey
+from annotator.annotations.access import MAY_READ_UNIT, TaskParam, UnitKey
 from annotator.annotations.schema import EMPTY_SCHEMA
 from annotator.annotations.unit import parse_unit
 from annotator.annotations.versions import checkout
@@ -35,10 +35,12 @@ def annotations(
     state: StateDep,
     annotations: AnnotationsDep,
     key: UnitKey,
+    task: TaskParam,
     dataset: DatasetParam = None,
     version: Annotated[int | None, Query(ge=1, description="Read a historical version (time-travel).")] = None,
 ) -> Response:
-    """Arrow IPC stream of the annotations for one unit of a task's item (`annotator.annotations.access`).
+    """Arrow IPC stream of the annotations for one unit of a task's item (`annotator.annotations.access`): that task's
+    rows of the unit, never those of another task holding the same unit.
 
     The key's segments pair with the dataset's identity fields (`annotator.annotations.unit`). ``version`` reads a
     HISTORICAL snapshot (Lance time-travel) for the compare-versions view; omitted ⇒ the latest."""
@@ -48,7 +50,7 @@ def annotations(
     if ds is None:
         # No annotations table yet — serve an empty stream so the client renders 0.
         return _empty_stream_response()
-    where = unit.where
+    where = unit.of_task(task)
     if version is not None:
         return _annotations_response(checkout(ds, version).to_table(filter=where), version)
     # The version the client echoes back on Save is the one this open is pinned at, so the rows served are that

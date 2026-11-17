@@ -26,6 +26,7 @@ from pydantic import SecretStr
 from annotator.annotations import save, tags, wire
 from annotator.api.security import authenticate, current_subject, get_authorizer
 from annotator.api.v1.endpoints import me, members, projects
+from annotator.api.v1.endpoints import tasks as task_doors
 from annotator.core.config import AnnotatorSettings
 from annotator.projects.models import Task
 from annotator.state.store import AnnotatorStore
@@ -90,6 +91,7 @@ def door(openfga_store: OpenFgaStore, state_settings: AnnotatorSettings, tmp_pat
     app.include_router(save.router)
     app.include_router(wire.router)
     app.include_router(me.router)
+    app.include_router(task_doors.router)
     app.dependency_overrides[current_subject] = lambda: who[0]
     app.dependency_overrides[authenticate] = lambda: Caller(
         principal=Principal.parse(who[0]), claims=IDToken(iss="i", sub=who[0], aud="workbench", exp=1, iat=1), access_token=SecretStr("t")
@@ -169,12 +171,12 @@ def _save(door: _Door, person: str, project: str, *, task: str = "t1", unit: str
     return door.as_(person).post(f"/annotations/{unit}", params=params, json={"base_version": 0, **body})
 
 
-def _read(door: _Door, person: str, project: str, *, unit: str = UNIT) -> Any:
-    return door.as_(person).get(f"/annotations/{unit}", params={"project": project, "task": "t1", "dataset": DATASET})
+def _read(door: _Door, person: str, project: str, *, task: str = "t1", unit: str = UNIT) -> Any:
+    return door.as_(person).get(f"/annotations/{unit}", params={"project": project, "task": task, "dataset": DATASET})
 
 
-def _rows(door: _Door, project: str) -> list[str]:
-    return sorted(pa.ipc.open_stream(_read(door, "fay", project).content).read_all().column("id").to_pylist())
+def _rows(door: _Door, project: str, *, task: str = "t1", person: str = "fay") -> list[str]:
+    return sorted(pa.ipc.open_stream(_read(door, person, project, task=task).content).read_all().column("id").to_pylist())
 
 
 def test_a_project_member_cannot_write_or_delete_another_projects_annotations_of_a_shared_dataset(door: _Door, openfga_store: OpenFgaStore) -> None:
@@ -265,6 +267,10 @@ _MANY = ",".join(f'{{"id":"d{i}","t_start":0,"t_end":1}}' for i in range(5001))
         pytest.param('{"inserts":[{"id":"n","shape_type":"bbox","x":NaN}]}', 422, id="a-box-at-no-place"),
         pytest.param(f'{{"inserts":[{{"id":"n","shape_type":"bbox","group":"{_LONG_GROUP}"}}]}}', 422, id="a-group-past-its-bound"),
         pytest.param(f'{{"temporal":[{_MANY}]}}', 422, id="more-rows-than-one-save-names"),
+        pytest.param('{"spans":[{"id":"held","char_start":5,"char_end":2}]}', 422, id="a-span-that-ends-before-it-starts"),
+        pytest.param('{"spans":[{"id":"held","char_start":-3,"char_end":2}]}', 422, id="a-span-before-its-text"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"text","parent_id":"held","char_start":0,"char_end":2147483648}]}', 422, id="a-span-past-int32"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"text","parent_id":"held","char_start":-1,"char_end":4}]}', 422, id="half-a-span"),
         # Ids are one key over the project's table: an insert naming another task's row would update it in place.
         pytest.param('{"inserts":[{"id":"held","shape_type":"bbox","label":"taken"}]}', 409, id="a-new-shape-with-another-tasks-id"),
         # A delete is held to the task's own unit too: another task's row is not this save's to remove.
@@ -312,7 +318,40 @@ def test_a_tag_batch_tags_only_the_units_of_the_task_it_names(door: _Door, openf
 
     assert (outside.status_code, outside.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's")
     assert inside.status_code == 200, inside.text
-    assert _rows(door, project) == [f"tag:{DOC}:0:19:letter"]
+    assert _rows(door, project) == [f"tag:t1:{DOC}:0:19:letter"]
+
+
+def test_two_replicas_of_one_item_each_keep_their_own_work_and_only_a_reviewer_reads_both(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """A consensus item is two tasks over one unit, each an annotator's own: fay's and rita's saves land in the same
+    project table, and each task's read, save and delete reach only its own rows. Fay may view rita's task, as everyone on
+    the project may, and is still refused rita's rows and draft; rex, a reviewer, reads both versions apart."""
+    project = _create(door, "alice").json()["project_id"]
+    openfga_store.write(
+        ("user:keycloak~fay", "annotator", f"project:{project}"),
+        ("user:keycloak~rita", "annotator", f"project:{project}"),
+        ("user:keycloak~rex", "reviewer", f"project:{project}"),
+    )
+    _task(door, project, "g1-r1", replica_of="g1")
+    _task(door, project, "g1-r2", replica_of="g1", assignee="keycloak~rita")
+    first = _save(door, "fay", project, task="g1-r1", inserts=[{"id": "fay-box", "shape_type": "bbox", "label": "a"}])
+    second = _save(door, "rita", project, task="g1-r2", inserts=[{"id": "rita-box", "shape_type": "bbox", "label": "b"}], base_version=first.json()["version"])
+    assert second.status_code == 200, second.text
+
+    across = _save(door, "rita", project, task="g1-r2", deletes=["fay-box"], base_version=second.json()["version"])
+
+    drafted = door.as_("rita").put("/tasks/g1-r2/draft", json={"shapes": [{"shape_id": "rita-box", "shape_type": "bbox", "label": "b"}], "links": []})
+    assert drafted.status_code == 200, drafted.text
+    peeked_rows = _read(door, "fay", project, task="g1-r2")
+    peeked_draft = door.as_("fay").get("/tasks/g1-r2/draft")
+
+    assert _rows(door, project, task="g1-r1", person="rex") == ["fay-box"]
+    assert _rows(door, project, task="g1-r2", person="rex") == ["rita-box"]
+    assert [s["shape_id"] for s in door.as_("rex").get("/tasks/g1-r2/draft").json()["shapes"]] == ["rita-box"]
+    refusal = "keycloak~fay may not read replica g1-r2's work: only its annotator, or someone who may review it"
+    assert (peeked_rows.status_code, peeked_rows.json()["detail"]) == (403, refusal)
+    assert (peeked_draft.status_code, peeked_draft.json()["detail"]) == (403, refusal)
+    assert across.status_code == 404, across.text
+    assert across.json()["detail"] == "annotation(s) ['fay-box'] are not this task's rows of its unit"
 
 
 def test_a_viewer_reads_the_unit_of_a_task_and_no_other(door: _Door, openfga_store: OpenFgaStore) -> None:

@@ -94,11 +94,12 @@ def finalize_commit(
 
 
 def refuse_unknown_ids(ds: lance.LanceDataset, ids: Sequence[str], *, within: str) -> None:
-    """Refuse a delete naming any id the unit ``within`` selects does not hold: such an id is another task's row,
-    another project's, or none. The project's table is one table for every task, so its ids alone do not bound a save."""
+    """Refuse a delete naming any id the rows ``within`` selects (a task's rows of its unit) do not hold: such an id is
+    another task's row, another project's, or none. The project's table is one table for every task, so its ids alone do
+    not bound a save."""
     held = set(ds.to_table(columns=["id"], filter=and_(within, isin("id", list(ids)))).column("id").to_pylist())
     if unknown := sorted(set(ids) - held):
-        raise NotFoundError(f"annotation(s) {unknown[:20]} are not this unit's")
+        raise NotFoundError(f"annotation(s) {unknown[:20]} are not this task's rows of its unit")
 
 
 def refuse_held_ids(ds: lance.LanceDataset, ids: Sequence[str]) -> None:

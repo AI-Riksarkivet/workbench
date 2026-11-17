@@ -28,6 +28,7 @@ level when every route in the group needs it, "cheaper to read and harder to for
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,8 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints.assist import router
-from client_kit.media.config import Settings
+from annotator.core.config import AnnotatorSettings
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Task
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
@@ -54,7 +56,8 @@ def _app(*, allow: bool, record: list[dict[str, Any]] | None = None, subject: st
             record.append({"user": user, "relation": relation, "obj": obj})
         return allow
 
-    state = AppState(settings=Settings())
+    # The annotator's own settings, as its service builds them: no assist backend named, so the in-repo mock answers.
+    state = AppState(settings=AnnotatorSettings())
 
     app = FastAPI()
     app.include_router(router)
@@ -112,3 +115,65 @@ def test_the_check_is_the_annotating_role_on_the_named_project() -> None:
     client.post("/api/assist/doc-1/0/0?project=p1", json=BODY)
     assert asked, "no check was made at all"
     assert (asked[0]["user"], asked[0]["relation"], asked[0]["obj"]) == ("gina", "can_annotate", "project:p1")
+
+
+def test_an_allowed_caller_gets_proposals_for_its_tasks_unit_named_by_the_datasets_own_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_app: Callable[..., FastAPI]
+) -> None:
+    """A unit is named by its dataset's identity, however many fields it has (here a document and a chunk), as the
+    annotations doors name it, and must be one of the named task's item: the door answers the producer's proposals for
+    it, and refuses a key the identity cannot name, a unit the task does not hold, no task, and a body past its bounds."""
+    declared = {"identity": {"key_fields": ["doc_id", "chunk_id"]}, "document": {"table": "documents", "media_blob": "image"}}
+    documents = pa.table(
+        {"doc_id": pa.array([], pa.string()), "image": lance.blob_array([])}, schema=pa.schema([pa.field("doc_id", pa.string()), lance.blob_field("image")])
+    )
+    chunks = pa.table({"doc_id": pa.array(["doc-1", "doc-1"]), "chunk_id": pa.array([0, 1], pa.int64())})
+    write_table(tmp_path, ["acme", "pages", "documents"], documents, descriptor=declared)
+    write_table(tmp_path, ["acme", "pages", "chunks"], chunks, descriptor=declared)
+    monkeypatch.setenv("MEDIA_DEFAULT_DATASET", "lake~acme$pages")
+    app = state_app(router)
+
+    async def allow(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
+        return True
+
+    state = AppState(settings=AnnotatorSettings())
+    app.dependency_overrides[get_checker] = lambda: allow
+    app.dependency_overrides[get_authorizer] = lambda: None
+    app.dependency_overrides[current_subject] = lambda: "gina"
+    app.dependency_overrides[get_state] = lambda: state
+    region = {"x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0}
+    ask = {"producer": "grounding-dino", "prompt": "stamp", "region": region, "task_id": "t1"}
+    with TestClient(app) as client:
+        assert client.portal is not None
+        client.portal.call(app.state.store.create_project, AnnotationProject(project_id="p1", tenant="acme", slug="pages"))
+        task = Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks", keys=["doc-1/0"]), media=MediaRef(kind="image"))
+        client.portal.call(app.state.store.send_tasks, "p1", [task])
+
+        answered = client.post("/api/assist/doc-1/0?project=p1", json=ask)
+        refused = {
+            "a-key-the-identity-cannot-name": client.post("/api/assist/doc-1/0/0?project=p1", json=ask),
+            "a-unit-the-task-does-not-hold": client.post("/api/assist/doc-1/1?project=p1", json=ask),
+            "no-task": client.post("/api/assist/doc-1/0?project=p1", json={**ask, "task_id": None}),
+            "too-many-points": client.post("/api/assist/doc-1/0?project=p1", json={**ask, "points": [{"x": 1, "y": 1}] * 65}),
+            "a-point-at-no-place": client.post(
+                "/api/assist/doc-1/0?project=p1",
+                content=json.dumps(ask)[:-1] + ', "points": [{"x": NaN, "y": 1}]}',
+                headers={"content-type": "application/json"},
+            ),
+            "a-prompt-past-its-bound": client.post("/api/assist/doc-1/0?project=p1", json={**ask, "prompt": "x" * 2001}),
+        }
+
+    assert answered.status_code == 200, answered.text
+    assert [(s["shape_type"], s["label"], s["x"], s["y"]) for s in answered.json()["shapes"]] == [("bbox", "stamp", 10.0, 20.0)]
+    assert {name: r.status_code for name, r in refused.items()} == {
+        "a-key-the-identity-cannot-name": 422,
+        "a-unit-the-task-does-not-hold": 404,
+        "no-task": 400,
+        "too-many-points": 422,
+        "a-point-at-no-place": 422,
+        "a-prompt-past-its-bound": 422,
+    }
+    assert (
+        refused["a-key-the-identity-cannot-name"].json()["detail"] == "unit key 'doc-1/0/0' has 3 part(s), and this dataset names a unit by 2: doc_id/chunk_id"
+    )
+    assert refused["a-unit-the-task-does-not-hold"].json()["detail"] == "unit doc-1/1 of dataset None is not task t1's"

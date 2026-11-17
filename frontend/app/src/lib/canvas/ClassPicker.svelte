@@ -137,7 +137,7 @@
 		</ul>
 		<p class="text-muted-foreground border-t px-2 py-1 text-[0.7rem]">
 			Enter picks · Esc {open.reason === 'drawn' && !controller.allowsUnlabelled
-				? 'discards the region'
+				? `discards the ${controller.rows.find((r) => r.index === open.index)?.shape === 'text' ? 'span' : 'region'}`
 				: 'leaves it as it is'}
 		</p>
 	</div>

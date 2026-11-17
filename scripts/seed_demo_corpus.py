@@ -78,10 +78,31 @@ from service_kit.naming import CATALOG_DELIMITER
 
 #: The warehouse the fixture is written in when the command line names none.
 DEFAULT_WAREHOUSE = "demo"
-#: The two datasets' namespaces inside the warehouse.
+#: The datasets' namespaces inside the warehouse.
 PAGES = "corpus"
 RECORDINGS = "recordings"
 FILMS = "films"
+LETTERS = "letters"
+
+#: The text fixture: letters with no picture and no sound, a row per paragraph, each paragraph naming people and places,
+#: so a token-classification task has entities to mark.
+LETTERS_FIXTURE: list[dict] = [
+    {
+        "doc_id": "a7e3c19d04b25f86",
+        "title": "Brev från landshövdingen 1701",
+        "paragraphs": [
+            "Landshövdingen Erik Sparre skriver från Visby att skeppet Kronan lagt till i hamnen den tredje maj.",
+            "Han ber att tullen i Kalmar skall räkna lasten av salt innan den förs vidare till Stockholm.",
+        ],
+    },
+    {
+        "doc_id": "5d0b8f2e6c1a9437",
+        "title": "Brev från bruket 1702",
+        "paragraphs": [
+            "Brukspatron Anna Lind meddelar att järnet från Bergslagen nått Uppsala utan skada.",
+        ],
+    },
+]
 
 #: The page fixture: three volumes, each a handful of pages. The prose is deliberately OVERLAPPING (every page mentions
 #: the archive and most a protokoll) so a one-word query returns hits across several documents, and DIFFERENT enough
@@ -704,13 +725,35 @@ def seed_films(client: LanceNamespace, connection: lancedb.DBConnection, namespa
     _index_and_stamp(client, connection, namespace, "shots", declared)
 
 
+def seed_letters(client: LanceNamespace, connection: lancedb.DBConnection, namespace: list[str]) -> None:
+    """The text dataset: ``paragraphs`` (one row per paragraph of a letter) and the descriptor, which declares no
+    document: an item of it is its text, labelled as text."""
+    _namespace(client, namespace)
+    rows = [
+        {"doc_id": letter["doc_id"], "chunk_id": index, "title": letter["title"], "text": text}
+        for letter in LETTERS_FIXTURE
+        for index, text in enumerate(letter["paragraphs"])
+    ]
+    schema = pa.schema([pa.field("doc_id", pa.utf8()), pa.field("chunk_id", pa.int64()), pa.field("title", pa.utf8()), pa.field("text", pa.utf8())])
+    _fresh_table(client, [*namespace, "paragraphs"], pa.Table.from_pylist(rows, schema=schema))
+    declared = Declared.model_validate(
+        {
+            "identity": {"key_fields": ["doc_id", "chunk_id"], "doc_key": "doc_id"},
+            "display": {"title": ["title"], "body": "text", "metadata": []},
+            "search": {"row_table": "paragraphs", "fts": {"table": "paragraphs", "column": "text"}, "filterable": ["doc_id"]},
+        }
+    )
+    _index_and_stamp(client, connection, namespace, "paragraphs", declared)
+
+
 def seed(client: LanceNamespace, connection: lancedb.DBConnection, warehouse: str) -> list[str]:
-    """Write the three stamped datasets into ``warehouse``; their ids in the catalog."""
-    pages, recordings, films = [warehouse, PAGES], [warehouse, RECORDINGS], [warehouse, FILMS]
+    """Write the four stamped datasets into ``warehouse``; their ids in the catalog."""
+    pages, recordings, films, letters = [warehouse, PAGES], [warehouse, RECORDINGS], [warehouse, FILMS], [warehouse, LETTERS]
     seed_pages(client, connection, pages)
     seed_recordings(client, connection, recordings)
     seed_films(client, connection, films)
-    return [CATALOG_DELIMITER.join(pages), CATALOG_DELIMITER.join(recordings), CATALOG_DELIMITER.join(films)]
+    seed_letters(client, connection, letters)
+    return [CATALOG_DELIMITER.join(d) for d in (pages, recordings, films, letters)]
 
 
 #: The unstamped fixture's namespace in the archive catalog, two levels deep, and its table.

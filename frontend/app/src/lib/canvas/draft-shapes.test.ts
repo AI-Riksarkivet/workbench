@@ -13,21 +13,27 @@ import { rowsToShapes } from './draft-shapes.ts';
 describe('rowsToShapes', () => {
 	it('maps the annotation columns onto draft shapes', () => {
 		const table = tableFromArrays({
-			id: ['a1', 'a2'],
+			id: ['a1', 'a2', 's1'],
 			// what the canvas actually writes: RectTool commits 'rect', historically stored as
 			// 'rectangle'. Both must normalize to the canonical 'bbox'.
-			shape_type: ['rectangle', 'polygon'],
-			x: Float32Array.from([10, 0]),
-			y: Float32Array.from([12, 0]),
-			width: Float32Array.from([80, 0]),
-			height: Float32Array.from([40, 0]),
-			label: ['portrait', 'stamp'],
-			difficult: [false, true],
+			shape_type: ['rectangle', 'polygon', 'text'],
+			x: Float32Array.from([10, 0, 0]),
+			y: Float32Array.from([12, 0, 0]),
+			width: Float32Array.from([80, 0, 0]),
+			height: Float32Array.from([40, 0, 0]),
+			label: ['portrait', 'stamp', 'person'],
+			difficult: [false, true, false],
+			// A row that is no span carries -1 (`makeInsertRow`); a span from the first character carries 0.
+			parent_id: ['', '', 'a2'],
+			char_start: Int32Array.from([-1, -1, 0]),
+			char_end: Int32Array.from([-1, -1, 4]),
 		});
 
 		const shapes = rowsToShapes(table);
 
-		expect(shapes).toHaveLength(2);
+		expect(shapes).toHaveLength(3);
+		expect(shapes[0]).not.toHaveProperty('char_start');
+		expect(shapes[2]).toMatchObject({ parent_id: 'a2', char_start: 0, char_end: 4 });
 		expect(shapes[0]).toMatchObject({
 			shape_id: 'a1',
 			shape_type: 'bbox',

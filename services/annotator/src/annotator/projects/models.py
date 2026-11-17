@@ -286,6 +286,10 @@ class Task(BaseModel):
     #: or None for an ordinary item. Sibling ids are deterministic (`{group}-r{k}`), which is what
     #: lets the one-replica-per-annotator guard find them without an index.
     replica_of: str | None = None
+    #: Everyone who has ever held this task (claimed it, or been assigned it), in the order they first did. A release, a
+    #: skip or a lapsed lease clears `assignee` but not this: on a replica it is what keeps a person who saw one
+    #: replica's work off every sibling, and it is never trimmed, since it holds each person once.
+    holders: list[str] = Field(default_factory=list)
     submitted_by: str | None = None
     submitted_at: datetime | None = None
     reviewed_by: str | None = None

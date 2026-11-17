@@ -54,13 +54,20 @@ def test_a_label_outside_the_taxonomy_is_refused() -> None:
     assert "asdf" in violation and "portrait" in violation
 
 
-def test_an_unlabelled_region_is_a_member_but_blocks_a_submission_naming_it() -> None:
+def test_an_unlabelled_region_or_span_is_a_member_but_blocks_a_submission_naming_it() -> None:
     """Drawing before choosing a class is a normal state of a draft (an import passes it); a submission claims the item
-    is done, so every region still without a class is refused, by id."""
+    is done, so every region and every text span still without a class is refused, by id. The text a span ranges over
+    is the item's own content, not a mark, and takes no class."""
     ontology = LabelOntology(classes=[LabelClass(name="portrait")])
-    shapes = [_shape("a", label=None), _shape("b", label="portrait"), _shape("c", shape_type="segment", label=None)]
+    shapes = [
+        _shape("a", label=None),
+        _shape("b", label="portrait"),
+        _shape("c", shape_type="segment", label=None),
+        ShapeLike(shape_id="doc", shape_type="text", text="Gustav Vasa was crowned"),
+        ShapeLike(shape_id="d", shape_type="text", parent_id="doc", char_start=0, char_end=6),
+    ]
     assert membership_violation(ontology, shapes) is None
-    assert validate_against_ontology(ontology, shapes) == "2 shape(s) carry no class: a, c; this task's classes are ['portrait']"
+    assert validate_against_ontology(ontology, shapes) == "3 shape(s) carry no class: a, c, d; this task's classes are ['portrait']"
 
 
 @pytest.mark.parametrize(
@@ -250,6 +257,18 @@ SPAN_ONTOLOGY = LabelOntology(
 def test_a_span_inside_its_parent_is_accepted() -> None:
     shapes = [_line("l1", "Gustav Vasa was crowned"), _span("s1", "l1", 0, 11)]
     assert validate_against_ontology(SPAN_ONTOLOGY, shapes) is None
+
+
+def test_a_spans_offsets_are_code_points_so_a_character_outside_the_BMP_counts_once() -> None:
+    """The wire's unit is the code point (the canvas converts from the browser's UTF-16 at its edge): after one astral
+    character (a fraktur initial, two UTF-16 units) the last word's code-point range lands inside its parent, and the
+    UTF-16 range a browser would measure runs one past the end."""
+    text = "Brev till 𝔄nna i Visby"
+    shapes = [_line("l1", text), _span("s1", "l1", len(text) - 5, len(text))]
+    shifted = [_line("l1", text), _span("s1", "l1", len(text) - 4, len(text) + 1)]
+    assert text[len(text) - 5 :] == "Visby"
+    assert validate_against_ontology(SPAN_ONTOLOGY, shapes) is None
+    assert validate_against_ontology(SPAN_ONTOLOGY, shifted) == f"text span s1 ends at {len(text) + 1}, past the end of l1 ({len(text)} characters)"
 
 
 def test_a_RANGE_with_no_parent_is_refused() -> None:
