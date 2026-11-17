@@ -667,33 +667,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dapr"
-version = "1.18.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "grpcio" },
-    { name = "grpcio-status" },
-    { name = "protobuf" },
-    { name = "python-dateutil" },
-    { name = "typing-extensions" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/cf/0e558760eca8db826a95b4ff101cd5b7c24dbd552afc5ac899f1c82f9b3e/dapr-1.18.3-py3-none-any.whl", hash = "sha256:32bd139df4f2ac1824819d41abf3ba66bacca2cd01063b55b5464e3a651a985b", size = 271624, upload-time = "2026-07-15T14:35:09.283Z" },
-]
-
-[[package]]
-name = "dapr-ext-workflow"
-version = "1.18.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "dapr" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/d8/785393983d8ac4a4bde8c9a2aa3e001d778881de99d4c662988d29125f13/dapr_ext_workflow-1.18.3-py3-none-any.whl", hash = "sha256:99616f2c9eb9a705ba3a0afed872c8a609229389c54e24ecd68008a3a6b21d37", size = 157477, upload-time = "2026-07-15T14:35:12.666Z" },
-]
-
-[[package]]
 name = "decorator"
 version = "5.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -809,19 +782,21 @@ name = "flows"
 version = "0.1.0"
 source = { editable = "services/flows" }
 dependencies = [
-    { name = "dapr-ext-workflow" },
     { name = "httpx" },
+    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "regex" },
     { name = "service-kit", extra = ["governed"] },
+    { name = "tenacity" },
     { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "dapr-ext-workflow", specifier = ">=1.18" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "regex", specifier = ">=2024.5.15" },
     { name = "service-kit", extras = ["governed"], editable = "packages/service-kit" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -1976,21 +1951,6 @@ wheels = [
 ]
 
 [[package]]
-name = "opentelemetry-instrumentation-grpc"
-version = "0.65b0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/67/80/0006818bfb54d5e3abb138607beff63561c2c920393ec8d18cc7e3d33810/opentelemetry_instrumentation_grpc-0.65b0.tar.gz", hash = "sha256:b05b3a1f476f350fdb12514ca1ebaed0d596095f91188c2efd26b3e6e2a4cc82", size = 31971, upload-time = "2026-07-16T15:26:07.304Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/05/6b/857ecc989566b09dde5bbfaf7dce4955095416d64b2e9231d1d9d6681d56/opentelemetry_instrumentation_grpc-0.65b0-py3-none-any.whl", hash = "sha256:d4d884439ddee9e68ebd45586eaa243d982351b1ec6a5ce9916eccfd20e66805", size = 24370, upload-time = "2026-07-16T15:25:14.63Z" },
-]
-
-[[package]]
 name = "opentelemetry-instrumentation-httpx"
 version = "0.65b0"
 source = { registry = "https://pypi.org/simple" }
@@ -3045,13 +3005,11 @@ name = "service-kit"
 version = "0.1.0"
 source = { editable = "packages/service-kit" }
 dependencies = [
-    { name = "dapr" },
     { name = "fastapi" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-aiohttp-client" },
     { name = "opentelemetry-instrumentation-botocore" },
     { name = "opentelemetry-instrumentation-fastapi" },
-    { name = "opentelemetry-instrumentation-grpc" },
     { name = "opentelemetry-instrumentation-httpx" },
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-instrumentation-requests" },
@@ -3084,7 +3042,6 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'governed'", specifier = ">=3.14.4" },
     { name = "certifi", marker = "extra == 'governed'", specifier = ">=2026.10.23" },
     { name = "cryptography", marker = "extra == 'governed'", specifier = ">=49" },
-    { name = "dapr", specifier = ">=1.18.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'governed'", specifier = ">=0.27" },
     { name = "joserfc", marker = "extra == 'governed'", specifier = ">=1.8.0" },
@@ -3094,7 +3051,6 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-aiohttp-client", specifier = ">=0.65b0" },
     { name = "opentelemetry-instrumentation-botocore", specifier = ">=0.65b0" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.65b0" },
-    { name = "opentelemetry-instrumentation-grpc", specifier = ">=0.65b0" },
     { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.65b0" },
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.65b0" },
     { name = "opentelemetry-instrumentation-requests", specifier = ">=0.65b0" },

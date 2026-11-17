@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.11
 # rask flows service image — FastAPI on python:3.13-slim-bookworm.
-# The studio flow-builder's server half: node catalog, graph validation, run execution (inline, or
-# over Dapr Workflow when the injected sidecar sets DAPR_GRPC_PORT).
+# The studio flow-builder's server half: node catalog, graph validation, durable run execution (each run
+# and its steps kept in the service's own Postgres).
 # Build (DAGGER builds every image in this repo — this recipe is the definition, not the driver):
 #   dagger call image --name=flows
 #   dagger call image --name=flows publish --address=172.17.0.1:5000/flows:dev
@@ -83,8 +83,8 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # This service sits behind the platform Gateway's data plane (the cluster route); --forwarded-allow-ips
 # MUST be that data plane's pod CIDR at deploy time, never '*' (header-spoofing risk). The chart
 # overrides these args with `rask.proxyHeaderArgs` from `forwardedAllowIps`.
-# --workers intentionally unset: the run store is a process-local dict (v0), so a second worker
-# would serve GET /flows/runs/{id} from a process that never saw the run — a 404 half the time.
+# --workers intentionally unset: one process per pod, and replicas scale it. Every process drives runs under a lease
+# from the service's own Postgres, so any replica serves any run and resumes one whose driver died.
 CMD ["uvicorn", "flows:app", \
      "--host", "0.0.0.0", "--port", "8840", \
      "--proxy-headers", \

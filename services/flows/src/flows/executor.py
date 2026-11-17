@@ -1,12 +1,11 @@
-"""Node dispatch and the inline run executor.
+"""Node dispatch: executing one step of a run.
 
-Two entry points, one dispatch. `dispatch()` executes ONE node and is shared by both lanes — the
-inline `execute()` below and the Dapr activity in `activities.py` — because a node that behaves
-differently depending on which orchestrator called it is a node whose sandbox result means nothing.
+`dispatch()` executes ONE node and `run_node()` wraps it with timing and failure-as-state; the run driver
+(`flows.runner`) calls `run_node` for each step it has no outcome for.
 
 The HTTP client is a PARAMETER, never built here. That is what makes the Serve boundary testable at
-the transport (respx) instead of by patching our own functions, and it is what lets the inline lane
-reuse the app-scoped client while an activity gets a short-lived one on its own worker.
+the transport (respx) instead of by patching our own functions, and it is what lets every step reuse the
+app-scoped client.
 """
 
 import asyncio
@@ -19,16 +18,17 @@ from xml.sax.saxutils import unescape
 
 import httpx
 import regex
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 
-from flows.graph import topo_waves, upstreams
 from flows.models import (
-    FlowGraph,
     FlowNode,
     NodeJob,
     NodeResult,
     NodeRunState,
     Payload,
-    RunState,
+    unstorable,
 )
 from flows.serve_auth import ServeCredentialError, serve_authorization
 
@@ -290,10 +290,7 @@ def _regex(node: FlowNode, inputs: list[Payload]) -> Payload:
         raise NodeError(f"bad pattern: {exc}") from exc
     # The APPLY is inside the boundary too, not just the compile. A pattern can compile and still
     # raise when used: `re.compile(r"(a)").sub(r"\\9", "aaa")` raises `re.error: invalid group
-    # reference 9`, which is caller input and therefore a NodeError, not a crash. Outside the try it
-    # escaped `run_node`'s `except NodeError`, propagated out of the activity, burned three
-    # NODE_RETRY attempts on input no retry can fix, and failed the whole orchestration with no node
-    # states — the precise outcome workflow.py says must not happen for a user-input refusal.
+    # reference 9`, which is caller input and therefore a NodeError, a node failure the builder paints, not a crash.
     try:
         if node.config.get("regexMode") == "replace":
             replacement = node.config.get("regexReplace")
@@ -309,11 +306,28 @@ def _regex(node: FlowNode, inputs: list[Payload]) -> Payload:
 
 
 async def run_node(job: NodeJob, *, client: httpx.AsyncClient, idempotency_key: str = "") -> NodeResult:
-    """One node, timed, with failure captured as state rather than raised.
+    """One node, timed, with failure captured as state rather than raised, and named on the current span.
 
     `time.perf_counter` is the monotonic clock — a wall clock can step backwards under NTP and
     report a negative duration, which is exactly the kind of nonsense a timing chip must not show.
     """
+    result = await _run_node(job, client=client, idempotency_key=idempotency_key)
+    # The step's span (`runner.drive_run` opens one per step) names the node: in a run of 256 steps nothing else says
+    # WHICH node is slow or which kind fails. The identifiers ride the SPAN and not a metric: a node id is
+    # caller-supplied and unbounded.
+    span = trace.get_current_span()
+    span.set_attribute("lance.flows.node_id", job.node.id)
+    span.set_attribute("lance.flows.node_kind", job.node.kind)
+    if result.state.status == "failed":
+        # A failed node RETURNS its failure, so no `with` block sees an exception and the span would stay UNSET: mark it,
+        # so a trace search for errors finds the node that broke. `set_status` and not `record_exception`: there is no
+        # exception here, and the detail rides the log line and the step's outcome.
+        span.set_status(Status(StatusCode.ERROR, f"node {job.node.id} failed: {result.state.error}"))
+        log.info("node %s failed: %s", job.node.id, result.state.error)
+    return result
+
+
+async def _run_node(job: NodeJob, *, client: httpx.AsyncClient, idempotency_key: str) -> NodeResult:
     started = time.perf_counter()
     inputs = [Payload(text=text) for text in job.inputs]
     try:
@@ -328,82 +342,70 @@ async def run_node(job: NodeJob, *, client: httpx.AsyncClient, idempotency_key: 
             serve_token_file=job.serve_token_file,
         )
     except NodeError as exc:
-        return NodeResult(state=NodeRunState(status="failed", ms=_elapsed_ms(started), error=str(exc)))
+        return NodeResult(state=NodeRunState(status="failed", ms=_elapsed_ms(started), error=_keepable(str(exc))))
     except Exception as exc:
         # A NODE FAILS AS STATE, NEVER AS A RAISE — that is this module's stated contract, and a
         # boundary that only catches NodeError enforces it only for the failures somebody remembered
-        # to convert. Anything else escaped into the activity, where the durable lane retries it three
-        # times against input no retry can fix and then fails the orchestration with no node states at
-        # all: the builder sees a dead run and cannot tell which node killed it. The specific leak
+        # to convert. Anything else would escape into the driver and stop the run with no outcome for
+        # this step, so every re-drive would execute it again against input no retry can fix. The specific leak
         # found was `re.error` from `sub()`, now converted at source; this is the general guard so the
         # next one does not need finding first.
         log.exception("flows_node_crashed", extra={"node": job.node.id, "kind": job.node.kind})
-        return NodeResult(state=NodeRunState(status="failed", ms=_elapsed_ms(started), error=f"{type(exc).__name__}: {exc}"))
+        return NodeResult(state=NodeRunState(status="failed", ms=_elapsed_ms(started), error=_keepable(f"{type(exc).__name__}: {exc}")))
+    if reason := unstorable(out.text):
+        # A step's output is stored as its outcome, so output the run store cannot keep fails the STEP, with the reason.
+        # Left to the write, it would fail the record, and every re-drive would run the step again to the same end.
+        return NodeResult(state=NodeRunState(status="failed", ms=_elapsed_ms(started), error=f"the step's output holds {reason}"))
     # BOTH fields are capped by the model, at different ceilings: `output_text` at the 4 000-char
     # DISPLAY cap, `payload_text` at `MAX_PAYLOAD_CHARS` (256 KiB) because it is the document the
-    # graph carries on — and, in the durable lane, the value written to the workflow history once as
-    # this activity's output and again as every dependent's input.
+    # graph carries on, stored once as the step's payload and read back as every dependent's input.
     return NodeResult(
         state=NodeRunState(status="succeeded", ms=_elapsed_ms(started), output_text=out.text),
         payload_text=out.text,
     )
 
 
-async def execute(
-    graph: FlowGraph,
-    seeds: dict[str, str],
-    run_id: str,
-    *,
-    client: httpx.AsyncClient,
-    serve_url: str,
-    serve_timeout: float = 180.0,
-    serve_token_file: str | None = None,
-) -> RunState:
-    """Run the whole graph inline, wave by wave, and return the finished RunState.
+#: How many times one model step calls Serve before it fails, and the first wait between calls, doubled each time:
+#: the per-step retry a model call has always had (first retry after 2 s, three attempts, backoff 2). Only Serve NOT
+#: ANSWERING YET is retried — a dropped or refused connection, a 502/503/504, a 429 — never a 4xx, which is Serve
+#: refusing the request, and never a read timeout, which is a model slower than its budget and would only spend it again.
+#: Every attempt carries the step's one Idempotency-Key.
+SERVE_ATTEMPTS = 3
+SERVE_FIRST_WAIT_SECONDS = 2.0
+#: The longest a 429's Retry-After is honoured; a longer one waits this long.
+SERVE_MAX_RETRY_AFTER_SECONDS = 60.0
+_NOT_YET_STATUSES = frozenset({429, 502, 503, 504})
 
-    A failed node BLOCKS its dependents: they are recorded `failed` with "upstream failed" and
-    never dispatched. The alternative — running them against missing input — invents a second
-    failure whose message is about the symptom, and the builder would paint the wrong node red.
-    """
-    waves = topo_waves(graph)
-    if waves is None:
-        return RunState(run_id=run_id, status="failed", error="graph has a cycle")
 
-    by_id = {node.id: node for node in graph.nodes}
-    incoming = upstreams(graph)
-    states: dict[str, NodeRunState] = {}
-    outputs: dict[str, str] = {}
+class _ServeNotYet(Exception):
+    """Serve answered a status that says to try again, with the wait it asked for, if any."""
 
-    for wave in waves:
-        runnable: list[str] = []
-        for node_id in wave:
-            blocked = [u for u in incoming[node_id] if states.get(u) is None or states[u].status == "failed"]
-            if blocked:
-                states[node_id] = NodeRunState(status="failed", error="upstream failed")
-            else:
-                runnable.append(node_id)
+    def __init__(self, status: int, retry_after: float | None) -> None:
+        super().__init__(f"serve answered {status}")
+        self.status = status
+        self.retry_after = retry_after
 
-        jobs = [
-            NodeJob(
-                node=by_id[node_id],
-                inputs=[outputs[u] for u in incoming[node_id]],
-                seed=seeds.get(node_id),
-                serve_url=serve_url,
-                serve_timeout=serve_timeout,
-                serve_token_file=serve_token_file,
-            )
-            for node_id in runnable
-        ]
-        # gather, not a loop: a wave is BY DEFINITION independent, and serializing it would make two
-        # parallel model nodes cost the sum of their latencies — the thing waves exist to avoid.
-        results = await asyncio.gather(*(run_node(job, client=client) for job in jobs))
-        for node_id, result in zip(runnable, results, strict=True):
-            states[node_id] = result.state
-            if result.payload_text is not None:
-                outputs[node_id] = result.payload_text
 
-    failed = any(s.status == "failed" for s in states.values())
-    return RunState(run_id=run_id, status="failed" if failed else "succeeded", nodes=states)
+def _retry_after(resp: httpx.Response) -> float | None:
+    """A Retry-After in seconds; an HTTP-date or an unreadable value leaves the backoff to decide."""
+    value = resp.headers.get("retry-after", "").strip()
+    return float(value) if value.isdigit() else None
+
+
+def _serve_not_yet(exc: BaseException) -> bool:
+    return isinstance(exc, _ServeNotYet) or (isinstance(exc, httpx.TransportError) and not isinstance(exc, httpx.ReadTimeout))
+
+
+def _serve_wait(state: RetryCallState) -> float:
+    exc = state.outcome.exception() if state.outcome is not None else None
+    if isinstance(exc, _ServeNotYet) and exc.retry_after is not None:
+        return min(exc.retry_after, SERVE_MAX_RETRY_AFTER_SECONDS)
+    return SERVE_FIRST_WAIT_SECONDS * 2 ** (state.attempt_number - 1)
+
+
+async def _sleep(seconds: float) -> None:
+    """The wait between two calls to Serve; its own name so a test records the waits instead of sleeping them."""
+    await asyncio.sleep(seconds)
 
 
 async def _call_serve(
@@ -435,21 +437,34 @@ async def _call_serve(
     content_type = "text/plain; charset=utf-8" if payload.kind == "text" else "application/octet-stream"
     headers = {"content-type": content_type, **credential}
     if idempotency_key:
-        # DWF-ACT-002. `run_node` is retried by NODE_RETRY, and this POST is the side effect: a model
-        # that charges, writes, or enqueues sees the same work twice with no way to tell. The header is
+        # A step that ran and has no recorded outcome (its driver died between the two) is executed again by the
+        # re-drive, and this POST is the side effect: a model that charges, writes, or enqueues would see the same work
+        # twice with no way to tell. The key is the same on every attempt of the step (`runner.step_key`). The header is
         # the conventional spelling, so a Serve app that honours it needs no rask-specific contract and
         # one that ignores it is no worse off than before.
         headers["Idempotency-Key"] = idempotency_key
     try:
-        resp = await client.post(
-            url,
-            content=payload.as_bytes(),
-            params=params,
-            headers=headers,
-            # Explicit per-call, not inherited from the client: the same client serves the whole
-            # fleet-shaped app, and one node's model budget is not the app's default budget.
-            timeout=serve_timeout,
-        )
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(SERVE_ATTEMPTS),
+            wait=_serve_wait,
+            retry=retry_if_exception(_serve_not_yet),
+            sleep=lambda seconds: _sleep(seconds),
+            reraise=True,
+        ):
+            with attempt:
+                resp = await client.post(
+                    url,
+                    content=payload.as_bytes(),
+                    params=params,
+                    headers=headers,
+                    # Explicit per-call, not inherited from the client: the same client serves the whole
+                    # fleet-shaped app, and one node's model budget is not the app's default budget.
+                    timeout=serve_timeout,
+                )
+                if resp.status_code in _NOT_YET_STATUSES:
+                    raise _ServeNotYet(resp.status_code, _retry_after(resp))
+    except _ServeNotYet as exc:
+        raise NodeError(f"serve returned {exc.status} for app '{app}' ({SERVE_ATTEMPTS} attempts)") from exc
     except httpx.RequestError as exc:
         # The exception CLASS, not its message: httpx interpolates the resolved address, which in
         # cluster is an internal one the caller cannot act on. The address they can act on is the
@@ -473,6 +488,11 @@ def _one_input(node: FlowNode, inputs: list[Payload]) -> Payload:
     # First edge wins for the single-input kinds, and it is the FIRST rather than a merge because
     # `alto`/`model` take one document; merging two would produce a body neither upstream authored.
     return inputs[0]
+
+
+def _keepable(text: str) -> str:
+    """An error message the run store can keep: a NUL or a lone surrogate it quotes is replaced with U+FFFD."""
+    return text.replace("\x00", "\ufffd").encode("utf-8", "surrogatepass").decode("utf-8", "replace")
 
 
 def _elapsed_ms(started: float) -> float:

@@ -1,9 +1,9 @@
 /**
- * Reading a secret from a MOUNTED FILE — the sanctioned delivery for a pod with no Dapr sidecar.
+ * Reading a secret from a MOUNTED FILE — the sanctioned delivery of a secret to a pod.
  *
- * The estate's rule is the owner's, verbatim: "Never secret through envs. Either from ESO, secret
- * store dapr and STS for zero trust." A web zone carries no sidecar, so its path is an ESO-managed
- * Secret taken as a file. What travels in the environment is the PATH, which is not a secret.
+ * The estate's rule is the owner's: never a secret through the environment. A secret reaches a pod as an
+ * ESO-managed Secret taken as a file, or as a short-lived credential from STS. What travels in the
+ * environment is the PATH, which is not a secret.
  *
  * RE-READ PER CALL, and that is the reason this exists rather than a module-level constant. A
  * process's environment is fixed at exec, so a rotated Secret can never reach a pod that took it that

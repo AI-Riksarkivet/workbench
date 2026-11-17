@@ -13,9 +13,8 @@ under load — pods cycle, and a limiter becomes an outage. Probe routes carry n
 in-memory backend is per PROCESS. Every service carrying these limits runs `replicas: 1`, so per-pod
 state *is* the global state. It stops being true the moment one scales: N pods give N times the declared
 limit, silently, with no error anywhere — the failure `rate-limiting.md` files under "in-process
-defaultdict rate limiter". This estate deliberately runs no Redis (`CLAUDE.md`: events ride Dapr
-pub/sub on NATS JetStream), so shared storage is a real infrastructure addition and is not justified
-while the assumption holds.
+defaultdict rate limiter". This estate deliberately runs no Redis, so shared storage is a real
+infrastructure addition and is not justified while the assumption holds.
 
 So the assumption is GATED, not commented: `test_rate_limit.py` fails if any service in
 `RATE_LIMITED_SERVICES` has a replica count above one, and names Redis as the fix. That is the moment

@@ -1,11 +1,11 @@
 """flows — the studio flow-builder's server half.
 
-Three seams and no cluster of its own: a server-DECLARED node catalog (so a server-side node kind can
-appear in the palette without a frontend release), PURE graph validation shared with the frontend
-executor's vocabulary, and run execution — inline in v0, and over Dapr Workflow whenever a sidecar is
-present, which is what makes an in-cluster run durable.
+Three seams: a server-DECLARED node catalog (so a server-side node kind can appear in the palette without a frontend
+release), PURE graph validation shared with the frontend executor's vocabulary, and durable run execution — each run
+and each step's outcome are rows in the service's own Postgres (`flows.store`), driven under a lease by any replica
+and resumed by any replica's re-drive after a crash (`flows.runner`).
 
-Fleet layout (`make_service_app` + flat modules + an injectable lifespan), like `compute`. The public
+Fleet layout (`make_service_app` + flat modules + an injectable lifespan). The public
 namespace is `/api/flows`; the cluster route forwards that rule unrewritten because this app mounts its
 routers under `WORKBENCH_API_PREFIX` (`/api` in the chart and in `scripts/local-stack.sh`) itself.
 """

@@ -40,8 +40,8 @@ def test_topo_waves_group_independent_nodes() -> None:
     assert topo_waves(graph) == [["a", "b"], ["c"]]
 
 
-def test_topo_waves_are_sorted_so_the_plan_is_replay_identical() -> None:
-    """The durable orchestrator recomputes the plan on every replay instead of persisting it. That is
+def test_topo_waves_are_sorted_so_every_re_drive_walks_one_plan() -> None:
+    """Every re-drive of a run recomputes the plan from the stored graph instead of persisting it. That is
     only safe if the plan is a pure function of the graph — hence sorted waves, not set order."""
     forward = _graph([("z", "text"), ("m", "text"), ("a", "text")], [])
     backward = _graph([("a", "text"), ("m", "text"), ("z", "text")], [])
@@ -99,12 +99,11 @@ def test_a_node_still_tolerates_editor_only_fields() -> None:
     assert [n.id for n in graph.nodes] == ["a"]
 
 
-# --- Size bounds: what stops one run from writing an unbounded workflow history ------------------
+# --- Size bounds: what stops one run from storing an unbounded number of payloads -----------------
 
 
 def test_a_graph_larger_than_the_node_cap_is_REFUSED() -> None:
-    """The durable lane persists every node's payload to the actor state store, so an unbounded
-    node count is an unbounded history — and history is RELOADED on every replay.
+    """A run stores every step's payload, so an unbounded node count is an unbounded run.
 
     `MAX_PAYLOAD_CHARS` already bounds ONE payload (256 KiB). Nothing bounded how many of them a
     single run could produce, so the ceiling on a run was the ceiling on a drawing.
@@ -127,37 +126,5 @@ def test_a_graph_larger_than_the_node_cap_is_REFUSED() -> None:
     # cannot do that.
     too_big = FlowGraph.model_construct(nodes=[FlowNode(id=f"n{i}", kind="text") for i in range(MAX_GRAPH_NODES + 1)], edges=[])
     problems = validate_graph(too_big)
-    assert problems, f"a {MAX_GRAPH_NODES + 1}-node graph was accepted — the history it writes is bounded by nothing"
+    assert problems, f"a {MAX_GRAPH_NODES + 1}-node graph was accepted — what it stores is bounded by nothing"
     assert any(str(MAX_GRAPH_NODES) in p for p in problems), f"the refusal must name the ceiling, so the caller knows what to cut to: {problems}"
-
-
-def test_the_bounds_are_ARITHMETICALLY_consistent_with_the_payload_cap_and_the_sidecar_limit() -> None:
-    """A bound whose arithmetic nobody checked is a bound that drifts.
-
-    Worst case for one activity input is `MAX_NODE_FAN_IN * MAX_PAYLOAD_CHARS`. That must stay
-    comfortably under daprd's 32Mi `--max-body-size`, with room for the node config, the serve
-    origin, JSON envelope overhead and — the one that bites — escape expansion, which can nearly
-    double a text payload full of quotes and newlines.
-
-    This test fails if someone raises the fan-in cap or the payload cap without redoing that sum.
-    """
-    from flows.models import MAX_NODE_FAN_IN, MAX_PAYLOAD_CHARS
-
-    # 4 MiB, and NOT daprd's `--max-body-size=32Mi`. Two different channels, and the SMALLER binds.
-    # `--max-body-size` governs daprd's own server; the activity payload crosses the app<->sidecar
-    # WORKFLOW channel, which the vendored durabletask worker opens. `WorkflowRuntime` constructs
-    # `TaskHubGrpcWorker(...)` without `channel_options`, so `get_grpc_channel` merges only
-    # `DEFAULT_GRPC_KEEPALIVE_OPTIONS` — keepalive settings and no `grpc.max_*_message_length` at all,
-    # leaving grpc's 4 MiB default. Read out of dapr 1.18.3 in `.venv`, and independently reproduced
-    # against a real grpc server (`RESOURCE_EXHAUSTED ... 5242880 vs 4194304`, docs/architecture/medallion-cascade.md).
-    # It is not raisable from config: nothing in the runtime plumbs channel options through.
-    grpc_default_max_message_bytes = 4 * 1024 * 1024
-    worst_case_raw = MAX_NODE_FAN_IN * MAX_PAYLOAD_CHARS
-
-    assert worst_case_raw * 2 <= grpc_default_max_message_bytes, (
-        f"worst-case activity input is {MAX_NODE_FAN_IN} x {MAX_PAYLOAD_CHARS} = {worst_case_raw} bytes raw, "
-        f"which does not leave a 2x margin for JSON escape expansion under the "
-        f"{grpc_default_max_message_bytes}-byte workflow-channel limit. Lower MAX_NODE_FAN_IN or "
-        f"MAX_PAYLOAD_CHARS — raising daprd's --max-body-size does NOT help, because this is the worker's "
-        f"own channel. Past the limit the worker rejects the input and the run WEDGES rather than failing."
-    )

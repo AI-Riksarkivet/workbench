@@ -1,9 +1,8 @@
 """Pure graph functions: hygiene problems, topological order, topological waves.
 
 NO I/O in this module, and that is load-bearing twice over. It is what lets `POST /flows/validate`
-answer without touching a cluster, and it is what lets the Dapr Workflow orchestrator compute its
-own execution plan inside a replaying workflow body, where a network call would be a determinism
-bug rather than a slow function.
+answer without touching a cluster, and it is what lets every re-drive of a run derive the same plan from
+the stored graph (`flows.runner`), so a resumed run walks the waves its first driver walked.
 
 The vocabulary is shared with the frontend executor on purpose (open_studio_flows.md): both refuse
 the same graphs for the same stated reasons.
@@ -34,9 +33,8 @@ def validate_graph(graph: FlowGraph) -> list[str]:
     if not graph.nodes:
         problems.append("graph has no nodes")
 
-    # SIZE, before shape. The durable lane writes every node's payload to the actor state store and
-    # reloads that history on every replay, so an unbounded node count is an unbounded history — the
-    # per-payload `MAX_PAYLOAD_CHARS` cap bounds one document, not a run. Named with the ceiling so
+    # SIZE, before shape. Every step's payload is stored, so an unbounded node count is an unbounded run —
+    # the per-payload `MAX_PAYLOAD_CHARS` cap bounds one document, not a run. Named with the ceiling so
     # the caller knows what to cut to rather than bisecting.
     if len(graph.nodes) > MAX_GRAPH_NODES:
         problems.append(f"graph has {len(graph.nodes)} nodes, over the {MAX_GRAPH_NODES}-node ceiling")
@@ -60,10 +58,10 @@ def validate_graph(graph: FlowGraph) -> list[str]:
             self_loop = True
 
     # FAN-IN, measured through `upstreams` itself rather than recounted here. That function is what
-    # `workflow.py` builds each activity input from, so counting any other way bounds a number that
-    # never reaches the wire — and it already drops dangling and self edges, which are reported above
+    # the driver builds each step's input from, so counting any other way bounds a number that
+    # no step receives — and it already drops dangling and self edges, which are reported above
     # as their own problems. Counting EDGES is the point: duplicates are tolerated by design and each
-    # one is another full copy of the same payload in the same message.
+    # one is another full copy of the same payload in the same step input.
     for node_id, incoming in upstreams(graph).items():
         if len(incoming) > MAX_NODE_FAN_IN:
             problems.append(f"node {node_id} has {len(incoming)} incoming edges, over the {MAX_NODE_FAN_IN}-edge ceiling")
@@ -102,10 +100,9 @@ def topo_waves(graph: FlowGraph) -> list[list[str]] | None:
     """The same order, grouped into waves that may run CONCURRENTLY: wave *n* depends only on
     waves before it. None if the graph has a cycle.
 
-    Waves rather than a flat order because both executors fan out — the inline one with
-    `asyncio.gather`, the durable one with `wf.when_all` — and a flat list would serialize a graph
-    whose whole point is that two model nodes can run at once. Each wave's ids are sorted, so the
-    plan is byte-identical across processes and across a workflow replay.
+    Waves rather than a flat order because the driver runs a wave's steps at once, and a flat list would
+    serialize a graph whose whole point is that two model nodes can run at once. Each wave's ids are sorted,
+    so the plan is byte-identical across processes and across a re-drive.
     """
     ids = _node_ids(graph)
     successors, indegree = _adjacency(graph, ids)

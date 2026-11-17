@@ -19,34 +19,11 @@ the taxonomy, not a departure from it.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import httpx
-import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from flows import health, routes
-from flows.config import FlowsSettings
-from service_kit.exceptions import register_handlers
 
-
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    """The routers over an explicit `app.state`, the shape `test_routes.py` documents — and with
-    `register_handlers` mounted, which is the whole point here: the refusal must be PRODUCED by that
-    handler rather than assembled beside it."""
-    app = FastAPI()
-    register_handlers(app)
-    app.include_router(health.router, prefix="/api")
-    app.include_router(routes.router, prefix="/api")
-    app.state.flows_settings = FlowsSettings(serve_url="http://serve.invalid:8000", serve_timeout=5.0, max_runs=3)
-    app.state.http = httpx.AsyncClient()
-    app.state.runs = {}
-    app.state.workflow_scheduler = None
-    app.state.workflow_reader = None
-    with TestClient(app) as test_client:
-        yield test_client
+# `client` is the real flows app (`conftest.py`), whose factory mounts `register_handlers`: the refusal must be PRODUCED
+# by that handler rather than assembled beside it.
 
 
 def test_the_refusal_body_is_the_shared_builders_output(client: TestClient) -> None:

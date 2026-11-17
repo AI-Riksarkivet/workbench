@@ -33,9 +33,6 @@ if TYPE_CHECKING:
 #: excluded by default instead of leaking until someone notices.
 _SPAN_HEADERS: dict[str, str] = {
     "x-request-id": "request.id",
-    # The Dapr caller's app-id: which SERVICE invoked this one, which is attribution rather than
-    # identity. The subject stays off the span deliberately.
-    "dapr-caller-app-id": "rask.caller.app_id",
 }
 
 
@@ -228,32 +225,8 @@ def setup_otel(app: FastAPI, service_name: str, settings: Settings) -> bool:
 
         RequestsInstrumentor().instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
 
-    # gRPC — THE DAPR LEG. Now that `lance-tracing` names an exporter the sidecars emit spans, but
-    # without this the app->sidecar call carries no `traceparent`, so the sidecar's span ROOTS A NEW
-    # TRACE. That fresh id is stamped into the CloudEvent envelope and persisted as
-    # `ExecutionStartedEvent.ParentTraceContext`, so every activity, lineage event and notification
-    # downstream inherits the orphan: a severed subtree, not a missing span, presenting as a sampling
-    # problem rather than a missing instrumentor.
-    #
-    # BOTH VARIANTS, and installing one is worse than installing neither because it looks configured:
-    # `dapr.aio.clients.DaprClient` builds `grpc.aio` channels (publish, state, bindings, workflow
-    # schedule) while `dapr-ext-workflow`'s `DaprWorkflowClient` uses SYNC grpc, and the two
-    # instrumentors patch different symbols. Dapr accepts the W3C `traceparent` metadata OTel injects
-    # via its documented `grpc-trace-bin` fallback, so no app-side header plumbing is needed.
-    #
-    # `BaseInstrumentor` is a per-class singleton, so this is safe alongside `dapr.ext.workflow`'s own
-    # import-time `GrpcInstrumentorClient().instrument()`: the second call logs "already instrumented"
-    # and returns.
-    with suppress(ImportError):
-        from opentelemetry.instrumentation.grpc import GrpcAioInstrumentorClient, GrpcInstrumentorClient
-
-        GrpcAioInstrumentorClient().instrument(tracer_provider=tracer_provider)
-        GrpcInstrumentorClient().instrument(tracer_provider=tracer_provider)
-
-    # aiohttp — the transport behind EVERY actor call and EVERY authorization check. `ActorProxy`
-    # resolves to `DaprActorHttpClient`, and `ActorProxyFactory` exposes no headers_callback, so there
-    # is no app-side hook to add context by hand; the `openfga_sdk` rides the same library, which is
-    # why the authz hot path had no span, no metric and no latency anywhere.
+    # aiohttp — the transport behind EVERY authorization check. The `openfga_sdk` rides it, with no app-side hook to add
+    # context by hand, which is why the authz hot path had no span, no metric and no latency anywhere.
     with suppress(ImportError):
         from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 

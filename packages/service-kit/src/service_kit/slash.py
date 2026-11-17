@@ -1,9 +1,8 @@
 """Trailing-slash tolerance without redirects.
 
-Dapr service invocation strips a request's trailing slash, so a call to
-`/api/v1/batches/` reaches the service as `/api/v1/batches`. FastAPI's default
-`redirect_slashes` would answer that with a 307 whose absolute `Location` leaks
-the service's in-pod address. Instead we resolve the slash variant in-process:
+A caller may reach a route with or without its trailing slash. FastAPI's default
+`redirect_slashes` would answer the other spelling with a 307 whose absolute `Location`
+leaks the service's in-pod address. Instead we resolve the slash variant in-process:
 if the incoming path matches no route but the toggled variant does, rewrite the
 ASGI scope path and continue — no redirect, no leak.
 """

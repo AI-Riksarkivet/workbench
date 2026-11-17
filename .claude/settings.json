@@ -23,7 +23,6 @@
     "gsap@ra-skills": true,
     "architecture-diagram@ra-skills": true,
     "svelte-flow@ra-skills": true,
-    "dapr-skills@diagrid-labs": true,
     "mattpocock-skills@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
@@ -61,12 +60,6 @@
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
-      }
-    },
-    "diagrid-labs": {
-      "source": {
-        "source": "github",
-        "repo": "diagrid-labs/dapr-skills"
       }
     }
   }

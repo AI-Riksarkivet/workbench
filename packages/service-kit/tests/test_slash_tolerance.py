@@ -27,7 +27,7 @@ def _client() -> tuple[TestClient, str]:
 
 def test_missing_trailing_slash_served_not_redirected() -> None:
     c, p = _client()
-    # Dapr drops the slash: <prefix>/items arrives though canonical is /items/
+    # The slash left off: <prefix>/items arrives though canonical is /items/
     resp = c.get(f"{p}/items")
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"ok": "items"}

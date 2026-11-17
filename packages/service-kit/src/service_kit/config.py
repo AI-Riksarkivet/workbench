@@ -68,9 +68,3 @@ class Settings(BaseSettings):
     # endpoint configured by OTEL_EXPORTER_OTLP_ENDPOINT. Also auto-enabled when
     # that env var is present, even if this flag is false.
     otel_enabled: bool = Field(default=False, alias="WORKBENCH_OTEL_ENABLED")
-
-    # Whether a Dapr sidecar runs beside the app; a service reads it to fail closed on an
-    # unset app token (`assert_app_token_configured`). DAPR_HTTP_PORT is set by the
-    # Dapr sidecar injector in-cluster.
-    dapr_enabled: bool = Field(default=False, alias="WORKBENCH_DAPR_ENABLED")
-    dapr_http_port: str = Field(default="3500", alias="DAPR_HTTP_PORT")

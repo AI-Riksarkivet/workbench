@@ -124,7 +124,7 @@ def test_authorization_without_authentication_is_refused_at_construction(monkeyp
 # stamped `client_kit.media.deps.get_author`'s value as the reviewer, so any caller could sign
 # another person's name onto annotation provenance by setting a header. The independent re-audit
 # (2026-08-28) confirmed it live at HEAD and noted the sharp part: the gateway's spoofable-header
-# strip covers `dapr-*` and `x-forwarded-*` but not `x-user`, so the header sailed through the edge.
+# strip covered `x-forwarded-*` but not `x-user`, so the header sailed through the edge.
 
 
 def _author_dependency(route_fn: object) -> object:

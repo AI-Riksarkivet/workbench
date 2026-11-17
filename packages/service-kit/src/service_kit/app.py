@@ -99,12 +99,6 @@ def build_settings() -> Settings:
     return Settings.model_validate({})
 
 
-# NO DAPR CLIENT IS BUILT HERE. Every service that publishes constructs its own client in its own
-# lifespan (catalog, lineage, maintenance), and the `make_service_app`
-# services never touch `app.state.dapr`. A client wired into the app factory would be a shared seam no
-# caller wants, and one that looks available is the one the next service reaches for.
-
-
 def default_lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     """Minimal lifespan for stateless services: expose `settings` on `app.state`.
 
@@ -261,7 +255,7 @@ def make_service_app(
     if proxy_router is not None:
         app.include_router(proxy_router)
 
-    # Dapr drops trailing slashes; resolve the variant in-process instead of a
+    # Resolve the other trailing-slash spelling in-process instead of a
     # 307 redirect that would leak the service's in-pod address (see slash.py).
     app.router.redirect_slashes = False
     app.add_middleware(SlashToleranceMiddleware, routes_provider=lambda: app.router.routes)

@@ -35,9 +35,8 @@ def _app(settings: FlowsSettings) -> FastAPI:
     app.include_router(routes.router, prefix="/api")
     app.state.flows_settings = settings
     app.state.http = httpx.AsyncClient()
-    app.state.runs = {}
-    app.state.workflow_scheduler = None
-    app.state.workflow_reader = None
+    app.state.run_store = None
+    app.state.run_runner = None
     return app
 
 

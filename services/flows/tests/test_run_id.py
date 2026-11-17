@@ -1,8 +1,8 @@
 """`run_id_for` must be INJECTIVE, because the id it derives is three things at once.
 
-The run id is the Dapr workflow INSTANCE id, the dedupe key, and the URL of a readable resource
+The run id is the run row's key, the dedupe key, and the URL of a readable resource
 (`GET /flows/runs/{run_id}`). A collision is therefore not a hash curiosity: two callers land on one
-workflow instance, one caller's POST is answered as a duplicate of the other's, and either can read
+run, one caller's POST is answered as a duplicate of the other's, and either can read
 the other's node outputs and error text at a URL they now share.
 
 The shipped derivation was `uuid5(NS, f"{subject}-flows-{key}")`, and a printable separator cannot
@@ -22,7 +22,7 @@ COLLIDING_PAIR = (("alice", "b-flows-c"), ("alice-flows-b", "c"))
 def test_distinct_pairs_never_share_a_run_id() -> None:
     """The regression: the delimiter must not be forgeable out of the fields it separates."""
     first, second = COLLIDING_PAIR
-    assert run_id_for("p1", *first) != run_id_for("p1", *second), "two callers derive one workflow instance id — the cross-tenant collision"
+    assert run_id_for("p1", *first) != run_id_for("p1", *second), "two callers derive one run id — the cross-tenant collision"
 
 
 def test_the_subject_still_scopes_the_key() -> None:

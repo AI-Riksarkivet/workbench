@@ -1,9 +1,8 @@
 /**
  * A secret reaches a zone as a MOUNTED FILE, re-read per call — never through the environment.
  *
- * [[XC-001]], [[LH-160]]. The estate's rule is the owner's, verbatim: "Never secret through envs.
- * Either from ESO, secret store dapr and STS for zero trust." A web zone has no Dapr sidecar, so its
- * sanctioned path is an ESO-managed Secret taken as a file. Measured 2026-09-20, the render carries 30
+ * [[XC-001]], [[LH-160]]. The estate's rule is the owner's: never a secret through the environment. A
+ * web zone's sanctioned path is an ESO-managed Secret taken as a file. Measured 2026-09-20, the render carries 30
  * `secretKeyRef` env entries and 21 of them are these seven zones — 70% of the whole violation, all
  * flowing through one shared module.
  *

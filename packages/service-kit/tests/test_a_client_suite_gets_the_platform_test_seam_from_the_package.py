@@ -1,8 +1,7 @@
 """[[XC-190]] A client's suite gets the platform's test seam from `service-kit` alone, with no conftest of this repository.
 
-A client pins `service-kit` by lakehouse tag, and its suite runs in its own repository. The state the platform keeps
-across a process (Dapr's sidecar handshake and actor-proxy factory) and the respx default the
-estate's suites rely on therefore have to arrive with the package, as a pytest plugin, rather than from this
+A client pins `service-kit` by lakehouse tag, and its suite runs in its own repository. The respx default the
+estate's suites rely on therefore has to arrive with the package, as a pytest plugin, rather than from this
 repository's root `conftest.py`, which no client has. So the suite below runs in a directory outside this repository,
 where no conftest of ours reaches it, and is answered by the plugin alone.
 """
@@ -19,11 +18,6 @@ from pathlib import Path
 #: A client's suite, one test per seam the plugin provides.
 _CLIENT_SUITE = """
 import respx
-from dapr.conf import settings as dapr_settings
-
-
-def test_the_sidecar_handshake_is_bounded():
-    assert dapr_settings.DAPR_HEALTH_TIMEOUT == 1.0
 
 
 @respx.mock
@@ -60,7 +54,6 @@ def test_a_suite_outside_the_repository_is_served_the_seam_by_the_installed_pack
         for case in ET.parse(report).getroot().iter("testcase")  # noqa: S314 -- the report is the child pytest's own, written just now
     }
     assert outcomes == {
-        "test_the_sidecar_handshake_is_bounded": "passed",
         "test_a_route_nobody_calls_fails_the_test": "failure",
         "test_a_route_registered_to_prove_it_is_not_called_may_stay_uncalled": "passed",
     }, f"the client suite ran:\n{run.stdout}"

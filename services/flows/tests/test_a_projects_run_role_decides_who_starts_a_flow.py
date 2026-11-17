@@ -47,7 +47,9 @@ def outbound(oidc_provider: Provider) -> Iterator[respx.MockRouter]:
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider, openfga_store: OpenFgaStore, outbound: respx.MockRouter) -> Iterator[TestClient]:
+def client(
+    monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider, openfga_store: OpenFgaStore, outbound: respx.MockRouter, flows_state: object
+) -> Iterator[TestClient]:
     for name, value in {
         "WORKBENCH_OIDC_ENABLED": "true",
         "WORKBENCH_OIDC_ISSUER": oidc_provider.issuer,
@@ -83,7 +85,7 @@ def test_the_run_role_starts_a_flow_and_a_viewer_is_refused(client: TestClient, 
 
     started, refused = _start(client, fay, "p1"), _start(client, gus, "p1")
 
-    assert started[0] == 200, started
+    assert started[0] == 202, started
     assert refused == (403, refused[1])
     assert refused[1]["detail"] == "'keycloak~gus' lacks 'can_run_flow' on 'project:p1'"
 
@@ -91,7 +93,7 @@ def test_the_run_role_starts_a_flow_and_a_viewer_is_refused(client: TestClient, 
 def test_a_run_is_read_by_its_projects_read_role_and_by_no_other_project(client: TestClient, oidc_provider: Provider) -> None:
     fay, gus, mallory = (_Person(oidc_provider, name) for name in ("fay", "gus", "mallory"))
     status, run = _start(client, fay, "p1")
-    assert status == 200, run
+    assert status == 202, run
     in_p1, in_p2 = f"/api/flows/projects/p1/runs/{run['run_id']}", f"/api/flows/projects/p2/runs/{run['run_id']}"
 
     by_viewer = client.get(in_p1, headers=gus.headers("GET", in_p1))

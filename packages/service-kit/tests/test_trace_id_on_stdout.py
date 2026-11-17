@@ -70,14 +70,21 @@ def stdout_lines() -> Iterator[io.StringIO]:
 
 @pytest.fixture
 def instrumented() -> Iterator[None]:
-    """`LoggingInstrumentor` active, as `setup_otel` leaves it in a live service."""
+    """`LoggingInstrumentor` active, as `setup_otel` leaves it in a live service.
+
+    Its trace-context injection only: the OTLP handler it would also attach binds to whatever logger provider the
+    process holds, and after `test_otel.py` shut its provider down in this process that handler answers every record
+    with a second line, `Shutdown called, ignoring Log.` (measured: `test_otel.py` then
+    `test_a_record_carrying_NOTHING_extra_gains_no_trailing_noise` in one process failed it). These tests read the
+    stdout line, which that handler never writes.
+    """
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
 
     instrumentor = LoggingInstrumentor()
     already = instrumentor.is_instrumented_by_opentelemetry
     if already:
         instrumentor.uninstrument()
-    instrumentor.instrument(inject_trace_context=True)
+    instrumentor.instrument(inject_trace_context=True, enable_log_auto_instrumentation=False)
     try:
         yield
     finally:

@@ -1,4 +1,4 @@
-"""Node dispatch and the inline executor. The Serve boundary is mocked at the TRANSPORT (respx),
+"""Node dispatch: executing one step. The Serve boundary is mocked at the TRANSPORT (respx),
 so every assertion is about the request that would actually reach the cluster."""
 
 import tempfile
@@ -9,8 +9,8 @@ import httpx
 import pytest
 import respx
 
-from flows.executor import _MISSING, _REGEX_MAX_SUBJECT, NodeError, alto_lines, compare_texts, dispatch, execute, pick_path, run_node
-from flows.models import MAX_PAYLOAD_CHARS, FlowEdge, FlowGraph, FlowNode, NodeJob, NodeResult, NodeRunState, Payload
+from flows.executor import _MISSING, _REGEX_MAX_SUBJECT, NodeError, alto_lines, compare_texts, dispatch, pick_path, run_node
+from flows.models import MAX_PAYLOAD_CHARS, FlowNode, NodeJob, NodeResult, NodeRunState, Payload
 
 
 SERVE = "http://serve.test:8000"
@@ -33,6 +33,10 @@ ALTO = """<?xml version="1.0"?>
 @pytest.fixture
 def client():
     return httpx.AsyncClient()
+
+
+def _model_job(app: str) -> NodeJob:
+    return NodeJob(node=FlowNode(id="m", kind="model", config={"app": app}), inputs=["seed"], serve_url=SERVE, serve_token_file=TOKEN_FILE)
 
 
 # ---- alto extraction -------------------------------------------------------------------------
@@ -143,6 +147,28 @@ async def test_an_unreachable_serve_names_the_configured_address_not_the_resolve
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_a_transient_serve_failure_is_retried_with_one_key_and_a_refusal_is_not(waits: list[float]) -> None:
+    """A dropped connection, a 502/503/504 or a 429 is Serve not answering YET: the call is made again, up to
+    `SERVE_ATTEMPTS`, after 2 s and then twice as long each time, or after the 429's Retry-After, with the same
+    Idempotency-Key on every attempt. A 4xx is Serve refusing the request, which no retry changes."""
+    flaky = respx.post(f"{SERVE}/flaky").mock(
+        side_effect=[httpx.ConnectError("reset"), httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, text="read")]
+    )
+    refused = respx.post(f"{SERVE}/refuses").mock(return_value=httpx.Response(400))
+
+    async with httpx.AsyncClient() as client:
+        answered = await run_node(_model_job("flaky"), client=client, idempotency_key="run-1:m")
+        failed = await run_node(_model_job("refuses"), client=client, idempotency_key="run-1:r")
+
+    assert (answered.state.status, answered.payload_text) == ("succeeded", "read")
+    assert [call.request.headers["idempotency-key"] for call in flaky.calls] == ["run-1:m"] * 3
+    assert waits == [2.0, 7.0]
+    assert failed.state.status == "failed"
+    assert refused.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_inspect_node_concatenates_its_upstreams_in_edge_order(client: httpx.AsyncClient) -> None:
     async with client:
         out = await dispatch(
@@ -156,83 +182,11 @@ async def test_inspect_node_concatenates_its_upstreams_in_edge_order(client: htt
     assert out.text == "first\nsecond"
 
 
-# ---- whole-graph execution -------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_execute_runs_a_text_model_alto_chain() -> None:
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
-    graph = FlowGraph(
-        nodes=[
-            FlowNode(id="t", kind="text"),
-            FlowNode(id="m", kind="model", config={"app": "htrflow"}),
-            FlowNode(id="a", kind="alto"),
-        ],
-        edges=[FlowEdge(source="t", target="m"), FlowEdge(source="m", target="a")],
-    )
-
-    async with httpx.AsyncClient() as client:
-        state = await execute(graph, {"t": "seed"}, "run-1", client=client, serve_url=SERVE, serve_token_file=TOKEN_FILE)
-
-    assert state.status == "succeeded"
-    assert state.nodes["a"].output_text == "Anno 1723\nBengt & Anna"
-    assert all(n.ms is not None for n in state.nodes.values())
-
-
-@pytest.mark.asyncio
-async def test_execute_refuses_a_cycle_without_running_anything() -> None:
-    graph = FlowGraph(
-        nodes=[FlowNode(id="a", kind="text"), FlowNode(id="b", kind="inspect")],
-        edges=[FlowEdge(source="a", target="b"), FlowEdge(source="b", target="a")],
-    )
-    async with httpx.AsyncClient() as client:
-        state = await execute(graph, {}, "run-3", client=client, serve_url=SERVE, serve_token_file=TOKEN_FILE)
-    assert state.status == "failed"
-    assert state.error == "graph has a cycle"
-    assert state.nodes == {}
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_a_downstream_node_receives_the_full_payload_not_the_display_truncation() -> None:
-    """`NodeRunState.output_text` is capped for display at 4 000 characters; the payload the graph
-    carries is not bounded by THAT — its own ceiling is two orders of magnitude higher (see
-    `test_a_payload_past_its_own_ceiling_is_cut_loudly`). Feeding the display copy downstream would
-    hand an alto node a document cut mid-element."""
-    long_alto = "<TextLine>" + "".join(f'<String CONTENT="w{i}"/>' for i in range(1200)) + "</TextLine>"
-    assert len(long_alto) > 4000
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=long_alto))
-    graph = FlowGraph(
-        nodes=[
-            FlowNode(id="t", kind="text"),
-            FlowNode(id="m", kind="model", config={"app": "htrflow"}),
-            FlowNode(id="a", kind="alto"),
-        ],
-        edges=[FlowEdge(source="t", target="m"), FlowEdge(source="m", target="a")],
-    )
-
-    async with httpx.AsyncClient() as client:
-        state = await execute(graph, {"t": "x"}, "run-4", client=client, serve_url=SERVE, serve_token_file=TOKEN_FILE)
-
-    assert state.status == "succeeded"
-    assert len(state.nodes["m"].output_text or "") == 4000  # display cap held on the model node
-
-    # 4000 characters of that XML covers roughly the first 170 `<String>` elements, so a `w500` in the
-    # alto node's text is only possible if it was fed the UNCAPPED payload. Asserting the last word
-    # instead would be asserting the wrong thing: the alto node's own output_text is capped too (it
-    # ends at w821), which is display truncation working, not the payload being short.
-    words = (state.nodes["a"].output_text or "").split()
-    assert "w500" in words
-    assert len(state.nodes["a"].output_text or "") == 4000
-
-
 @pytest.mark.asyncio
 @respx.mock
 async def test_a_payload_past_its_own_ceiling_is_cut_loudly() -> None:
-    """The value `run_node` returns is the DURABLE one: it lands in the workflow history as this
-    activity's output and again as the input of every dependent node, so an unbounded payload costs
-    O(dependents) writes to the state store.
+    """The value `run_node` returns is the one a run stores as the step's payload and reads back as the input of
+    every dependent node, so an unbounded payload is an unbounded row.
 
     Two properties, and the second is what makes the first acceptable: the payload stops at
     `MAX_PAYLOAD_CHARS` (so it also still fits `_REGEX_MAX_SUBJECT`, the other bound a payload meets
@@ -270,14 +224,10 @@ async def test_a_payload_under_the_ceiling_is_untouched() -> None:
     assert result.payload_text == body
 
 
-def test_the_cap_survives_a_workflow_replay_unchanged() -> None:
-    """REPLAY HYGIENE, which is what makes a truncating validator safe to put on a durable contract.
-
-    `workflow.flow_run_workflow` re-validates every activity result out of the history
-    (`NodeResult.model_validate(raw)`) on every replay, and hands `payload_text` on as the next
-    node's input — where it is validated again. A cap that cut a second time would make one history
-    yield a different payload on each replay (and compound the marker), which is the non-determinism
-    the workflow's own docstring bans. Idempotent, so it does not.
+def test_the_cap_survives_being_read_back_unchanged() -> None:
+    """A stored step outcome is validated again each time a driver reads it back (`flows.store`) and hands
+    `payload_text` on as the next node's input. A cap that cut a second time would make one stored payload read
+    differently on each re-drive (and compound the marker). Idempotent, so it does not.
     """
     once = NodeResult(state=NodeRunState(status="succeeded"), payload_text="y" * (MAX_PAYLOAD_CHARS * 2))
     twice = NodeResult.model_validate(once.model_dump())
@@ -468,8 +418,7 @@ async def test_a_pattern_that_compiles_but_FAILS_TO_APPLY_is_a_node_failure(clie
     `_regex` wrapped only the compile. A replacement string is expanded when the pattern is APPLIED,
     so `re.compile(r"(a)").sub(r"\\9", "aaa")` raises `re.error: invalid group reference 9` from a
     line that sat outside the try. `re.error` is not a `NodeError`, so `run_node`'s boundary did not
-    catch it either: it propagated out of the activity, the durable lane burned three NODE_RETRY
-    attempts on input no retry can fix, and the orchestration went FAILED with no node states — the
+    catch it either: it propagated out of the step, and the run stopped with no outcome for that node — the
     builder sees a dead run and cannot tell which node killed it.
 
     Before the fix this test failed rather than erroring usefully: `pytest.raises(NodeError)` does not
@@ -487,8 +436,8 @@ async def test_a_node_that_raises_ANYTHING_fails_as_state_not_as_a_raise(client:
     enforced that only for the failures somebody remembered to convert.
 
     The specific leak found was `re.error`, fixed at source above. This is the general guard, so the
-    next unconverted exception degrades one node instead of killing the run: the durable lane retries
-    a raise three times and then fails the whole orchestration with no node states.
+    next unconverted exception degrades one node instead of killing the run: a raise would stop the driver with no
+    outcome for the step, and every re-drive would execute it again.
     """
     from flows import executor
 

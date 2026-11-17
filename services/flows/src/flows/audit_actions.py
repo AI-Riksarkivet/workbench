@@ -15,4 +15,4 @@ class FlowsAuditAction(StrEnum):
     FLOWS_RUN = "flows_run"
     FLOWS_INFER = "flows_infer"
     FLOWS_RUN_READ = "flows_run_read"
-    FLOWS_RUN_TERMINATE = "flows_run_terminate"
+    FLOWS_RUN_CANCEL = "flows_run_cancel"

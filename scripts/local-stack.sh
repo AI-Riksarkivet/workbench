@@ -24,15 +24,16 @@
 #   MEDIA_DEFAULT_DATASET  the dataset an item naming none is sent from (default: `lake~demo$corpus`)
 #   EDGE_PORT           the origin the browser uses (default 8700); serve.ts listens on EDGE_PORT + 1000
 #   VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT   the services' own ports (8701, 8702, 8703, 8704)
-#   STATE_PORT          the annotator's PostgreSQL (default 8705), the pinned server `make postgres` exports
+#   STATE_PORT          the pinned PostgreSQL `make postgres` exports (default 8705), holding the annotator's database
+#                       (`annotator`) and flows' (`flows`), one database per service
 #   STATE_DIR           its data directory (default: the catalog directory's sibling `<catalog>-state`), kept between
-#                       runs, so projects and tasks survive a restart of the stack
+#                       runs, so projects, tasks and flow runs survive a restart of the stack
 #
 # Every port is checked before anything starts: one that something already listens on is refused, by name.
 #
-# The person is anonymous and administers the one local organisation (`annotator.api.v1.endpoints.me`). No sidecar
-# runs, so flows runs its pipelines inline (`flows.lifespan`). No embedder runs either: full-text search works,
-# semantic search does not.
+# The person is anonymous and administers the one local organisation (`annotator.api.v1.endpoints.me`). Flows keeps
+# its runs in its own database on the same server and drives them itself (`flows.runner`). No embedder runs: full-text
+# search works, semantic search does not.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -156,15 +157,30 @@ run() {  # run <name> <command...>
   NAMES[$!]=$name
 }
 
-# Stop every child's process group and wait until each is gone (10 s, then KILL), so the ports are free when this
-# returns: `wait` alone returns at once when a trap interrupted a `wait -n`.
+# Stop every child's process group and wait until each is gone, so the ports are free when this returns: `wait` alone
+# returns at once when a trap interrupted a `wait -n`.
 stop() {
   set +m  # no job notices while the children end
-  # PostgreSQL takes INT as a fast shutdown (sessions ended, a clean checkpoint); TERM would wait for every client.
+  # The services first, the database they write to last: a service ending gracefully writes on its way out (flows gives
+  # back the run attempts its shutdown cut short and releases their leases), which a database already stopped refuses.
+  stop_children services
+  stop_children state
+}
+
+# stop_children services|state: signal those children's process groups and wait until each is gone (10 s, then KILL).
+# PostgreSQL takes INT as a fast shutdown (sessions ended, a clean checkpoint); TERM would wait for every client.
+stop_children() {
+  local pid pids=()
   for pid in "${!NAMES[@]}"; do
-    if [ "${NAMES[$pid]}" = state ]; then kill -INT -- "-$pid" 2>/dev/null || true; else kill -TERM -- "-$pid" 2>/dev/null || true; fi
+    if [ "$1" = state ] && [ "${NAMES[$pid]}" = state ]; then
+      kill -INT -- "-$pid" 2>/dev/null || true
+      pids+=("$pid")
+    elif [ "$1" = services ] && [ "${NAMES[$pid]}" != state ]; then
+      kill -TERM -- "-$pid" 2>/dev/null || true
+      pids+=("$pid")
+    fi
   done
-  for pid in "${!NAMES[@]}"; do
+  for pid in "${pids[@]}"; do
     for _ in $(seq 1 50); do
       kill -0 -- "-$pid" 2>/dev/null || break
       sleep 0.2
@@ -179,8 +195,9 @@ trap '[ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$PID_FILE"' EXIT
 
 cd "$ROOT"
 
-# The annotator's state: the pinned PostgreSQL on the loopback, trusting only the loopback, its data kept in STATE_DIR.
-# Started first and waited for, since the annotator refuses to start without the database it names.
+# The services' state: the pinned PostgreSQL on the loopback, trusting only the loopback, its data kept in STATE_DIR, with
+# one database per service. Started first and waited for, since the annotator and flows refuse to start without the
+# database each names.
 pg() { LD_LIBRARY_PATH="$POSTGRES_TREE/deps" "$POSTGRES_TREE/bin/$1" "${@:2}"; }
 if [ ! -f "$STATE_DIR/PG_VERSION" ]; then
   mkdir -p "$STATE_DIR"
@@ -193,16 +210,20 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 if ! pg pg_isready -q -h "$LOOPBACK" -p "$STATE_PORT" -U postgres; then
-  echo "the annotator's PostgreSQL did not start within 10 s; stopping" >&2
+  echo "the services' PostgreSQL did not start within 10 s; stopping" >&2
   trap - INT TERM
   stop
   exit 1
 fi
-if [ "$(pg psql -h "$LOOPBACK" -p "$STATE_PORT" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'annotator'")" != 1 ]; then
-  pg createdb -h "$LOOPBACK" -p "$STATE_PORT" -U postgres annotator
-fi
+for database in annotator flows; do
+  if [ "$(pg psql -h "$LOOPBACK" -p "$STATE_PORT" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$database'")" != 1 ]; then
+    pg createdb -h "$LOOPBACK" -p "$STATE_PORT" -U postgres "$database"
+  fi
+done
 export ANNOTATOR_STATE_HOST="$LOOPBACK" ANNOTATOR_STATE_PORT="$STATE_PORT" ANNOTATOR_STATE_DATABASE=annotator \
   ANNOTATOR_STATE_USER=postgres ANNOTATOR_STATE_SSLMODE=disable
+export WORKBENCH_FLOWS_STATE_HOST="$LOOPBACK" WORKBENCH_FLOWS_STATE_PORT="$STATE_PORT" WORKBENCH_FLOWS_STATE_DATABASE=flows \
+  WORKBENCH_FLOWS_STATE_USER=postgres WORKBENCH_FLOWS_STATE_SSLMODE=disable
 
 run viewer uv run --no-sync uvicorn viewer.main:app --host "$LOOPBACK" --port "$VIEWER_PORT"
 run search uv run --no-sync uvicorn search.main:app --host "$LOOPBACK" --port "$SEARCH_PORT"
