@@ -399,7 +399,7 @@
       },
       "AccessGrantRequest": {
         "additionalProperties": false,
-        "description": "Grant or revoke ONE base rung to a subject. ``user`` may be a bare id (``alice`` \u2192 ``user:alice``)\nor a fully-qualified userset (``role:<id>#assignee``); ``relation`` must\nbe a grantable base rung the compiled model defines on the type (owner/writer/reader/validator) \u2014 never\na derived ``can_*`` action nor the structural ``parent`` edge.",
+        "description": "Grant or revoke ONE base rung to a subject. ``user`` may be a bare id (``alice`` \u2192 ``user:alice``)\nor a fully-qualified userset (``role:<id>#assignee``); ``relation`` must\nbe a grantable base rung the compiled model defines on the type (owner/writer/reader/maintainer) \u2014 never\na derived ``can_*`` action nor the structural ``parent`` edge.",
         "properties": {
           "relation": {
             "title": "Relation",
@@ -2823,8 +2823,6 @@
               "warehouse_unprotected",
               "policy_set",
               "policy_deleted",
-              "gate_set",
-              "gate_deleted",
               "namespace_created",
               "namespace_dropped",
               "table_created",
@@ -2841,10 +2839,6 @@
               "namespace_undropped",
               "table_purged",
               "namespace_purged",
-              "table_published",
-              "promotion_held",
-              "promotion_rejected",
-              "promotion_expired",
               "table_branch_created",
               "table_branch_deleted",
               "table_tag_created",
@@ -2859,7 +2853,9 @@
               "table_labelled",
               "table_unlabelled",
               "namespace_labelled",
-              "namespace_unlabelled"
+              "namespace_unlabelled",
+              "table_contract_set",
+              "table_contract_deleted"
             ],
             "title": "Action",
             "type": "string"
@@ -2918,7 +2914,6 @@
               "policy",
               "namespace",
               "table",
-              "gate",
               "principal",
               "role",
               "label"
@@ -3176,6 +3171,60 @@
           "tasks"
         ],
         "title": "CompactionDue",
+        "type": "object"
+      },
+      "ContractResponse": {
+        "description": "The data contract a table holds (ADR 0212): the ODCS v3 document its owner set, or none.",
+        "properties": {
+          "contract": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract"
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set At"
+          },
+          "set_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set By"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "uuid": {
+            "title": "Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table",
+          "uuid"
+        ],
+        "title": "ContractResponse",
         "type": "object"
       },
       "CountTableRowsRequest": {
@@ -6961,7 +7010,7 @@
         "type": "object"
       },
       "EventsResponse": {
-        "description": "A poll response: control events strictly after the caller's cursor, the new head cursor, and a reset\nflag (``True`` when the client's cursor fell off the bounded buffer \u2192 the console should re-read all).",
+        "description": "A poll response: control events strictly after the caller's cursor, read off the control stream, the cursor after\nthem (the stream's sequence, the same on every replica), and a reset flag (``True`` when the stream no longer holds\nwhat came after the caller's cursor \u2192 the console should re-read all).",
         "properties": {
           "cursor": {
             "title": "Cursor",
@@ -7240,81 +7289,6 @@
           }
         },
         "title": "FtsQuery",
-        "type": "object"
-      },
-      "GateSpecRequest": {
-        "additionalProperties": false,
-        "description": "Declare one project's gate. The project comes from the gated PATH, never from here.\n\nOmitting ``project`` is the security half: a body-supplied project would let an admin of one\ntenant pass ``can_administer`` on their own project while rewriting somebody else's gate.\n\nField semantics live on ``lakehouse.gate_specs.GateSpec``, which is the model this\nvalidates into.",
-        "properties": {
-          "key_column": {
-            "default": "id",
-            "title": "Key Column",
-            "type": "string"
-          },
-          "required_columns": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Required Columns",
-            "type": "array"
-          },
-          "review_band": {
-            "default": 0.25,
-            "title": "Review Band",
-            "type": "number"
-          },
-          "review_enabled": {
-            "default": false,
-            "title": "Review Enabled",
-            "type": "boolean"
-          },
-          "review_hours": {
-            "default": 72.0,
-            "title": "Review Hours",
-            "type": "number"
-          }
-        },
-        "title": "GateSpecRequest",
-        "type": "object"
-      },
-      "GateSpecResponse": {
-        "properties": {
-          "key_column": {
-            "title": "Key Column",
-            "type": "string"
-          },
-          "project": {
-            "title": "Project",
-            "type": "string"
-          },
-          "required_columns": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Required Columns",
-            "type": "array"
-          },
-          "review_band": {
-            "title": "Review Band",
-            "type": "number"
-          },
-          "review_enabled": {
-            "title": "Review Enabled",
-            "type": "boolean"
-          },
-          "review_hours": {
-            "title": "Review Hours",
-            "type": "number"
-          }
-        },
-        "required": [
-          "project",
-          "key_column",
-          "review_band",
-          "review_enabled",
-          "review_hours"
-        ],
-        "title": "GateSpecResponse",
         "type": "object"
       },
       "GcPreview": {
@@ -10093,6 +10067,17 @@
             ],
             "title": "Outcome",
             "type": "string"
+          },
+          "versions_guarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Versions Guarded"
           }
         },
         "required": [
@@ -10250,199 +10235,6 @@
         "title": "ProjectWarehouse",
         "type": "object"
       },
-      "PromotionDecision": {
-        "description": "What a decision did: the closed hold, what readers of `published` now read, and main's restore.",
-        "properties": {
-          "hold": {
-            "$ref": "#/components/schemas/PromotionHold"
-          },
-          "published_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Published Version"
-          },
-          "restored_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Restored Version"
-          }
-        },
-        "required": [
-          "hold",
-          "published_version"
-        ],
-        "title": "PromotionDecision",
-        "type": "object"
-      },
-      "PromotionDecisionRequest": {
-        "additionalProperties": false,
-        "description": "The held version being decided. A decision lands only on the hold its decider reviewed.",
-        "properties": {
-          "version": {
-            "minimum": 1.0,
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "version"
-        ],
-        "title": "PromotionDecisionRequest",
-        "type": "object"
-      },
-      "PromotionHold": {
-        "description": "A version the project's quality gate holds for a `can_promote` holder, or the last decision on one.",
-        "properties": {
-          "decided_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Decided At"
-          },
-          "decided_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Decided By"
-          },
-          "expires_at": {
-            "format": "date-time",
-            "title": "Expires At",
-            "type": "string"
-          },
-          "opened_at": {
-            "format": "date-time",
-            "title": "Opened At",
-            "type": "string"
-          },
-          "published_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Published Version"
-          },
-          "reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Reasons",
-            "type": "array"
-          },
-          "requested_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Requested By"
-          },
-          "restored_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Restored Version"
-          },
-          "state": {
-            "default": "open",
-            "enum": [
-              "open",
-              "approved",
-              "rejected",
-              "expired",
-              "superseded"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "table": {
-            "title": "Table",
-            "type": "string"
-          },
-          "uuid": {
-            "title": "Uuid",
-            "type": "string"
-          },
-          "version": {
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "table",
-          "uuid",
-          "version",
-          "published_version",
-          "reasons",
-          "opened_at",
-          "expires_at"
-        ],
-        "title": "PromotionHold",
-        "type": "object"
-      },
-      "PromotionsListResponse": {
-        "description": "The open holds the caller may see, the soonest the sweep expires first.",
-        "properties": {
-          "holds": {
-            "items": {
-              "$ref": "#/components/schemas/PromotionHold"
-            },
-            "title": "Holds",
-            "type": "array"
-          },
-          "page_token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Page Token"
-          }
-        },
-        "required": [
-          "holds"
-        ],
-        "title": "PromotionsListResponse",
-        "type": "object"
-      },
       "ProtectionResponse": {
         "properties": {
           "id": {
@@ -10470,129 +10262,6 @@
           "protected"
         ],
         "title": "ProtectionResponse",
-        "type": "object"
-      },
-      "PublishRequest": {
-        "additionalProperties": false,
-        "description": "Ask the catalog to gate a committed version and, if it passes, publish it.\n\n`version` is explicit rather than \"whatever is latest\": between a writer's commit and its publish\ncall another writer may have committed, and publishing a version nobody gated is the failure the\ngate exists to prevent. The caller names what it wrote.",
-        "properties": {
-          "accept_assertions": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Accept Assertions",
-            "type": "array"
-          },
-          "gate_only": {
-            "default": false,
-            "title": "Gate Only",
-            "type": "boolean"
-          },
-          "key_column": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Key Column",
-            "type": "string"
-          },
-          "originator": {
-            "default": "",
-            "maxLength": 256,
-            "title": "Originator",
-            "type": "string"
-          },
-          "required_columns": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Required Columns",
-            "type": "array"
-          },
-          "version": {
-            "minimum": 1.0,
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "version",
-          "key_column"
-        ],
-        "title": "PublishRequest",
-        "type": "object"
-      },
-      "PublishResult": {
-        "description": "The outcome, and the RANGE a notification should carry (\u00a7 D2 D-R3).\n\n`published=False` is a normal answer, not an error: the gate refused, the pointer did not move,\nand the previously published version keeps serving. `assertions` come back either way so a\nblocked batch is auditable without re-running anything.",
-        "properties": {
-          "assertions": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Assertions",
-            "type": "array"
-          },
-          "from_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "From Version"
-          },
-          "gate_source": {
-            "default": "request",
-            "title": "Gate Source",
-            "type": "string"
-          },
-          "held": {
-            "default": false,
-            "title": "Held",
-            "type": "boolean"
-          },
-          "hold": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PromotionHold"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "published": {
-            "title": "Published",
-            "type": "boolean"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "table": {
-            "title": "Table",
-            "type": "string"
-          },
-          "to_version": {
-            "title": "To Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "table",
-          "published",
-          "from_version",
-          "to_version"
-        ],
-        "title": "PublishResult",
         "type": "object"
       },
       "QueryTableRequest": {
@@ -13387,7 +13056,7 @@
     },
     "/management/v1/access/principals/{principal}": {
       "delete": {
-        "description": "Offboard one principal: revoke every tuple naming it, record it deleted, announce ``principal_deleted`` ([[LH-233]]).\n\nA grant is a tuple naming the principal on an object of any type, written by whichever door made it, so the door\nreads them type by type rather than trusting any one door's list. It never strands an administration: a principal\nholding the only direct ``admin`` of a project, or the last assignee of a role that is, is refused before anything\nis revoked (:func:`subject_tuples.refuse_stranding`), and each project ``admin`` and role assignment goes through the\nstore-arbitrated revoke its own door uses, which refuses again should another change strand the project meanwhile;\nwhat was revoked before that stays revoked, and calling the door again finishes. The estate admin cannot offboard themselves, since the rung this door asks would go with\nthem, and a principal whose grants git declares is refused (:func:`_refuse_a_principal_git_declares`). Re-running the door\nrevokes whatever was granted since, keeps the first deletion's record and announces again. The announcement is filed\nbefore the revoke and sent once the deletion is recorded, so a door failing after the record still announces it\n([[LH-576]]). ``revoked`` counts the tuples this call removed.",
+        "description": "Offboard one principal: revoke every tuple naming it, record it deleted, announce ``principal_deleted`` ([[LH-233]]).\n\nA grant is a tuple naming the principal on an object of any type, written by whichever door made it, so the door\nreads them type by type rather than trusting any one door's list. It never strands an administration: a principal\nwho is the last person a project's ``admin`` reaches, directly or through its roles, is refused before anything\nis revoked (:func:`subject_tuples.refuse_stranding`), and each project ``admin`` and role assignment goes through the\nstore-arbitrated removal its own door uses, which refuses again should another change strand the project meanwhile;\nwhat was revoked before that stays revoked, and calling the door again finishes. The estate admin cannot offboard themselves, since the rung this door asks would go with\nthem, and a principal whose grants git declares is refused (:func:`_refuse_a_principal_git_declares`). Re-running the door\nrevokes whatever was granted since, keeps the first deletion's record and announces again. The announcement is filed\nbefore the revoke and sent once the deletion is recorded, so a door failing after the record still announces it\n([[LH-576]]). ``revoked`` counts the tuples this call removed.",
         "operationId": "delete_principal_management_v1_access_principals__principal__delete",
         "parameters": [
           {
@@ -14629,7 +14298,7 @@
     },
     "/management/v1/events": {
       "get": {
-        "description": "Return control-plane change-events after ``since`` for a platform (estate) administrator.\n\nFail-closed via FGA: a non-estate-admin gets 403, an OpenFGA outage 503, and the gate is a no-op only\nwhen FGA is off (parity with every other ``require_*`` site). The ring buffer is per-replica + in-memory,\nso ``cursor`` is a per-replica monotonic counter and ``reset`` means the client missed the buffer window\n(scaling the catalog past one replica needs session affinity or a shared buffer \u2014 see\ndocs/adr/0028-control-events-per-replica-cursor-boundary.md).",
+        "description": "Return control-plane change-events after ``since`` for a platform (estate) administrator.\n\nFail-closed via FGA: a non-estate-admin gets 403, an OpenFGA outage 503, and the gate is a no-op only\nwhen FGA is off (parity with every other ``require_*`` site). A bus this process cannot read answers 503.",
         "operationId": "poll_control_events_management_v1_events_get",
         "parameters": [
           {
@@ -16435,226 +16104,6 @@
         ]
       }
     },
-    "/management/v1/project/{id}/gate/delete": {
-      "post": {
-        "description": "Stop overriding \u2014 the chart's settings govern again. Never writes zeros; see the module note.",
-        "operationId": "delete_gate_management_v1_project__id__gate_delete_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "boolean"
-                  },
-                  "title": "Response Delete Gate Management V1 Project  Id  Gate Delete Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Delete Gate",
-        "tags": [
-          "gate"
-        ]
-      }
-    },
-    "/management/v1/project/{id}/gate/describe": {
-      "post": {
-        "description": "This project's declared gate, or ``null`` when the chart's settings still govern.\n\n``null`` rather than a populated default: a caller must be able to tell \"nothing is declared\" \u2014\nwhere a `helm upgrade` is still the only lever \u2014 from \"declared, and these are the values\". A declaration that cannot\nbe read is neither, so it is refused as the publish refuses it ([[LH-572]]).",
-        "operationId": "describe_gate_management_v1_project__id__gate_describe_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/GateSpecResponse"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Response Describe Gate Management V1 Project  Id  Gate Describe Post"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Describe Gate",
-        "tags": [
-          "gate"
-        ]
-      }
-    },
-    "/management/v1/project/{id}/gate/set": {
-      "post": {
-        "description": "Declare (or re-declare) this project's gate settings \u2014 admin-gated; idempotent.",
-        "operationId": "set_gate_management_v1_project__id__gate_set_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GateSpecRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GateSpecResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Set Gate",
-        "tags": [
-          "gate"
-        ]
-      }
-    },
     "/management/v1/project/{id}/policy/delete": {
       "post": {
         "description": "Remove the project's maintenance policy (idempotent) \u2014 admin-gated.",
@@ -17824,7 +17273,7 @@
     },
     "/management/v1/projects/{project_id}/members": {
       "delete": {
-        "description": "Revoke one tenant rung \u2014 gated identically to granting it.\n\nREFUSES the last ``admin``. Removing it leaves a tenant nobody inside can administer, grant on, or\ndelete \u2014 recoverable only by estate intervention, which is exactly the state the API exists to\navoid. Named rather than discovered later.\n\nRevoking a rung that is not there is a no-op, not a 404: the caller asked for a state and that\nstate already holds.",
+        "description": "Revoke one tenant rung \u2014 gated identically to granting it.\n\nREFUSES the last administrator: an ``admin`` after whose removal the project's ``admin`` tuples reach no\nperson, directly or through a role (:func:`project_admins.withdraw`). That leaves a tenant nobody inside can\nadminister, grant on, or delete \u2014 recoverable only by estate intervention, which is exactly the state the API\nexists to avoid. Named rather than discovered later.\n\nRevoking a rung that is not there is a no-op, not a 404: the caller asked for a state and that\nstate already holds.",
         "operationId": "revoke_member_management_v1_projects__project_id__members_delete",
         "parameters": [
           {
@@ -17968,7 +17417,7 @@
         ]
       },
       "put": {
-        "description": "Grant one tenant rung to one subject \u2014 gated PER RUNG (``can_grant_admin`` / ``can_grant_member``).\n\nA role is granted only on its own project: one another project owns is refused 400 (code 13), as every grant door\nrefuses it (:func:`fga_deps.refuse_a_cross_tenant_role_grant`), since that project's security admins decide who is\nin it ([[LH-557]]).\n\nIdempotent: re-granting what someone already holds is a no-op. That is not an optimisation \u2014 an\nOpenFGA Write is transactional and REJECTS an existing tuple, so without the read this would 400\non the second call.",
+        "description": "Grant one tenant rung to one subject \u2014 gated PER RUNG (``can_grant_admin`` / ``can_grant_member``).\n\nA role is granted only on its own project: one another project owns is refused 400 (code 13), as every grant door\nrefuses it (:func:`fga_deps.refuse_a_cross_tenant_role_grant`), since that project's security admins decide who is\nin it ([[LH-557]]).\n\nIdempotent: re-granting what someone already holds is a no-op. That is not an optimisation \u2014 an\nOpenFGA Write is transactional and REJECTS an existing tuple, so without the read this would 400\non the second call. An ``admin`` is granted in one Write with the project's ``admin_revision``\n(:func:`project_admins.confer`), since it changes who administers the project.",
         "operationId": "grant_member_management_v1_projects__project_id__members_put",
         "parameters": [
           {
@@ -18269,7 +17718,7 @@
     },
     "/management/v1/projects/{project_id}/roles/{role_id}": {
       "delete": {
-        "description": "End a role, gated on its ``can_delete``: every tuple naming it and on it, and its record (:func:`role_grants.end_role`).\n\nRefused 409 (code 14) while ending it would leave a project with no direct admin, before anything is revoked. An\nending that fails part-way leaves the role listed and deletable, so calling the door again finishes it, and what it\ntook is announced though the ending failed after it ([[LH-576]]).",
+        "description": "End a role, gated on its ``can_delete``, and on the project's ``can_grant_admin`` while the project's ``admin``\nreaches the role: every tuple naming it and on it, and its record (:func:`role_grants.end_role`).\n\nRefused 409 (code 14) while ending it would leave a project whose ``admin`` reaches nobody, before anything is revoked. An\nending that fails part-way leaves the role listed and deletable, so calling the door again finishes it, and what it\ntook is announced though the ending failed after it ([[LH-576]]).",
         "operationId": "delete_role_management_v1_projects__project_id__roles__role_id__delete",
         "parameters": [
           {
@@ -18425,7 +17874,7 @@
     },
     "/management/v1/projects/{project_id}/roles/{role_id}/assignees": {
       "delete": {
-        "description": "Remove one assignee from the role, gated as an assignment is; removing one it does not hold is a no-op.\n\nRefused 409 (code 14) for the last assignee of a role that is its project's only direct admin\n(:func:`role_membership.unassign`, arbitrated by the store as the members door's revoke is).",
+        "description": "Remove one assignee from the role, gated as an assignment is; removing one it does not hold is a no-op.\n\nRefused 409 (code 14) when the project's ``admin`` would reach nobody without it\n(:func:`project_admins.withdraw`, arbitrated by the store as the members door's revoke is).",
         "operationId": "unassign_role_management_v1_projects__project_id__roles__role_id__assignees_delete",
         "parameters": [
           {
@@ -18512,7 +17961,7 @@
         ]
       },
       "put": {
-        "description": "Assign one principal or standing role of the project to the role, gated on its ``can_manage_assignees``, and on\nthe project's ``can_grant_admin`` while the role holds the project's ``admin``. Idempotent.",
+        "description": "Assign one principal or standing role of the project to the role, gated on its ``can_manage_assignees``, and on\nthe project's ``can_grant_admin`` while the project's ``admin`` reaches the role. Idempotent.\n\nThe assignment is one Write with the project's ``admin_revision`` (:func:`project_admins.confer`), judged on the\nread that found whether ``admin`` reaches the role.",
         "operationId": "assign_role_management_v1_projects__project_id__roles__role_id__assignees_put",
         "parameters": [
           {
@@ -18596,93 +18045,6 @@
         "summary": "Assign Role",
         "tags": [
           "roles"
-        ]
-      }
-    },
-    "/management/v1/promotions": {
-      "get": {
-        "description": "The open holds the caller may see, the soonest the sweep expires first: each table's held version, what\n`published` names, why it is held and when the sweep expires it. A hold names its table as the table is named now,\nand is listed to a caller holding `can_get_metadata` on it; a hold whose table is gone is listed to nobody, and\nexpires.\n\nA hold is named and judged only as the page fills (:func:`fga_deps.named_record_page`), on the uuid it records\n([[LH-524]]), the object the table's grants are held by: a page costs about the holds it serves or passes over.",
-        "operationId": "list_promotions_management_v1_promotions_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "maximum": 1000,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Continue after this hold (the previous page's `page_token`).",
-            "in": "query",
-            "name": "page_token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Continue after this hold (the previous page's `page_token`).",
-              "title": "Page Token"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PromotionsListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "List Promotions",
-        "tags": [
-          "publication"
         ]
       }
     },
@@ -19267,7 +18629,7 @@
     },
     "/management/v1/table/{id}/changes": {
       "post": {
-        "description": "Rows that changed in ``(begin_version, end_version]`` \u2014 Arrow-IPC, like ``query``.\n\nAnswers the change data feed `lance_docs/lance/format/table/row_id_lineage.md:426-454` documents, from one snapshot at\nthe window's end, and refuses a window the version columns cannot describe; the rules and the\nconsumer contract live in `catalog.services.changes`, the read in `dataplane.read_changes`.\n\nA CHANGE FEED IS A READ, which settles both policy questions: it is gated like one and audited like\none (\u00a7 J1), because following every row a table ever received is the most disclosing read\navailable, not a metadata lookup.\n\nTHE PUSH TRIGGER IS `table_published` ([[LH-091]]), and a BYO consumer needs no new event to find\nit. That `ControlAction` (`lakehouse.control_events.ControlAction`) announces a version advance and\ncarries `{from_version, to_version}` \u2014 \"the RANGE (D-R3) the notification carries, so a consumer\nresolves the delta\" (`catalog/services/publication.py:245-254`) \u2014 which is exactly the window this\ndoor takes. Its emitter is a DIFFERENT `publication.py`, the route module\n`catalog/api/v1/endpoints/publication.py:343-356`, gated on `result.advanced` so only a real\nadvance signals. A consumer subscribes to `catalog.control.v1`, reads the pair off the event, and\ncalls here with it \u2014 no new `ControlAction` member, so no added control-buffer cost.\nIt names no person a notifier addresses: a version advance changes an OBJECT, not\nwhat any particular person may do, so it is an untargeted control event like the other 31 and\nreaches a feed rather than a person.\n\nTHE GATE IS NOT AUTOMATIC \u2014 `fga_deps._DATA_READ_ACTIONS` must name `changes`, or the router\nrefuses the route for every caller. Any rung above the reader's refuses the feed's whole audience\nand records a write in the audit trail: measured 2026-09-08 at the writer rung, `can_write_data\nALLOW` beside the `read_data` record for the same call. Pinned by\n`tests/unit/test_fga_model_contract.py::test_every_DATA_READ_door_is_gated_as_a_READ`.",
+        "description": "Rows that changed in ``(begin_version, end_version]`` \u2014 Arrow-IPC, like ``query``.\n\nAnswers the change data feed `lance_docs/lance/format/table/row_id_lineage.md:426-454` documents, from one snapshot at\nthe window's end, and refuses a window the version columns cannot describe; the rules and the\nconsumer contract live in `catalog.services.changes`, the read in `dataplane.read_changes`.\n\nA CHANGE FEED IS A READ, which settles both policy questions: it is gated like one and audited like\none (\u00a7 J1), because following every row a table ever received is the most disclosing read\navailable, not a metadata lookup.\n\nIt names no person a notifier addresses: a version advance changes an OBJECT, not\nwhat any particular person may do, so it is an untargeted control event like the other 31 and\nreaches a feed rather than a person.\n\nTHE GATE IS NOT AUTOMATIC \u2014 `fga_deps._DATA_READ_ACTIONS` must name `changes`, or the router\nrefuses the route for every caller. Any rung above the reader's refuses the feed's whole audience\nand records a write in the audit trail: measured 2026-09-08 at the writer rung, `can_write_data\nALLOW` beside the `read_data` record for the same call. Pinned by\n`tests/unit/test_fga_model_contract.py::test_every_DATA_READ_door_is_gated_as_a_READ`.",
         "operationId": "table_changes_management_v1_table__id__changes_post",
         "parameters": [
           {
@@ -19339,6 +18701,216 @@
         "summary": "Table Changes",
         "tags": [
           "data-management"
+        ]
+      }
+    },
+    "/management/v1/table/{id}/contract/delete": {
+      "post": {
+        "description": "Delete the table's data contract (idempotent): its commits are held to no contract after. Asked at\n``can_set_contract``.",
+        "operationId": "delete_table_contract_management_v1_table__id__contract_delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
+            "in": "query",
+            "name": "delimiter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
+              "title": "Delimiter"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Table Contract",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/management/v1/table/{id}/contract/describe": {
+      "post": {
+        "description": "The data contract the table holds, as the ODCS v3 document its owner set; ``contract`` is null for a table\nholding none. Read at ``can_get_metadata``.",
+        "operationId": "describe_table_contract_management_v1_table__id__contract_describe_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
+            "in": "query",
+            "name": "delimiter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
+              "title": "Delimiter"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Describe Table Contract",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/management/v1/table/{id}/contract/set": {
+      "post": {
+        "description": "Set the table's data contract: an ODCS v3 document naming the columns its consumers rely on. Asked at\n``can_set_contract``, the table owner's.\n\nThe document is read strictly: a quality or service-level rule is refused 406, since the catalog checks a\ncontract's schema on every commit and nothing else. The table must meet the contract now, and a contract that takes\nback what the standing one promises carries a higher major version. From then on a commit that drops, renames,\nretypes or loosens a contracted column is refused 409 (code 19), through every door and from a stock client alike.",
+        "operationId": "set_table_contract_management_v1_table__id__contract_set_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
+            "in": "query",
+            "name": "delimiter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
+              "title": "Delimiter"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Document",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Table Contract",
+        "tags": [
+          "contract"
         ]
       }
     },
@@ -20478,222 +20050,6 @@
         ]
       }
     },
-    "/management/v1/table/{id}/promotion/approve": {
-      "post": {
-        "description": "Approve the held `version`: `published` moves to it (the spec's `UpdateTableTag`) and its watchers are told.\n\nGated on `can_promote` by the router (`fga_deps`), and the write judge decides it like every write. The approval\nis recorded before the tag moves, so approving again completes one whose tag move failed and otherwise answers\nas decided. 409 when the table holds no such version, it was decided otherwise, or `published` reached it.",
-        "operationId": "approve_promotion_management_v1_table__id__promotion_approve_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-lance-originator",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Lance-Originator"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PromotionDecisionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PromotionDecision"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Approve Promotion",
-        "tags": [
-          "publication"
-        ]
-      }
-    },
-    "/management/v1/table/{id}/promotion/reject": {
-      "post": {
-        "description": "Reject the held `version`: main is restored to the published version (the spec's `RestoreTable`), as a new\ncommit, so the next writer builds on what readers read. `published` does not move.\n\nGated on `can_promote` by the router (`fga_deps`), and the write judge decides it like every write. The rejection\nis recorded before main is restored, and main is restored once: rejecting again completes a restore the first\ncall could not make, and otherwise answers as decided. With nothing published, or `published` moved to or past\nthe held version meanwhile, there is nothing to restore and the rejection only closes the hold. A rejection whose\nrestore landed and whose record of it failed finds that restore when asked again and records it, rather than\nrestoring a second time. 409 when the table holds no such version, it was decided otherwise, or `published` reached\nit; and 409 (code 14) naming main's head while main holds a commit after the held version, which a restore would\ndiscard: the hold stays open for an approval, a RestoreTable, or a later rejection (owner, 2026-11-12).",
-        "operationId": "reject_promotion_management_v1_table__id__promotion_reject_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-lance-originator",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Lance-Originator"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PromotionDecisionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PromotionDecision"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Reject Promotion",
-        "tags": [
-          "publication"
-        ]
-      }
-    },
     "/management/v1/table/{id}/protection": {
       "get": {
         "description": "Read the deletion-protection flag (#123). The SET door shipped a year of writes with NO read:\nan operator could not arm, disarm-check, or audit protection \u2014 they discovered it by eating a\n409. Owner-gated like the set door (the observer of a safety is whoever might trip it), and the\nrecord's `set_by` comes back so a refused drop can name who armed it.",
@@ -20831,114 +20187,6 @@
         "summary": "Set Table Protection",
         "tags": [
           "table-management"
-        ]
-      }
-    },
-    "/management/v1/table/{id}/publish": {
-      "post": {
-        "description": "Gate `version` and, if it passes, advance `published` to it; hold it when it breaches under review.\n\nA refused gate is a 200 with `published=False`, not an error status: the request was well-formed\nand the system did exactly what it should. A held one is a 200 with `held=True` and the hold. Errors\nare reserved for the caller getting it wrong \u2014 an unknown version (404), a backwards move (409), a\nmalformed one (400), a version older than the one held (409), a version another publish overtook while\nits gate ran (409, code 14) \u2014 all raised as `lance_namespace` typed errors so the shared problem-body\nhandler renders them.",
-        "operationId": "publish_table_management_v1_table__id__publish_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-lance-originator",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Lance-Originator"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PublishRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PublishResult"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Publish Table",
-        "tags": [
-          "publication"
         ]
       }
     },
@@ -22481,7 +21729,7 @@
     },
     "/management/v1/warehouses/{warehouse_id}/validate": {
       "post": {
-        "description": "Prove this warehouse's vended credentials are actually SCOPED, by using one.\n\nTHE CONTROL THIS ASSERTS IS THE WHOLE STORAGE POSTURE. `core/vending.py::build_session_policy`\nrestricts every credential to one bucket + prefix, and the goal names STS as the answer for\nstorage \u2014 so if the object store ACCEPTS the inline session policy and IGNORES it, every credential\nthe estate has ever vended reached the whole bucket, every log line reads normal, and no audit\nrecord could reconstruct which of them over-reached. Nothing asserted it: every vending defect in\nthis estate's history was found by a client failing later, never by the catalog.\n\nIT WRITES, and that is the point \u2014 a policy document can be inspected without learning anything\nabout the store that receives it. The probe vends a real credential for `_validate/<uuid4>` under\nthe warehouse's own root, writes and reads inside it, then attempts a write to the PARENT prefix\nwhich MUST be refused, and removes what it made. The failure of that last write is the finding.\n\nAdmin-gated on the warehouse's own project and collapsing denied \u2192 404, the same\nno-existence-oracle rule the lifecycle doors follow (audit #4): this door writes to a tenant's\nbucket, so its gate is the create/lifecycle rung and not a read one.\n\nReports every check even after one fails (see :func:`summarize_probe`) \u2014 an over-permissive store\nand an unreachable one need different answers, and a first-failure exit cannot tell them apart.",
+        "description": "Prove this warehouse's vended credentials are actually SCOPED, by using one.\n\nTHE CONTROL THIS ASSERTS IS THE WHOLE STORAGE POSTURE. `core/vending.py::build_session_policy`\nrestricts every credential to one bucket + prefix, and the goal names STS as the answer for\nstorage \u2014 so if the object store ACCEPTS the inline session policy and IGNORES it, every credential\nthe estate has ever vended reached the whole bucket, every log line reads normal, and no audit\nrecord could reconstruct which of them over-reached. Nothing asserted it: every vending defect in\nthis estate's history was found by a client failing later, never by the catalog.\n\nIT WRITES, and that is the point \u2014 a policy document can be inspected without learning anything\nabout the store that receives it. The probe vends a real credential for `_validate/<uuid4>` under\nthe warehouse's own root, writes and reads inside it, then attempts a write to the PARENT prefix\nwhich MUST be refused. Under a second credential, vended at the WRITE tier for the same prefix, it stages a\nmanifest and attempts a final manifest and a put under `_refs/`, which MUST both be refused ([[LH-511]]). It removes\nwhat it made. The refusals are the finding.\n\nAdmin-gated on the warehouse's own project and collapsing denied \u2192 404, the same\nno-existence-oracle rule the lifecycle doors follow (audit #4): this door writes to a tenant's\nbucket, so its gate is the create/lifecycle rung and not a read one.\n\nReports every check even after one fails (see :func:`summarize_probe`) \u2014 an over-permissive store\nand an unreachable one need different answers, and a first-failure exit cannot tell them apart.",
         "operationId": "validate_warehouse_credentials_management_v1_warehouses__warehouse_id__validate_post",
         "parameters": [
           {
@@ -22857,7 +22105,7 @@
     },
     "/v1/namespace/{id}/create": {
       "post": {
-        "description": "Create a namespace via ``create_namespace``, then seed its FGA owner + parent edge.",
+        "description": "Create a namespace via ``create_namespace``, owned by its creator and joined to its parent before it is recorded.",
         "operationId": "create_namespace_v1_namespace__id__create_post",
         "parameters": [
           {
@@ -29407,7 +28655,7 @@
     },
     "/v1/table/{id}/tags/create": {
       "post": {
-        "description": "Tag the given table version with a name \u2014 wraps lance_namespace CreateTableTag.\n\nANNOUNCED ON THE CONTROL LANE ([[LH-056]]) and UNTARGETED, by the rule the estate codified: a\ncontrol event is targeted when it changes what a specific PERSON may do or must do, not when it\nchanges an object. A tag is a ref, so this joins the members that name nobody.\n\nTHE REF PLANE IS WHERE `published` LIVES, which is why these three matter more than their size\nsuggests: `table_published` already announces the publication tag moving, and until now the OTHER\nref mutations moved in silence \u2014 a console could not tell a tag was gone.",
+        "description": "Tag the given table version with a name \u2014 wraps lance_namespace CreateTableTag.\n\nANNOUNCED ON THE CONTROL LANE ([[LH-056]]) and UNTARGETED, by the rule the estate codified: a\ncontrol event is targeted when it changes what a specific PERSON may do or must do, not when it\nchanges an object. A tag is a ref, so this joins the members that name nobody.\n\nA TAG IS HOW A PIPELINE MARKS A VERSION READY (`lance_docs/lance/guide/tags_and_branches.md`), under a name it\nchooses, so each of the three ref mutations is announced: a reader holding \"tag -> version\" learns it moved.",
         "operationId": "create_table_tag_v1_table__id__tags_create_post",
         "parameters": [
           {
@@ -29553,7 +28801,7 @@
     },
     "/v1/table/{id}/tags/delete": {
       "post": {
-        "description": "Delete a tag from the table \u2014 wraps lance_namespace DeleteTableTag.\n\nAuthorization alone governs it (``can_drop``): a tag pins the version it names against cleanup, so deleting\none makes that version reclaimable, which is history reclaim, and deletion protection guards dropping the\ntable, not its history (ADR 0150). The catalog's own tags, ``published`` among them, are refused here.",
+        "description": "Delete a tag from the table \u2014 wraps lance_namespace DeleteTableTag.\n\nAuthorization alone governs it (``can_drop``): a tag pins the version it names against cleanup, so deleting\none makes that version reclaimable, which is history reclaim, and deletion protection guards dropping the\ntable, not its history (ADR 0150). The catalog's own clone tags are refused here.",
         "operationId": "delete_table_tag_v1_table__id__tags_delete_post",
         "parameters": [
           {
