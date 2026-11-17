@@ -11,11 +11,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import lance
+import lance_namespace
 import pyarrow as pa
 import pytest
+from lance_namespace import CreateNamespaceRequest, InvalidInputError, NamespaceExistsRequest
 
 from annotator.annotations.save import build_delta, new_rows
 from annotator.annotations.schema import EMPTY_SCHEMA, NewAnnotation, TagWrite
+from annotator.annotations.store import ensure_namespace
 from annotator.annotations.tags import check_keys_arity, tag_id, tag_rows
 from client_kit.lancekit.descriptor import Declared
 
@@ -206,3 +209,30 @@ def test_save_emits_spec_2_0_2_openlineage(tmp_path: Path) -> None:
     names = {f["name"] for f in facets["schema"]["fields"]}
     assert {"id", "status", "polygon", "x"} <= names
     assert facets["columnLineage"]
+
+
+def test_a_first_save_creates_only_the_namespace_levels_the_catalog_lacks(tmp_path: Path) -> None:
+    """A lakehouse holds its warehouse (the first segment) and refuses a create naming it, so the annotations namespace
+    is made level by level, asking each level first: one that exists is never created again."""
+    catalog = lance_namespace.connect("dir", {"root": str(tmp_path)})
+    catalog.create_namespace(CreateNamespaceRequest(id=["acme"]))
+    created: list[list[str]] = []
+
+    class Lakehouse(lance_namespace.LanceNamespace):
+        def namespace_id(self) -> str:
+            return "lakehouse"
+
+        def namespace_exists(self, request: NamespaceExistsRequest) -> lance_namespace.NamespaceExistsResponse:
+            return catalog.namespace_exists(request)
+
+        def create_namespace(self, request: CreateNamespaceRequest) -> lance_namespace.CreateNamespaceResponse:
+            if request.id == ["acme"]:
+                raise InvalidInputError("'acme' names a warehouse, which is created at /management/v1/warehouses")
+            created.append(list(request.id or []))
+            return catalog.create_namespace(request)
+
+    ensure_namespace(Lakehouse(), ["acme", "workbench_annotations"])
+    ensure_namespace(Lakehouse(), ["acme", "workbench_annotations"])
+
+    assert created == [["acme", "workbench_annotations"]]
+    catalog.namespace_exists(NamespaceExistsRequest(id=["acme", "workbench_annotations"]))

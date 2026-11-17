@@ -21,7 +21,7 @@ from collections.abc import Callable
 import lance
 import lance_namespace
 import pyarrow as pa
-from lance_namespace import CreateNamespaceRequest, NamespaceAlreadyExistsError
+from lance_namespace import CreateNamespaceRequest, NamespaceAlreadyExistsError, NamespaceExistsRequest
 from pydantic import BaseModel, ConfigDict
 
 from annotator.annotations.schema import EMPTY_SCHEMA
@@ -44,6 +44,23 @@ def table_schema(declared: Declared) -> pa.Schema:
     identity = declared.identity
     keys = [pa.field(identity.doc_key, pa.string())] + [pa.field(f, pa.int64()) for f in identity.key_fields if f != identity.doc_key]
     return pa.schema([*keys, *EMPTY_SCHEMA])
+
+
+def ensure_namespace(client: lance_namespace.LanceNamespace, namespace: list[str]) -> None:
+    """Create the levels of ``namespace`` the catalog does not hold, and only those.
+
+    A level that exists is never asked for again: a lakehouse may hold a level it creates only through another door (a
+    warehouse, the first segment of a governed name) and refuse a create naming it even though it is there."""
+    for depth in range(1, len(namespace) + 1):
+        level = namespace[:depth]
+        try:
+            with translate_catalog_errors():
+                bounded(lambda lv=level: client.namespace_exists(NamespaceExistsRequest(id=lv)))
+            continue
+        except NotFoundError:
+            pass
+        with translate_catalog_errors(), contextlib.suppress(NamespaceAlreadyExistsError):
+            bounded(lambda lv=level: client.create_namespace(CreateNamespaceRequest(id=lv)))
 
 
 class ProjectAnnotations(BaseModel):
@@ -98,10 +115,7 @@ class ProjectAnnotations(BaseModel):
         existing = self.open()
         if existing is not None:
             return existing
-        client = self._client()
-        for depth in range(1, len(self.namespace) + 1):
-            with translate_catalog_errors(), contextlib.suppress(NamespaceAlreadyExistsError):
-                bounded(lambda d=depth: client.create_namespace(CreateNamespaceRequest(id=self.namespace[:d])))
+        ensure_namespace(self._client(), self.namespace)
         # Created empty through the namespace (DeclareTable and the credential it vends), the stock client's create: a
         # CreateTable carries rows, and a new project's table has none. File format 2.2 and stable row ids, as every
         # governed table the lakehouse creates.
