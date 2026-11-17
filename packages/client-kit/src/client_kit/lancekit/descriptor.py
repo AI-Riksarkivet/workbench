@@ -209,7 +209,7 @@ class DatasetDescriptor(BaseModel):
     problem: str | None = None
     #: The tables the catalog lists here that could not be opened, each with the reason a person can read.
     unreadable: dict[str, str] = Field(default_factory=dict)
-    #: Why the dataset cannot be annotated (it is not a lakehouse's), or ``None`` when it can.
+    #: Why the dataset cannot be annotated (its source is not marked annotatable), or ``None`` when it can.
     read_only: str | None = None
     #: A table could not be read right now: the descriptor is not kept, and the next request reads the dataset again.
     transient: bool = Field(default=False, exclude=True)

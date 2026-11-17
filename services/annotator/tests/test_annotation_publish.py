@@ -254,32 +254,42 @@ def _pin_task(task_id: str, table: str | None, version: int | None, where: str |
     )
 
 
+PAGES, OTHER, SURVEY = "lake~acme$media$pages", "lake~acme$media$other", "archive~field$survey$chunks"
+
+
 @pytest.mark.parametrize(
-    ("specs", "tables", "uncaptured"),
+    ("specs", "tables", "uncaptured", "outside"),
     [
-        pytest.param([("acme$media$pages", 24), ("acme$media$pages", 24)], [("acme$media$pages", 24)], 0, id="one-table-one-version"),
-        pytest.param(
-            [("acme$media$pages", 25), ("acme$media$pages", 24), ("acme$media$other", 3)],
-            [("acme$media$other", 3), ("acme$media$pages", 24), ("acme$media$pages", 25)],
-            0,
-            id="every-table-and-version",
-        ),
-        pytest.param([(None, None), ("acme$media$pages", 24)], [("acme$media$pages", 24)], 1, id="an-item-that-names-no-table"),
-        pytest.param([("acme$media$pages", None)], [], 1, id="a-version-not-captured"),
+        pytest.param([(PAGES, 24), (PAGES, 24)], [(PAGES, 24)], 0, 0, id="one-table-one-version"),
+        pytest.param([(PAGES, 25), (PAGES, 24), (OTHER, 3)], [(OTHER, 3), (PAGES, 24), (PAGES, 25)], 0, 0, id="every-table-and-version"),
+        pytest.param([(None, None), (PAGES, 24)], [(PAGES, 24)], 1, 0, id="an-item-that-names-no-table"),
+        pytest.param([(PAGES, None)], [], 1, 0, id="a-version-not-captured"),
+        pytest.param([(SURVEY, 3), (PAGES, 24)], [(PAGES, 24)], 0, 1, id="a-table-outside-the-lakehouse"),
     ],
 )
-def test_publish_inputs_name_every_captured_table_version_and_count_the_rest(
-    specs: list[tuple[str | None, int | None]], tables: list[tuple[str, int]], uncaptured: int
+def test_publish_inputs_name_every_captured_lakehouse_table_version_and_count_the_rest(
+    specs: list[tuple[str | None, int | None]], tables: list[tuple[str, int]], uncaptured: int, outside: int
 ) -> None:
     from annotator.projects.publish import publish_inputs
 
     project = AnnotationProject(project_id="p1", tenant="acme", slug="vasa")
-    pairs = [(_pin_task(f"t{i}", table, v, where="acme$notes" if table is None else None), None) for i, (table, v) in enumerate(specs)]
+    pairs = [(_pin_task(f"t{i}", table, v, where="lake~acme$notes" if table is None else None), None) for i, (table, v) in enumerate(specs)]
     plan = build_plan(project, pairs, publish_id="tok", published_at=NOW)
 
-    inputs = publish_inputs(plan)
+    inputs = publish_inputs(plan, "lake")
 
-    assert (inputs.tables, inputs.uncaptured) == (tables, uncaptured)
+    assert (inputs.tables, inputs.uncaptured, inputs.outside) == (tables, uncaptured, outside)
+
+
+def test_every_published_row_names_the_table_and_version_its_item_was_read_from_of_any_source() -> None:
+    """The lineage inputs name only the lakehouse's tables, so the rows are where an item of another source, and every
+    item alike, says which table at which version it was read from; an item whose send captured none says nothing."""
+    project = AnnotationProject(project_id="p1", tenant="acme", slug="vasa")
+    pairs = [(_pin_task("t0", SURVEY, 3), None), (_pin_task("t1", PAGES, 24), None), (_pin_task("t2", None, None, where="lake~acme$notes"), None)]
+
+    plan = build_plan(project, pairs, publish_id="tok", published_at=NOW)
+
+    assert [(row["item_table"], row["item_table_version"]) for row in plan.rows] == [(SURVEY, 3), (PAGES, 24), (None, None)]
 
 
 # --------------------------------------------------------------------------------------------------

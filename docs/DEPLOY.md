@@ -27,7 +27,7 @@ make deploy-dev          # every step below, in order; each is safe to run again
 | `make dev-images` | builds `media`, `annotator` and `frontend` through Dagger (the shared engine) and publishes them as `workbench-media`, `workbench-annotator`, `workbench-app` tagged with the commit (`git rev-parse --short=12 HEAD`) to `172.17.0.1:5000`; refuses a dirty tree | the tags stay in the registry until rask's `make registry-gc` |
 | `make dev-openfga` | release `workbench-openfga` (`deploy/fixtures/openfga`) in `workbench`, creating the namespace: OpenFGA v1.18.3 on a Postgres `Cluster` of its own, its database password and preshared key generated in the cluster | `make dev-undeploy-openfga` |
 | `make dev-dex-client` | rask's `scripts/fixtures.sh dex` with `deploy/dex-client.yaml`: rask's development Dex gains the public client `workbench-app` (PKCE, redirect `http://workbench.localhost:8080/auth/callback`), the confidential client `workbench-services`, and the CORS origin `http://workbench.localhost:8080`; Dex restarts once when its configuration changes | `make dev-undeploy-dex-client` |
-| `make dev-release` | release `workbench` from `chart/` with `deploy/values-dev.yaml` and the commit's image tags (`--reset-values`, nothing read back from a release): the four workloads, the annotator's `Cluster`, the HTTPRoutes under `workbench.localhost`, the NetworkPolicies, the model writer job, and the development Secrets | `make dev-undeploy-release` |
+| `make dev-release` | release `workbench` from `chart/` with `deploy/values-dev.yaml` and the commit's image tags (`--reset-values`, nothing read back from a release): the four workloads, the annotator's `Cluster`, the HTTPRoutes under `workbench.localhost`, the NetworkPolicies, the model writer job, the development Secrets, and the demo source (below) | `make dev-undeploy-release` (the demo claim stays, until the namespace goes) |
 | `make dev-grants` | at rask's catalog doors, as a development administrator (`DEV_ADMIN`, its password from `DEV_ADMIN_PASSWORD_FILE` or asked): creates the annotations namespace `acme$workbench_annotations` if missing, grants the workbench's own identity `dex-client~workbench-services` `writer` there and `reader` on the warehouse `acme` | `make dev-undeploy-grants` (the namespace and its tables stay) |
 | `make dev-readback` | waits for every Deployment and `Cluster` in `workbench` and asks the Gateway for the app's `/config.json` under `workbench.localhost` | none needed |
 
@@ -37,6 +37,26 @@ annotation tables in the lakehouse.
 
 Rask's own `make k3s-up` installs its Dex with rask's values alone, so it drops the workbench's clients: run
 `make dev-dex-client` again after it.
+
+### The demo source
+
+Beside rask's tables, the development release reads demo data of its own, so the cluster shows something whatever the
+lakehouse holds: the corpus, recordings and films `make local` seeds (`demo~demo$corpus`, `demo~demo$recordings`,
+`demo~demo$films`), as the source `demo` (`kind: namespace`, a directory catalog). `demo.enabled` renders a
+PersistentVolumeClaim `workbench-demo` (k3s's default `local-path` class, 1Gi) and a Job `workbench-demo-seed-<digest>`
+that runs `scripts/seed_demo_corpus.py --once` from the media image into it; the viewer, search and the annotator mount
+the claim read-only, and only the Job mounts it writable. The Job is a plain object of the release, named by the digest
+of its whole rendered pod template (which a Job cannot change in place), so an upgrade that changes nothing in it leaves
+it as it is, and one that changes anything starts a new Job that finds the completed seed (`.seeded` on the volume) and
+exits 0 without writing. The claim carries
+`helm.sh/resource-policy: keep`: an uninstall leaves the data, a reinstall from git adopts it, and only deleting the
+claim (or `make undeploy-dev`, which deletes the namespace) seeds again. Its readers are the dev Dex's demo people
+(alice, bob, carol, dave and erin, as `dex~<user id>`), granted `reader` on `source:demo` by the model writer.
+
+The demo source is read-only, as every source but a rask lakehouse is, and marked `annotatable: true`, so its items are
+sent to a project, labelled and reviewed: each records the table it was read from and the version the sender saw, and
+its annotations go, as every annotation does, to the lakehouse's annotations namespace (`acme$workbench_annotations`),
+written as `workbench-services` with the person named.
 
 ### Whose grants are whose
 
@@ -59,7 +79,7 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
   names a credential. A lakehouse is `kind: rask` with its catalog's `uri`; `auth.lakehouse.audience` names its audience
   and `auth.lakehouse.delegation` how a person's read reaches it (`exchange` at a provider that exchanges its own tokens,
   `forward` where it does not), and further issuers each name their own (`auth.oidc.providers[].lakehouse`). Only the
-  lakehouse is sent a token, annotated and published to.
+  lakehouse is sent a token, holds the annotation tables and is published to.
 - **Authorization:** `auth.fga.apiUrl`, `auth.fga.store`, and the Secret holding the preshared key
   (`auth.fga.credential`).
 - **Secrets:** `media.viewer.mediaUrlKey` names the viewer's signing key; `dev.secrets.enabled` stays off, so git holds
@@ -72,7 +92,8 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
 The workbench reads any Lance data a release declares, read-only, beside a lakehouse or with none:
 
 - `kind: namespace`: a lance-namespace catalog by `impl` (`dir` or `rest`) and its `properties`; with `claim`, a
-  PersistentVolumeClaim mounted read-only as a `dir` catalog's `root`. A `rest` catalog names the store prefixes its
+  PersistentVolumeClaim mounted read-only as a `dir` catalog's `root` (the directory `path` names on it, when it names
+  one). A `rest` catalog names the store prefixes its
   tables may lie under (`locations`): a table it places anywhere else is refused, and its tables are read on the
   `storage` options the release declares, never on what the catalog answers.
 - `kind: tables`: a bare Lance table (a URI ending `.lance`) or a directory of them, by `uri`, or by `path` on a
@@ -108,9 +129,17 @@ ServiceAccount's token for that audience at `/var/run/secrets/workbench/store/to
 names (S3 web identity, or Azure's `azure_federated_token_file`, `lance_docs/lance/guide/object_store.md`); the store
 trusts the cluster's issuer for that role. With none, the store is reached only as the platform otherwise grants the pod.
 
-With no `kind: rask` source nothing is annotated: the annotator's project plane still runs, and every dataset says why it
-cannot be sent to a project. A dataset with no workbench descriptor is shown as a plain table; one whose writer stamped a
+**What is labelled.** A lakehouse's datasets always are. Any other source's are only when git marks it
+`annotatable: true` (owner, 2026-11-17: "Only if marked"); an unmarked one's datasets say "source '<name>' is not marked
+annotatable" on every send control, and the annotator refuses to send from it. A marked source's items record their
+table and version at send, as a lakehouse's do; a publish names only the lakehouse's tables as its lineage inputs (a
+commit names only its own lakehouse's tables), so under the run rule a project holding such items is refused with that
+reason, and without it the publish lands naming no input from that source. Every published row names the table and
+version its item was read from (`item_table`, `item_table_version`), whatever the source. The annotations themselves are
+written only to a lakehouse, so with no `kind: rask` source nothing is annotated, and the render refuses a source marked
+annotatable beside none. A dataset with no workbench descriptor is shown as a plain table; one whose writer stamped a
 `lance_media.descriptor` keeps every view it declares.
 
-`make chart-check` renders the chart in each of these shapes: the dev overlay, a platform's, a release with no lakehouse
-(a directory catalog on a claim and a bare table on a store), and one with sign-in off reading one table on a claim.
+`make chart-check` renders the chart in each of these shapes: the dev overlay (its demo source among them), a platform's,
+a release with no lakehouse (a directory catalog on a claim and a bare table on a store), and one with sign-in off
+reading one table on a claim.

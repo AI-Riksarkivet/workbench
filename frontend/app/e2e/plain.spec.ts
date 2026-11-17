@@ -83,12 +83,10 @@ test('what a plain table cannot do is disabled with its reason', async ({ page, 
 	await expect(page.getByRole('menu')).toHaveCount(0);
 	await page.getByRole('table').getByRole('row').nth(1).click();
 	const send = page.getByRole('button', { name: 'Send to a project' });
-	await expect(send).toHaveAccessibleDescription(
-		"source 'archive' is read-only: only a rask lakehouse's datasets are annotated",
-	);
+	await expect(send).toHaveAccessibleDescription("source 'archive' is not marked annotatable");
 	await send.focus();
 	await expect(page.getByRole('status').filter({ hasText: /^Send to a project — / })).toHaveText(
-		"Send to a project — source 'archive' is read-only: only a rask lakehouse's datasets are annotated",
+		"Send to a project — source 'archive' is not marked annotatable",
 	);
 	await send.blur();
 	await expect(page.getByRole('status').filter({ hasText: /^Send to a project — / })).toBeHidden();

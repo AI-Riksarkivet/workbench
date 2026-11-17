@@ -37,8 +37,15 @@ async def store(state_settings: AnnotatorSettings) -> AsyncGenerator[AnnotatorSt
     await opened.close()
 
 
+#: A lakehouse table and a table of an annotatable source outside it, as a send stamps them (`<source>~<id>`).
+PAGES, SURVEY = "lake~acme$media$pages", "archive~field$survey$chunks"
+
+
 class _Publisher:
     """A catalog that behaves like the real one must: create is idempotent on table id."""
+
+    #: The lakehouse source it writes to: only that source's tables are inputs.
+    lakehouse = "lake"
 
     def __init__(self, fail_on: str | None = None, *, run_rule: bool = False) -> None:
         self.tables: dict[str, int] = {}
@@ -85,7 +92,7 @@ async def _publishing(store: AnnotatorStore, *tasks: tuple[str, TaskState, int, 
                 {
                     "task_id": task_id,
                     "project_id": project.project_id,
-                    "source": {"kind": "chunks", "keys": [task_id], "where": table or "acme$notes", "table": table, "dataset_version": version},
+                    "source": {"kind": "chunks", "keys": [task_id], "where": table or "lake~acme$notes", "table": table, "dataset_version": version},
                     "media": {"kind": "image"},
                 }
             )
@@ -316,30 +323,39 @@ async def test_a_missing_token_stops_rather_than_minting_one(store: AnnotatorSto
 @pytest.mark.asyncio
 async def test_every_captured_table_version_reaches_the_publisher_as_an_input(store: AnnotatorStore) -> None:
     """§7.2: the create names each table version the items came from; the saga computes them from the plan."""
-    project_id = await _publishing(store, ("t0", TaskState.ACCEPTED, 1, "acme$media$pages", 24), ("t1", TaskState.ACCEPTED, 1, "acme$media$letters", 3))
+    project_id = await _publishing(
+        store, ("t0", TaskState.ACCEPTED, 1, "lake~acme$media$pages", 24), ("t1", TaskState.ACCEPTED, 1, "lake~acme$media$letters", 3)
+    )
     publisher = _Publisher(run_rule=True)
 
     await _run(store, project_id, publisher)
 
-    assert publisher.inputs == [("acme$media$letters", 3), ("acme$media$pages", 24)]
+    assert publisher.inputs == [("lake~acme$media$letters", 3), ("lake~acme$media$pages", 24)]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("run_rule", "sources", "refusal"),
     [
+        pytest.param(True, [(PAGES, 24), (None, None)], "acme$published requires every write to name the tables", id="uncaptured-under-the-run-rule"),
+        pytest.param(False, [(PAGES, 24), (None, None)], None, id="uncaptured-with-no-run-rule"),
         pytest.param(
-            True, [("acme$media$pages", 24), (None, None)], "acme$published requires every write to name the tables", id="uncaptured-under-the-run-rule"
+            True,
+            [(PAGES, 24), (SURVEY, 3)],
+            "acme$published requires every write to name the tables it was made from, and 1 of this project's item sources is a table"
+            " outside the lakehouse, which no lakehouse write can name: publish into a namespace that does not require a run",
+            id="outside-the-lakehouse-under-the-run-rule",
         ),
-        pytest.param(False, [("acme$media$pages", 24), (None, None)], None, id="uncaptured-with-no-run-rule"),
-        pytest.param(False, [(f"acme$media$t{i}", 1) for i in range(65)], "one publish names at most 64 inputs", id="more-inputs-than-one-run-names"),
+        pytest.param(False, [(PAGES, 24), (SURVEY, 3)], None, id="outside-the-lakehouse-with-no-run-rule"),
+        pytest.param(False, [(f"lake~acme$media$t{i}", 1) for i in range(65)], "one publish names at most 64 inputs", id="more-inputs-than-one-run-names"),
     ],
 )
 async def test_a_publish_the_catalog_could_not_take_fails_before_it_writes(
     store: AnnotatorStore, run_rule: bool, sources: list[tuple[str | None, int | None]], refusal: str | None
 ) -> None:
     """Every item's input is named or the run rule cannot be met, and the publish says so in plain words before any
-    table is created; with no run rule an uncaptured item publishes and names no input."""
+    table is created; with no run rule an uncaptured item, or one read from a table outside the lakehouse, publishes and
+    names no input."""
     project_id = await _publishing(store, *((f"t{i:02d}", TaskState.ACCEPTED, 1, table, version) for i, (table, version) in enumerate(sources)))
     publisher = _Publisher(run_rule=run_rule)
 
@@ -351,7 +367,7 @@ async def test_a_publish_the_catalog_could_not_take_fails_before_it_writes(
 
     project = await _state(store, project_id)
     assert publisher.creates == (1 if refusal is None else 0)
-    assert publisher.inputs == ([("acme$media$pages", 24)] if refusal is None else None)
+    assert publisher.inputs == ([(PAGES, 24)] if refusal is None else None)
     assert project.state is (ProjectState.PUBLISHED if refusal is None else ProjectState.PUBLISH_FAILED)
     if refusal is not None:
         assert project.publish_error is not None and refusal in project.publish_error

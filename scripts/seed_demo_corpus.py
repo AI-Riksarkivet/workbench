@@ -34,9 +34,11 @@ query for a common word returns MANY hits across MANY documents.
 This is a DEV FIXTURE, not production data. Every image and sound is made here rather than shipped as a binary, so the
 fixture stays reviewable in a diff.
 
-    uv run python scripts/seed_demo_corpus.py <root>
+    uv run python scripts/seed_demo_corpus.py [--once] <root>
 
-Then run the media services with the declaration copied into ``<root>`` (`scripts/local-stack.sh` does both).
+Then run the media services with the declaration copied into ``<root>`` (`scripts/local-stack.sh` does both). The media
+image carries this file (`.docker/media.dockerfile`), and the chart's demo Job runs it there with ``--once`` into the
+volume its demo source reads (`chart/templates/demo.yaml`).
 """
 
 from __future__ import annotations
@@ -830,13 +832,48 @@ def seed_loose(root: str) -> str:
     return path
 
 
+#: The file a completed seed leaves under its root, written after every table; its presence is what ``--once`` reads.
+SEEDED_MARKER = ".seeded"
+
+
+def _mark_seeded(root: str) -> None:
+    """Record that every table under ``root`` was written, by a rename, so a seed cut short leaves no marker.
+
+    The tree is flushed to the disk before the marker is, and the marker's rename after it: a node that crashes cannot
+    leave a marker standing over tables still in its page cache."""
+    os.sync()
+    pending = os.path.join(root, f"{SEEDED_MARKER}.pending")
+    with open(pending, "w", encoding="utf-8") as marker:
+        marker.write("seeded by scripts/seed_demo_corpus.py\n")
+        marker.flush()
+        os.fsync(marker.fileno())
+    os.replace(pending, os.path.join(root, SEEDED_MARKER))
+    directory = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def main() -> None:
     """Seed every demo source under one root: the stamped datasets in ``<root>/lakehouse`` (a directory catalog standing
     in for a lakehouse), an unstamped table in ``<root>/archive`` and a bare table at ``<root>/loose/scans.lance``, the
-    three the local stack declares (`scripts/local-sources.json`)."""
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: seed_demo_corpus.py <root>")
-    root = sys.argv[1]
+    three the local stack declares (`scripts/local-sources.json`).
+
+    With ``--once`` (the chart's demo Job, `chart/templates/demo.yaml`), a root a completed seed already filled is left
+    as it is and the run exits 0, so a release installed again from git never rewrites data a person's annotations refer
+    to; a root holding a seed cut short (no marker) is seeded again from nothing, which every table's drop-and-create
+    makes safe. Without it every table is rewritten, as the local stack wants on each start."""
+    args = sys.argv[1:]
+    once = args[:1] == ["--once"]
+    if once:
+        args = args[1:]
+    if len(args) != 1:
+        raise SystemExit("usage: seed_demo_corpus.py [--once] <root>")
+    root = args[0]
+    if once and os.path.exists(os.path.join(root, SEEDED_MARKER)):
+        print(f"{root} holds a completed seed ({SEEDED_MARKER}): nothing written")
+        return
     properties = {"root": os.path.join(root, "lakehouse")}
     client, connection = lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties)
     for dataset in seed(client, connection, DEFAULT_WAREHOUSE):
@@ -848,6 +885,7 @@ def main() -> None:
     for dataset in seed_archive(os.path.join(root, "archive")):
         print(f"seeded archive {dataset} (no descriptor)")
     print(f"seeded {seed_loose(os.path.join(root, 'loose'))} (a bare table)")
+    _mark_seeded(root)
 
 
 if __name__ == "__main__":

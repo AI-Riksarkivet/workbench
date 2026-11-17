@@ -56,6 +56,11 @@ class Publisher(Protocol):
     the `CREATE` RunEvent with the caller's verified identity.
     """
 
+    @property
+    def lakehouse(self) -> str:
+        """The name of the lakehouse source it writes to (`client_kit.sources`): only that source's tables are inputs."""
+        ...
+
     async def create_table(
         self,
         table_id: str,
@@ -103,6 +108,23 @@ def table_id_for(project: AnnotationProject, publish_id: str, namespace: str) ->
     are two datasets and must not collide. The slug is carried for human legibility only.
     """
     return f"{namespace}{CATALOG_DELIMITER}{project.slug}_{publish_id[:12]}"
+
+
+def _run_rule_refusal(namespace: str, uncaptured: int, outside: int) -> str:
+    """Why a namespace under the run rule refuses this publish, naming only the causes that hold and the remedy each has:
+    an item source with no captured version is sent again; a table outside the lakehouse can never be named, so only
+    another namespace takes it."""
+    causes = []
+    if uncaptured:
+        causes.append(f"{uncaptured} of this project's item sources recorded no version of a catalog table (send those items again from their dataset)")
+    if outside:
+        verb = "is a table" if outside == 1 else "are tables"
+        causes.append(f"{outside} of this project's item sources {verb} outside the lakehouse, which no lakehouse write can name")
+    if not causes:
+        causes.append("none of this project's items named a table")
+    return (
+        f"{namespace} requires every write to name the tables it was made from, and {'; '.join(causes)}: publish into a namespace that does not require a run"
+    )
 
 
 class LostLease(Exception):
@@ -174,18 +196,14 @@ async def run_publish(
         # §7.2: every captured (table, version) is an input, and none is fabricated. Refused before anything is written
         # when the catalog could not take them: more than one run may name, or, under the run rule, any item that
         # captured none.
-        inputs = publish_inputs(plan)
+        inputs = publish_inputs(plan, publisher.lakehouse)
         if len(inputs.tables) > MAX_INPUTS:
             raise PublishRefusal(
                 f"the project's items came from {len(inputs.tables)} table versions, and one publish names at most {MAX_INPUTS} inputs: "
                 "split the items across projects"
             )
-        if (inputs.uncaptured or not inputs.tables) and await publisher.requires_run(namespace):
-            raise PublishRefusal(
-                f"{namespace} requires every write to name the tables it was made from, and {inputs.uncaptured} of this project's item "
-                "sources recorded no version of a catalog table: send those items again from their dataset, or publish into a namespace "
-                "that does not require a run"
-            )
+        if (inputs.uncaptured or inputs.outside or not inputs.tables) and await publisher.requires_run(namespace):
+            raise PublishRefusal(_run_rule_refusal(namespace, inputs.uncaptured, inputs.outside))
 
         await step(f"creating table {table_id}")
         version = await publisher.create_table(

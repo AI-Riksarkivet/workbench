@@ -111,12 +111,16 @@ class CatalogPublisher:
         self._token = token
         self._originator = originator
 
+    @property
+    def lakehouse(self) -> str:
+        return self._source
+
     def _in_lakehouse(self, table: str) -> list[str]:
-        """A captured input's lakehouse id: its qualified name (``<source>~<id>``, `client_kit.sources`) without the source,
-        which a send admits only from the lakehouse (`annotator.corpus.not_annotatable`).
+        """A captured input's lakehouse id: its qualified name (``<source>~<id>``, `client_kit.sources`) without the source;
+        the saga passes only the lakehouse's own tables as inputs (`annotator.projects.publish.publish_inputs`).
 
         Raises:
-            PublishRefusal: The input names another source, which no send admits.
+            PublishRefusal: The input names another source.
         """
         source, separator, identifier = table.partition(SOURCE_SEPARATOR)
         if not separator or source != self._source:

@@ -73,19 +73,44 @@ forwardedAllowIps: 127.0.0.1
 # (`<release>-sources`, `client_kit.sources`); several in one release, each a dataset id's prefix (`<name>~<namespace>`):
 # - `kind: rask`: a rask lakehouse by its catalog's REST door (`uri`, `http://<rask>-catalog.<namespace>:2333`), read as
 #   the person (`identity: person`, under `auth.lakehouse`: the lakehouse decides every read) or as the workbench's own
-#   client (`service`: the workbench decides, by `readers`). At most one; only its datasets are annotated and
-#   published to, and only it is sent a token.
+#   client (`service`: the workbench decides, by `readers`). At most one; its datasets are always annotated, it alone
+#   holds the annotation tables and is published to, and only it is sent a token.
 # - `kind: namespace`: any lance-namespace implementation (`impl`, `dir` or `rest`) and its `properties`; with `claim`,
-#   a PersistentVolumeClaim mounted read-only as the `dir` root. Its tables are read only under its `dir` root or the
+#   a PersistentVolumeClaim mounted read-only as the `dir` root (or its `path` on the claim). Its tables are read only
+#   under its `dir` root or the
 #   store prefixes `locations` names (required for any other `impl`), on the `storage` options it declares.
 # - `kind: tables`: a bare Lance table (`uri` ending `.lance`) or a directory of them, by `uri`, or by `path` on a
 #   `claim`; `storage` names object-store options (a region, an endpoint).
-# Read-only every one but the lakehouse. No source names a credential: properties and storage options are held to the
+# Read-only every one but the lakehouse. A `namespace` or `tables` source's items may be sent to a project and labelled
+# only when it is marked `annotatable: true` (a boolean, false when left out; refused on a lakehouse, which always is, and
+# beside no lakehouse, which alone holds annotations). No source names a credential: properties and storage options are held to the
 # allow-list in `files/source-keys.json`, and a store is reached on the catalog's vend or the workload's own identity
 # (`storeIdentity`). Every source but a lakehouse read as the person names its `readers`
 # (`{orgs: [<org>], people: [<idp-id>~<subject>]}`), the only people who may read it; with none, nobody may. Each takes
 # a `title` the dataset list shows.
 sources: []
+
+# DEVELOPMENT ONLY: the workbench's own demo data, read with no lakehouse (`templates/demo.yaml`). On, the release renders
+# a PersistentVolumeClaim `<release>-demo` and a Job that fills it once, from the media image, with the demo corpus,
+# recordings and films the local stack uses (`scripts/seed_demo_corpus.py`: a directory catalog at `lakehouse/` holding
+# `demo$corpus`, `demo$recordings` and `demo$films`, beside `archive/` and `loose/`). A source in `sources` reads it:
+# `{kind: namespace, impl: dir, claim: <release>-demo, path: lakehouse, annotatable: true, readers: ...}`, which every service mounts
+# read-only; the render refuses `demo.enabled` with no source naming the claim. A second run over a filled volume writes
+# nothing, and the claim outlives an uninstall (`helm.sh/resource-policy: keep`): only deleting it re-seeds.
+demo:
+  enabled: false
+  storage: 1Gi
+  # The claim's StorageClass; empty takes the cluster's default (k3s: local-path).
+  storageClassName: ""
+  # One writer (the Job) and every reader mount the one volume, so a multi-node cluster needs a class that serves
+  # ReadWriteMany, or every reader lands on the node that holds a ReadWriteOnce volume; a single node serves either.
+  accessModes: [ReadWriteOnce]
+  # The seed runs in about three seconds and writes about 2 MB (measured 2026-11-17 in the media image), peaking at about
+  # 310 MB resident (measured on the host the same day).
+  activeDeadlineSeconds: 600
+  resources:
+    requests: { cpu: 100m, memory: 384Mi }
+    limits: { cpu: "1", memory: 1Gi }
 
 # The workload's own identity at an object store, for a source whose store trusts the cluster's ServiceAccount tokens
 # (S3 web identity, Azure workload identity): with `audience` named, the viewer and search mount their ServiceAccount's

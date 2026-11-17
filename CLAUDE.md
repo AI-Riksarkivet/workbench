@@ -19,9 +19,15 @@ properties, through `lance_namespace.connect`) or `tables` (a bare `.lance` tabl
 directory catalog with the manifest off). A dataset is a namespace of a source that holds tables, at any depth, and its
 id is `<source>~<namespace>` (`lake~acme$corpus`, `scans~`). **Everything rask-only sits behind the `rask` kind** and
 nothing else: the person's lakehouse token (never sent to another source), the `x-lance-originator` and `x-rask-*`
-headers, the warehouse-first id rule, annotation and publish. Every other source is read-only and read with no token,
-through `client_kit.lancekit.confined.ConfinedNamespace` (only the names it lists, only under its declared locations, on
-its declared storage options). **Who reads what:** a lakehouse read as the person decides every read itself; every other
+headers, the warehouse-first id rule, the annotation tables and publish. Every other source is read-only and read with no
+token, through `client_kit.lancekit.confined.ConfinedNamespace` (only the names it lists, only under its declared
+locations, on its declared storage options). **What is labelled** (owner, 2026-11-17: "Only if marked"): a lakehouse's
+datasets always; any other source's only when git marks it `annotatable: true` (`client_kit.sources.annotatable`, the
+one function the send door, `annotator.corpus.resolve`, the default-dataset check and the app's send gate read, through
+the descriptor's `read_only` reason "source '<name>' is not marked annotatable"). Its items record their table and
+version at send like a lakehouse's, its annotations go to the lakehouse's annotations namespace like every annotation,
+and a publish names only the lakehouse's tables as lineage inputs while every published row names its item's table and
+version (`item_table`, `item_table_version`). **Who reads what:** a lakehouse read as the person decides every read itself; every other
 source, and a lakehouse read as the workbench (`identity: service`), is decided by the workbench's own OpenFGA, `reader`
 on `source:<name>` from the source's `readers` in git (`client_kit.media.source_gate`; none means nobody). No source
 names a credential: properties and storage options are an allow-list (`client_kit.source_keys`, the chart's copy in
@@ -186,7 +192,7 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 | First-time setup | `make install` (uv sync, bun install, prek hooks, Claude Code plugins) |
 | Run it locally with real data | `make local`: installs, seeds three demo sources under `LOCAL_CATALOG` (`scripts/seed_demo_corpus.py`, declared by `scripts/local-sources.json`): a stamped page corpus (with an atlas, a topic tree and a small knowledge graph), an audio dataset and a video dataset (two short WebM films with sound, encoded by PyAV) in a directory catalog standing in for a lakehouse (`lake`), an unstamped table two namespaces deep in a lance-namespace directory catalog (`archive`) and a bare `.lance` table with an image blob (`scans`), each with columns a person can set an atlas, a graph and a tree up on, builds the app, and runs the viewer, search, annotator and flows with sign-in off behind the app's Gateway stand-in (`scripts/local-stack.sh`), on the loopback, printing the URL to open (http://127.0.0.1:8700/datasets; a port already in use is refused); the annotator's state runs on the pinned PostgreSQL (`make postgres`) on :8705, its data kept beside the catalog (`<catalog>-state`), and the anonymous person administers the organisation `local`, so projects can be created and labelled. Ctrl-C stops it; GNU make itself then prints `*** Interrupt`, which `bash scripts/local-stack.sh` run on its own (after `make local` once) does not |
 | Stop the local stack | `make local-stop`: stops the process `make local` recorded (`$TMPDIR/workbench-local-stack.pid`) and waits until its ports are free; `make local` checks the ports before it installs or builds anything |
-| Deploy to the development cluster | `make deploy-dev` (images by commit, the OpenFGA fixture, the Dex client, the release, the lakehouse grants, a read-back), each step its own `make dev-*`; `make undeploy-dev` removes it all (docs/DEPLOY.md) |
+| Deploy to the development cluster | `make deploy-dev` (images by commit, the OpenFGA fixture, the Dex client, the release, the lakehouse grants, a read-back), each step its own `make dev-*`; `make undeploy-dev` removes it all (docs/DEPLOY.md). The dev release also reads demo data of its own, the source `demo` (the corpus, recordings and films `make local` seeds), from a claim a Job fills once with `scripts/seed_demo_corpus.py --once` (`demo.enabled`, `chart/templates/demo.yaml`), read-only like every source but a lakehouse and marked `annotatable: true`, so its items are sent to a project and labelled there |
 | The chart's renders | `make chart-check` (lint, the dev overlay, a platform's, a release with no lakehouse and one with sign-in off, and every misconfiguration the templates refuse, each rendered and failing with its own message: `scripts/chart-refusals.sh`) |
 | Tests (no live stack) | `make test` (= `uv run pytest -m "not e2e" -n 8`) |
 | One test | `uv run pytest services/<svc>/tests/<file>.py::<test>` |
@@ -276,7 +282,8 @@ Two language-pure planes, as in rask; never blur them.
 - `chart/`: the workbench's release (the annotator, the viewer and search from the `media` image, the app, the
   annotator's Postgres and the model writer), every object named from the release; it reads the `sources` its values
   declare (`<release>-sources`, validated at render): a rask lakehouse by reference, any other source by URI or on a
-  claim, so it runs with no rask at all.
+  claim (at a `path` on it), so it runs with no rask at all. Development only, `demo` renders the claim and the Job
+  (the media image, which carries the seeder) that fills it once for the demo source.
 - `deploy/`: the development estate's overlay (`values-dev.yaml`), the clients it supplies to rask's dev Dex
   (`dex-client.yaml`), and `fixtures/openfga`, the workbench's own development OpenFGA. `docs/DEPLOY.md` says how a
   release is installed on the development cluster (`make deploy-dev`) and on a platform.

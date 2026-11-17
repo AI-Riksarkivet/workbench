@@ -285,7 +285,7 @@ const PLAIN_ROWS = [
 	media: {},
 	score: null as number | null,
 }));
-const READ_ONLY = "source 'archive' is read-only: only a rask lakehouse's datasets are annotated";
+const READ_ONLY = "source 'archive' is not marked annotatable";
 const NOT_WRITTEN =
 	'the catalog lists it, but holds no version of it to read: declared and never written, or its data removed';
 const PLAIN_FACTS = {

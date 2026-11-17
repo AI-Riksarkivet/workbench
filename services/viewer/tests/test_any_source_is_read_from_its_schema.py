@@ -2,7 +2,8 @@
 
 Driven through the real viewer app over HTTP on real pylance: a lakehouse stand-in (a directory catalog laid out as rask's),
 a lance-namespace directory catalog with tables at its root and three namespaces deep, and a bare ``.lance`` table by
-path (`client_kit.sources`). The plain table is paged, sorted where Lance orders a column, searched where a full-text
+path (`client_kit.sources`), the bare table marked annotatable and the directory catalog not, so each dataset says
+whether it can be sent to a project and why not. The plain table is paged, sorted where Lance orders a column, searched where a full-text
 index is, ranked where a vector index is, and refuses each of these where the table cannot answer it; a row's image cell
 is named by its bytes and served through a signed media URL. Every read is bounded: a page starts no deeper than
 `MAX_OFFSET`, a cell's text and list are cut at the read, a plain binary cell is never read, and a version, row or seed
@@ -78,7 +79,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     sources = [
         {"kind": "rask", "name": LAKE, "dir": str(tmp_path / "lake"), "identity": "none"},
         {"kind": "namespace", "name": "archive", "impl": "dir", "properties": {"root": str(archive)}},
-        {"kind": "tables", "name": "scans", "uri": str(tmp_path / "loose" / "scans.lance")},
+        {"kind": "tables", "name": "scans", "uri": str(tmp_path / "loose" / "scans.lance"), "annotatable": True},
     ]
     settings = ViewerSettings.model_validate({"WORKBENCH_SOURCES": sources, "VIEWER_MEDIA_URL_KEY_FILE": str(key)})
     app = create_viewer_app(settings)
@@ -90,15 +91,16 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
 ROWS = "/api/datasets/archive~a$b$c/tables/observations/rows"
 
 
+UNMARKED = "source 'archive' is not marked annotatable"
+
+
 def test_every_source_lists_its_datasets_whatever_their_depth(client: TestClient) -> None:
     listed = client.get("/api/datasets").json()["sources"]
 
-    assert [
-        (s["name"], s["kind"], [(d["id"], d["stamped"], sorted(d["tables"]), d["read_only"] is None) for d in s["datasets"]], s["unlisted"]) for s in listed
-    ] == [
-        ("lake", "rask", [("lake~acme$corpus", True, ["chunks"], True)], []),
-        ("archive", "namespace", [("archive~", False, ["at_root", "wide"], False), ("archive~a$b$c", False, ["observations"], False)], []),
-        ("scans", "tables", [("scans~", False, ["scans"], False)], []),
+    assert [(s["name"], s["kind"], [(d["id"], d["stamped"], sorted(d["tables"]), d["read_only"]) for d in s["datasets"]], s["unlisted"]) for s in listed] == [
+        ("lake", "rask", [("lake~acme$corpus", True, ["chunks"], None)], []),
+        ("archive", "namespace", [("archive~", False, ["at_root", "wide"], UNMARKED), ("archive~a$b$c", False, ["observations"], UNMARKED)], []),
+        ("scans", "tables", [("scans~", False, ["scans"], None)], []),
     ]
 
 

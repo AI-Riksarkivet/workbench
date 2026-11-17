@@ -37,6 +37,7 @@ import pyarrow as pa
 from pydantic import BaseModel, Field
 
 from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Task, TaskState
+from client_kit.source_names import SOURCE_SEPARATOR
 from service_kit.naming import CATALOG_DELIMITER, is_safe_project
 
 
@@ -69,6 +70,12 @@ PUBLISHED_LABELS_SCHEMA: Final[pa.Schema] = pa.schema(
         ("item_source_kind", pa.string()),
         ("item_dataset", pa.string()),
         ("item_key_path", pa.string()),
+        # The table the item's row was read from (`<source>~<id>`, any source the item came from) and the version the
+        # sender saw, as the send recorded and checked them (`ItemSource.table`, `dataset_version`); null where the
+        # send captured none. Only a lakehouse's are also the publish's lineage inputs (`publish_inputs`), so these
+        # columns are where a source outside the lakehouse is named at all.
+        ("item_table", pa.string()),
+        ("item_table_version", pa.int64()),
         # the label
         ("annotation_id", pa.string()),
         ("shape_type", pa.string()),  # bbox|polygon|mask|segment|tag|text|none
@@ -228,6 +235,8 @@ def _row(
         "item_source_kind": source.kind,
         "item_dataset": source.where or "",
         "item_key_path": source.keys[0] if source.keys else "",
+        "item_table": source.table,
+        "item_table_version": source.dataset_version if source.table else None,
         "annotation_id": shape.shape_id if shape else "",
         "shape_type": shape.shape_type if shape else NO_SHAPE,
         "x": shape.x if shape else None,
@@ -372,23 +381,32 @@ class PublishInputs(BaseModel):
     tables: list[tuple[str, int]] = Field(default_factory=list)
     #: Sources that name no input: a table recorded with no captured version, and items whose source names no table.
     uncaptured: int = 0
+    #: Captured table versions of a source other than the lakehouse: recorded in the published rows (`item_table`), and
+    #: never an input, since a lakehouse commit names only the lakehouse's own tables.
+    outside: int = 0
 
 
-def publish_inputs(plan: PublishPlan) -> PublishInputs:
-    """The inputs a publish names (§7.2): every table version its items captured at send, never fabricated.
+def publish_inputs(plan: PublishPlan, lakehouse: str) -> PublishInputs:
+    """The inputs a publish names (§7.2): every version of a ``lakehouse`` table its items captured at send, never
+    fabricated.
 
-    A plan's sources are only the tables the server stamped at send (`ItemSource.table`), each a governed table the
-    sender could read, so every captured pair is a table reference the catalog can check; a version not captured counts
-    as uncaptured with the items that named no table. The catalog takes several datasets and several versions alike."""
+    A plan's sources are only the tables the server stamped at send (`ItemSource.table`, ``<source>~<id>``), each a table
+    the sender could read, so every captured pair of the lakehouse is a table reference the catalog can check; one of
+    another source counts as outside, and a version not captured as uncaptured, with the items that named no table. The
+    catalog takes several datasets and several versions alike."""
     tables: list[tuple[str, int]] = []
     uncaptured = plan.sources_uncaptured
+    outside = 0
     for table, versions in plan.dataset_versions.items():
+        source, _, _ = table.partition(SOURCE_SEPARATOR)
         for version in versions:
             if version is None:
                 uncaptured += 1
+            elif source != lakehouse:
+                outside += 1
             else:
                 tables.append((table, version))
-    return PublishInputs(tables=sorted(tables), uncaptured=uncaptured)
+    return PublishInputs(tables=sorted(tables), uncaptured=uncaptured, outside=outside)
 
 
 def table_properties(project: AnnotationProject, plan: PublishPlan) -> dict[str, str]:

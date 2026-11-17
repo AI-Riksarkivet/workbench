@@ -1,0 +1,128 @@
+{{- /*
+DEVELOPMENT ONLY: the workbench's own demo data, a source of its own that needs no lakehouse. A PersistentVolumeClaim
+(`<release>-demo`) that a Job fills once with the demo corpus, recordings and films (`scripts/seed_demo_corpus.py`, which
+the media image carries), and that every service reading sources mounts READ-ONLY through the source naming it as its
+`claim` (`workbench.sourcesMount`): only this Job mounts it writable.
+
+The Job is a plain object of the release, not a hook: a hook re-runs and blocks every upgrade, and Argo CD would map it
+to a sync hook of its own. Its pod template is immutable, so its name carries the digest of that whole rendered
+template (the image, its pull policy, the command, the claim, the resources and every other field): a release that
+changes none of it leaves the completed Job as it is, and one that changes any of it replaces it with a Job of a new name. Every run is `--once`: a volume a completed seed filled is left untouched and
+the run exits 0, so a reinstall from git converges on the data already there and never rewrites tables a person's
+annotations name. The claim is kept when the release is uninstalled (`helm.sh/resource-policy: keep`); deleting it,
+or the namespace, is the only way the data goes.
+*/ -}}
+{{- if .Values.demo.enabled }}
+{{- $d := .Values.demo -}}
+{{- $m := .Values.media -}}
+{{- $claim := include "workbench.demoClaim" . -}}
+{{- $named := false -}}
+{{- range .Values.sources }}{{ if eq (toString .claim) $claim }}{{ $named = true }}{{ end }}{{ end -}}
+{{- if not $named }}{{ fail (printf "demo.enabled fills the claim %s, and no source names it as its `claim`: declare the demo source in `sources`" $claim) }}{{ end -}}
+{{- $selector := dict "app.kubernetes.io/name" "workbench" "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "demo-seed" -}}
+{{- $image := printf "%s:%s" $m.image.repository (required "media.image.tag must be set" $m.image.tag) -}}
+{{- $mount := "/var/lib/workbench/demo" -}}
+{{- $args := list "python" "/opt/workbench/seed_demo_corpus.py" "--once" $mount -}}
+{{- $pod := include "workbench.demoSeedPod" (dict "release" .Release.Name "selector" $selector "image" $image "pullPolicy" $m.image.pullPolicy "args" $args "resources" $d.resources "mount" $mount "claim" $claim) -}}
+{{- /* The digest is of the whole rendered pod template: any field a Job cannot change in place names a new Job. */ -}}
+{{- $digest := $pod | sha256sum | trunc 10 -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels:
+    app.kubernetes.io/name: workbench
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: demo
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml $d.accessModes | nindent 4 }}
+  {{- with $d.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $d.storage }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-demo-seed
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-demo-seed-%s" .Release.Name $digest }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ $d.activeDeadlineSeconds }}
+  template:
+    {{- $pod | nindent 4 }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# The seed reaches nothing and is reached by nothing: it writes files to its volume.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-demo-seed
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+{{- end }}
+{{- end }}
+
+{{- /* The seed Job's pod template, rendered once: the Job carries it, and its digest names the Job. */}}
+{{- define "workbench.demoSeedPod" -}}
+metadata:
+  labels:
+    {{- toYaml .selector | nindent 4 }}
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ .release }}-demo-seed
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    # A volume whose root the kubelet can hand to a group (most block volumes) is made writable to the seed, which
+    # runs as the image's uid 10001; local-path's volume is created world-writable and ignores it. The readers read
+    # the files the seed leaves world-readable (0644, directories 0755), whatever their group.
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: seed
+      image: {{ .image | quote }}
+      imagePullPolicy: {{ .pullPolicy }}
+      args:
+        {{- toYaml .args | nindent 8 }}
+      env:
+        # The root filesystem is read-only: anything a library caches goes to the scratch volume.
+        - { name: HOME, value: /tmp }
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        {{- toYaml .resources | nindent 8 }}
+      volumeMounts:
+        - { name: tmp, mountPath: /tmp }
+        - { name: demo, mountPath: {{ .mount }} }
+  volumes:
+    - { name: tmp, emptyDir: { sizeLimit: "256Mi" } }
+    - name: demo
+      persistentVolumeClaim: { claimName: {{ .claim }} }
+{{- end }}

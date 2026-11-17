@@ -198,12 +198,12 @@ test('a maximized graph stays maximized when an entity is picked, beside its det
 	await expect(page).toHaveURL(/max=graph/);
 });
 
-test('a dataset in a read-only source offers no send: each send control says why', async ({
+test('a dataset of a source not marked annotatable offers no send: each send control says why', async ({
 	page,
 	context,
 }) => {
 	await signIn(context, person('Ada'));
-	const why = "source 'scans' is read-only: only a rask lakehouse's datasets are annotated";
+	const why = "source 'scans' is not marked annotatable";
 	await page.route('**/api/viewer/api/datasets/lake~acme%24letters', async (route) => {
 		const answer = await route.fetch();
 		await route.fulfill({

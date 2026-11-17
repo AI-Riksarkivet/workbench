@@ -80,44 +80,57 @@ refuses "auth.oidc.client.secret.name: the Secret holding the workbench client's
 refuses "auth.fga.apiUrl: the platform's OpenFGA" "${APIS[@]}" "${BASE[@]}" --set auth.fga.apiUrl=
 refuses "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" "${APIS[@]}" "${BASE[@]}" --set otel.endpoint=
 
-# The sources: each a name and a kind, no credential, at most one lakehouse.
+# The sources: each a name and a kind, no credential, at most one lakehouse. A source added here is `sources[2]`, past
+# the overlay's own two: `--set` on an index the overlay holds merges into that entry rather than replacing it.
 refuses "sources: declare at least one source the workbench reads" "${APIS[@]}" "${BASE[@]}" --set sources=null
+refuses "sources[2].path is a directory on the source's \`claim\`, and it names none" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=t' --set 'sources[2].kind=tables' --set 'sources[2].uri=s3://bucket/t.lance' --set 'sources[2].path=t.lance'
+refuses 'sources[1].path "../other" leaves its claim' "${APIS[@]}" "${BASE[@]}" --set 'sources[1].path=../other'
+refuses "sources[1].annotatable is true or false, not yes" "${APIS[@]}" "${BASE[@]}" --set 'sources[1].annotatable=yes'
+refuses "sources[0].annotatable: a rask lakehouse's datasets are always annotated" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[0].annotatable=false'
+refuses "sources: demo is marked annotatable, and no rask lakehouse holds the annotations" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[0].kind=tables' --set 'sources[0].uri=s3://bucket/t.lance'
+
+# The demo volume is filled only for a source that reads it.
+refuses "demo.enabled fills the claim workbench-demo, and no source names it as its \`claim\`" \
+  "${APIS[@]}" "${BASE[@]}" --set 'sources[1].claim=elsewhere'
 refuses 'sources[0].name "Lake" is not a DNS label' "${APIS[@]}" "${BASE[@]}" --set 'sources[0].name=Lake'
 refuses 'sources: the name "lake" is declared twice' "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=lake' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://b/t.lance'
+  --set 'sources[2].name=lake' --set 'sources[2].kind=tables' --set 'sources[2].uri=s3://b/t.lance'
 refuses 'sources[0].kind "parquet" is rask, namespace or tables' "${APIS[@]}" "${BASE[@]}" --set 'sources[0].kind=parquet'
 refuses "sources: at most one source is a rask lakehouse" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=other' --set 'sources[1].kind=rask' --set 'sources[1].uri=http://other.example'
+  --set 'sources[2].name=other' --set 'sources[2].kind=rask' --set 'sources[2].uri=http://other.example'
 refuses "sources[0].uri: the lakehouse catalog's REST door" "${APIS[@]}" "${BASE[@]}" --set 'sources[0].uri=null'
 refuses "sources[0].identity is person or service" "${APIS[@]}" "${BASE[@]}" --set 'sources[0].identity=none'
 refuses "sources[0].readers: a lakehouse read as the person decides every read itself" \
   "${APIS[@]}" "${BASE[@]}" --set 'sources[0].readers.orgs[0]=acme'
 refuses "sources[0]: a rask lakehouse is reached at its catalog's \`uri\`, never on a claim" \
   "${APIS[@]}" "${BASE[@]}" --set 'sources[0].claim=lake'
-refuses "sources[1].impl: the lance-namespace implementation" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=ns' --set 'sources[1].kind=namespace'
-refuses 'sources[1].impl "nope" takes no declared property a source may name' "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=ns' --set 'sources[1].kind=namespace' --set 'sources[1].impl=nope'
-refuses "sources[1].properties.password is not one a dir source may declare" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=ns' --set 'sources[1].kind=namespace' --set 'sources[1].impl=dir' \
-  --set 'sources[1].properties.root=/data' --set 'sources[1].properties.password=x'
-refuses "sources[1]: a dir source names its \`root\`, or a \`claim\`" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=ns' --set 'sources[1].kind=namespace' --set 'sources[1].impl=dir'
-refuses "sources[1].locations: the store prefixes its tables may lie under" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=ns' --set 'sources[1].kind=namespace' --set 'sources[1].impl=rest' \
-  --set 'sources[1].properties.uri=https://ns.example'
-refuses "sources[1]: a tables source names its \`uri\`, or a \`path\` on its \`claim\`" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=t' --set 'sources[1].kind=tables'
+refuses "sources[2].impl: the lance-namespace implementation" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=ns' --set 'sources[2].kind=namespace'
+refuses 'sources[2].impl "nope" takes no declared property a source may name' "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=ns' --set 'sources[2].kind=namespace' --set 'sources[2].impl=nope'
+refuses "sources[2].properties.password is not one a dir source may declare" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=ns' --set 'sources[2].kind=namespace' --set 'sources[2].impl=dir' \
+  --set 'sources[2].properties.root=/data' --set 'sources[2].properties.password=x'
+refuses "sources[2]: a dir source names its \`root\`, or a \`claim\`" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=ns' --set 'sources[2].kind=namespace' --set 'sources[2].impl=dir'
+refuses "sources[2].locations: the store prefixes its tables may lie under" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=ns' --set 'sources[2].kind=namespace' --set 'sources[2].impl=rest' \
+  --set 'sources[2].properties.uri=https://ns.example'
+refuses "sources[2]: a tables source names its \`uri\`, or a \`path\` on its \`claim\`" "${APIS[@]}" "${BASE[@]}" \
+  --set 'sources[2].name=t' --set 'sources[2].kind=tables'
 refuses "carries a user or password: a source declares no credential" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=t' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://me:pw@bucket/t.lance'
+  --set 'sources[2].name=t' --set 'sources[2].kind=tables' --set 'sources[2].uri=s3://me:pw@bucket/t.lance'
 refuses "carries a query or fragment, as a pre-signed URL does" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=t' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://bucket/t.lance?X-Amz-Signature=1'
+  --set 'sources[2].name=t' --set 'sources[2].kind=tables' --set 'sources[2].uri=s3://bucket/t.lance?X-Amz-Signature=1'
 refuses "names a credential file outside" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=t' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://bucket/t.lance' \
-  --set 'sources[1].storage.aws_web_identity_token_file=/etc/token'
+  --set 'sources[2].name=t' --set 'sources[2].kind=tables' --set 'sources[2].uri=s3://bucket/t.lance' \
+  --set 'sources[2].storage.aws_web_identity_token_file=/etc/token'
 refuses "is not a storage option a source may declare" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[1].name=t' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://bucket/t.lance' \
-  --set 'sources[1].storage.aws_secret_access_key=x'
+  --set 'sources[2].name=t' --set 'sources[2].kind=tables' --set 'sources[2].uri=s3://bucket/t.lance' \
+  --set 'sources[2].storage.aws_secret_access_key=x'
 
 if [ "$failed" -gt 0 ]; then
   echo "$failed of $checked refusals did not fire as declared" >&2

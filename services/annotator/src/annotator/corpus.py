@@ -1,10 +1,11 @@
 """The annotator's corpus: media datasets read as the person, through lance-namespace (ADR 0171).
 
-A media dataset is a lakehouse namespace and its tables are governed tables; only a lakehouse's datasets are annotated
-(`client_kit.sources`). Each is opened through the namespace with the
-person's bearer (the media registry, :mod:`client_kit.lancekit.registry`), so pylance asks `DescribeTable` for the
-credential the catalog vends that person and reads with it. The annotator holds no store credential, so there is no
-other way in, and a table the person may not read is refused at the catalog.
+A media dataset is a namespace of a declared source (`client_kit.sources`): a lakehouse's are always annotated, any
+other source's only where git marks it annotatable (`client_kit.sources.annotatable`). A lakehouse's is opened through
+the namespace with the person's bearer (the media registry, :mod:`client_kit.lancekit.registry`), so pylance asks
+`DescribeTable` for the credential the catalog vends that person and reads with it, and a table the person may not read
+is refused at the catalog. Any other source is read with no token through its confined namespace, after the workbench's
+own check that the person reads it (`client_kit.media.source_gate`). The annotator holds no store credential.
 
 A dataset's declared roles (row identity, the document binding) come from the `lance_media.descriptor` stamp on one of
 its tables, checked against the tables before a route uses them.
@@ -52,8 +53,8 @@ def resolve(state: AppState, dataset_id: str | None, caller: LakehouseCaller) ->
     the threadpool."""
     handle = dataset_handle(state, dataset_id, caller)
     if handle.descriptor.read_only is not None:
-        # Only a lakehouse's data is annotated (`client_kit.sources.annotatable`): nothing of another source is sent to a
-        # project, labelled or published, so no write can follow from reading it.
+        # A source git does not mark annotatable (`client_kit.sources.annotatable`) is never sent to a project, labelled
+        # or published, so no write can follow from reading it.
         raise ConflictError(f"dataset {handle.id!r} cannot be annotated: {handle.descriptor.read_only}")
     return Corpus(id=handle.id, declared=handle.declared, handle=handle)
 
@@ -75,8 +76,8 @@ def _is_table(client: lance_namespace.LanceNamespace, identifier: list[str]) -> 
 
 
 def not_annotatable(state: AppState, names: list[str]) -> list[str]:
-    """Why each of ``names`` that belongs to a source other than a lakehouse cannot be annotated; a name naming no declared
-    source is left to the catalog check, which answers it as unseen."""
+    """Why each of ``names`` whose source is not marked annotatable cannot be annotated; a name naming no declared source
+    is left to the catalog check, which answers it as unseen."""
     reasons: list[str] = []
     for name in names:
         try:
@@ -89,25 +90,24 @@ def not_annotatable(state: AppState, names: list[str]) -> list[str]:
 
 
 def input_tables(state: AppState, names: list[str], caller: LakehouseCaller) -> dict[str, str | None] | None:
-    """For each of ``names`` the catalog shows the caller, the governed table an item's captured version is a version of.
+    """For each of ``names`` its source shows the caller, the table an item's captured version is a version of.
 
-    A name is qualified by its source (`client_kit.sources`) and, in a lakehouse, written with its warehouse first. One of
-    three or more segments that the catalog holds as a table is a table, its own input; any other of two or more segments
-    is a dataset (a namespace, possibly nested), whose items are rows of its default search's row table: the table whose
-    version a sender captures (the zone's `rowTableVersion`), so that table at that version is what a publish of the items
-    names as its input, which a target under the run rule requires. None for a dataset that declares no search. A name
-    missing from the answer is one the caller cannot open on the canvas: absent, refused, of a source that is not
-    annotated, or a dataset with no valid descriptor. None when the catalog could not be asked.
+    A name is qualified by its source (`client_kit.sources`) and, in a lakehouse, written with its warehouse first. A name
+    its source holds as a table (in a lakehouse, one of three or more segments) is its own table; any other is a dataset
+    (a namespace, possibly nested, or a source's root), whose items are rows of its default search's row table: the table
+    whose version a sender captures (the zone's `rowTableVersion`). Every item thus records its table and version, from
+    any source marked annotatable; a publish names a lakehouse's as its lineage inputs, which a target under the run rule
+    requires, and writes every item's into its rows (`annotator.projects.publish`). None for a dataset that declares no
+    search. A name missing from the answer is one the caller cannot open on the canvas: absent, refused, of a source not
+    marked annotatable, or a dataset with no valid descriptor. None when a catalog could not be asked.
     """
     sources = state.settings.sources
     found: dict[str, str | None] = {}
     for name in names:
         try:
             located = sources.locate(name)
-            if not isinstance(located.source, RaskSource):
-                continue
             client = connect_source(located.source, person=caller.token, service=caller.service)
-            if len(located.identifier) >= 3 and _is_table(client, located.identifier):
+            if len(located.identifier) >= (3 if isinstance(located.source, RaskSource) else 1) and _is_table(client, located.identifier):
                 found[name] = name
             else:
                 corpus = resolve(state, name, caller)

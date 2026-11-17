@@ -14,10 +14,14 @@ values and the local stack writes from a file), each by a name and a kind:
   root is a table of the root namespace) with the manifest off, so a read never writes one.
 
 THE ONE SWITCH. Everything rask-specific belongs to the ``rask`` kind alone: a token addressed to the lakehouse, the
-``x-lance-originator`` and ``x-rask-*`` context headers, the warehouse-first id rule, annotation and publish. Every
-other source is plain lance-namespace or plain Lance, read with no token through a namespace that can only read
+``x-lance-originator`` and ``x-rask-*`` context headers, the warehouse-first id rule, the annotation tables and publish.
+Every other source is plain lance-namespace or plain Lance, read with no token through a namespace that can only read
 (`client_kit.lancekit.confined`), only tables it lists, only under the locations git declares, and only on the storage
 options git declares (:func:`connect_source`).
+
+WHAT IS LABELLED. A lakehouse's datasets are always annotated. Any other source's are only where git marks the source
+``annotatable: true`` (:func:`annotatable`): its rows are still only read, and the annotations, as every annotation, are
+written to the lakehouse's annotations namespace.
 
 WHO DECIDES A READ. A ``rask`` source read as the person (``identity: person``) is the lakehouse's to decide, on the
 person's own token. Every other source, and a ``rask`` source read as the workbench (``identity: service``), has no
@@ -128,7 +132,12 @@ class RaskSource(_Source):
         return self
 
 
-class NamespaceSource(_Source):
+class _LabelledOnlyIfMarked(_Source):
+    #: Whether its datasets may be sent to a project and labelled (:func:`annotatable`): off unless git marks it.
+    annotatable: bool = False
+
+
+class NamespaceSource(_LabelledOnlyIfMarked):
     """A lance-namespace implementation the allow-list knows (`client_kit.source_keys`), by name, and its properties."""
 
     kind: Literal[SourceKind.NAMESPACE] = SourceKind.NAMESPACE
@@ -163,7 +172,7 @@ class NamespaceSource(_Source):
         return self.properties.get("delimiter") or CATALOG_DELIMITER
 
 
-class TablesSource(_Source):
+class TablesSource(_LabelledOnlyIfMarked):
     """A bare Lance table (a URI ending ``.lance``) or a directory of them, read through the directory catalog's V1 shape."""
 
     kind: Literal[SourceKind.TABLES] = SourceKind.TABLES
@@ -226,6 +235,11 @@ class Sources(BaseModel):
             # One lakehouse holds the workbench's annotation tables and is where a publish lands, so a second would leave
             # both undecided.
             raise ValueError("at most one source is a rask lakehouse")
+        if not any(isinstance(source, RaskSource) for source in self.items):
+            for source in self.items:
+                if isinstance(source, _LabelledOnlyIfMarked) and source.annotatable:
+                    # Annotations are written only to a lakehouse's annotations namespace.
+                    raise ValueError(f"source {source.name!r} is marked annotatable, and no rask lakehouse holds the annotations")
         return self
 
     @classmethod
@@ -239,7 +253,7 @@ class Sources(BaseModel):
 
     @property
     def lakehouse(self) -> RaskSource | None:
-        """The rask source, which alone is annotated and published to."""
+        """The rask source, which alone holds the annotation tables and is published to."""
         return next((source for source in self.items if isinstance(source, RaskSource)), None)
 
     def named(self, name: str) -> RaskSource | NamespaceSource | TablesSource:
@@ -331,10 +345,11 @@ def workbench_decides(source: RaskSource | NamespaceSource | TablesSource) -> bo
 
 
 def annotatable(source: RaskSource | NamespaceSource | TablesSource) -> str | None:
-    """Why a dataset of ``source`` cannot be annotated, or ``None`` when it can: only a lakehouse's data is."""
-    if isinstance(source, RaskSource):
+    """Why a dataset of ``source`` cannot be annotated, or ``None`` when it can: a lakehouse's always can, and any other
+    source's only when git marks it ``annotatable``."""
+    if isinstance(source, RaskSource) or source.annotatable:
         return None
-    return f"source {source.name!r} is read-only: only a rask lakehouse's datasets are annotated"
+    return f"source {source.name!r} is not marked annotatable"
 
 
 def connect_source(

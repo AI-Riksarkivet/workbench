@@ -72,8 +72,8 @@ export function shownTab(
 /**
  * What a dataset with no workbench descriptor offers, read from one table's columns (the viewer's
  * `ColumnView`: its kind and the indices the table itself carries). Nothing is guessed: text search
- * needs a full-text index, similar rows a vector index, and annotation a lakehouse's dataset with a
- * descriptor naming its rows' identity. Each capability the table lacks carries the reason a disabled
+ * needs a full-text index, similar rows a vector index, and annotation a dataset of a source that may be
+ * annotated (a lakehouse, or one git marks annotatable) with a descriptor naming its rows' identity. Each capability the table lacks carries the reason a disabled
  * control shows. (Its Atlas, Graph and Tree are the person's to set up: `plainGates`.)
  */
 export interface PlainColumn {
@@ -263,7 +263,7 @@ export function panelGates(
 
 /**
  * Why a dataset's rows cannot be sent to a project, or null when they can: the one gate every "Send to a
- * project" control reads, for a stamped dataset (its source's read-only reason, `facts.read_only`) and a
+ * project" control reads, for a stamped dataset (why its source may not be annotated, `facts.read_only`) and a
  * plain one (which also lacks a descriptor naming its rows' identity, `plainPanes`).
  */
 export function sendGate(

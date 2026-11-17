@@ -6,9 +6,10 @@ What: the workbench's own OpenFGA model (`service_kit/governed/auth/model.fga`):
 a project's five concentric roles (owner > manager > reviewer > annotator > viewer), and the tasks and corpora that
 inherit from a project. The annotator never asks the lakehouse what a person may do in the annotator.
 
-Data: a corpus is a lakehouse's (only a lakehouse's data is annotated). Read as the person (``identity: person``), the
-lakehouse decides, on a token the annotator exchanges or passes on for them (`CallerDep`); read as the workbench
-(``identity: service``), the workbench's own store decides first, `reader` on its source (`READS_DATASET`). Annotations
+Data: a corpus is a lakehouse's, or one of a source git marks annotatable (`client_kit.sources.annotatable`). Read as the
+person (``identity: person``), the lakehouse decides, on a token the annotator exchanges or passes on for them
+(`CallerDep`); read as the workbench (``identity: service``), and for every other source, the workbench's own store
+decides first, `reader` on its source (`READS_DATASET`). Annotations
 are written as the workbench's own identity once the annotator's own role check has passed, naming the person in the
 commit (`annotator.annotations.commit`).
 """

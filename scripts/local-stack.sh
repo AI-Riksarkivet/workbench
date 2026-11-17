@@ -18,6 +18,10 @@
 #                       `scripts/local-sources.json` is copied there and names three sources beside it, one of each kind
 #                       (a directory catalog standing in for a lakehouse, a lance-namespace directory catalog, a bare
 #                       table), which SEED=1 writes (`scripts/seed_demo_corpus.py`)
+#   LOCAL_SOURCES       the declaration copied there (default: `scripts/local-sources.json`); another names the same
+#                       seeded directories otherwise (a demo read as a source marked annotatable beside an empty
+#                       lakehouse stand-in, say), its relative paths read beside it
+#   MEDIA_DEFAULT_DATASET  the dataset an item naming none is sent from (default: `lake~demo$corpus`)
 #   EDGE_PORT           the origin the browser uses (default 8700); serve.ts listens on EDGE_PORT + 1000
 #   VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT   the services' own ports (8701, 8702, 8703, 8704)
 #   STATE_PORT          the annotator's PostgreSQL (default 8705), the pinned server `make postgres` exports
@@ -41,7 +45,7 @@ export WORKBENCH_OIDC_ENABLED=false
 export WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED=true
 LOCAL_CATALOG="${LOCAL_CATALOG:-${TMPDIR:-/tmp}/workbench-catalog}"
 mkdir -p "$LOCAL_CATALOG"
-cp "$ROOT/scripts/local-sources.json" "$LOCAL_CATALOG/sources.json"
+cp "${LOCAL_SOURCES:-$ROOT/scripts/local-sources.json}" "$LOCAL_CATALOG/sources.json"
 export WORKBENCH_SOURCES_FILE="$LOCAL_CATALOG/sources.json"
 export MEDIA_DEFAULT_DATASET="${MEDIA_DEFAULT_DATASET:-lake~demo\$corpus}"
 

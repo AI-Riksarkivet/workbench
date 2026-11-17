@@ -114,7 +114,8 @@ app-e2e:
 image:
 	$(DAGGER) call image --name=$(NAME)
 
-# The chart renders and lints in each shape a deployment takes: the development estate's overlay, a platform's (an https
+# The chart renders and lints in each shape a deployment takes: the development estate's overlay (with its demo volume,
+# the Job that fills it and the source reading it at a path on its claim, `demo`), a platform's (an https
 # IdP that binds tokens, a rask lakehouse by reference), a release with no lakehouse at all (a directory catalog on a
 # claim and a bare table on a store), and one with sign-in off reading one table on a claim.
 CHART_APIS = --api-versions postgresql.cnpg.io/v1/Cluster --api-versions generators.external-secrets.io/v1alpha1/Password
@@ -138,6 +139,10 @@ chart-check:
 	helm template workbench chart -n workbench $(CHART_APIS) --set auth.enabled=false --set route.enabled=false \
 		--set 'sources[0].name=scans' --set 'sources[0].kind=tables' --set 'sources[0].claim=scans' --set 'sources[0].path=scans.lance' \
 		--set media.viewer.mediaUrlKey.name=wb-media >/dev/null
+	@# A Job's pod template cannot change in place: a change to any field of the demo seed's must name a new Job.
+	@seed() { helm template workbench chart -n workbench $(CHART_APIS) -f deploy/values-dev.yaml --set media.image.pullPolicy=$$1 \
+		| grep -o 'workbench-demo-seed-[0-9a-f]\{10\}' | sort -u; }; \
+		test "$$(seed IfNotPresent)" != "$$(seed Always)" || { echo "the demo seed Job keeps its name when its pod template changes" >&2; exit 1; }
 	bash scripts/chart-refusals.sh
 	helm lint deploy/fixtures/openfga/chart
 	helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) >/dev/null

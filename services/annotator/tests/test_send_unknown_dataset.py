@@ -1,4 +1,4 @@
-"""`send` refuses an item whose media dataset does not resolve, or belongs to a source that is not annotated.
+"""`send` refuses an item whose media dataset does not resolve, or belongs to a source not marked annotatable.
 
 Removal is the escape hatch; this is what stops the trap being set. An item naming a dataset that
 was renamed or removed cannot be opened on the canvas, so it can never be claimed, submitted or
@@ -87,27 +87,42 @@ def test_an_item_naming_an_unknown_dataset_is_refused(state_app: Callable[..., F
     assert held == [], "a task was written for an item that can never be opened"
 
 
+def _beside_the_lake(tmp_path: Path, *, annotatable: bool | None) -> list[dict[str, Any]]:
+    """A lakehouse stand-in and an ``archive`` directory catalog holding ``archive~field$survey`` (its row table at
+    versions 1 and 2), marked annotatable or not, or naming no mark."""
+    write_table(tmp_path / "archive", ["field", "survey", "chunks"], pa.table({"doc_id": ["doc0"]}), descriptor=DESCRIPTOR)
+    archive: dict[str, Any] = {"kind": "namespace", "name": "archive", "impl": "dir", "properties": {"root": str(tmp_path / "archive")}}
+    if annotatable is not None:
+        archive["annotatable"] = annotatable
+    return [{"kind": "rask", "name": "lake", "dir": str(tmp_path / "lake"), "identity": "none"}, archive]
+
+
 @pytest.mark.parametrize("named", [True, False], ids=["named", "by-default"])
-def test_an_item_of_a_source_that_is_not_annotated_is_refused_with_the_reason(state_app: Callable[..., FastAPI], tmp_path: Path, named: bool) -> None:
-    """Only a lakehouse's datasets are annotated (`client_kit.sources`): an item of another source, named or taken by
-    default, is refused before the catalog is asked, naming why, and nothing is written; and the annotator refuses to
-    start with such a default."""
-    write_table(tmp_path / "archive", ["field", "survey", "observations"], pa.table({"doc_id": ["doc0"]}), descriptor=DESCRIPTOR)
-    sources = [
-        {"kind": "rask", "name": "lake", "dir": str(tmp_path / "lake"), "identity": "none"},
-        {"kind": "namespace", "name": "archive", "impl": "dir", "properties": {"root": str(tmp_path / "archive")}},
-    ]
+def test_an_item_of_a_source_not_marked_annotatable_is_refused_with_the_reason(state_app: Callable[..., FastAPI], tmp_path: Path, named: bool) -> None:
+    """A source other than the lakehouse is annotated only where git marks it (`client_kit.sources.annotatable`): an item
+    of an unmarked one, named or taken by default, is refused before the catalog is asked, naming why, and nothing is
+    written; and the annotator refuses to start with such a default."""
+    sources = _beside_the_lake(tmp_path, annotatable=None)
     settings = Settings.model_validate({"WORKBENCH_SOURCES": sources, "MEDIA_DEFAULT_DATASET": "archive~field$survey"})
 
     r, held = _send(state_app, settings, _items("archive~field$survey" if named else None))
-    with pytest.raises(ValidationError, match="cannot be the annotator's default: source 'archive' is read-only"):
+    with pytest.raises(ValidationError, match="cannot be the annotator's default: source 'archive' is not marked annotatable"):
         AnnotatorSettings.model_validate({"WORKBENCH_SOURCES": sources, "MEDIA_DEFAULT_DATASET": "archive~field$survey"})
 
-    assert (r.status_code, r.json()["detail"], held) == (
-        409,
-        "nothing was sent: archive~field$survey: source 'archive' is read-only: only a rask lakehouse's datasets are annotated",
-        [],
-    )
+    assert (r.status_code, r.json()["detail"], held) == (409, "nothing was sent: archive~field$survey: source 'archive' is not marked annotatable", [])
+
+
+def test_an_item_of_a_source_marked_annotatable_is_sent_with_its_table_and_version(state_app: Callable[..., FastAPI], tmp_path: Path) -> None:
+    """A source git marks annotatable is sent from like the lakehouse: the item records the row table it was read from and
+    the version the sender saw, held to that table as any version is."""
+    settings = Settings.model_validate({"WORKBENCH_SOURCES": _beside_the_lake(tmp_path, annotatable=True)})
+    body = _items("archive~field$survey")
+    body["items"][0]["source"]["dataset_version"] = 1
+
+    r, held = _send(state_app, settings, body)
+
+    assert r.status_code == 201, r.text
+    assert [(t.source.where, t.source.table, t.source.dataset_version) for t in held] == [("archive~field$survey", "archive~field$survey$chunks", 1)]
 
 
 def test_a_known_dataset_sends_normally(state_app: Callable[..., FastAPI], catalog: Settings) -> None:

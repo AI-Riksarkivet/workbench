@@ -8,6 +8,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: annotator
 {{- end -}}
 
+{{- /* The demo volume's claim (`demo`), which the demo source names as its `claim`. */ -}}
+{{- define "workbench.demoClaim" -}}{{ printf "%s-demo" .Release.Name }}{{- end -}}
+
 {{- define "annotator.stateCluster" -}}{{ printf "%s-state" (include "annotator.name" .) }}{{- end -}}
 
 {{- define "annotator.otlpEndpoint" -}}{{ required "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" .Values.otel.endpoint }}{{- end -}}
@@ -20,8 +23,10 @@ option must be on the allow-list `files/source-keys.json` holds (the services en
 `client_kit.source_keys`, and `make chart-check` fails when the two differ), a credential file must lie under its mount
 root, and no location carries a user, a password, a query or a fragment. A source the workbench decides for (any but a
 lakehouse read as the person) names its `readers`, organisations and principal keys the model writer grants `reader` on
-`source:<name>`; with none, nobody reads it. A source with a `claim` reads a PersistentVolumeClaim mounted at
-`/var/lib/workbench/sources/<name>`: a `namespace` source's `dir` root, or a `tables` source's directory. The declaration
+`source:<name>`; with none, nobody reads it. A source with a `claim` reads a PersistentVolumeClaim mounted read-only at
+`/var/lib/workbench/sources/<name>`: a `namespace` source's `dir` root, or a `tables` source's directory, at the
+`path` it names on the claim (never outside it). A lakehouse's datasets are always annotated; any other source's only
+when it is marked `annotatable: true` (a boolean, `client_kit.sources.annotatable`). The declaration
 rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- define "workbench.sources" -}}
 {{- $keys := .Files.Get "files/source-keys.json" | fromJson -}}
@@ -34,6 +39,8 @@ rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- $_ := set $names $s.name true -}}
 {{- $out := dict "name" $s.name "kind" $s.kind "title" ($s.title | default "") -}}
 {{- $mount := printf "/var/lib/workbench/sources/%s" $s.name -}}
+{{- if and $s.path (not $s.claim) }}{{ fail (printf "sources[%d].path is a directory on the source's `claim`, and it names none" $i) }}{{ end -}}
+{{- if regexMatch "(^|/)\\.\\.(/|$)" (toString ($s.path | default "")) }}{{ fail (printf "sources[%d].path %q leaves its claim" $i (toString $s.path)) }}{{ end -}}
 {{- $decides := true -}}
 {{- if eq $s.kind "rask" -}}
 {{- $lakehouses = add1 $lakehouses -}}
@@ -49,7 +56,7 @@ rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- $allowed := index $keys.namespaceProperties $s.impl | default list -}}
 {{- if not (hasKey $keys.namespaceProperties $s.impl) }}{{ fail (printf "sources[%d].impl %q takes no declared property a source may name: one of %s" $i $s.impl (keys $keys.namespaceProperties | sortAlpha | join ", ")) }}{{ end -}}
 {{- $properties := deepCopy ($s.properties | default dict) -}}
-{{- if $s.claim }}{{ $_ := set $properties "root" $mount }}{{ end -}}
+{{- if $s.claim }}{{ $_ := set $properties "root" (printf "%s/%s" $mount ($s.path | default "" | trimPrefix "/") | trimSuffix "/") }}{{ end -}}
 {{- range $k, $v := $properties }}
 {{- if not (has $k $allowed) }}{{ fail (printf "sources[%d].properties.%s is not one a %s source may declare (allowed: %s)" $i $k $s.impl (join ", " $allowed)) }}{{ end -}}
 {{- if has $k (list "uri" "root") }}{{ include "workbench.checkLocation" (list (printf "sources[%d].properties.%s" $i $k) $v) }}{{ end -}}
@@ -73,11 +80,17 @@ rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- fail (printf "sources[%d].kind %q is rask, namespace or tables" $i (toString $s.kind)) -}}
 {{- end -}}
 {{- if and $s.claim (eq $s.kind "rask") }}{{ fail (printf "sources[%d]: a rask lakehouse is reached at its catalog's `uri`, never on a claim" $i) }}{{ end -}}
+{{- if hasKey $s "annotatable" -}}
+{{- if eq $s.kind "rask" }}{{ fail (printf "sources[%d].annotatable: a rask lakehouse's datasets are always annotated" $i) }}{{ end -}}
+{{- if not (kindIs "bool" $s.annotatable) }}{{ fail (printf "sources[%d].annotatable is true or false, not %v" $i $s.annotatable) }}{{ end -}}
+{{- $_ := set $out "annotatable" $s.annotatable -}}
+{{- end -}}
 {{- if and $decides $s.readers }}{{ $_ := set $out "readers" (dict "orgs" ($s.readers.orgs | default list) "people" ($s.readers.people | default list)) }}{{ end -}}
 {{- $declared = append $declared $out -}}
 {{- end -}}
 {{- if empty $declared }}{{ fail "sources: declare at least one source the workbench reads" }}{{ end -}}
 {{- if gt $lakehouses 1 }}{{ fail "sources: at most one source is a rask lakehouse" }}{{ end -}}
+{{- if eq $lakehouses 0 }}{{ range $declared }}{{ if .annotatable }}{{ fail (printf "sources: %s is marked annotatable, and no rask lakehouse holds the annotations" .name) }}{{ end }}{{ end }}{{ end -}}
 {{- toJson (dict "sources" $declared) -}}
 {{- end -}}
 

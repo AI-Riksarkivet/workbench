@@ -78,6 +78,12 @@ def test_a_source_naming_one_table_holds_no_other() -> None:
         pytest.param({"WORKBENCH_SOURCES_FILE": "FILE", "WORKBENCH_SOURCES": SOURCES}, "set exactly one of WORKBENCH_SOURCES_FILE", id="both"),
         pytest.param({"WORKBENCH_SOURCES": [SOURCES[0], {**SOURCES[1], "name": "lake"}]}, "source names must be distinct", id="one-name-twice"),
         pytest.param({"WORKBENCH_SOURCES": [SOURCES[0], {**SOURCES[0], "name": "lake2"}]}, "at most one source is a rask lakehouse", id="two-lakehouses"),
+        pytest.param(
+            {"WORKBENCH_SOURCES": [{**SOURCES[1], "annotatable": True}]},
+            "source 'archive' is marked annotatable, and no rask lakehouse holds the annotations",
+            id="annotatable-with-no-lakehouse",
+        ),
+        pytest.param({"WORKBENCH_SOURCES": [{**SOURCES[0], "annotatable": False}]}, "Extra inputs are not permitted", id="a-lakehouse-marked"),
         *(
             pytest.param({"WORKBENCH_SOURCES": [{**SOURCES[2], "storage": {key: "x"}}]}, f"storage option {key!r} is not one", id=key)
             for key in (

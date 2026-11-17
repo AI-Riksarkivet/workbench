@@ -17,13 +17,35 @@ route:
   hostnames: [workbench.localhost]
 # The Gateway's data plane runs in the k3s pod CIDR, as rask's `forwardedAllowIps` in deploy/values-local.yaml.
 forwardedAllowIps: 10.42.0.0/16
-# rask's catalog and Collector, reached across namespaces by their Services' namespace-qualified names; rask is the one
-# source, read as the person whose token Dex issued (`auth.lakehouse.delegation: forward`).
+# rask's catalog and Collector, reached across namespaces by their Services' namespace-qualified names; rask is read as
+# the person whose token Dex issued (`auth.lakehouse.delegation: forward`).
 sources:
   - name: lake
     title: The dev estate's lakehouse
     kind: rask
     uri: http://rask-catalog.default.svc:2333
+  # The workbench's own demo data (`demo` below): the corpus, recordings and films the local stack seeds, in the
+  # directory catalog the demo Job writes at `lakehouse/` on the release's demo claim, read-only. No catalog knows the
+  # person here, so the workbench's own OpenFGA decides who reads it: the dev Dex's five demo people, named as rask
+  # names them (`dex~<the local connector's user id>`, rask's deploy/fixtures/dex/chart/values.yaml).
+  - name: demo
+    title: Workbench demo (corpus, recordings, films)
+    kind: namespace
+    impl: dir
+    claim: workbench-demo
+    path: lakehouse
+    # Its items may be sent to a project and labelled; their annotations go to `auth.annotationsNamespace` in the
+    # lakehouse, as every annotation does.
+    annotatable: true
+    readers:
+      people:
+        - dex~08a8684b-db88-4b73-90a9-3cd1661f5466 # alice
+        - dex~1b6e2f5a-7c4d-4e9b-9f1a-2d3c4b5a6e7f # bob
+        - dex~718ae9f8-ab91-403e-a07c-cd1caf667cce # carol
+        - dex~a7d3182d-0d75-4ce6-930f-dcb5c0d9f8ad # dave
+        - dex~bbca9aad-6c7c-4bcd-a88e-f74abbae1185 # erin
+demo:
+  enabled: true
 otel:
   enabled: true
   endpoint: http://rask-otel-collector.default.svc:4318

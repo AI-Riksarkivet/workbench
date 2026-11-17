@@ -91,6 +91,14 @@ COPY --from=builder --link /opt/venv /opt/venv
 COPY .docker/import-gate.py /tmp/import-gate.py
 RUN --network=none /opt/venv/bin/python /tmp/import-gate.py viewer search client_kit && rm /tmp/import-gate.py
 
+# ── the demo seeder ──────────────────────────────────────────────────────────
+# The chart's demo Job (chart/templates/demo.yaml, off by default) fills its demo source's volume with
+# scripts/seed_demo_corpus.py, which needs exactly this venv's closure: PyAV (the films), pylance,
+# lancedb (the FTS indexes), numpy, pillow and client_kit. Run once here, offline, into a scratch
+# directory, so an image whose venv could not seed fails its build rather than its Job.
+COPY --chmod=0444 scripts/seed_demo_corpus.py /opt/workbench/seed_demo_corpus.py
+RUN --network=none /opt/venv/bin/python /opt/workbench/seed_demo_corpus.py --once /tmp/seed-gate && rm -rf /tmp/seed-gate
+
 # Strip setuid/setgid bits from the whole shipped filesystem (base account tools passwd/chsh/... +
 # anything in the venv) — no use in a container, residual privesc surface. Own RUN so its `|| true`
 # (which only tolerates find matching nothing) cannot mask a real build failure above.
