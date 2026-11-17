@@ -275,7 +275,7 @@ async def test_a_dropped_task_goes_with_its_draft_and_no_longer_blocks_the_publi
     await store.send_tasks(project_id, [_task("t0", project_id), _task("t1", project_id)])
     await _drive(store, "t0", TaskState.ACCEPTED)
     await store.fire_task("t1", event="claim", actor="gina")
-    await store.save_draft("t1", author="gina", shapes=[Shape(shape_type="tag", label="x")], links=[], base_revision=None)
+    await store.change_draft("t1", author="gina", change=lambda _current, _now: ([Shape(shape_type="tag", label="x")], []), base_revision=0)
 
     dropped = await store.drop_task(project_id, "t1")
     again = await store.drop_task(project_id, "t1")

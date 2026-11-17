@@ -24,7 +24,6 @@
 	import { Dialog } from '@workbench/ui/dialog';
 	import { ResizableSplit } from '@workbench/ui/resizable-split';
 	import { cn } from '@workbench/ui/utils';
-	import { fetchDraft } from '#lib/api/projects.api.ts';
 	import { login } from '#lib/auth.svelte.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
 	import { viewTransitions } from '#lib/view-transition.svelte.ts';
@@ -100,10 +99,7 @@
 	// The task's captured ontology, read once with the task: the rail offers no tool the task will refuse, the inspector
 	// its relations, tag choices, attributes and transcription per class; the submit still enforces it. Read untracked,
 	// once: the page remounts this shell per task.
-	controller.configure(
-		untrack(() => task.ontology),
-		untrack(() => task.task_id),
-	);
+	controller.configure(untrack(() => task.ontology));
 	// Who may edit follows the task: a claim, a submit or a review changes it while the canvas stays open.
 	$effect.pre(() => {
 		controller.setReadOnly(readOnly);
@@ -123,19 +119,7 @@
 			: [],
 	);
 
-	onMount(() => {
-		// Links live on the task's draft, not in the annotations table: read back once at open, so the next draft save
-		// carries them rather than an empty list. `restoreLinks` keeps links drawn before the read answered.
-		let alive = true;
-		void fetchDraft(task.task_id).then((draft) => {
-			if (alive && draft.ok && draft.data !== null && draft.data.links.length > 0)
-				controller.restoreLinks(draft.data.links);
-		});
-		return () => {
-			alive = false;
-			controller.stopAutosave();
-		};
-	});
+	onMount(() => () => controller.stopAutosave());
 
 	// Autosave, run from here because a component has a lifecycle and the controller does not: the timer dies with
 	// the canvas. A reader who may not edit gets none, and gets it once the item becomes theirs to edit.

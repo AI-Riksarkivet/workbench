@@ -1,8 +1,9 @@
 """Per-service settings — the shared media-library config plus the annotator's own knobs.
 
 The annotator is a client of the lakehouse: it reads governed tables through the catalog's doors as the person, on a
-token it exchanges for them, and writes annotations and publishes as the workbench's own confidential client, naming
-the person in each commit. So its settings name the catalog and that client (`LakehouseTokenSettings`), and never a store
+token it exchanges for them, and publishes a project's accepted work as the workbench's own confidential client, naming
+the person in the commit. The work people do before that is its own, in its own Postgres (`state_*`), so it labels
+with no lakehouse at all; only a publish needs one. So its settings name the catalog and that client (`LakehouseTokenSettings`), and never a store
 credential: a corpus is opened on the credential the catalog vends.
 
 It mixes in :class:`GovernedAuthSettings` for the person it serves: every entity the annotator keeps (projects, tasks,
@@ -11,7 +12,6 @@ claims, drafts) is keyed on who owns or claims it, and what they may do is the w
 
 from __future__ import annotations
 
-from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -21,17 +21,6 @@ from pydantic import BaseModel, Field, model_validator
 from client_kit.media.config import Settings
 from client_kit.sources import annotatable
 from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
-
-
-class LineageSink(StrEnum):
-    """Where a save the annotator commits to a directory catalog standing in for the lakehouse logs its OpenLineage RunEvent.
-
-    Only such a save emits: a write through the lakehouse's REST door is announced by the lakehouse, so
-    emitting here too would count the run twice (`AnnotatorSettings.effective_lineage_sink`).
-    """
-
-    log = "log"
-    none = "none"
 
 
 class AssistBackend(BaseModel):
@@ -58,18 +47,9 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
     service_name: str = "annotator"
     service_port: int = Field(default=8103, alias="ANNOTATOR_PORT")
 
-    #: The namespace of the deployment's lakehouse source that holds the workbench's annotation tables
-    #: (`<warehouse>$<namespace>`, in the lakehouse's own id, with no source), which the
-    #: workbench's own identity is granted to write: one table per (project, dataset), so a project's annotations are
-    #: its own rows and no other project's write can reach them (`annotator.annotations.store`).
-    annotations_namespace: str = Field(default="workbench$annotations", min_length=3, alias="ANNOTATOR_ANNOTATIONS_NAMESPACE")
-
     #: The namespace of a project's warehouse a publish lands in when it names none: `<warehouse>$<this>`. One segment;
     #: the lakehouse gives the name no meaning, so a project's admin creates it, under the run rule if they choose.
     publish_namespace: str = Field(default="published", pattern=r"^[A-Za-z0-9_-]{1,64}$", alias="ANNOTATOR_PUBLISH_NAMESPACE")
-
-    #: Where a local-mode save logs its RunEvent; see `LineageSink`.
-    lineage_sink: LineageSink = Field(default=LineageSink.log, alias="ANNOTATOR_LINEAGE_SINK")
 
     # Interactive AI-assist model endpoint — a Ray Serve deployment (GroundingDINO/SAM). Unset ⇒ a deterministic mock
     # so the draw/prompt→shapes round-trip is testable in-repo (drop-in for the Ray Serve HTTP endpoint).
@@ -139,14 +119,6 @@ class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
         if self.state_sslmode == "disable" and self.state_host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError(f"ANNOTATOR_STATE_SSLMODE=disable is for a database on the loopback; {self.state_host} is not")
         return self
-
-    @property
-    def effective_lineage_sink(self) -> LineageSink:
-        """The sink a save uses: ``none`` on a lakehouse's REST door, which announces the write itself; a directory catalog
-        standing in for one announces nothing, so there the annotator logs its own."""
-        if self.reads_lakehouse:
-            return LineageSink.none
-        return self.lineage_sink
 
 
 @lru_cache

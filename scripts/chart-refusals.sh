@@ -89,8 +89,6 @@ refuses 'sources[1].path "../other" leaves its claim' "${APIS[@]}" "${BASE[@]}" 
 refuses "sources[1].annotatable is true or false, not yes" "${APIS[@]}" "${BASE[@]}" --set 'sources[1].annotatable=yes'
 refuses "sources[0].annotatable: a rask lakehouse's datasets are always annotated" "${APIS[@]}" "${BASE[@]}" \
   --set 'sources[0].annotatable=false'
-refuses "sources: demo is marked annotatable, and no rask lakehouse holds the annotations" "${APIS[@]}" "${BASE[@]}" \
-  --set 'sources[0].kind=tables' --set 'sources[0].uri=s3://bucket/t.lance'
 
 # The demo volume is filled only for a source that reads it.
 refuses "demo.enabled fills the claim workbench-demo, and no source names it as its \`claim\`" \

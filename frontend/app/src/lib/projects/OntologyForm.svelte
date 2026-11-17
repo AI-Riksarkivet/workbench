@@ -133,12 +133,12 @@
 			<Checkbox bind:checked={classesRequired} aria-label="Every class is required" />
 			<span>Every class is required</span>
 		</label>
-		<!-- Said out loud, because it is the property that makes editing safe at all: items already
-		     sent captured their own copy, so work in review is judged by the contract it was issued
-		     under. Without that, an edit mid-flight would retroactively invalidate someone's work. -->
+		<!-- Said out loud, because it is the property that makes editing safe at all: an item someone has
+		     started keeps the copy it was issued under, so their work is judged by the contract they
+		     worked to. Without that, an edit mid-flight would retroactively invalidate someone's work. -->
 		<p class="text-muted-foreground text-xs">
-			Items already sent keep the definition they were issued under. This applies to items sent from
-			now on.
+			Items nobody has started yet take this definition too. An item someone has claimed or worked
+			on keeps the definition it was issued under.
 		</p>
 		{#if error}
 			<p class="text-destructive text-sm" data-testid="ontology-error">{error}</p>

@@ -82,7 +82,7 @@ def test_a_draft_read_publishes_the_draft_model_or_null_before_the_first(client:
     before = client.get("/tasks/g1-r1/draft")
     app: Any = client.app
     shape = Shape(shape_id="s1", shape_type=cast(Any, "bbox"), label="letter", source="human")
-    saved = _portal(client).call(partial(app.state.store.save_draft, "g1-r1", author="dana", shapes=[shape], links=[], base_revision=None))
+    saved = _portal(client).call(partial(app.state.store.change_draft, "g1-r1", author="dana", change=lambda _current, _now: ([shape], []), base_revision=0))
 
     after = client.get("/tasks/g1-r1/draft")
 

@@ -9,19 +9,18 @@ inherit from a project. The annotator never asks the lakehouse what a person may
 Data: a corpus is a lakehouse's, or one of a source git marks annotatable (`client_kit.sources.annotatable`). Read as the
 person (``identity: person``), the lakehouse decides, on a token the annotator exchanges or passes on for them
 (`CallerDep`); read as the workbench (``identity: service``), and for every other source, the workbench's own store
-decides first, `reader` on its source (`READS_DATASET`). Annotations
-are written as the workbench's own identity once the annotator's own role check has passed, naming the person in the
-commit (`annotator.annotations.commit`).
+decides first, `reader` on its source (`READS_DATASET`). The work people do on it is kept in the annotator's own
+database (`annotator.annotations`); a publish writes a project's accepted work to the lakehouse as the workbench's own
+identity once the annotator's own role check has passed, naming the person in the commit.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from typing import Annotated, Any
 
 from fastapi import Depends, Query, Request
 
-from annotator.annotations.store import ProjectAnnotations
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from client_kit.media.deps import StateDep
 from client_kit.media.source_gate import named_in, require_read
@@ -35,7 +34,6 @@ from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
 __all__ = [
     "ANONYMOUS_SUBJECT",
     "READS_DATASET",
-    "AnnotationsDep",
     "AuthorizerDep",
     "CallerDep",
     "Checker",
@@ -141,20 +139,6 @@ def project_gate(relation: str) -> Any:
 #: The decorator dependencies an annotation write and an annotation read carry.
 MAY_ANNOTATE = project_gate("can_annotate")
 MAY_VIEW = project_gate("can_view")
-
-
-def project_annotations(request: Request, project: ProjectParam, settings: SettingsDep, tokens: ServiceTokenDep) -> Callable[[str], ProjectAnnotations]:
-    """The project's annotation tables, reached as the workbench's own identity."""
-    state = request.app.state.resources
-    token = tokens.for_service if tokens is not None else None
-
-    def _for(dataset_id: str) -> ProjectAnnotations:
-        return ProjectAnnotations.of(state.settings, settings.annotations_namespace, project, dataset_id, token)
-
-    return _for
-
-
-AnnotationsDep = Annotated[Callable[[str], ProjectAnnotations], Depends(project_annotations)]
 
 
 async def _reads_dataset(request: Request, subject: CurrentSubject, checker: CheckerDep, state: StateDep) -> None:

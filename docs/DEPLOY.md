@@ -28,12 +28,12 @@ make deploy-dev          # every step below, in order; each is safe to run again
 | `make dev-openfga` | release `workbench-openfga` (`deploy/fixtures/openfga`) in `workbench`, creating the namespace: OpenFGA v1.18.3 on a Postgres `Cluster` of its own, its database password and preshared key generated in the cluster | `make dev-undeploy-openfga` |
 | `make dev-dex-client` | rask's `scripts/fixtures.sh dex` with `deploy/dex-client.yaml`: rask's development Dex gains the public client `workbench-app` (PKCE, redirect `http://workbench.localhost:8080/auth/callback`), the confidential client `workbench-services`, and the CORS origin `http://workbench.localhost:8080`; Dex restarts once when its configuration changes | `make dev-undeploy-dex-client` |
 | `make dev-release` | release `workbench` from `chart/` with `deploy/values-dev.yaml` and the commit's image tags (`--reset-values`, nothing read back from a release): the four workloads, the annotator's `Cluster`, the HTTPRoutes under `workbench.localhost`, the NetworkPolicies, the model writer job, the development Secrets, and the demo source (below) | `make dev-undeploy-release` (the demo claim stays, until the namespace goes) |
-| `make dev-grants` | at rask's catalog doors, as a development administrator (`DEV_ADMIN`, its password from `DEV_ADMIN_PASSWORD_FILE` or asked): creates the annotations namespace `acme$workbench_annotations` if missing, grants the workbench's own identity `dex-client~workbench-services` `writer` there and `reader` on the warehouse `acme` | `make dev-undeploy-grants` (the namespace and its tables stay) |
+| `make dev-grants` | at rask's catalog doors, as a development administrator (`DEV_ADMIN`, its password from `DEV_ADMIN_PASSWORD_FILE` or asked): grants the workbench's own identity `dex-client~workbench-services` `reader` on the warehouse `acme`, for the cells a signed media link names | `make dev-undeploy-grants` |
 | `make dev-readback` | waits for every Deployment and `Cluster` in `workbench` and asks the Gateway for the app's `/config.json` under `workbench.localhost` | none needed |
 
 `make undeploy-dev` revokes the grants, uninstalls both releases, deletes the namespace (and with it both databases'
-claims) and installs rask's Dex again without the workbench's clients. It leaves the images in the registry and the
-annotation tables in the lakehouse.
+claims) and installs rask's Dex again without the workbench's clients. It leaves the images in the registry, and any
+table a publish wrote in the lakehouse, which is its owner's to drop at the catalog's drop door.
 
 Rask's own `make k3s-up` installs its Dex with rask's values alone, so it drops the workbench's clients: run
 `make dev-dex-client` again after it.
@@ -55,15 +55,17 @@ claim (or `make undeploy-dev`, which deletes the namespace) seeds again. Its rea
 
 The demo source is read-only, as every source but a rask lakehouse is, and marked `annotatable: true`, so its items are
 sent to a project, labelled and reviewed: each records the table it was read from and the version the sender saw, and
-its annotations go, as every annotation does, to the lakehouse's annotations namespace (`acme$workbench_annotations`),
-written as `workbench-services` with the person named.
+the work people do on it stays in the annotator's Postgres, as all work in progress does, until the project is
+published.
 
 ### Whose grants are whose
 
 The workbench's services read datasets as the person: under Dex, the person's own token is passed on (it names the
 lakehouse's audience), so what a person may read is their own grants, made by their project's administrator at rask's
 doors. `make dev-grants` grants people nothing. It grants the workbench's own identity only what it uses as itself:
-writing its annotation tables, and reading the one cell a signed media link names.
+reading the one cell a signed media link names. It writes nothing in the lakehouse while people label; a publish writes
+the project's table in its target namespace, which the project's administrator grants it (`writer` there) at rask's
+doors.
 
 ## On a platform
 
@@ -79,7 +81,7 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
   names a credential. A lakehouse is `kind: rask` with its catalog's `uri`; `auth.lakehouse.audience` names its audience
   and `auth.lakehouse.delegation` how a person's read reaches it (`exchange` at a provider that exchanges its own tokens,
   `forward` where it does not), and further issuers each name their own (`auth.oidc.providers[].lakehouse`). Only the
-  lakehouse is sent a token, holds the annotation tables and is published to.
+  lakehouse is sent a token and published to.
 - **Authorization:** `auth.fga.apiUrl`, `auth.fga.store`, and the Secret holding the preshared key
   (`auth.fga.credential`).
 - **Secrets:** `media.viewer.mediaUrlKey` names the viewer's signing key; `dev.secrets.enabled` stays off, so git holds
@@ -135,11 +137,12 @@ annotatable" on every send control, and the annotator refuses to send from it. A
 table and version at send, as a lakehouse's do; a publish names only the lakehouse's tables as its lineage inputs (a
 commit names only its own lakehouse's tables), so under the run rule a project holding such items is refused with that
 reason, and without it the publish lands naming no input from that source. Every published row names the table and
-version its item was read from (`item_table`, `item_table_version`), whatever the source. The annotations themselves are
-written only to a lakehouse, so with no `kind: rask` source nothing is annotated, and the render refuses a source marked
-annotatable beside none. A dataset with no workbench descriptor is shown as a plain table; one whose writer stamped a
+version its item was read from (`item_table`, `item_table_version`), whatever the source. Labeling needs no lakehouse:
+the work people do is kept in the annotator's own Postgres until a publish, so a release with no `kind: rask` source
+labels every source marked annotatable, and its publish is refused with "this deployment reads no rask lakehouse, so
+there is nowhere to publish to". A dataset with no workbench descriptor is shown as a plain table; one whose writer stamped a
 `lance_media.descriptor` keeps every view it declares.
 
 `make chart-check` renders the chart in each of these shapes: the dev overlay (its demo source among them), a platform's,
-a release with no lakehouse (a directory catalog on a claim and a bare table on a store), and one with sign-in off
+a release with no lakehouse (a directory catalog on a claim, marked annotatable, and a bare table on a store), and one with sign-in off
 reading one table on a claim.

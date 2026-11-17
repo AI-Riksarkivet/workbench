@@ -20,6 +20,7 @@ subject and the checker's own answer, and stated to it like the subject itself, 
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, Path, Request, status
@@ -42,7 +43,7 @@ from annotator.projects.machines import (
     legal_task_events,
     task_transition,
 )
-from annotator.projects.models import Draft, DraftOrigin, Link, Shape, Task, TaskState
+from annotator.projects.models import Draft, Link, Shape, Task, TaskState
 from annotator.state.store import AnnotatorStore
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
@@ -82,16 +83,6 @@ class FireRequest(BaseModel):
     #: `request_changes` only — the reviewer's reason, appended as a `ReviewNote`.
     message: str = Field(default="", max_length=4000)
     shape_ids: list[str] = Field(default_factory=list, max_length=500)
-
-
-class SaveDraftRequest(BaseModel):
-    shapes: list[Shape] = Field(default_factory=list)
-    #: The typed edges drawn between those shapes. Declared here and not only on `Draft`: a field this model does not
-    #: name is dropped in silence, and a submit judged against an ontology requiring a relation would then refuse
-    #: work that was done.
-    links: list[Link] = Field(default_factory=list)
-    base_revision: int | None = None
-    origin: DraftOrigin = "human"
 
 
 async def _authorize(checker: Checker, subject: str, permission: str, task: Task, what: AnnotatorAuditAction, **context: str) -> None:
@@ -146,8 +137,8 @@ async def _refuse_if_frozen(store: AnnotatorStore, task: Task, event: str) -> No
 async def require_editable(store: AnnotatorStore, task: Task, checker: Checker, subject: str, what: AnnotatorAuditAction) -> None:
     """The caller may edit this viewed task's shapes now, or the refusal that says why.
 
-    The one rule every write of a task's shapes answers to: its draft (`save_draft`) and its unit's annotations
-    (`annotator.annotations.access`). Asked in this order, so a refusal names no more than its step:
+    The one rule every write of a task's shapes answers to: the canvas's saves of its draft
+    (`annotator.annotations.access`) and an import into it. Asked in this order, so a refusal names no more than its step:
     - 409 when the task's state takes no edits (`EDIT_PERMISSION`), or its project is frozen;
     - 403 when the caller lacks the state's relation on the task, or is not who may edit it now (`edit_violation`).
     """
@@ -244,32 +235,6 @@ async def get_task(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject
     return await with_legal_events(store, await viewed_task(store, task_id, checker, subject))
 
 
-@router.put("/{task_id}/draft", status_code=status.HTTP_200_OK)
-async def save_draft(task_id: TaskId, payload: SaveDraftRequest, checker: CheckerDep, subject: CurrentSubject, store: StoreDep) -> Draft:
-    """Replace the whole shape set in one keyed write. `base_revision` is the etag — a mismatch is a
-    409, which is how two tabs of one annotator are stopped from silently clobbering each other."""
-    current = await viewed_task(store, task_id, checker, subject)
-    # The holder of a claim, or a reviewer of work in review (`require_editable`): an accepted task's shapes are never
-    # rewritten after review, and never during a publish.
-    await require_editable(store, current, checker, subject, AnnotatorAuditAction.TASK_SAVE_DRAFT)
-    try:
-        draft = await store.save_draft(
-            task_id,
-            author=subject,
-            shapes=payload.shapes,
-            links=payload.links,
-            base_revision=payload.base_revision,
-            origin=payload.origin,
-            # A verified input like the subject: the caller holds `can_review` on this task in review.
-            reviewing=current.state is TaskState.IN_REVIEW,
-        )
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
-
-    audit(AnnotatorAuditAction.TASK_SAVE_DRAFT, AuditOutcome.SUCCESS, subject=subject, resource=task_id)
-    return draft
-
-
 @router.post("/{task_id}/import", status_code=status.HTTP_200_OK)
 async def import_annotations(
     task_id: TaskId, request: Request, checker: CheckerDep, subject: CurrentSubject, settings: SettingsDep, store: StoreDep
@@ -298,9 +263,7 @@ async def import_annotations(
         raise ForbiddenError(violation)
 
     existing = await store.get_draft(task_id)
-    existing_shapes = list(existing.shapes) if existing else []
-    existing_links = list(existing.links) if existing else []
-    taken = {s.shape_id for s in existing_shapes}
+    taken = {s.shape_id for s in existing.shapes} if existing else set()
     # The ontology CAPTURED on the task, not one the client sends: the caller must not supply the rules it is judged by.
     ontology = current.ontology if current.ontology.constrains else None
 
@@ -309,14 +272,16 @@ async def import_annotations(
     # request this process serves, its own probes included.
     shapes, links = await run_in_threadpool(shapes_from_ipc, payload, max_bytes=settings.max_body_bytes, ontology=ontology, taken_ids=taken)
 
+    def append(current: Draft | None, _now: datetime) -> tuple[list[Shape], list[Link]]:
+        return [*(current.shapes if current else []), *shapes], [*(current.links if current else []), *links]
+
     try:
-        draft = await store.save_draft(
+        draft = await store.change_draft(
             task_id,
             author=subject,
-            shapes=existing_shapes + shapes,
-            links=existing_links + links,
-            # Read from the draft just appended to, so a save that lands in between is a 409 rather than a silent overwrite.
-            base_revision=existing.revision if existing else None,
+            change=append,
+            # The revision the ids were checked against, so a save that lands in between is a 409 rather than a clash.
+            base_revision=existing.revision if existing else 0,
             origin="import",
         )
     except IllegalTransition as exc:

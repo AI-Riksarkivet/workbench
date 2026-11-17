@@ -1,35 +1,29 @@
-"""The per-unit review Save — the local-first write path (NOT sync-per-edit).
+"""The per-unit Save — the canvas's change to a task's work, applied to its draft.
 
-Edits accumulate client-side (in-memory overlay + undo/redo); one Save patches only
-the editable fields onto the current rows (geometry/provenance carried forward) and
-``merge_insert("id")`` commits them as ONE atomic new version — the lakehouse
-"version IS the handshake". The rows are the project's own (`annotator.annotations.store`): the
-write goes through the catalog's doors as the workbench's own identity, after the person's
-`can_annotate` on the project, naming the person as the commit's originator. A save stays inside its
-task's rows of its unit: a delete naming a row they do not hold is refused, never applied, and so is a new shape naming
-a row the project's table holds; an edit naming another unit's row patches nothing.
+Edits accumulate client-side (an in-memory overlay with undo and redo); one Save sends only what changed (field edits,
+new shapes, moved geometry, resized times, re-anchored spans, deletes and, when they changed, the item's links), and
+the store applies it to the task's draft in one transaction under the task's row lock (`AnnotatorStore.change_draft`):
+the revision the client loaded is checked there (409 when the work moved, per task), and so are the task's state, who
+may edit it now and whether its project is frozen. Nothing is written to the lakehouse: work in progress lives in the
+annotator's own database until a publish.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 
-import pyarrow as pa
 from fastapi import APIRouter
 
-from annotator.annotations.access import MAY_EDIT_UNIT, TaskParam, UnitKey
-from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit, refuse_held_ids, refuse_unknown_ids
-from annotator.annotations.schema import (
-    EDITABLE_FIELDS,
-    NewAnnotation,
-    SaveAnnotations,
-    SaveResult,
-)
+from annotator.annotations.access import EditableUnit, UnitKey
+from annotator.annotations.schema import SaveAnnotations, SaveResult
 from annotator.annotations.unit import parse_unit
-from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep, CurrentSubject
+from annotator.annotations.work import apply_save
+from annotator.api.dependencies import StoreDep
+from annotator.api.security import READS_DATASET, CallerDep, CurrentSubject
 from annotator.corpus import resolve
+from annotator.projects.machines import IllegalTransition
+from annotator.projects.models import Draft, Link, Shape, TaskState
 from client_kit.media.deps import DatasetParam, StateDep
-from service_kit.exceptions import NotFoundError
+from service_kit.exceptions import ConflictError
 
 
 logger = logging.getLogger(__name__)
@@ -37,116 +31,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["annotate"])
 
 
-def build_delta(current: pa.Table, edits_by_id: dict[str, dict[str, object]]) -> pa.Table:
-    """The merge_insert source: current rows for the edited ids, editable fields
-    patched, everything else (geometry, provenance) carried forward. Same schema as
-    ``current`` so merge_insert updates in place."""
-    patched = [{**row, **edits_by_id[row["id"]]} for row in current.to_pylist() if row["id"] in edits_by_id]
-    return pa.Table.from_pylist(patched, schema=current.schema)
-
-
-def new_rows(inserts: Sequence[NewAnnotation], ident: Mapping[str, object], schema: pa.Schema) -> pa.Table:
-    """Full new-annotation rows: identity stamped + shape fields; columns absent from
-    the payload fall to null via the schema. Same schema ⇒ merge_insert can insert."""
-    rows = [{**ident, **ins.model_dump()} for ins in inserts]
-    return pa.Table.from_pylist(rows, schema=schema)
-
-
-@router.post("/annotations/{key:path}", dependencies=[MAY_EDIT_UNIT, READS_DATASET])
-def save_annotations(
+@router.post("/annotations/{key:path}", dependencies=[READS_DATASET])
+async def save_annotations(
     caller: CallerDep,
     state: StateDep,
-    # The VERIFIED subject, never a header (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit": any caller could sign another
-    # person's name onto annotation provenance via `X-User`). `current_subject` is `anon` with
-    # OIDC off (byte-identical dev behaviour), the token's principal key with it on, 401 with no token,
-    # 503 when enabled-but-unwired — the same no-header-fallback rule the projects plane got.
+    store: StoreDep,
+    # The VERIFIED subject, never a header: `anon` with sign-in off, the token's principal with it on.
     author: CurrentSubject,
-    annotations: AnnotationsDep,
+    task: EditableUnit,
     key: UnitKey,
-    task: TaskParam,
     body: SaveAnnotations,
     dataset: DatasetParam = None,
 ) -> SaveResult:
-    """Flush a review delta to Lance as ONE atomic version (see module docstring)."""
+    """Apply a save to the task's work as ONE new revision of its draft (see module docstring)."""
     corpus = resolve(state, dataset, caller)
-    declared = corpus.declared
-    unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
-    # The task's own rows of the unit: another task holding the same unit (a consensus replica) keeps its rows.
-    scope = unit.of_task(task)
-    # The version check AND the carry-forward read are of the table the wire GET served, the project's own, so the 409
-    # compares the version the client loaded against the same source. A project's first save creates it.
-    table = annotations(corpus.id)
-    existing = table.open()
-    # REQUIRED here (#50): this path commits a merge_upsert, which UPDATES matched rows, so a save
-    # that does not state what it was built from can overwrite another annotator's fields. The tag
-    # batch is insert-only and keeps the precondition optional — see check_base_version_value. A table
-    # not yet made is version 0, the version the wire GET serves for it.
-    check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version, required=True)
-    if body.deletes:
-        # Only this task's rows of the unit can be deleted: an id they do not hold is refused before anything is written.
-        if existing is None:
-            raise NotFoundError(f"annotation(s) {sorted(body.deletes)[:20]} are not this task's rows of its unit")
-        refuse_unknown_ids(existing, body.deletes, within=scope)
-    if body.inserts and existing is not None:
-        refuse_held_ids(existing, [i.id for i in body.inserts])
-    ds = existing if existing is not None else table.open_or_create(declared, author)
+    # The key is read against the dataset's identity, so a unit the dataset cannot have is refused in its own words.
+    parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
 
-    current = ds.to_table(filter=scope)
+    def change(current: Draft | None, now: datetime) -> tuple[list[Shape], list[Link]]:
+        return apply_save(current, body, author=author, now=now)
 
-    # edits (patch existing) + inserts (new shapes) commit in ONE merge_insert; the
-    # source is the union, keyed by id — matched ⇒ update, unmatched ⇒ insert.
-    edits_by_id: dict[str, dict[str, object]] = {e.id: e.model_dump(include=set(EDITABLE_FIELDS), exclude_none=True) for e in body.edits}
-    # Geometry moves + segment-time resizes patch the same rows (by id) — merged in.
-    for g in body.geometry:
-        edits_by_id.setdefault(g.id, {}).update({"x": g.x, "y": g.y, "width": g.width, "height": g.height, "polygon": g.polygon})
-    for tseg in body.temporal:
-        edits_by_id.setdefault(tseg.id, {}).update({"t_start": tseg.t_start, "t_end": tseg.t_end})
-    # Re-anchored text spans (the transcription-edit remap) patch offsets the same way.
-    for span in body.spans:
-        edits_by_id.setdefault(span.id, {}).update({"char_start": span.char_start, "char_end": span.char_end})
-    # Governance: the SERVER stamps who wrote each touched row (not the client's claim) —
-    # the per-user seam. lance-ns's OpenFGA keys on this author at merge. Row lifecycle
-    # is stamped the same way: updated_at on every touched row, created_at at row birth
-    # (build_delta/new_rows drop the keys when a pre-settle table lacks the columns).
-    now = datetime.now(UTC)
-    for fields in edits_by_id.values():
-        fields["reviewer"] = author
-        fields["updated_at"] = now
-    parts = [build_delta(current, edits_by_id)]
-    if body.inserts:
-        ident = {
-            **unit.values,
-            "task_id": task,
-            "reviewer": author,
-            "created_at": now,
-            "updated_at": now,
-        }
-        parts.append(new_rows(body.inserts, ident, current.schema))
-    delta = pa.concat_tables(parts)
-
-    # Writes go through the catalog's merge_insert and delete doors as the workbench, after its own `can_annotate` check
-    # (`MAY_ANNOTATE`), naming the person in the commit; the catalog governs whether the workbench may write the table.
-    writer = table.writer(author)
-    touched = 0
-    if delta.num_rows:
-        writer.merge_upsert(delta, "id")
-        touched += delta.num_rows
-    if body.deletes:
-        delete_by_ids(writer, body.deletes, within=scope)
-        touched += len(body.deletes)
-
-    result = finalize_commit(
-        table,
-        state.settings,
-        touched=touched,
-        unit_key=unit.key,
-    )
-    if touched:
-        logger.info(
-            "saved %s→ v%d (%d edit+insert, %d delete)",
-            unit.key,
-            result.version,
-            delta.num_rows,
-            len(body.deletes),
+    try:
+        draft = await store.change_draft(
+            task.task_id,
+            author=author,
+            change=change,
+            base_revision=body.base_version,
+            # A verified input like the subject: the caller holds `can_review` on this task in review (`EditableUnit`).
+            reviewing=task.state is TaskState.IN_REVIEW,
         )
-    return result
+    except IllegalTransition as exc:  # the task moved between the door's read and the transaction
+        raise ConflictError(str(exc)) from exc
+    touched = len(body.edits) + len(body.inserts) + len(body.geometry) + len(body.temporal) + len(body.spans) + len(body.deletes)
+    logger.info("saved task %s's work on %s → v%d (%d row(s) named)", task.task_id, key, draft.revision, touched)
+    return SaveResult(saved=touched, version=draft.revision)

@@ -6,16 +6,15 @@ The workbench's services reach the lakehouse in two ways, and only one of them n
   so what a person may read is that person's own grants, made by their project's administrator at the same doors. This
   script grants people nothing.
 - **The workbench itself**, its confidential client signed in for itself (the machine `<idp id>-client~<client id>`),
-  writes the annotation tables and reads the one cell a signed media link names. It needs:
-  - its annotations namespace (`auth.annotationsNamespace`), created if the catalog does not hold it, and `writer` on it,
-    the least that lets it create and write its tables there;
-  - `reader` on each warehouse whose datasets the viewer signs media links for (`--reads`).
+  reads the one cell a signed media link names. It needs `reader` on each warehouse whose datasets the viewer signs
+  media links for (`--reads`). It writes nothing in the lakehouse while people label: their work is the annotator's own,
+  in its own database, until a publish, whose target namespace is the project's administrator's to grant.
 
-The doors (`docs/rask/catalog-openapi.json`): `POST /v1/namespace/{id}/exists` and `/create`; `POST
-/management/v1/{namespace,warehouse}/{id}/access/{grant,revoke,list}`; `GET /management/v1/warehouses`. rask keeps a
+The doors (`docs/rask/catalog-openapi.json`): `POST /management/v1/warehouse/{id}/access/{grant,revoke,list}`; `GET
+/management/v1/warehouses`. rask keeps a
 grant made at its doors across every upgrade of its release (rask's CLAUDE.md, LH-563).
 
-    uv run python scripts/lakehouse_grants.py {plan,grant,list,revoke} --values deploy/values-dev.yaml --admin alice@example.com
+    uv run python scripts/lakehouse_grants.py {plan,grant,list,revoke} --values deploy/values-dev.yaml --reads acme --admin alice@example.com
 
 The administrator signs in at the identity provider with the password grant on the workbench's public client; the
 password is read from `--password-file` or asked for, never taken from the command line or the environment, and no
@@ -36,8 +35,7 @@ import yaml
 from pydantic import BaseModel
 
 
-#: The relation the workbench's own identity holds on its annotations namespace, and on each warehouse it reads.
-WRITE = "writer"
+#: The relation the workbench's own identity holds on each warehouse it reads.
 READ = "reader"
 
 
@@ -53,23 +51,20 @@ class Plan(BaseModel):
     """Everything this script makes, and for whom."""
 
     principal: str
-    annotations_namespace: str
     grants: list[Grant]
 
 
 def plan_of(values: dict[str, Any], reads: list[str]) -> Plan:
-    """The grants a deployment's values call for: the workbench client's principal, its annotations namespace and the
-    warehouses it reads (`--reads`, else the annotations namespace's own warehouse)."""
-    auth = values.get("auth") or {}
-    oidc = auth.get("oidc") or {}
-    idp_id, client_id, namespace = oidc.get("idpId"), (oidc.get("client") or {}).get("id"), auth.get("annotationsNamespace")
-    if not (idp_id and client_id and namespace):
-        raise SystemExit("the values name no auth.oidc.idpId, auth.oidc.client.id or auth.annotationsNamespace")
-    warehouse = str(namespace).split("$", 1)[0]
+    """The grants a deployment's values call for: the workbench client's principal, and `reader` on each warehouse it
+    reads (`--reads`)."""
+    oidc = (values.get("auth") or {}).get("oidc") or {}
+    idp_id, client_id = oidc.get("idpId"), (oidc.get("client") or {}).get("id")
+    if not (idp_id and client_id):
+        raise SystemExit("the values name no auth.oidc.idpId or auth.oidc.client.id")
+    if not reads:
+        raise SystemExit("name each warehouse the viewer signs media links for with --reads")
     principal = f"{idp_id}-client~{client_id}"
-    grants = [Grant(kind="namespace", object_id=str(namespace), relation=WRITE)]
-    grants += [Grant(kind="warehouse", object_id=read, relation=READ) for read in dict.fromkeys(reads or [warehouse])]
-    return Plan(principal=principal, annotations_namespace=str(namespace), grants=grants)
+    return Plan(principal=principal, grants=[Grant(kind="warehouse", object_id=read, relation=READ) for read in dict.fromkeys(reads)])
 
 
 def _password(path: str | None) -> str:
@@ -105,16 +100,6 @@ class Doors:
         answer.raise_for_status()
         return [str(warehouse["id"]) for warehouse in answer.json()]
 
-    def namespace_exists(self, namespace: str) -> bool:
-        answer = self._post(f"/v1/namespace/{quote(namespace, safe='')}/exists", {})
-        if answer.status_code == 404:
-            return False
-        answer.raise_for_status()
-        return True
-
-    def create_namespace(self, namespace: str) -> None:
-        self._post(f"/v1/namespace/{quote(namespace, safe='')}/create", {}).raise_for_status()
-
     def access(self, grant: Grant, action: str, principal: str) -> httpx.Response:
         return self._post(f"/management/v1/{grant.kind}/{quote(grant.object_id, safe='')}/access/{action}", {"user": principal, "relation": grant.relation})
 
@@ -134,7 +119,7 @@ def _say(plan: Plan) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else None)
     parser.add_argument("action", choices=["plan", "grant", "list", "revoke"])
-    parser.add_argument("--values", required=True, help="the deployment's values file (its auth section names the identity and namespace)")
+    parser.add_argument("--values", required=True, help="the deployment's values file (its auth section names the identity)")
     parser.add_argument("--reads", action="append", default=[], help="a warehouse the viewer signs media links for (repeatable)")
     parser.add_argument("--catalog", default="http://localhost:8080/api/catalog", help="the catalog's public base")
     parser.add_argument("--issuer", help="the identity provider's issuer; default the values' auth.oidc.issuer")
@@ -161,9 +146,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"the lakehouse holds no warehouse {', '.join(missing)}; it holds: {', '.join(sorted(known)) or 'none'}", file=sys.stderr)
             return 2
         if args.action == "grant":
-            if not doors.namespace_exists(plan.annotations_namespace):
-                doors.create_namespace(plan.annotations_namespace)
-                print(f"created namespace {plan.annotations_namespace}")
             for grant in plan.grants:
                 doors.access(grant, "grant", plan.principal).raise_for_status()
                 print(f"granted {grant.relation} on {grant.kind} {grant.object_id} to {plan.principal}")
@@ -174,7 +156,6 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"revoked {grant.relation} on {grant.kind} {grant.object_id} from {plan.principal}")
                 else:
                     print(f"{grant.kind} {grant.object_id}: the door answered {answer.status_code} to revoking {grant.relation}: {answer.text[:200]}")
-            print(f"the namespace {plan.annotations_namespace} and its tables stay: dropping data is its owner's, at the catalog's drop door")
         else:
             for grant in plan.grants:
                 held = sorted(action for action, users in doors.holders(grant).items() if {plan.principal, f"user:{plan.principal}"} & set(users))

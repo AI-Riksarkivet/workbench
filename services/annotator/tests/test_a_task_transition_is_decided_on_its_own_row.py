@@ -55,12 +55,14 @@ async def _read(store: AnnotatorStore, task_id: str = "t1") -> Task:
 
 
 async def _save(store: AnnotatorStore, shapes: list[dict[str, Any]], **kw: Any) -> Any:
-    return await store.save_draft(
+    """Replace the draft of t1 with ``shapes`` (and ``links``), built on revision ``base_revision`` (0: none yet)."""
+    drawn = [Shape.model_validate(s) for s in shapes]
+    linked = [Link.model_validate(link) for link in kw.pop("links", [])]
+    return await store.change_draft(
         "t1",
         author=kw.pop("author", "gina"),
-        shapes=[Shape.model_validate(s) for s in shapes],
-        links=[Link.model_validate(link) for link in kw.pop("links", [])],
-        base_revision=kw.pop("base_revision", None),
+        change=lambda _current, _now: (drawn, linked),
+        base_revision=kw.pop("base_revision", 0),
         **kw,
     )
 
@@ -141,7 +143,8 @@ async def test_the_events_door_and_the_canvas_door_renew_the_lease_by_one_rule(s
     for task_id in ("t1", "t2"):
         await store.fire_task(task_id, event="claim", actor="gina", lease_seconds=60)
 
-    await store.save_draft("t1", author="gina", shapes=[], links=[], base_revision=None, lease_seconds=600)
+    drawn = [Shape(shape_type="bbox")]
+    await store.change_draft("t1", author="gina", change=lambda _current, _now: (drawn, []), base_revision=0, lease_seconds=600)
     await store.fire_task("t2", event="save_draft", actor="gina", lease_seconds=600)
 
     canvas, events = _remaining((await _read(store, "t1")).lease_expires_at), _remaining((await _read(store, "t2")).lease_expires_at)
@@ -200,31 +203,6 @@ async def test_a_draft_is_one_write_for_the_whole_shape_set(store: AnnotatorStor
     stored = await store.get_draft("t1")
     assert out.revision == 1
     assert stored is not None and [s.shape_type for s in stored.shapes] == ["bbox", "polygon"]
-
-
-@pytest.mark.asyncio
-async def test_a_stale_base_revision_is_refused_so_two_tabs_cannot_clobber(store: AnnotatorStore) -> None:
-    await _claimed(store)
-    await _save(store, [])
-    await _save(store, [], base_revision=1)
-
-    with pytest.raises(IllegalTransition, match="save at 1"):
-        await _save(store, [], base_revision=1)
-
-
-@pytest.mark.asyncio
-async def test_two_tabs_cannot_clobber_by_omitting_base_revision(store: AnnotatorStore) -> None:
-    """Once a draft exists the caller states the revision it edited: a save that omits it is a conflict, not a silent
-    overwrite of the other tab's work."""
-    await _claimed(store)
-    await _save(store, [{"shape_type": "bbox"}])
-    await _save(store, [{"shape_type": "bbox"}] * 30, base_revision=1)
-
-    with pytest.raises(IllegalTransition, match="without base_revision"):
-        await _save(store, [{"shape_type": "tag"}])
-
-    surviving = await store.get_draft("t1")
-    assert surviving is not None and len(surviving.shapes) == 30, "the omitted-revision save clobbered 30 shapes"
 
 
 @pytest.mark.asyncio

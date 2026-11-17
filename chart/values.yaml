@@ -74,7 +74,7 @@ forwardedAllowIps: 127.0.0.1
 # - `kind: rask`: a rask lakehouse by its catalog's REST door (`uri`, `http://<rask>-catalog.<namespace>:2333`), read as
 #   the person (`identity: person`, under `auth.lakehouse`: the lakehouse decides every read) or as the workbench's own
 #   client (`service`: the workbench decides, by `readers`). At most one; its datasets are always annotated, it alone
-#   holds the annotation tables and is published to, and only it is sent a token.
+#   is published to, and only it is sent a token.
 # - `kind: namespace`: any lance-namespace implementation (`impl`, `dir` or `rest`) and its `properties`; with `claim`,
 #   a PersistentVolumeClaim mounted read-only as the `dir` root (or its `path` on the claim). Its tables are read only
 #   under its `dir` root or the
@@ -82,8 +82,9 @@ forwardedAllowIps: 127.0.0.1
 # - `kind: tables`: a bare Lance table (`uri` ending `.lance`) or a directory of them, by `uri`, or by `path` on a
 #   `claim`; `storage` names object-store options (a region, an endpoint).
 # Read-only every one but the lakehouse. A `namespace` or `tables` source's items may be sent to a project and labelled
-# only when it is marked `annotatable: true` (a boolean, false when left out; refused on a lakehouse, which always is, and
-# beside no lakehouse, which alone holds annotations). No source names a credential: properties and storage options are held to the
+# only when it is marked `annotatable: true` (a boolean, false when left out; refused on a lakehouse, which always is).
+# Labeling needs no lakehouse: work in progress is kept in the annotator's own Postgres, and only a publish writes to a
+# lakehouse, so a release with none labels and refuses a publish. No source names a credential: properties and storage options are held to the
 # allow-list in `files/source-keys.json`, and a store is reached on the catalog's vend or the workload's own identity
 # (`storeIdentity`). Every source but a lakehouse read as the person names its `readers`
 # (`{orgs: [<org>], people: [<idp-id>~<subject>]}`), the only people who may read it; with none, nobody may. Each takes
@@ -213,9 +214,6 @@ auth:
     # tokens: Keycloak) or `forward` (the person's token, which the sign-in asked for the lakehouse's audience too, is
     # passed on unchanged: Dex). `forward` needs `auth.oidc.dpopRequired: false`.
     delegation: exchange
-  # The lakehouse namespace holding the workbench's annotation tables (`<warehouse>$<namespace>`), which the workbench's
-  # own identity is granted to write in the lakehouse: one table per (project, dataset).
-  annotationsNamespace: workbench$annotations
   # The workbench's own OpenFGA store, on the platform's OpenFGA, by reference.
   fga:
     # The platform's OpenFGA. Required.

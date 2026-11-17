@@ -14,14 +14,14 @@ values and the local stack writes from a file), each by a name and a kind:
   root is a table of the root namespace) with the manifest off, so a read never writes one.
 
 THE ONE SWITCH. Everything rask-specific belongs to the ``rask`` kind alone: a token addressed to the lakehouse, the
-``x-lance-originator`` and ``x-rask-*`` context headers, the warehouse-first id rule, the annotation tables and publish.
+``x-lance-originator`` and ``x-rask-*`` context headers, the warehouse-first id rule, and publish.
 Every other source is plain lance-namespace or plain Lance, read with no token through a namespace that can only read
 (`client_kit.lancekit.confined`), only tables it lists, only under the locations git declares, and only on the storage
 options git declares (:func:`connect_source`).
 
 WHAT IS LABELLED. A lakehouse's datasets are always annotated. Any other source's are only where git marks the source
-``annotatable: true`` (:func:`annotatable`): its rows are still only read, and the annotations, as every annotation, are
-written to the lakehouse's annotations namespace.
+``annotatable: true`` (:func:`annotatable`): its rows are still only read. The work people do on any source's items is
+the annotator's own, in its own database, so labeling needs no lakehouse; only a publish does, and lands in one.
 
 WHO DECIDES A READ. A ``rask`` source read as the person (``identity: person``) is the lakehouse's to decide, on the
 person's own token. Every other source, and a ``rask`` source read as the workbench (``identity: service``), has no
@@ -232,14 +232,8 @@ class Sources(BaseModel):
         if len(set(names)) != len(names):
             raise ValueError(f"source names must be distinct: {names}")
         if sum(isinstance(source, RaskSource) for source in self.items) > 1:
-            # One lakehouse holds the workbench's annotation tables and is where a publish lands, so a second would leave
-            # both undecided.
+            # One lakehouse is where a publish lands, so a second would leave it undecided.
             raise ValueError("at most one source is a rask lakehouse")
-        if not any(isinstance(source, RaskSource) for source in self.items):
-            for source in self.items:
-                if isinstance(source, _LabelledOnlyIfMarked) and source.annotatable:
-                    # Annotations are written only to a lakehouse's annotations namespace.
-                    raise ValueError(f"source {source.name!r} is marked annotatable, and no rask lakehouse holds the annotations")
         return self
 
     @classmethod

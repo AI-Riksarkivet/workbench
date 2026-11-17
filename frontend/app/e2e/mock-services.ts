@@ -33,10 +33,10 @@ import {
 	vectorFromArray,
 } from 'apache-arrow';
 import { athOf, readToken, verifyProof, type TokenClaims } from './dpop';
-import { lakehouseCallsOf, readAsPerson, writeAsService } from './mock-lakehouse';
+import { lakehouseCallsOf, readAsPerson } from './mock-lakehouse';
 import { SHAPES, shapeOf } from './providers';
 import { annotationsDoor, assistDoor } from './mock-annotations';
-import { orgsOf, permissionsOn, projectsDoor, taskOf } from './mock-projects';
+import { draftOf, orgsOf, permissionsOn, projectsDoor, taskOf, writeDraft } from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
 /** One call as a service saw it. */
@@ -1439,7 +1439,10 @@ Bun.serve({
 			(taskId) => taskOf(who.sub, taskId),
 			ok,
 			faultOf(who.sub, url.pathname),
-			() => writeAsService(who, who.host),
+			{
+				read: (taskId) => draftOf(who.sub, taskId),
+				write: (taskId, draft) => writeDraft(who.sub, taskId, draft),
+			},
 		);
 		if (annotations) return annotations;
 		const assist = await assistDoor(req, url, (projectId) => permissionsOn(who.sub, projectId), ok);

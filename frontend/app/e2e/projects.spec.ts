@@ -523,7 +523,7 @@ test('a new choice of project starts with no label: a label is never carried int
 	expect(items.every((item) => item.prediction === undefined)).toBe(true);
 });
 
-test('a project created around a selection whose send then fails is retried by sending alone, chosen', async ({
+test('a project created around a selection is made with its classes, and one whose send then fails is retried by sending alone, chosen', async ({
 	page,
 	context,
 }) => {
@@ -537,7 +537,22 @@ test('a project created around a selection whose send then fails is retried by s
 		}),
 	);
 	await dialog.getByLabel('Slug').fill('harbour-set');
-	await dialog.getByRole('button', { name: /^Create and send/ }).click();
+	// A project with no classes would leave every item it is sent unclassable: the dialog asks for them first.
+	const create = dialog.getByRole('button', { name: /^Create and send/ });
+	await expect(create).toBeDisabled();
+	await dialog.getByTestId('send-new-classes').fill('letter, map, letter');
+	await dialog.getByLabel('Shape kind', { exact: true }).click();
+	await page.getByRole('option', { name: 'polygon' }).click();
+	const createdBody = page.waitForRequest(
+		(req) => req.method() === 'POST' && new URL(req.url()).pathname === '/api/annotator/projects',
+	);
+	await create.click();
+	expect(
+		((await createdBody).postDataJSON() as { ontology: { classes: unknown[] } }).ontology.classes,
+	).toEqual([
+		{ name: 'letter', tools: ['polygon'], required: false },
+		{ name: 'map', tools: ['polygon'], required: false },
+	]);
 	await expect(dialog.getByTestId('send-error')).toHaveText(
 		'the annotator could not reach its state store',
 	);

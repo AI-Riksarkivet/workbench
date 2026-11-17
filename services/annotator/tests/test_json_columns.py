@@ -1,6 +1,6 @@
-"""The JSON columns are JSON, so a filter can reach inside them.
+"""The published table's JSON columns are JSON, so a filter can reach inside them.
 
-`attributes`, `metadata` and `links` were `pa.string()`: valid JSON in every writer, and entirely
+`attributes` and `links` were `pa.string()`: valid JSON in every writer, and entirely
 opaque to every reader. The ontology declares per-class attributes with real types
 (`free`/`int`/`enum`/`bool`), enforces them at submit and publishes them — and no consumer could ask
 "which annotations carry this attribute" without fetching every row and parsing client-side.
@@ -19,23 +19,10 @@ from pathlib import Path
 import lance
 import pyarrow as pa
 
-from annotator.annotations.schema import EMPTY_SCHEMA
 from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA
 
 
-def _schema(fields: object) -> pa.Schema:
-    return fields if isinstance(fields, pa.Schema) else pa.schema(fields)
-
-
-ANNOTATIONS = _schema(EMPTY_SCHEMA)
 PUBLISHED = PUBLISHED_LABELS_SCHEMA
-
-
-def test_the_three_columns_are_JSON_not_string() -> None:
-    """The change itself. `# json` in a comment beside `pa.string()` is a wish, not a type."""
-    assert ANNOTATIONS.field("metadata").type == pa.json_()
-    assert ANNOTATIONS.field("links").type == pa.json_()
-    assert PUBLISHED.field("attributes").type == pa.json_()
 
 
 def test_the_extension_type_survives_ARROW_IPC(tmp_path: Path) -> None:

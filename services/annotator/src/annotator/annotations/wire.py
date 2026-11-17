@@ -1,9 +1,9 @@
-"""Arrow-IPC wire serving — the annotator's READ path.
+"""Arrow-IPC serving — the canvas's READ of a unit's work.
 
-The PixiJS engine consumes Arrow IPC directly (zero-copy geometry views), so we stream
-the Lance annotations table as an Arrow IPC stream — the same wire format the atlas
-``/points`` uses. A missing table degrades to an empty stream (a dataset with no
-annotations yet is not an error).
+The canvas's engine consumes Arrow IPC directly (zero-copy geometry views), so the task's draft, the one store of its
+work in progress, is served as an Arrow IPC stream of rows (`annotator.annotations.work.wire_table`), the same wire
+format the atlas's ``/points`` uses. ``X-Annotations-Version`` is the draft's revision (0 before the first save), which
+a save echoes as its ``base_version``.
 """
 
 from __future__ import annotations
@@ -12,14 +12,15 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Query, Response
 
-from annotator.annotations.access import MAY_READ_UNIT, TaskParam, UnitKey
-from annotator.annotations.schema import EMPTY_SCHEMA
+from annotator.annotations.access import ReadableUnit, UnitKey
 from annotator.annotations.unit import parse_unit
-from annotator.annotations.versions import checkout
-from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep
+from annotator.annotations.work import wire_table
+from annotator.api.dependencies import StoreDep
+from annotator.api.security import READS_DATASET, CallerDep
 from annotator.corpus import resolve
 from client_kit.media.deps import DatasetParam, StateDep
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE, encode_arrow_stream
+from service_kit.exceptions import NotFoundError
 
 
 if TYPE_CHECKING:
@@ -29,45 +30,33 @@ if TYPE_CHECKING:
 router = APIRouter(tags=["annotate"])
 
 
-@router.get("/annotations/{key:path}", dependencies=[MAY_READ_UNIT, READS_DATASET])
-def annotations(
+@router.get("/annotations/{key:path}", dependencies=[READS_DATASET])
+async def annotations(
     caller: CallerDep,
     state: StateDep,
-    annotations: AnnotationsDep,
+    store: StoreDep,
+    task: ReadableUnit,
     key: UnitKey,
-    task: TaskParam,
     dataset: DatasetParam = None,
-    version: Annotated[int | None, Query(ge=1, description="Read a historical version (time-travel).")] = None,
+    version: Annotated[int | None, Query(ge=1, description="Read a past save of the work, as the history keeps it.")] = None,
 ) -> Response:
-    """Arrow IPC stream of the annotations for one unit of a task's item (`annotator.annotations.access`): that task's
-    rows of the unit, never those of another task holding the same unit.
+    """Arrow IPC stream of a task's work on its unit (`annotator.annotations.access`): its draft, never another task's,
+    even of the same unit.
 
-    The key's segments pair with the dataset's identity fields (`annotator.annotations.unit`). ``version`` reads a
-    HISTORICAL snapshot (Lance time-travel) for the compare-versions view; omitted ⇒ the latest."""
+    The key's segments pair with the dataset's identity fields (`annotator.annotations.unit`), which head every row.
+    ``version`` reads a past save from the task's history (a 404 for one it does not keep); omitted, the draft now."""
     corpus = resolve(state, dataset, caller)
     unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
-    ds = annotations(corpus.id).open()
-    if ds is None:
-        # No annotations table yet — serve an empty stream so the client renders 0.
-        return _empty_stream_response()
-    where = unit.of_task(task)
     if version is not None:
-        return _annotations_response(checkout(ds, version).to_table(filter=where), version)
-    # The version the client echoes back on Save is the one this open is pinned at, so the rows served are that
-    # version's: a commit landing after the open yields a spurious 409 on the next save (the client reloads), never a
-    # header claiming a version whose rows were not served.
-    return _annotations_response(ds.to_table(filter=where), int(ds.version))
+        past = await store.draft_at(task.task_id, version)
+        if past is None:
+            raise NotFoundError(f"annotations version {version} not found: the history of task {task.task_id} does not keep it")
+        return _response(wire_table(unit, task.task_id, past), version)
+    draft = await store.get_draft(task.task_id)
+    return _response(wire_table(unit, task.task_id, draft), draft.revision if draft else 0)
 
 
-def _empty_stream_response() -> Response:
-    return Response(
-        content=encode_arrow_stream(EMPTY_SCHEMA.empty_table()),
-        media_type=ARROW_STREAM_MEDIA_TYPE,
-        headers={"Cache-Control": "no-store", "X-Annotations-Version": "0"},
-    )
-
-
-def _annotations_response(table: pa.Table, version: int) -> Response:
+def _response(table: pa.Table, version: int) -> Response:
     """The wire response: rows + the version the client echoes on Save."""
     return Response(
         content=encode_arrow_stream(table),

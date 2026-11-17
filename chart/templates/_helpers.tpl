@@ -26,7 +26,8 @@ lakehouse read as the person) names its `readers`, organisations and principal k
 `source:<name>`; with none, nobody reads it. A source with a `claim` reads a PersistentVolumeClaim mounted read-only at
 `/var/lib/workbench/sources/<name>`: a `namespace` source's `dir` root, or a `tables` source's directory, at the
 `path` it names on the claim (never outside it). A lakehouse's datasets are always annotated; any other source's only
-when it is marked `annotatable: true` (a boolean, `client_kit.sources.annotatable`). The declaration
+when it is marked `annotatable: true` (a boolean, `client_kit.sources.annotatable`), with or without a lakehouse
+beside it: work in progress is the annotator's own, and only a publish needs a lakehouse. The declaration
 rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- define "workbench.sources" -}}
 {{- $keys := .Files.Get "files/source-keys.json" | fromJson -}}
@@ -90,7 +91,6 @@ rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- end -}}
 {{- if empty $declared }}{{ fail "sources: declare at least one source the workbench reads" }}{{ end -}}
 {{- if gt $lakehouses 1 }}{{ fail "sources: at most one source is a rask lakehouse" }}{{ end -}}
-{{- if eq $lakehouses 0 }}{{ range $declared }}{{ if .annotatable }}{{ fail (printf "sources: %s is marked annotatable, and no rask lakehouse holds the annotations" .name) }}{{ end }}{{ end }}{{ end -}}
 {{- toJson (dict "sources" $declared) -}}
 {{- end -}}
 
@@ -239,6 +239,5 @@ the app refuse a provider that offers no DPoP, and never lets it sign in without
 {{- if include "workbench.lakehouseAuth" . }}
 {{ include "workbench.lakehouseEnv" . }}
 {{- end }}
-- { name: ANNOTATOR_ANNOTATIONS_NAMESPACE, value: {{ required "auth.annotationsNamespace: the workbench's own annotations namespace" .Values.auth.annotationsNamespace | quote }} }
 {{ include "annotator.fgaEnv" . }}
 {{- end -}}

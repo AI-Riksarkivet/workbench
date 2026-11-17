@@ -11,8 +11,8 @@
  *   3. owns the layer grouping and the annotation table the sidebar reads.
  *
  * Its reads and writes go through `#lib/api/annotations.api.ts` (the app's DPoP transport, `?project=`
- * on every call) and the task draft through `./draft-sync.ts`. The layout binds to the controller,
- * never to the engine.
+ * on every call): the task's draft, the one store of its work in progress, served as rows and changed by each save
+ * (links included). The layout binds to the controller, never to the engine.
  */
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import type { Table } from 'apache-arrow';
@@ -33,7 +33,6 @@ import {
 } from '@workbench/labeling/annotations-client';
 import { loadAnnotations, saveAnnotations } from '#lib/api/annotations.api.ts';
 import { type AnnoRow, effectiveField, projectRows, rawField } from './annotation-rows.ts';
-import { syncTaskDraft } from './draft-sync.ts';
 import type { PendingEdits } from './pending.ts';
 import { ontologyTools, type TaskDetail } from '#lib/projects/types.ts';
 import {
@@ -212,6 +211,34 @@ export interface AnnoLink {
 }
 
 const STRING_FIELD_CANDIDATES = ['label', 'status', 'source', 'group', 'reviewer'];
+
+/** The links the rows of a unit's work carry: each row's `links` is a JSON array of the relations leaving it,
+ *  `[{"name", "to_shape"}]`. A cell that is not that array names no link. */
+function linksOf(table: Table): AnnoLink[] {
+	const ids = table.getChild('id');
+	const cells = table.getChild('links');
+	if (!ids || !cells) return [];
+	const links: AnnoLink[] = [];
+	for (let i = 0; i < table.numRows; i += 1) {
+		const from = ids.get(i);
+		const cell = cells.get(i);
+		if (typeof from !== 'string' || typeof cell !== 'string' || cell === '') continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(cell);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+		for (const entry of parsed as unknown[]) {
+			if (!isPlainObject(entry)) continue;
+			const { name, to_shape } = entry;
+			if (typeof name === 'string' && typeof to_shape === 'string')
+				links.push({ name, from_shape: from, to_shape });
+		}
+	}
+	return links;
+}
 
 /** #rrggbb ⇄ 0xRRGGBB — self-contained so the panel needs no engine color util. */
 function numToHex(n: number): string {
@@ -684,10 +711,16 @@ export class AnnotatorController implements Zoomable {
 
 	readonly canUndo = $derived(this._undo.length > 0);
 	readonly canRedo = $derived(this._redo.length > 0);
-	/** Unsaved-edits flag: pending field edits, a canvas geometry edit, or queued
+	/** Each change of the links (a draw, a removal, an undo or redo of one): the save sends the whole set when it moved
+	 *  past what the last save, or the last read, holds. */
+	private _linkRevision = $state(0);
+	private _savedLinkRevision = $state(0);
+
+	/** Unsaved-edits flag: pending field edits, a canvas geometry edit, a link edit, or queued
 	 *  structural inserts/deletes. */
 	readonly dirty = $derived(
-		this._undo.length > 0 ||
+		this._linkRevision !== this._savedLinkRevision ||
+			this._undo.length > 0 ||
 			this._geoDirty ||
 			this._inserts.length > 0 ||
 			this._deletes.length > 0 ||
@@ -729,6 +762,7 @@ export class AnnotatorController implements Zoomable {
 		this.count = table.numRows;
 		this._saveUrl = saveUrl ?? null;
 		this._version = version ?? null;
+		this._adoptLinks(table);
 
 		const im = ctx.plugins.interaction;
 		im.setEditMode(this.mode === 'edit');
@@ -1032,17 +1066,11 @@ export class AnnotatorController implements Zoomable {
 		);
 	}
 
-	/** Restore the DRAFT's relations at open. Links live on the task draft, not the annotations
-	 *  table, and nothing read them back — reopening a task showed zero links and the next save
-	 *  posted an empty list, silently destroying every drawn relation. Declines to clobber: links
-	 *  drawn before the (async) draft read resolves win over the snapshot they are newer than. */
-	restoreLinks(links: AnnoLink[]): void {
-		if (this.links.length > 0) return;
-		this.links = links.map((l) => ({
-			name: l.name,
-			from_shape: l.from_shape,
-			to_shape: l.to_shape,
-		}));
+	/** Take the links the read rows carry (each row's `links`, the relations leaving it), unless this canvas holds link
+	 *  edits no save has carried yet: those are newer than the rows. */
+	private _adoptLinks(table: Table): void {
+		if (this._linkRevision !== this._savedLinkRevision) return;
+		this.links = linksOf(table);
 		this._pushLinksToCanvas();
 	}
 
@@ -1090,6 +1118,7 @@ export class AnnotatorController implements Zoomable {
 		);
 		if (exists) return;
 		this.links = [...this.links, link];
+		this._linkRevision += 1;
 		this._pushLinksToCanvas();
 		this._pushUndo({ kind: 'link', link, created: true });
 	}
@@ -1103,6 +1132,7 @@ export class AnnotatorController implements Zoomable {
 				!(l.name === link.name && l.from_shape === link.from_shape && l.to_shape === link.to_shape),
 		);
 		if (this.links.length === before) return;
+		this._linkRevision += 1;
 		this._pushLinksToCanvas();
 		this._pushUndo({ kind: 'link', link, created: false });
 	}
@@ -1584,6 +1614,7 @@ export class AnnotatorController implements Zoomable {
 						),
 				);
 				this.links = present ? [...gone, op.link] : gone;
+				this._linkRevision += 1;
 				this._pushLinksToCanvas();
 				break;
 			}
@@ -1776,8 +1807,11 @@ export class AnnotatorController implements Zoomable {
 			deletes: this._deletes,
 			version: this._version,
 			resolveId: (index) => rawField(t, 'id', index),
+			links: this._linkRevision !== this._savedLinkRevision ? this.links : null,
 		});
 		if (payloadIsEmpty(payload)) return;
+		// The links this save carries, by the revision of them it read: a link edited while it is in flight is newer.
+		const linksSent = this._linkRevision;
 		// What this save carries, by id: an edit made while it is in flight is not in it, and survives it.
 		const sent = this.pendingEdits();
 
@@ -1805,6 +1839,7 @@ export class AnnotatorController implements Zoomable {
 				// state; the pending edits are dropped, to be re-applied on fresh data.
 				this.saveError = 'Annotations changed on the server — reloaded. Re-apply your edits.';
 				this.notice = { tone: 'error', text: this.saveError };
+				this._savedLinkRevision = this._linkRevision;
 				await this._reload();
 				this._resetOverlays();
 				return;
@@ -1812,7 +1847,12 @@ export class AnnotatorController implements Zoomable {
 			if (!opts.auto) {
 				// An autosave is silent on success: a message every four idle seconds is noise.
 				this.notice = { tone: 'success', text: 'Annotations saved' };
+			} else if (this.notice?.tone === 'error') {
+				// What a refused or failed save said is answered by this one landing: it no longer stands.
+				this.notice = null;
 			}
+			// The links this save carried are the server's now; ones edited since stay this canvas's to send.
+			this._savedLinkRevision = linksSent;
 			// What was edited since this save was sent, read again once the rows are fetched and just before they replace
 			// the table: an edit made while the reload was in flight is kept too.
 			let later = this.pendingEdits(sent);
@@ -1820,13 +1860,12 @@ export class AnnotatorController implements Zoomable {
 				later = this.pendingEdits(sent);
 			});
 			this._resetOverlays();
-			const saved = this.table;
 			this.applyPending(later);
-			if (saved) await this._syncTaskDraft(saved);
 			this.lastSavedAt = Date.now();
 			this.onSaved?.();
-			// A successful manual save is what clears a halt: the conflict has been looked at.
-			if (!opts.auto) this.autosaveHalted = null;
+			// A successful save is what clears a halt: a manual one because the conflict has been looked at, an
+			// autosave's because the failure it stopped for has passed.
+			this.autosaveHalted = null;
 		} catch (e) {
 			this.saveError = e instanceof Error ? e.message : String(e);
 			// A transport failure halts autosave too: retrying a broken connection every four seconds
@@ -1924,8 +1963,8 @@ export class AnnotatorController implements Zoomable {
 		this.edits += 1;
 	}
 
-	/** Take the open task's rules from its captured ontology, and the task whose draft a save snapshots into. */
-	configure(ontology: TaskOntology | undefined, draftTaskId: string | null): void {
+	/** Take the open task's rules from its captured ontology. */
+	configure(ontology: TaskOntology | undefined): void {
 		const classes = ontology?.classes ?? [];
 		this.allowedShapeTypes = ontologyTools(ontology);
 		this.relationNames = (ontology?.relations ?? []).map((r) => r.name);
@@ -1954,27 +1993,6 @@ export class AnnotatorController implements Zoomable {
 		this.allowEmpty = ontology?.allow_empty ?? false;
 		// The shapes are coloured by their class (the layers group by `label`), each class its own colour.
 		for (const [name, hex] of this.classColour) this.layers.setColor(name, hexToNum(hex));
-		this.draftTaskId = draftTaskId;
-	}
-
-	/** The task whose draft a save snapshots the unit into: set by the page for a task of ONE unit, null
-	 *  otherwise (a draft holds one unit's shapes, so a multi-unit task's pages must not overwrite each
-	 *  other's). */
-	draftTaskId = $state<string | null>(null);
-
-	/** A task's canvas snapshots the saved unit into the task's draft, the document the publish reads,
-	 *  so canvas work travels into the published table. A failure is said out loud: work that looks
-	 *  saved but never publishes is the worst outcome. */
-	private async _syncTaskDraft(saved: Table): Promise<void> {
-		const taskId = this.draftTaskId;
-		if (!taskId) return;
-		const detail = await syncTaskDraft(taskId, saved, this.links);
-		if (detail !== null) {
-			this.notice = {
-				tone: 'error',
-				text: `Saved, but the task draft did not update — the publish will not carry these shapes (${detail})`,
-			};
-		}
 	}
 
 	/** Drop every pending local edit (after a flush or a conflict reload). */
@@ -2021,6 +2039,7 @@ export class AnnotatorController implements Zoomable {
 		// AFTER `this.table` is swapped: the id→index map is built from `rows`, which reads the new
 		// table. Re-pushing here is what stops a reload — which renumbers every row — from leaving
 		// each edge pointing at whatever now happens to sit at its old index.
+		this._adoptLinks(table);
 		this._pushLinksToCanvas();
 		this._syncTracks();
 		this.select(null);
@@ -2035,6 +2054,7 @@ export class AnnotatorController implements Zoomable {
 		this.count = table.numRows;
 		this._saveUrl = saveUrl;
 		this._version = version;
+		this._adoptLinks(table);
 	}
 
 	/** Release what `attachTable` took. */

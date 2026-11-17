@@ -85,7 +85,9 @@ class _Door:
         return self.portal.call(self.store.get_draft, task_id)
 
     def save_draft(self, shapes: list[Shape], task_id: str = "t1") -> Draft:
-        return self.portal.call(lambda: self.store.save_draft(task_id, author=SUBJECT, shapes=shapes, links=[], base_revision=None))
+        return self.portal.call(
+            lambda: self.store.change_draft(task_id, author=SUBJECT, change=lambda _current, _now: (shapes, []), base_revision=None, require_base=False)
+        )
 
 
 @pytest.fixture
@@ -256,61 +258,6 @@ def test_someone_elses_submission_can_be_reviewed(door: Callable[..., _Door]) ->
 
 
 # --------------------------------------------------------------------------------------------------
-# Drafts
-# --------------------------------------------------------------------------------------------------
-
-
-def test_the_draft_save_records_the_verified_subject_as_author(door: Callable[..., _Door]) -> None:
-    """Provenance: who annotated is the VERIFIED subject, never a field the client supplied; the project is the task's."""
-    d = door(allow=True)
-    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-
-    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}], "author": "mallory", "project_id": "elsewhere"})
-
-    assert r.status_code == 200, r.text
-    stored = d.draft()
-    assert stored is not None
-    assert (stored.author, stored.project_id) == (SUBJECT, PROJECT_ID)
-
-
-@pytest.mark.parametrize("state", [TaskState.ACCEPTED])
-def test_a_draft_is_only_writable_while_the_task_is_claimed_or_in_review(state: TaskState, door: Callable[..., _Door]) -> None:
-    """An ACCEPTED task's shapes are never rewritten after review, and never during a publish: the shapes take edits
-    only while the task is claimed or in review (`EDIT_PERMISSION`)."""
-    d = door(allow=True)
-    d.seed(_task(state=state, assignee=SUBJECT))
-
-    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
-
-    assert r.status_code == 409, r.text
-    assert d.draft() is None, f"a draft was written to a {state} task"
-
-
-def test_a_reviewer_saves_a_fix_into_work_in_review(door: Callable[..., _Door]) -> None:
-    """`fix_and_accept` records a fix: a reviewer who did not submit the work saves it into the draft under
-    `can_review`, which the store takes only as a verified reviewer's write."""
-    d = door(allow={"can_view", "can_review"})
-    d.seed(_task(state=TaskState.IN_REVIEW, submitted_by="dave"))
-
-    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
-
-    assert r.status_code == 200, r.text
-    stored = d.draft()
-    assert stored is not None and (stored.author, [s.shape_type for s in stored.shapes]) == (SUBJECT, ["bbox"])
-    assert {"user": SUBJECT, "relation": "can_review", "obj": "task:t1"} in d.seen
-
-
-def test_a_draft_save_by_a_non_holder_is_403(door: Callable[..., _Door]) -> None:
-    d = door(allow=True)
-    d.seed(_task(state=TaskState.CLAIMED, assignee="dave"))
-
-    r = d.client.put("/tasks/t1/draft", json={"shapes": []})
-
-    assert r.status_code == 403
-    assert d.draft() is None
-
-
-# --------------------------------------------------------------------------------------------------
 # §5.2 rule 5 — nothing escapes a published project
 # --------------------------------------------------------------------------------------------------
 
@@ -329,18 +276,6 @@ def test_no_task_transition_survives_a_published_project(frozen: ProjectState, d
     assert r.status_code == 409, r.text
     assert "frozen with the published artifact" in r.text
     assert d.task().state is TaskState.IN_REVIEW
-
-
-def test_a_draft_cannot_be_saved_into_a_publishing_project(door: Callable[..., _Door]) -> None:
-    """The sharpest case: the saga is reading drafts right now to build the plan."""
-    d = door(allow=True)
-    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
-    d.freeze_project_as(ProjectState.PUBLISHING)
-
-    r = d.client.put("/tasks/t1/draft", json={"shapes": [{"shape_type": "bbox"}]})
-
-    assert r.status_code == 409
-    assert d.draft() is None
 
 
 # --------------------------------------------------------------------------------------------------

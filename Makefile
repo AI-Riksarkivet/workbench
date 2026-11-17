@@ -123,7 +123,7 @@ CHART_PLATFORM = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId
 	--set auth.oidc.client.secret.name=wb-client --set auth.lakehouse.audience=lakehouse --set 'sources[0].name=lake' --set 'sources[0].kind=rask' --set 'sources[0].uri=https://lakehouse.example' \
 	--set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
 CHART_NO_LAKEHOUSE = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example \
-	--set 'sources[0].name=archive' --set 'sources[0].kind=namespace' --set 'sources[0].impl=dir' --set 'sources[0].claim=archive' \
+	--set 'sources[0].name=archive' --set 'sources[0].kind=namespace' --set 'sources[0].impl=dir' --set 'sources[0].claim=archive' --set 'sources[0].annotatable=true' \
 	--set 'sources[0].readers.orgs[0]=acme' --set 'sources[0].readers.people[0]=corp~ada' \
 	--set 'sources[1].name=scans' --set 'sources[1].kind=tables' --set 'sources[1].uri=s3://bucket/scans.lance' \
 	--set 'sources[1].storage.region=eu-north-1' --set 'sources[1].storage.aws_role_arn=arn:aws:iam::1:role/scans' \
@@ -165,7 +165,7 @@ DEV_ADMIN ?= alice@example.com
 DEV_ADMIN_PASSWORD_FILE ?=
 DEV_GATEWAY_HOST ?= workbench.localhost
 DEV_HELM = helm --namespace $(DEV_NAMESPACE)
-DEV_GRANTS = uv run python scripts/lakehouse_grants.py --values deploy/values-dev.yaml --admin $(DEV_ADMIN) \
+DEV_GRANTS = uv run python scripts/lakehouse_grants.py --values deploy/values-dev.yaml --reads acme --admin $(DEV_ADMIN) \
 	$(if $(DEV_ADMIN_PASSWORD_FILE),--password-file $(DEV_ADMIN_PASSWORD_FILE))
 
 deploy-dev: dev-clean-tree dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback
@@ -210,7 +210,7 @@ dev-readback:
 		&& echo "the workbench answers at http://$(DEV_GATEWAY_HOST):8080 (through the port-forward to the Gateway)"
 
 undeploy-dev: dev-undeploy-grants dev-undeploy-release dev-undeploy-openfga dev-undeploy-namespace dev-undeploy-dex-client
-	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry, and the annotations namespace's tables in the lakehouse (dropped by their owner at the catalog's drop door)"
+	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry"
 
 dev-undeploy-grants:
 	$(DEV_GRANTS) revoke

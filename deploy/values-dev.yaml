@@ -34,8 +34,7 @@ sources:
     impl: dir
     claim: workbench-demo
     path: lakehouse
-    # Its items may be sent to a project and labelled; their annotations go to `auth.annotationsNamespace` in the
-    # lakehouse, as every annotation does.
+    # Its items may be sent to a project and labelled; the work stays in the annotator's own Postgres until a publish.
     annotatable: true
     readers:
       people:
@@ -78,9 +77,6 @@ auth:
     audience: rask-lakehouse
     audienceScope: audience:server:client_id:rask-lakehouse
     delegation: forward
-  # The workbench's annotation tables, in a warehouse the dev estate holds; `make grants-dev` creates the namespace and
-  # grants the workbench's own identity write there (scripts/lakehouse_grants.py).
-  annotationsNamespace: acme$workbench_annotations
   # The workbench's own OpenFGA, the development fixture `deploy/fixtures/openfga` in this namespace, and the preshared
   # key it generates.
   fga:

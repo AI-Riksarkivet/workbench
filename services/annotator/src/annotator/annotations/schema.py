@@ -1,24 +1,19 @@
-"""The annotations CONTRACT — request/response models, the table schema, identity.
+"""The annotations CONTRACT — the canvas's request/response models and the columns of the rows it reads.
 
-One place for the shapes every annotations module shares. ``EMPTY_SCHEMA`` is the
-single backend source of truth for the table's columns; ``scripts/seed_annotations.py``
-imports it (identity columns prepended per descriptor) and a test asserts the seeded
-dataset matches, so the schema cannot silently drift across its consumers.
+One place for the shapes every annotations module shares. ``EMPTY_SCHEMA`` is the columns of the Arrow stream the
+canvas reads a unit's work in (`annotator.annotations.wire`), built from the task's draft
+(`annotator.annotations.work.wire_table`), with the unit's identity columns before them.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated, Self
+from typing import Annotated, Self
 
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from annotator.projects.models import Link, ShapeType
 
-if TYPE_CHECKING:
-    from client_kit.lancekit.descriptor import Declared
-
-ANNOTATIONS_TABLE = "annotations"
 
 #: An annotation's id: the canvas mints ids of a few dozen characters, and a chunk tag's id names its document, its keys
 #: and its percent-encoded label (`annotator.annotations.tags.tag_id`), a few hundred at most.
@@ -28,10 +23,15 @@ MAX_ID_LENGTH = 1024
 MAX_GROUP_LENGTH = 128
 
 #: The rows one save may name, every list counted: an autosave carries what changed since the last one, a few dozen
-#: rows, and a bulk load is an import, which has its own door. Bounds the merge one request has the catalog commit.
+#: rows, and a bulk load is an import, which has its own door. Bounds the change one request applies to a draft.
 MAX_SAVE_ROWS = 5000
 
+#: The links one save may state: the whole set of the item's relations, which a person draws one by one.
+MAX_SAVE_LINKS = 5000
+
 RowId = Annotated[str, Field(min_length=1, max_length=MAX_ID_LENGTH)]
+#: A tag's label: a class name, as long as a sender's prediction label may be.
+Label = Annotated[str, Field(min_length=1, max_length=128)]
 Group = Annotated[str, Field(max_length=MAX_GROUP_LENGTH)]
 #: A moment in the item's media, in seconds from its start.
 Seconds = Annotated[float, Field(ge=0.0)]
@@ -84,7 +84,9 @@ class NewAnnotation(BaseModel):
     model_config = FINITE
 
     id: RowId
-    shape_type: str
+    #: The canonical vocabulary only (the canvas maps its tools' names into it, `@workbench/labeling/shape-types`): a
+    #: draft holds no shape the submit, the ontology and the publish do not speak.
+    shape_type: ShapeType
     x: float = 0.0
     y: float = 0.0
     width: float = 0.0
@@ -177,12 +179,12 @@ class SpanEdit(BaseModel):
 
 
 class SaveAnnotations(BaseModel):
-    """The delta a Save flushes for one media unit: field edits + newly drawn shapes
-    + moved geometry + deleted ids. Edits/inserts/geometry commit together (one
-    merge_insert), deletes follow.
+    """The change a Save makes to one unit's work, applied to the task's draft in one transaction: field edits, newly
+    drawn shapes, moved geometry, resized times, re-anchored spans, deleted ids and, when the relations changed, the
+    whole set of the item's links.
 
-    ``base_version`` is the Lance version the client loaded — optimistic concurrency:
-    the save 409s if the table advanced underneath it (someone else / a deriver wrote).
+    ``base_version`` is the draft's revision the client loaded (0 before the first save): the save 409s when the
+    task's work moved underneath it (another tab, a reviewer).
     """
 
     edits: list[AnnotationEdit] = Field(default_factory=list)
@@ -191,7 +193,10 @@ class SaveAnnotations(BaseModel):
     temporal: list[TemporalEdit] = Field(default_factory=list)
     spans: list[SpanEdit] = Field(default_factory=list)
     deletes: list[RowId] = Field(default_factory=list)
-    base_version: int | None = None
+    #: The item's links after this save, all of them, or None to leave them as they are (a deleted shape's links go
+    #: with it either way).
+    links: list[Link] | None = Field(default=None, max_length=MAX_SAVE_LINKS)
+    base_version: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _bounded(self) -> Self:
@@ -205,53 +210,50 @@ class SaveAnnotations(BaseModel):
 
 
 class SaveResult(BaseModel):
-    """One save. ``saved`` counts touched rows (edits+inserts+deletes)."""
+    """One save. ``saved`` counts the rows it touched (edits, inserts and deletes); ``version`` is the draft's revision
+    it wrote."""
 
     saved: int
     version: int
 
 
 class TagWrite(BaseModel):
-    """One chunk (or its unit) + the tag labels to set on it. ``keys`` are the NON-doc
-    identity fields, positional — they pair with ``descriptor.identity.key_fields`` minus
-    the doc key, exactly like ``identity_values`` / ``chunk_key_filter`` (a chunk tag
-    sends ``keys=[speech_id, chunk_id]``)."""
+    """One unit + the tag labels to set on it. ``keys`` are the NON-doc identity fields, positional — they pair with
+    ``descriptor.identity.key_fields`` minus the doc key (a chunk tag sends ``keys=[speech_id, chunk_id]``)."""
 
     doc_id: str
-    keys: list[int] = Field(default_factory=list)
-    labels: list[str] = Field(default_factory=list)
+    keys: list[int] = Field(default_factory=list, max_length=16)
+    labels: list[Label] = Field(default_factory=list, max_length=MAX_SAVE_ROWS)
 
 
 class TagBatch(BaseModel):
-    """A workflow's chunk-tags promoted to annotation ROWS across many units, committed
-    in ONE version. ``removes`` untags (deletes the deterministic tag rows). Author is
-    stamped server-side; ``source``/``status`` are fixed for a human set."""
+    """A workflow's tags of a task's item, written as tag rows into the task's draft in ONE save. ``removes`` untags
+    (deletes the deterministic tag rows). Author is stamped server-side; ``source``/``status`` are fixed for a human
+    set. ``base_version`` is optional: an add never overwrites a row (it is insert-if-absent) and a removal names its
+    row by its deterministic id."""
 
-    adds: list[TagWrite] = Field(default_factory=list)
-    removes: list[TagWrite] = Field(default_factory=list)
-    base_version: int | None = None
+    adds: list[TagWrite] = Field(default_factory=list, max_length=MAX_SAVE_ROWS)
+    removes: list[TagWrite] = Field(default_factory=list, max_length=MAX_SAVE_ROWS)
+    base_version: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _bounded(self) -> Self:
+        # Each label of each write is a row the batch writes or removes, counted as a save counts its rows.
+        rows = sum(len(w.labels) for w in [*self.adds, *self.removes])
+        if rows > MAX_SAVE_ROWS:
+            raise ValueError(f"a tag batch names {rows} tag rows, and one names at most {MAX_SAVE_ROWS}")
+        return self
 
 
-#: The annotation contract — the schema of an EMPTY stream when a dataset has no
-#: annotations table yet (so the client still parses). Aligned to the engine
-#: (frontend/src/lib/engine/schema.ts) PLUS the active-learning columns
-#: (confidence/uncertainty/source/model_version) so predictions round-trip and the
-#: review queue can rank by them. THE single backend source of truth —
-#: scripts/seed_annotations.py builds from this; tests assert the alignment.
-#:
-#: Settled while the table was still EMPTY (handoff Q1): ``created_at``/``updated_at``
-#: are part of the contract and are stamped server-side on the save paths. The four
-#: TRAINING columns — ``trained_in_version`` (int64 = Lance version), ``margin`` (f32),
-#: ``logits`` (list/blob), ``encoder_embedding`` (list/blob) — are deliberately NOT
-#: added here (handoff Q2): nothing defines or writes them anywhere yet, so they get
-#: defined (additive evolution, never blocked) the moment the training loop first
-#: needs them, not guessed now.
+#: The columns of a unit's work as the canvas reads it (`annotator.annotations.work.wire_table`), aligned to the
+#: engine's reader, with the active-learning columns (confidence/uncertainty/source/model_version) so a model's
+#: proposals round-trip and the review queue can rank by them. ``links`` carries each row's outgoing relations
+#: (``[{"name", "to_shape"}]``, the shape an import reads back) and ``metadata`` its attributes, both as JSON.
 EMPTY_SCHEMA = pa.schema(
     [
         ("id", pa.string()),
-        # The task whose work the row is. Several tasks may hold one unit (a consensus item's replicas, each an
-        # annotator's own), so a unit's rows are its task's: every door reads and writes the unit AND the task, and the
-        # server stamps it on every row it inserts.
+        # The task whose work the row is: a unit several tasks hold (a consensus item's replicas, each an annotator's
+        # own) is each one's work apart, its own draft.
         ("task_id", pa.string()),
         ("shape_type", pa.string()),
         ("x", pa.float32()),
@@ -264,13 +266,8 @@ EMPTY_SCHEMA = pa.schema(
         ("t_start", pa.float32()),
         ("t_end", pa.float32()),
         ("text", pa.string()),
-        # TEXTUAL facet — a span INTO another row's `text`, which is what token-classification and
-        # the value half of KIE are made of. Nullable and additive: Lance assigns field IDs
-        # incrementally, so fragments written before these existed are never rewritten and read back
-        # as null (https://lance.org/format/table/schema/). Adding them is metadata-only.
-        #
-        # `parent_id` is the row the span sits inside, by ID — never an index. Rows renumber on every
-        # reload, and an index would silently re-point at a different annotation.
+        # TEXTUAL facet — a span INTO another row's `text`: `parent_id` is the row the span sits inside, by ID, never an
+        # index (rows renumber on every reload), and -1 on both offsets is a row that is no span.
         ("parent_id", pa.string()),
         ("char_start", pa.int32()),
         ("char_end", pa.int32()),
@@ -282,38 +279,14 @@ EMPTY_SCHEMA = pa.schema(
         ("uncertainty", pa.float32()),
         ("model_version", pa.string()),
         ("group", pa.string()),
-        ("group_id", pa.string()),
-        ("reading_order", pa.int32()),
         ("difficult", pa.bool_()),
-        # JSON columns, typed as JSON. They were `pa.string()` — valid JSON in every writer, and
-        # entirely opaque to every reader: a consumer had to fetch every row and parse client-side to
-        # answer "which annotations carry this attribute". `pa.json_()` stores JSONB and makes
-        # `json_get_*` / `json_extract` / `json_exists` work in a Lance filter
-        # (https://lance.org/guide/json/).
-        #
-        # A null is fine (the insert path lets absent columns fall to null); an EMPTY STRING would
-        # not be — it is not valid JSON — which is why every writer emits `{}` / `[]` rather than "".
+        # JSON, never an empty string (which is not JSON): `[]` for a row with no links, `{}` for one with no
+        # attributes.
         ("links", pa.json_()),
         ("mask", pa.string()),
         ("metadata", pa.json_()),
-        # row lifecycle — stamped server-side (save/tags): both at row birth,
-        # updated_at again on every edit. Timezone-aware UTC, microseconds.
+        # row lifecycle — stamped server-side: both at row birth, updated_at again on every edit.
         ("created_at", pa.timestamp("us", tz="UTC")),
         ("updated_at", pa.timestamp("us", tz="UTC")),
     ]
 )
-
-
-def identity_values(declared: Declared, doc_id: str, rest: Sequence[int]) -> dict[str, object]:
-    """A tag's chunk identity columns as a dict — the same (doc key, *other key fields)
-    mapping ``chunk_key_filter`` builds as a predicate, stamped onto new tag rows. Arity-generic off the descriptor.
-
-    A caller validates the arity first (``tags.check_keys_arity``): a short list here would stamp NULL identity
-    columns. A unit door names its identity through ``annotator.annotations.unit.parse_unit`` instead, which also
-    types each field."""
-    identity = declared.identity
-    values: dict[str, object] = {identity.doc_key: doc_id}
-    others = [f for f in identity.key_fields if f != identity.doc_key]
-    for field, value in zip(others, rest, strict=False):
-        values[field] = int(value)
-    return values

@@ -1,8 +1,10 @@
 """The annotator's state store: its projects, tasks, drafts and claims, as rows in its own Postgres.
 
 Workflow state with claims and leases is transactional row state, so it lives in a relational database the annotator
-owns (the chart's CloudNativePG `Cluster`), reached directly with psycopg. It is not lakehouse data: annotations and
-publishes go to the lakehouse through its doors (`annotator.annotations`, `annotator.projects.lakehouse`).
+owns (the chart's CloudNativePG `Cluster`), reached directly with psycopg. Work in progress is kept here too: each
+task's draft is the one store of the labels people make (the canvas reads and saves it through `annotator.annotations`,
+each save kept in a bounded history), and nothing reaches the lakehouse until a publish writes the project's accepted
+work through the catalog's doors (`annotator.projects.lakehouse`).
 
 **A transition is one transaction.** It locks the project row, then the task row (`SELECT … FOR UPDATE`), applies the
 pure machine (`annotator.projects.machines`), writes and commits. The row lock is what serialises two people acting
@@ -34,6 +36,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from http import HTTPStatus
 from importlib import resources
 from string import Template
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -41,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 
 from annotator.projects.machines import (
@@ -75,7 +78,7 @@ from annotator.projects.models import (
     new_id,
 )
 from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, validate_against_ontology
-from service_kit.exceptions import ConflictError
+from service_kit.exceptions import ConflictError, DomainError
 
 
 if TYPE_CHECKING:
@@ -93,6 +96,91 @@ SCHEMA_LOCK: Final = 0x616E6E6F74617465
 #: The project states a task may still be dropped in. Past `frozen` the answer set is closed and a publish is being
 #: prepared against it, so removing an item would change what the run facet describes after the description was fixed.
 DROPPABLE_STATES: Final = frozenset({ProjectState.DRAFT, ProjectState.LABELING})
+
+
+#: The most shapes, links and serialized bytes one task's draft holds. The draft is one document, rewritten whole on
+#: every save, so these bound what a save writes and what a read serves. Ten thousand shapes is a densely word-boxed
+#: page (measured: a box serializes to about 470 bytes, so 10,000 of them are about 4.7 MB); the bytes cap, 8 MiB, leaves
+#: such a page room for its texts and holds a draft of fewer shapes that carry long texts or polygons. An item that needs more is the "one row per shape for
+#: very large items" the owner deferred until it is needed.
+MAX_DRAFT_SHAPES: Final = 10_000
+MAX_DRAFT_LINKS: Final = 10_000
+MAX_DRAFT_BYTES: Final = 8 * 1024 * 1024
+
+#: The saves of one task the history keeps: at most this many, and at most `MAX_HISTORY_BYTES` of them. Fifty covers a
+#: working session of the canvas's autosaves (one after each pause in the work) and the twenty the history panel lists
+#: at first.
+MAX_DRAFT_HISTORY: Final = 50
+
+#: The most bytes of changes one task's history keeps. A history row holds its save's REVERSE change (the shapes as they
+#: were before it, for every shape it changed or removed, the ids it added, and the links before it when they changed),
+#: not a copy of the draft, and a past save is rebuilt from the draft by undoing the saves after it. An autosave's change
+#: is a few rows, about a kilobyte, so fifty of them cost about 50 KB; the bound holds the rare saves that replace a large
+#: part of the work. A task's worst case is then one capped draft and this much history: 8 + 8 = 16 MiB, where fifty
+#: whole copies would have been 50 × 8 = 400 MiB.
+MAX_HISTORY_BYTES: Final = 8 * 1024 * 1024
+
+
+class DraftTooLarge(DomainError):
+    """A change that would take a task's draft past one of its caps."""
+
+    status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    title = "Content Too Large"
+    problem_type = "about:blank#draft-too-large"
+
+
+#: A change of a draft: given the draft the transaction read (None before the first save) and the database's clock,
+#: the shapes and links it holds next. It may raise to refuse, and then nothing is written.
+type DraftChange = Callable[[Draft | None, datetime], tuple[list[Shape], list[Link]]]
+
+
+class DraftRevision(BaseModel):
+    """One kept save of a task's draft: its revision, when and by whom it was saved, and how many shapes it held."""
+
+    revision: int
+    saved_at: datetime
+    author: str
+    shapes: int
+
+
+class ReverseChange(BaseModel):
+    """What undoes one save: the shapes as they were before it (each one it changed or removed), the ids of the shapes it
+    added, and the links before it when it changed them."""
+
+    restore: list[Shape] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+    links: list[Link] | None = None
+
+    @classmethod
+    def of(cls, before: Draft | None, shapes: list[Shape], links: list[Link]) -> ReverseChange:
+        prior = {s.shape_id: s for s in (before.shapes if before else [])}
+        after = {s.shape_id: s for s in shapes}
+        prior_links = before.links if before else []
+        return cls(
+            restore=[s for sid, s in prior.items() if after.get(sid) != s],
+            remove=[sid for sid in after if sid not in prior],
+            links=prior_links if prior_links != links else None,
+        )
+
+    def undo(self, shapes: list[Shape], links: list[Link]) -> tuple[list[Shape], list[Link]]:
+        """The shapes and links before the save, from those after it. A shape the save removed comes back after the others."""
+        gone = set(self.remove)
+        kept = {s.shape_id: s for s in shapes if s.shape_id not in gone}
+        for shape in self.restore:
+            kept[shape.shape_id] = shape
+        return list(kept.values()), list(links if self.links is None else self.links)
+
+
+def _refuse_past_caps(draft: Draft) -> int:
+    """The draft's serialized size, or the refusal naming the cap it passes."""
+    if len(draft.shapes) > MAX_DRAFT_SHAPES:
+        raise DraftTooLarge(f"this change leaves the task's work at {len(draft.shapes)} shapes, past its cap of {MAX_DRAFT_SHAPES} shapes")
+    if len(draft.links) > MAX_DRAFT_LINKS:
+        raise DraftTooLarge(f"this change leaves the task's work at {len(draft.links)} links, past its cap of {MAX_DRAFT_LINKS} links")
+    size = len(draft.model_dump_json().encode())
+    if size > MAX_DRAFT_BYTES:
+        raise DraftTooLarge(f"this change leaves the task's work at {size} bytes, past its cap of {MAX_DRAFT_BYTES} bytes")
+    return size
 
 
 class TaskIndex(BaseModel):
@@ -372,9 +460,10 @@ class AnnotatorStore:
         return await self._update_project(project_id, change)
 
     async def set_ontology(self, project_id: str, ontology: LabelOntology) -> AnnotationProject:
-        """Replace the ontology while the project still takes work; items already sent keep the copy they captured."""
+        """Replace the ontology while the project still takes work. An item sent and not started yet takes it too; one
+        someone has started keeps the copy it captured."""
 
-        async def change(_conn: Connection, project: AnnotationProject) -> None:
+        async def change(conn: Connection, project: AnnotationProject) -> None:
             if project.state not in PROJECT_SEND_STATES:
                 raise IllegalTransition(
                     "project",
@@ -383,6 +472,18 @@ class AnnotatorStore:
                     message=f"project {project_id} is {project.state.value} — the ontology is editable only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
                 )
             project.ontology = ontology
+            # Every task nobody has started takes the new ontology: one still unassigned, never held (a release leaves
+            # its holder in `holders`) and with no draft. A task someone claimed, drew on or submitted keeps the copy it
+            # captured, so a definition edited mid-flight never re-judges work already done. Under the project's write
+            # lock, which every task transition and every send waits on, so no task starts between the read and the
+            # write.
+            await conn.execute(
+                "UPDATE tasks t SET document = jsonb_set(t.document, '{ontology}', %s) "
+                "WHERE t.project_id = %s AND t.state = 'unassigned' "
+                "AND jsonb_array_length(coalesce(t.document -> 'holders', '[]'::jsonb)) = 0 "
+                "AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = t.task_id)",
+                (Jsonb(ontology.model_dump(mode="json")), project_id),
+            )
 
         return await self._update_project(project_id, change)
 
@@ -692,24 +793,26 @@ class AnnotatorStore:
             await _write_task(conn, task)
             return task
 
-    async def save_draft(
+    async def change_draft(
         self,
         task_id: str,
         *,
         author: str,
-        shapes: list[Shape],
-        links: list[Link],
+        change: DraftChange,
         base_revision: int | None,
+        require_base: bool = True,
         origin: DraftOrigin = "human",
         reviewing: bool = False,
         lease_seconds: int | None = None,
     ) -> Draft:
-        """Replace the task's whole shape set in one write, bumping its revision.
+        """Apply ``change`` to the task's draft in one transaction, bumping its revision and recording it in the history.
 
         Writable only while the task takes edits (claimed, or in review for a reviewer the caller verified,
         ``reviewing``), only by who may edit it now (`machines.edit_violation`), and not once the project is frozen:
-        each checked on the rows this transaction holds. Once a draft exists the caller must state the revision it
-        edited, so two tabs cannot silently overwrite each other. A save into a claim renews its lease.
+        each checked on the rows this transaction holds, the task's row locked. ``base_revision`` is the revision the
+        caller built its change on (0 before the first save): another is a 409, per task, so two tabs cannot silently
+        overwrite each other. ``change`` runs on the draft this transaction read and may refuse (it raises, and nothing
+        is written). A save into a claim renews its lease.
         """
         async with self._transaction() as conn:
             task, project, _siblings, now = await self._lock_task(conn, task_id)
@@ -721,30 +824,87 @@ class AnnotatorStore:
             _refuse_if_frozen(project, task, "save_draft")
 
             current = await _draft(conn, task_id)
-            if current is not None:
-                if base_revision is None:
-                    raise IllegalTransition("draft", f"revision {current.revision}", "save without base_revision")
-                if base_revision != current.revision:
-                    raise IllegalTransition("draft", f"revision {current.revision}", f"save at {base_revision}")
+            at = current.revision if current is not None else 0
+            if base_revision is None:
+                if require_base:
+                    raise ConflictError(
+                        f"this save did not state the version it was built from; the work is at v{at}. Re-read it and send that version as base_version."
+                    )
+            elif base_revision != at:
+                raise ConflictError(f"annotations changed on the server (loaded v{base_revision}, now v{at})")
+            shapes, links = change(current, now)
+            if shapes == (current.shapes if current else []) and links == (current.links if current else []):
+                # A change that changes nothing writes nothing: no revision, no history slot, no renewed lease.
+                return current or Draft(task_id=task_id, project_id=task.project_id, author=author, revision=0)
             draft = Draft(
                 task_id=task_id,
                 project_id=task.project_id,
                 author=author,
                 shapes=shapes,
                 links=links,
-                revision=(current.revision + 1) if current else 1,
+                revision=at + 1,
                 updated_at=now,
                 origin=origin,
             )
+            _refuse_past_caps(draft)
             await conn.execute(
                 "INSERT INTO drafts (task_id, revision, document) VALUES (%s, %s, %s) "
                 "ON CONFLICT (task_id) DO UPDATE SET revision = EXCLUDED.revision, document = EXCLUDED.document",
                 (task_id, draft.revision, Jsonb(draft.model_dump(mode="json"))),
             )
+            undo = ReverseChange.of(current, shapes, links).model_dump_json()
+            await conn.execute(
+                "INSERT INTO draft_history (task_id, revision, saved_at, author, shapes, bytes, undo) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
+                (task_id, draft.revision, now, author, len(shapes), len(undo.encode()), undo),
+            )
+            await _trim_history(conn, task_id)
             if task.state is TaskState.CLAIMED:
                 task.lease_expires_at = now + _seconds(lease_seconds or task.lease_seconds)
             await _write_task(conn, task)
             return draft
+
+    async def draft_history(self, task_id: str, *, limit: int) -> list[DraftRevision]:
+        """The task's kept saves, newest first, at most ``limit``."""
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT revision, saved_at, author, shapes FROM draft_history WHERE task_id = %s ORDER BY revision DESC LIMIT %s",
+                    (task_id, limit),
+                )
+            ).fetchall()
+        return [DraftRevision(revision=int(r[0]), saved_at=r[1], author=str(r[2]), shapes=int(r[3])) for r in rows]
+
+    async def draft_at(self, task_id: str, revision: int) -> Draft | None:
+        """The task's draft as ``revision`` left it, rebuilt from the draft by undoing every later save, or `None` when the
+        history does not keep it (never saved, or past the bound)."""
+        async with self._transaction() as conn:
+            current = await _draft(conn, task_id)
+            rows = await (
+                await conn.execute(
+                    "SELECT revision, saved_at, author, undo FROM draft_history WHERE task_id = %s AND revision >= %s ORDER BY revision DESC",
+                    (task_id, revision),
+                )
+            ).fetchall()
+        if current is None or not rows or int(rows[-1][0]) != revision:
+            return None
+        shapes, links = current.shapes, current.links
+        for row in rows[:-1]:
+            shapes, links = ReverseChange.model_validate(row[3]).undo(shapes, links)
+        _rev, saved_at, author, _undo = rows[-1]
+        return Draft(task_id=task_id, project_id=current.project_id, author=str(author), shapes=shapes, links=links, revision=revision, updated_at=saved_at)
+
+
+async def _trim_history(conn: Connection, task_id: str) -> None:
+    """Keep the task's newest saves: at most `MAX_DRAFT_HISTORY`, and as many of them as `MAX_HISTORY_BYTES` holds."""
+    rows = await (await conn.execute("SELECT revision, bytes FROM draft_history WHERE task_id = %s ORDER BY revision DESC", (task_id,))).fetchall()
+    total, oldest = 0, None
+    for count, (rev, size) in enumerate(rows, start=1):
+        total += int(size)
+        if count > MAX_DRAFT_HISTORY or (total > MAX_HISTORY_BYTES and count > 1):
+            break
+        oldest = int(rev)
+    if oldest is not None:
+        await conn.execute("DELETE FROM draft_history WHERE task_id = %s AND revision < %s", (task_id, oldest))
 
 
 def _is_replica_of(task_id: str, group: str) -> bool:

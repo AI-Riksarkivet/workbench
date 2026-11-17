@@ -1,28 +1,20 @@
 // The lakehouse, as the mock services reach it, the way the workbench's services do (`service_kit.governed.deps`,
 // `token_exchange`): a person's read on a token addressed to the lakehouse, exchanged at a Keycloak-shaped provider and
-// the person's own token passed on at a Dex-shaped one; the workbench's own write on its client-credentials token,
-// asking Dex for the lakehouse's audience by its scope. The door admits only a token naming the lakehouse's audience
+// the person's own token passed on at a Dex-shaped one. Labeling writes nothing there: the work is the annotator's own
+// until a publish. The door admits only a token naming the lakehouse's audience
 // and bound to no key, as the lakehouse's doors do, and records whom it admitted on what: `GET
 // /api/viewer/__lakehouse?sub=` answers one person's calls.
 
 import { readToken, type TokenClaims } from './dpop';
 import { MOCK_OIDC_PORT } from './ports';
-import {
-	LAKEHOUSE_AUDIENCE,
-	SERVICE_CLIENT,
-	SERVICE_SECRET,
-	SHAPES,
-	audienceScope,
-	shapeOf,
-} from './providers';
+import { LAKEHOUSE_AUDIENCE, SERVICE_CLIENT, SERVICE_SECRET, SHAPES, shapeOf } from './providers';
 
 /** One call the lakehouse's door admitted or refused. */
 export interface LakehouseCall {
-	/** Whom the call was made as: the person, or the workbench's own client. */
-	as: 'person' | 'service';
-	/** How the token came to name the lakehouse: exchanged for the person, the person's own passed on, or the
-	 *  service's own. */
-	token: 'exchanged' | 'passed-on' | 'own';
+	/** Whom the call was made as: the person. */
+	as: 'person';
+	/** How the token came to name the lakehouse: exchanged for the person, or the person's own passed on. */
+	token: 'exchanged' | 'passed-on';
 	/** The token's subject, as the door read it. */
 	principal: string;
 	admitted: boolean;
@@ -83,16 +75,4 @@ export async function readAsPerson(
 		audience: LAKEHOUSE_AUDIENCE,
 	});
 	return exchanged !== null && door(claims.sub, { as: 'person', token: 'exchanged' }, exchanged);
-}
-
-/** A write to the lakehouse as the workbench's own client, for the person `claims` names: whether the door admitted it. */
-export async function writeAsService(claims: TokenClaims, host: string): Promise<boolean> {
-	const own = await ask(claims.iss, host, {
-		grant_type: 'client_credentials',
-		audience: LAKEHOUSE_AUDIENCE,
-		...(shapeOf(claims.iss) === 'dex'
-			? { scope: `openid ${audienceScope(LAKEHOUSE_AUDIENCE)}` }
-			: {}),
-	});
-	return own !== null && door(claims.sub, { as: 'service', token: 'own' }, own);
 }

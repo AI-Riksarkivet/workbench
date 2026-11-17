@@ -258,42 +258,50 @@ _MANY = ",".join(f'{{"id":"d{i}","t_start":0,"t_end":1}}' for i in range(5001))
 
 
 @pytest.mark.parametrize(
-    ("body", "status"),
+    ("body", "status", "own"),
     [
-        pytest.param('{"temporal":[{"id":"held","t_start":NaN,"t_end":1}]}', 422, id="a-time-that-is-not-a-number"),
-        pytest.param('{"inserts":[{"id":"n","shape_type":"segment","t_start":0,"t_end":Infinity}]}', 422, id="an-infinite-end"),
-        pytest.param('{"inserts":[{"id":"n","shape_type":"segment","t_start":9,"t_end":3}]}', 422, id="an-end-before-its-start"),
-        pytest.param('{"temporal":[{"id":"held","t_start":-1,"t_end":1}]}', 422, id="a-moment-before-the-media"),
-        pytest.param('{"inserts":[{"id":"n","shape_type":"bbox","x":NaN}]}', 422, id="a-box-at-no-place"),
-        pytest.param(f'{{"inserts":[{{"id":"n","shape_type":"bbox","group":"{_LONG_GROUP}"}}]}}', 422, id="a-group-past-its-bound"),
-        pytest.param(f'{{"temporal":[{_MANY}]}}', 422, id="more-rows-than-one-save-names"),
-        pytest.param('{"spans":[{"id":"held","char_start":5,"char_end":2}]}', 422, id="a-span-that-ends-before-it-starts"),
-        pytest.param('{"spans":[{"id":"held","char_start":-3,"char_end":2}]}', 422, id="a-span-before-its-text"),
-        pytest.param('{"inserts":[{"id":"n","shape_type":"text","parent_id":"held","char_start":0,"char_end":2147483648}]}', 422, id="a-span-past-int32"),
-        pytest.param('{"inserts":[{"id":"n","shape_type":"text","parent_id":"held","char_start":-1,"char_end":4}]}', 422, id="half-a-span"),
-        # Ids are one key over the project's table: an insert naming another task's row would update it in place.
-        pytest.param('{"inserts":[{"id":"held","shape_type":"bbox","label":"taken"}]}', 409, id="a-new-shape-with-another-tasks-id"),
-        # A delete is held to the task's own unit too: another task's row is not this save's to remove.
-        pytest.param('{"deletes":["held"]}', 404, id="a-delete-of-another-tasks-row"),
+        pytest.param('{"temporal":[{"id":"held","t_start":NaN,"t_end":1}]}', 422, False, id="a-time-that-is-not-a-number"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"segment","t_start":0,"t_end":Infinity}]}', 422, False, id="an-infinite-end"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"segment","t_start":9,"t_end":3}]}', 422, False, id="an-end-before-its-start"),
+        pytest.param('{"temporal":[{"id":"held","t_start":-1,"t_end":1}]}', 422, False, id="a-moment-before-the-media"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"bbox","x":NaN}]}', 422, False, id="a-box-at-no-place"),
+        pytest.param(f'{{"inserts":[{{"id":"n","shape_type":"bbox","group":"{_LONG_GROUP}"}}]}}', 422, False, id="a-group-past-its-bound"),
+        pytest.param(f'{{"temporal":[{_MANY}]}}', 422, False, id="more-rows-than-one-save-names"),
+        pytest.param('{"spans":[{"id":"held","char_start":5,"char_end":2}]}', 422, False, id="a-span-that-ends-before-it-starts"),
+        pytest.param('{"spans":[{"id":"held","char_start":-3,"char_end":2}]}', 422, False, id="a-span-before-its-text"),
+        pytest.param(
+            '{"inserts":[{"id":"n","shape_type":"text","parent_id":"held","char_start":0,"char_end":2147483648}]}', 422, False, id="a-span-past-int32"
+        ),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"text","parent_id":"held","char_start":-1,"char_end":4}]}', 422, False, id="half-a-span"),
+        pytest.param('{"inserts":[{"id":"n","shape_type":"rectangle"}]}', 422, False, id="a-shape-type-the-work-does-not-speak"),
+        # A delete or an edit is held to the named task's own work: another task's row is not this save's to touch.
+        pytest.param('{"deletes":["held"]}', 404, False, id="a-delete-of-another-tasks-row"),
+        pytest.param('{"edits":[{"id":"held","label":"taken"}]}', 404, False, id="an-edit-of-another-tasks-row"),
+        # Through the task that holds it: a new shape takes an id of its own.
+        pytest.param('{"inserts":[{"id":"held","shape_type":"bbox","label":"taken"}]}', 409, True, id="a-new-shape-with-an-id-the-work-holds"),
+        # The revision the save was built on is the task's: an older one, or none, is refused (two tabs, a reviewer).
+        pytest.param('{"base_version":0,"edits":[{"id":"held","label":"taken"}]}', 409, True, id="a-save-built-on-an-older-revision"),
+        pytest.param('{"base_version":null,"edits":[{"id":"held","label":"taken"}]}', 409, True, id="a-save-that-names-no-revision"),
     ],
 )
 def test_a_save_of_impossible_times_or_another_tasks_row_is_refused_and_writes_nothing(
-    door: _Door, openfga_store: OpenFgaStore, body: str, status: int
+    door: _Door, openfga_store: OpenFgaStore, body: str, status: int, own: bool
 ) -> None:
-    """Fay saves a segment on task t1's unit, then a save through task t2, of the same project, names something no row
-    may hold: the save is refused, and t1's row is as it was."""
+    """Fay saves a segment on task t1's unit, then a save names something its task's work may not hold, through task t2
+    of the same project (whose work is empty) or through t1 itself: the save is refused, and t1's row is as it was."""
     project = _create(door, "alice").json()["project_id"]
     openfga_store.write(("user:keycloak~fay", "annotator", f"project:{project}"))
     _task(door, project)
     _task(door, project, "t2", source={"kind": "chunks", "keys": [OTHER_UNIT], "where": DATASET})
     first = _save(door, "fay", project, inserts=[{"id": "held", "shape_type": "segment", "t_start": 1.0, "t_end": 2.0, "label": "kept"}])
     assert first.status_code == 200, first.text
-    payload = {**json.loads(body.replace("NaN", '"nan"').replace("Infinity", '"inf"')), "base_version": first.json()["version"]}
+    task, unit = ("t1", UNIT) if own else ("t2", OTHER_UNIT)
+    payload = {"base_version": first.json()["version"] if own else 0, **json.loads(body.replace("NaN", '"nan"').replace("Infinity", '"inf"'))}
     raw = json.dumps(payload).replace('"nan"', "NaN").replace('"inf"', "Infinity")
 
     refused = door.as_("fay").post(
-        f"/annotations/{OTHER_UNIT}",
-        params={"project": project, "task": "t2", "dataset": DATASET},
+        f"/annotations/{unit}",
+        params={"project": project, "task": task, "dataset": DATASET},
         content=raw,
         headers={"content-type": "application/json"},
     )
@@ -304,26 +312,35 @@ def test_a_save_of_impossible_times_or_another_tasks_row_is_refused_and_writes_n
 
 
 def test_a_tag_batch_tags_only_the_units_of_the_task_it_names(door: _Door, openfga_store: OpenFgaStore) -> None:
-    """The tag door writes across units in one version, so each unit it tags is checked against the task: a batch
-    naming a unit the task does not hold writes nothing."""
+    """The tag door writes into the named task's draft, so each unit it tags is checked against the task: a batch
+    naming a unit the task does not hold writes nothing. A re-tag is idempotent and a removal takes the row."""
     project = _create(door, "alice").json()["project_id"]
     openfga_store.write(("user:keycloak~fay", "annotator", f"project:{project}"))
     _task(door, project)
 
     def tag(*keys: int) -> Any:
-        body = {"adds": [{"doc_id": DOC, "keys": list(keys), "labels": ["letter"]}], "removes": [], "base_version": 0}
+        body = {"adds": [{"doc_id": DOC, "keys": list(keys), "labels": ["letter"]}], "removes": []}
         return door.as_("fay").post("/annotations/tags", params={"project": project, "task": "t1", "dataset": DATASET}, json=body)
 
-    outside, inside = tag(0, 20), tag(0, 19)
+    outside, inside, again = tag(0, 20), tag(0, 19), tag(0, 19)
 
     assert (outside.status_code, outside.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's")
-    assert inside.status_code == 200, inside.text
+    assert (inside.status_code, again.status_code) == (200, 200), inside.text
+    # A re-tag changes nothing, so it writes nothing: the work stays at the revision the first tag made.
+    assert again.json()["version"] == inside.json()["version"]
     assert _rows(door, project) == [f"tag:t1:{DOC}:0:19:letter"]
+    removed = door.as_("fay").post(
+        "/annotations/tags",
+        params={"project": project, "task": "t1", "dataset": DATASET},
+        json={"adds": [], "removes": [{"doc_id": DOC, "keys": [0, 19], "labels": ["letter"]}]},
+    )
+    assert removed.status_code == 200, removed.text
+    assert _rows(door, project) == []
 
 
 def test_two_replicas_of_one_item_each_keep_their_own_work_and_only_a_reviewer_reads_both(door: _Door, openfga_store: OpenFgaStore) -> None:
-    """A consensus item is two tasks over one unit, each an annotator's own: fay's and rita's saves land in the same
-    project table, and each task's read, save and delete reach only its own rows. Fay may view rita's task, as everyone on
+    """A consensus item is two tasks over one unit, each an annotator's own: fay's and rita's saves land in their own
+    task's draft, and each task's read, save and delete reach only its own rows. Fay may view rita's task, as everyone on
     the project may, and is still refused rita's rows and draft; rex, a reviewer, reads both versions apart."""
     project = _create(door, "alice").json()["project_id"]
     openfga_store.write(
@@ -334,13 +351,12 @@ def test_two_replicas_of_one_item_each_keep_their_own_work_and_only_a_reviewer_r
     _task(door, project, "g1-r1", replica_of="g1")
     _task(door, project, "g1-r2", replica_of="g1", assignee="keycloak~rita")
     first = _save(door, "fay", project, task="g1-r1", inserts=[{"id": "fay-box", "shape_type": "bbox", "label": "a"}])
-    second = _save(door, "rita", project, task="g1-r2", inserts=[{"id": "rita-box", "shape_type": "bbox", "label": "b"}], base_version=first.json()["version"])
-    assert second.status_code == 200, second.text
+    # Each replica's work has its own revisions: fay's save moved hers, not rita's.
+    second = _save(door, "rita", project, task="g1-r2", inserts=[{"id": "rita-box", "shape_type": "bbox", "label": "b"}], base_version=0)
+    assert (first.status_code, second.status_code) == (200, 200), second.text
 
     across = _save(door, "rita", project, task="g1-r2", deletes=["fay-box"], base_version=second.json()["version"])
 
-    drafted = door.as_("rita").put("/tasks/g1-r2/draft", json={"shapes": [{"shape_id": "rita-box", "shape_type": "bbox", "label": "b"}], "links": []})
-    assert drafted.status_code == 200, drafted.text
     peeked_rows = _read(door, "fay", project, task="g1-r2")
     peeked_draft = door.as_("fay").get("/tasks/g1-r2/draft")
 

@@ -5,9 +5,9 @@ Python SDK `lance_docs/ns_catalog/namespace/index.md` names for engines and fram
 the same doors answer from lance-namespace's stock ``dir`` catalog (`client_kit.sources`). It depends on the
 lakehouse only through that spec and the platform package (``service_kit``).
 
-A table is read by opening it through the namespace (:mod:`client_kit.lancekit.registry`). A write goes through the
-catalog's doors, :class:`NamespaceCatalogWriteTransport` (``merge_insert``, ``create`` and ``delete``), so the catalog
-governs it (its authorization, quality gate and announcement on lineage). Every error the SDK raises is one of the spec's
+A table is read by opening it through the namespace (:mod:`client_kit.lancekit.registry`). The one write a client
+makes, a publish's create, goes through the catalog's door, :class:`NamespaceCatalogWriteTransport`, so the catalog
+governs it (its authorization, its run rule and its announcement on lineage). Every error the SDK raises is one of the spec's
 typed errors, and :func:`translate_catalog_errors` maps its code onto the platform's DomainError hierarchy.
 
 pylance 13.0.0's ``RestNamespace`` bounds no call (measured 2026-11-02): a catalog that accepts a connection and never
@@ -26,27 +26,20 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 
-import lance_namespace
 from lance.namespace import DynamicContextProvider, RestNamespace
 from lance_namespace import (
     CreateTableRequest,
-    DeleteFromTableRequest,
     ErrorCode,
     LanceNamespaceError,
-    MergeInsertIntoTableRequest,
 )
 from opentelemetry import propagate
 
-from service_kit.arrow_ipc import encode_arrow_stream
 from service_kit.exceptions import ConflictError, DomainError, ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError, ValidationError
 from service_kit.naming import CATALOG_DELIMITER
 
 
 if TYPE_CHECKING:
-    import pyarrow as pa
     from lance_namespace import LanceNamespace
-
-    from client_kit.sources import RaskSource
 
 
 log = logging.getLogger(__name__)
@@ -134,28 +127,6 @@ class CallContext(DynamicContextProvider):
         return {f"headers.{name}": value for name, value in carrier.items()}
 
 
-def as_workbench(lakehouse: RaskSource, token: Callable[[], str] | None, headers: Mapping[str, str] | None = None) -> LanceNamespace:
-    """The lakehouse as the workbench's own identity, for the workbench's own reads and writes there (its annotation
-    tables): its REST door on ``token``, whatever identity people's reads take, or the directory catalog standing in for
-    it, which authenticates nobody and carries no header."""
-    if lakehouse.dir is not None:
-        return lance_namespace.connect("dir", {"root": str(lakehouse.dir)})
-    if lakehouse.uri is None:
-        raise TypeError("a rask source's validator admits none without a catalog")
-    return connect_catalog(lakehouse.uri, token=token, delimiter=lakehouse.delimiter, headers=headers)
-
-
-def lakehouse_writer(lakehouse: RaskSource, table_id: list[str], *, token: Callable[[], str] | None, originator: str) -> NamespaceCatalogWriteTransport:
-    """The lakehouse's write doors for one table as the workbench's own identity, naming the person it writes for.
-
-    Only a lakehouse is ever written (`client_kit.sources`): the workbench decides who may annotate before it writes (its
-    own role check), and the lakehouse decides whether the workbench may write the table. ``originator`` rides the
-    spec's ``x-lance-originator`` context header, which the catalog stamps in the commit's run as
-    ``rask_lance.originator`` (`docs/rask/COMMIT-EVENTS.md` § Whom a run names).
-    """
-    return NamespaceCatalogWriteTransport(as_workbench(lakehouse, token, {"x-lance-originator": originator}), table_id)
-
-
 @contextmanager
 def translate_catalog_errors() -> Generator[None]:
     """Map the SDK's typed spec errors onto the platform's DomainError hierarchy, so a catalog refusal renders as the
@@ -190,7 +161,7 @@ def bounded[T](call: Callable[[], T]) -> T:
 
 
 class NamespaceCatalogWriteTransport:
-    """The catalog's write doors for one table, through the stock SDK (:meth:`client_kit.lancekit.registry.DatasetHandle.writer`)."""
+    """The catalog's create door for one table, through the stock SDK."""
 
     def __init__(self, namespace: LanceNamespace, table_id: list[str]) -> None:
         self._namespace = namespace
@@ -200,14 +171,6 @@ class NamespaceCatalogWriteTransport:
     def namespace(self) -> LanceNamespace:
         """The namespace client the doors are reached through, with the identity and context headers it carries."""
         return self._namespace
-
-    def merge_upsert(self, delta: pa.Table, on: str) -> None:
-        """Insert the unmatched rows of ``delta`` and update the matched ones, keyed on ``on``."""
-        self._merge(delta, MergeInsertIntoTableRequest(id=self._id, on=on, when_matched_update_all=True, when_not_matched_insert_all=True))
-
-    def merge_insert_only(self, delta: pa.Table, on: str) -> None:
-        """Insert the unmatched rows of ``delta``, leaving a matched row as it is."""
-        self._merge(delta, MergeInsertIntoTableRequest(id=self._id, on=on, when_matched_update_all=False, when_not_matched_insert_all=True))
 
     def create(self, data: bytes, *, mode: str, properties: Mapping[str, str]) -> int | None:
         """Create the table from an Arrow IPC stream body, answering the version the catalog committed.
@@ -219,14 +182,3 @@ class NamespaceCatalogWriteTransport:
         with translate_catalog_errors():
             response = bounded(lambda: self._namespace.create_table(request, data))
         return response.version
-
-    def delete(self, predicate: str) -> None:
-        """Delete the rows matching ``predicate``."""
-        request = DeleteFromTableRequest(id=self._id, predicate=predicate)
-        with translate_catalog_errors():
-            bounded(lambda: self._namespace.delete_from_table(request))
-
-    def _merge(self, delta: pa.Table, request: MergeInsertIntoTableRequest) -> None:
-        body = encode_arrow_stream(delta)
-        with translate_catalog_errors():
-            bounded(lambda: self._namespace.merge_insert_into_table(request, body))

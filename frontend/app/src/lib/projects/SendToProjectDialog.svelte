@@ -2,13 +2,16 @@
 	/**
 	 * Send a selection to a project: the rows a dataset's search answered, or the rows a region of its atlas selected.
 	 * Each becomes an item of the project, appended to one still taking items (draft or labeling) or to a new project
-	 * created around the selection, optionally labelled as one class of the project's labels. The project's own door
-	 * decides: `can_send_items` on it, and the dataset must be one the reader can read.
+	 * created around the selection, optionally labelled as one class of the project's labels. A new project is made with
+	 * its classes and their shape kind, as the New project form makes one: an item is labelled with its project's
+	 * classes, so a project without any would leave every item it is sent unclassable. The project's own door decides:
+	 * `can_send_items` on it, and the dataset must be one the reader can read.
 	 */
 	import { resolve } from '$app/paths';
 	import { Button } from '@workbench/ui/button';
 	import { Dialog } from '@workbench/ui/dialog';
 	import { Input } from '@workbench/ui/input';
+	import { Select } from '@workbench/ui/select';
 	import { createProject, fetchProject, listProjects, sendItems } from '#lib/api/projects.api.ts';
 	import { sendItemsFor, sendRefusal, type SendSource } from './send.ts';
 
@@ -74,6 +77,18 @@
 	});
 	let newSlug = $state('');
 	let newTitle = $state('');
+	let newClasses = $state('');
+	let newShape = $state('bbox');
+	/** The shape kinds a class may be drawn with, as the New project form offers them. */
+	const SHAPE_KINDS = ['bbox', 'polygon', 'mask', 'segment', 'tag', 'text'];
+	const newClassNames = $derived([
+		...new Set(
+			newClasses
+				.split(',')
+				.map((c) => c.trim())
+				.filter(Boolean),
+		),
+	]);
 	let newOrg = $derived(orgs[0] ?? '');
 	let sending = $state(false);
 	let error = $state('');
@@ -94,10 +109,17 @@
 
 	async function createAndSend(): Promise<void> {
 		const slug = newSlug.trim();
-		if (!slug || !newOrg || sending) return;
+		if (!slug || !newOrg || newClassNames.length === 0 || sending) return;
 		sending = true;
 		error = '';
-		const created = await createProject({ tenant: newOrg, slug, title: newTitle.trim() });
+		const created = await createProject({
+			tenant: newOrg,
+			slug,
+			title: newTitle.trim(),
+			ontology: {
+				classes: newClassNames.map((name) => ({ name, tools: [newShape], required: false })),
+			},
+		});
 		sending = false;
 		if (!created.ok) {
 			error = created.detail;
@@ -109,6 +131,7 @@
 		chosen = created.data.project_id;
 		newSlug = '';
 		newTitle = '';
+		newClasses = '';
 		await sendTo(created.data.project_id);
 	}
 
@@ -230,11 +253,30 @@
 						<Input bind:value={newTitle} placeholder="Letters" />
 					</label>
 				</div>
+				<div class="flex flex-col gap-2 sm:flex-row">
+					<label class="flex flex-[2] flex-col gap-1">
+						<span>Label classes <span class="text-muted-foreground">(comma-separated)</span></span>
+						<Input
+							bind:value={newClasses}
+							placeholder="letter, map, photograph"
+							required
+							data-testid="send-new-classes"
+						/>
+					</label>
+					<label class="flex flex-1 flex-col gap-1">
+						<span>Shape kind</span>
+						<Select
+							bind:value={newShape}
+							ariaLabel="Shape kind"
+							options={SHAPE_KINDS.map((kind) => ({ value: kind, label: kind }))}
+						/>
+					</label>
+				</div>
 				<Button
 					type="submit"
 					variant="outline"
 					class="w-fit"
-					disabled={sending || !newSlug.trim() || !newOrg}
+					disabled={sending || !newSlug.trim() || !newOrg || newClassNames.length === 0}
 				>
 					Create and send {count}
 				</Button>

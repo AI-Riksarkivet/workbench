@@ -1,15 +1,16 @@
 /**
- * Annotation history — the read-side of the write-plane provenance story (who=reviewer,
- * when=version, what=lineage). Framework-agnostic (no Svelte): fetches a unit's Lance
- * version history + a historical snapshot, and diffs a past version against the current
- * rows by id. The compare-versions panel is a thin view over this. See annotate.py's
- * /versions endpoint + the ?version time-travel read.
+ * Annotation history — who saved a task's work, when, and what it held. Framework-agnostic (no Svelte): reads a
+ * unit's history of saves (the annotator's bounded history of the task's draft) and a past save's rows, and diffs a
+ * past save against the current rows by id. The compare-versions panel is a thin view over this. See the annotator's
+ * `/versions` door and its `?version` read.
  */
 import { type Table, tableFromIPC } from 'apache-arrow';
 
 export interface AnnotationVersion {
 	version: number;
 	timestamp: string;
+	/** Who saved it. */
+	author: string;
 	count: number;
 }
 
@@ -22,15 +23,21 @@ export function parseVersions(raw: unknown): AnnotationVersion[] {
 		if (entry === null || typeof entry !== 'object') {
 			throw new Error(`versions[${i}] is not an object`);
 		}
-		const e = entry as { version?: unknown; timestamp?: unknown; count?: unknown };
+		const e = entry as {
+			version?: unknown;
+			timestamp?: unknown;
+			author?: unknown;
+			count?: unknown;
+		};
 		if (
 			typeof e.version !== 'number' ||
 			typeof e.timestamp !== 'string' ||
+			typeof e.author !== 'string' ||
 			typeof e.count !== 'number'
 		) {
 			throw new Error(`versions[${i}] has a drifted shape`);
 		}
-		return { version: e.version, timestamp: e.timestamp, count: e.count };
+		return { version: e.version, timestamp: e.timestamp, author: e.author, count: e.count };
 	});
 }
 

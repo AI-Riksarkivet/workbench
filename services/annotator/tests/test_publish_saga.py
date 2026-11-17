@@ -103,7 +103,7 @@ async def _publishing(store: AnnotatorStore, *tasks: tuple[str, TaskState, int, 
         await store.fire_task(task_id, event="claim", actor="gina")
         if shapes:
             drawn = [Shape(shape_type="bbox", x=1.0, y=1.0, width=1.0, height=1.0) for _ in range(shapes)]
-            await store.save_draft(task_id, author="gina", shapes=drawn, links=[], base_revision=None)
+            await store.change_draft(task_id, author="gina", change=lambda _current, _now, drawn=drawn: (drawn, []), base_revision=0)
         if state is TaskState.SKIPPED:
             await store.fire_task(task_id, event="skip", actor="gina")
         else:

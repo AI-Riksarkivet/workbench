@@ -193,6 +193,13 @@ async def fire_project_event(
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
         await _check(checker, subject, "can_publish", obj, AnnotatorAuditAction.PROJECT_PUBLISH)
+        # Labeling needs no lakehouse, and a publish is the one thing that does: refused here, before the project moves,
+        # so its work stays as it is and the reason is the answer to the click.
+        if get_annotator_settings().sources.lakehouse is None:
+            raise ConflictError(
+                f"annotation project {project_id} cannot be published: this deployment reads no rask lakehouse, so there is nowhere to publish to. "
+                "Its work stays here until a lakehouse is declared among the sources."
+            )
     elif permission is not None:
         await _check(checker, subject, permission, obj, AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
 

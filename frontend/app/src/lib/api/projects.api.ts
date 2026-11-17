@@ -159,25 +159,11 @@ export const fetchTask = query(
 		readJSON(at(`/tasks/${enc(taskId)}`), TaskDetailSchema, UPSTREAM),
 );
 
-/** The task's draft as the publish will read it, or null when none is written yet (the canvas then writes the first
- *  with no `base_revision`; on a failed read it writes nothing). Read fresh on every call, since a save is guarded by
- *  the revision this answers. */
+/** The task's draft, its work in progress as the submit, the review and the publish read it, or null when nothing is
+ *  saved yet. The canvas changes it through the annotations door (`annotations.api.ts`); the compare reads another
+ *  replica's here. */
 export function fetchDraft(taskId: string): Promise<ApiResult<Draft | null>> {
 	return readJSON(at(`/tasks/${enc(taskId)}/draft`), v.nullable(DraftSchema), UPSTREAM);
-}
-
-/** The canvas's save of one unit's shapes and links into the task's draft, guarded by `base_revision` (a stale one is
- *  a 409, never an overwrite). Not a `command`: autosave writes every few idle seconds, and the activity log keeps the
- *  person's deliberate writes. */
-export function saveDraft(
-	taskId: string,
-	body: {
-		shapes: Record<string, unknown>[];
-		links: { name: string; from_shape: string; to_shape: string }[];
-		base_revision?: number;
-	},
-): Promise<ApiResult<Draft>> {
-	return send('PUT', `/tasks/${enc(taskId)}/draft`, body, DraftSchema);
 }
 
 // ── writes ───────────────────────────────────────────────────────────────────────────────────

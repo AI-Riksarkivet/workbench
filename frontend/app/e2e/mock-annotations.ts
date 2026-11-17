@@ -1,12 +1,12 @@
-// The annotator's annotations door as the e2e mock serves it: one unit's rows per project, dataset and key, read as
-// Arrow IPC with the version in `X-Annotations-Version`, saved as one review delta that names the version it was built
-// from (a moved version is a 409), with its history.
+// The annotator's annotations door as the e2e mock serves it: a task's work is its draft (`mock-projects.ts`), read as
+// Arrow IPC rows with the draft's revision in `X-Annotations-Version`, changed by one review delta that names the
+// revision it was built from (a moved one is a 409), with its kept saves as its history.
 //
 // It refuses what the service's door refuses (`annotator.annotations.access`, `annotator.annotations.unit`), in its
 // words: a key whose parts are not the dataset's identity (422), a project the caller may not view (404), a task that is
 // not that project's (404), a unit that is not the task's (404), and a save the task takes no edit for (409 for its
 // state, 403 for the caller).
-import { mayReadWork, type Task } from './mock-projects';
+import { mayReadWork, type Draft, type Row, type Task } from './mock-projects';
 import {
 	Field,
 	Float32,
@@ -18,16 +18,6 @@ import {
 	vectorFromArray,
 	type DataType,
 } from 'apache-arrow';
-
-/** One annotation row, as the canvas sends and reads it. */
-type Row = Record<string, unknown> & { id: string };
-
-interface Unit {
-	version: number;
-	rows: Row[];
-	/** The rows at each version, newest last. */
-	history: { version: number; timestamp: string; rows: Row[] }[];
-}
 
 const COLUMNS: [string, DataType][] = [
 	['id', new Utf8()],
@@ -52,88 +42,26 @@ const COLUMNS: [string, DataType][] = [
 	['uncertainty', new Float32()],
 	['group', new Utf8()],
 	['metadata', new Utf8()],
+	['links', new Utf8()],
 ];
 
-function ipc(rows: Row[]): Uint8Array {
+/** The rows the canvas reads, each with the links leaving it as its `links` cell (`[{"name", "to_shape"}]`). */
+function ipc(rows: Row[], links: Draft['links']): Uint8Array {
+	const leaving = (id: string): string =>
+		JSON.stringify(
+			links.filter((l) => l.from_shape === id).map((l) => ({ name: l.name, to_shape: l.to_shape })),
+		);
 	const columns = Object.fromEntries(
 		COLUMNS.map(([name, type]) => [
 			name,
 			vectorFromArray(
-				rows.map((r) => r[name] ?? null),
+				rows.map((r) => (name === 'links' ? leaving(r.id) : (r[name] ?? null))),
 				type,
 			),
 		]),
 	);
 	return tableToIPC(new Table(columns), 'stream');
 }
-
-/** Two boxes on the first page of the canvas's item: a figure top left and a caption bottom right (the picture is
- *  160 × 160). */
-const SEEDED: Record<string, Row[]> = {
-	'pages|lake~acme$letters|letter-001/0': [
-		{
-			id: 'fig-1',
-			shape_type: 'bbox',
-			x: 10,
-			y: 10,
-			width: 50,
-			height: 40,
-			polygon: [],
-			label: 'figure',
-			status: 'accepted',
-			source: 'human',
-			// Keys the attribute editor does not show, nested and not: an edit of one attribute keeps them.
-			metadata: '{"damaged":"false","provenance":{"source":"ocr","page":3}}',
-		},
-		{
-			id: 'cap-1',
-			shape_type: 'bbox',
-			x: 90,
-			y: 100,
-			width: 60,
-			height: 40,
-			polygon: [],
-			label: 'caption',
-			text: 'The harbour at dawn',
-			status: 'prediction',
-			source: 'model:seed',
-			uncertainty: 0.4,
-			// Metadata that is not an object: an attribute edit is refused rather than writing over it.
-			metadata: '"scribbled note"',
-		},
-	],
-};
-
-/** The first replica of a consensus item on the `pages` project, its own annotator's rows of one unit; the second's
- *  work is its task's draft (`mock-projects.ts`). */
-const BY_TASK: Record<string, Row[]> = {
-	'pagesg-r1': [
-		{
-			id: 'r1-fig',
-			shape_type: 'bbox',
-			x: 10,
-			y: 10,
-			width: 50,
-			height: 40,
-			polygon: [],
-			label: 'figure',
-			status: 'accepted',
-			source: 'human',
-		},
-		{
-			id: 'r1-cap',
-			shape_type: 'bbox',
-			x: 90,
-			y: 100,
-			width: 60,
-			height: 40,
-			polygon: [],
-			label: 'caption',
-			status: 'accepted',
-			source: 'human',
-		},
-	],
-};
 
 /** Each mock dataset's identity, as its descriptor declares it (`mock-services.ts`): a doc key and an integer chunk. */
 const IDENTITY: Record<string, string[]> = {
@@ -156,32 +84,6 @@ function keyRefusal(dataset: string, key: string): string | null {
 	return null;
 }
 
-/** Each person's units, so no spec sees another's saves. */
-const worlds = new Map<string, Map<string, Unit>>();
-
-/** A unit's rows are its task's (`annotator.annotations.unit.Unit.of_task`): `id` is `project|task|dataset|key`. */
-function unitOf(sub: string, id: string): Unit {
-	let units = worlds.get(sub);
-	if (!units) {
-		units = new Map();
-		worlds.set(sub, units);
-	}
-	let unit = units.get(id);
-	if (!unit) {
-		const [project, task, dataset, key] = id.split('|');
-		const rows = structuredClone(
-			BY_TASK[task ?? ''] ?? SEEDED[`${project}|${dataset}|${key}`] ?? [],
-		);
-		unit = {
-			version: rows.length > 0 ? 1 : 0,
-			rows,
-			history: rows.length > 0 ? [{ version: 1, timestamp: new Date().toISOString(), rows }] : [],
-		};
-		units.set(id, unit);
-	}
-	return unit;
-}
-
 const json = (body: unknown, status = 200): Response =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -199,12 +101,14 @@ interface SaveBody {
 	spans: { id: string; char_start: number; char_end: number }[];
 	temporal: { id: string; t_start: number; t_end: number }[];
 	deletes: string[];
+	links?: Draft['links'];
 	base_version: number | null;
 }
 
 /** Answer one call to `/api/annotations/…`, or null when the path is not that door. `perms` is what the caller holds
- *  on a project; `record` writes the call's status into the ledger; `fault` is the spec's switch for this path;
- *  `lakehouseWrite` writes a save to the lakehouse as the workbench's own client, as the annotator does. */
+ *  on a project; `record` writes the call's status into the ledger; `fault` is the spec's switch for this path; `work`
+ *  reads and writes a task's draft, the one store of its work in progress, which the task door serves too. Nothing here
+ *  reaches the lakehouse: a save is the annotator's own until a publish. */
 export async function annotationsDoor(
 	req: Request,
 	url: URL,
@@ -213,7 +117,10 @@ export async function annotationsDoor(
 	taskOf: (taskId: string) => Task | undefined,
 	record: (status: number) => void,
 	fault: string | undefined,
-	lakehouseWrite: () => Promise<boolean>,
+	work: {
+		read: (taskId: string) => Draft | undefined;
+		write: (taskId: string, draft: Draft) => void;
+	},
 ): Promise<Response | null> {
 	const match = /^\/api\/annotations\/(.+?)(\/versions)?$/.exec(url.pathname);
 	if (!match) return null;
@@ -222,7 +129,7 @@ export async function annotationsDoor(
 		return json(body, status);
 	};
 	if (fault === 'fail')
-		return answer({ detail: 'the annotator could not open the annotations table' }, 503);
+		return answer({ detail: 'the annotator could not read the task’s work' }, 503);
 	const project = url.searchParams.get('project');
 	const taskId = url.searchParams.get('task');
 	const dataset = url.searchParams.get('dataset') ?? '';
@@ -234,7 +141,8 @@ export async function annotationsDoor(
 	if (!task || task.project_id !== project)
 		return answer({ detail: `No task ${taskId} that you can see` }, 404);
 	const key = decodeURIComponent(match[1] ?? '');
-	if (task.source.where !== dataset || !task.source.keys.includes(key))
+	// A task's draft holds its item's first unit (`annotator.annotations.access.work_unit`).
+	if (task.source.where !== dataset || task.source.keys[0] !== key)
 		return answer({ detail: `unit ${key} of dataset ${dataset} is not task ${taskId}'s` }, 404);
 	if (req.method === 'GET' && !mayReadWork(task, sub, held))
 		return answer(
@@ -263,52 +171,105 @@ export async function annotationsDoor(
 	}
 	const refused = keyRefusal(dataset, key);
 	if (refused) return answer({ detail: refused }, 422);
-	const unit = unitOf(sub, `${project}|${taskId}|${dataset}|${key}`);
+	const draft = work.read(taskId);
+	const version = draft?.revision ?? 0;
 
 	if (match[2] && req.method === 'GET') {
 		return answer(
-			unit.history
-				.toReversed()
-				.map((h) => ({ version: h.version, timestamp: h.timestamp, count: h.rows.length })),
+			(draft?.history ?? []).toReversed().map((h) => ({
+				version: h.version,
+				timestamp: h.timestamp,
+				author: h.author,
+				count: h.rows.length,
+			})),
 		);
 	}
 	if (req.method === 'GET') {
 		const at = url.searchParams.get('version');
-		const rows =
-			at === null ? unit.rows : (unit.history.find((h) => h.version === Number(at))?.rows ?? []);
+		const past = at === null ? null : draft?.history.find((h) => h.version === Number(at));
+		if (at !== null && !past)
+			return answer(
+				{
+					detail: `annotations version ${at} not found: the history of task ${taskId} does not keep it`,
+				},
+				404,
+			);
 		record(200);
-		return new Response(new Blob([new Uint8Array(ipc(rows))]), {
-			headers: {
-				'content-type': 'application/vnd.apache.arrow.stream',
-				'x-annotations-version': String(unit.version),
-				'cache-control': 'no-store',
+		return new Response(
+			new Blob([
+				new Uint8Array(
+					ipc(past ? past.rows : (draft?.rows ?? []), past ? [] : (draft?.links ?? [])),
+				),
+			]),
+			{
+				headers: {
+					'content-type': 'application/vnd.apache.arrow.stream',
+					'x-annotations-version': String(past ? past.version : version),
+					'cache-control': 'no-store',
+				},
 			},
-		});
+		);
 	}
 	if (req.method !== 'POST') return null;
 	const b = (await req.json()) as SaveBody;
-	if (b.base_version !== unit.version)
+	if (b.base_version === null || b.base_version === undefined)
 		return answer(
-			{ detail: `the annotations moved: version ${unit.version}, not ${b.base_version}` },
+			{
+				detail: `this save did not state the version it was built from; the work is at v${version}. Re-read it and send that version as base_version.`,
+			},
 			409,
 		);
-	if (!(await lakehouseWrite()))
-		return answer({ detail: 'the lakehouse refused the workbench’s write' }, 503);
+	if (b.base_version !== version)
+		return answer(
+			{ detail: `annotations changed on the server (loaded v${b.base_version}, now v${version})` },
+			409,
+		);
+	// New shapes first: a shape drawn and changed before the save arrives as its insert and its changes, by its new id.
+	const current = [...(draft?.rows ?? []), ...b.inserts.map((r) => ({ ...r, reviewer: sub }))];
+	const ids = new Set(current.map((r) => r.id));
+	const named = [
+		...b.edits.map((e) => e.id),
+		...b.geometry.map((g) => g.id),
+		...b.spans.map((s) => s.id),
+		...b.temporal.map((t) => t.id),
+		...b.deletes,
+	].filter((id) => !ids.has(id));
+	if (named.length > 0)
+		return answer(
+			{
+				detail: `annotation(s) ${JSON.stringify([...new Set(named)].sort())} are not this task's rows of its unit`,
+			},
+			404,
+		);
 	const gone = new Set(b.deletes);
-	const rows = unit.rows
+	const rows = current
 		.filter((r) => !gone.has(r.id))
 		.map((r) => {
 			const edit = b.edits.find((e) => e.id === r.id);
 			const geo = b.geometry.find((g) => g.id === r.id);
 			const span = b.spans.find((s) => s.id === r.id);
 			const time = b.temporal.find((t) => t.id === r.id);
-			return { ...r, ...edit, ...geo, ...span, ...time, reviewer: sub };
+			const touched = edit || geo || span || time;
+			return { ...r, ...edit, ...geo, ...span, ...time, ...(touched ? { reviewer: sub } : {}) };
 		});
-	rows.push(...b.inserts.map((r) => ({ ...r, reviewer: sub })));
-	unit.version += 1;
-	unit.rows = rows;
-	unit.history.push({ version: unit.version, timestamp: new Date().toISOString(), rows });
-	return answer({ version: unit.version, inserted: b.inserts.length, deleted: gone.size });
+	const links =
+		b.links ?? (draft?.links ?? []).filter((l) => !gone.has(l.from_shape) && !gone.has(l.to_shape));
+	const next = version + 1;
+	work.write(taskId, {
+		rows,
+		links,
+		revision: next,
+		history: [
+			...(draft?.history ?? []),
+			{
+				version: next,
+				timestamp: new Date().toISOString(),
+				author: sub.replace(/^user:/, ''),
+				rows,
+			},
+		].slice(-50),
+	});
+	return answer({ saved: b.inserts.length + b.edits.length + gone.size, version: next });
 }
 
 /** The models the annotator's mock answers for (`annotator.api.v1.endpoints.assist`): the detector and the segmenter,

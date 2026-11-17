@@ -6,6 +6,8 @@
 	//
 	// REGIONS. Drag on the waveform or an empty region lane to make one; drag an edge to resize it, its body to move it;
 	// edges snap to the playhead and to other regions' edges while snapping is on. A new region opens the class picker.
+	// It calls itself ready (`data-ready`, `aria-busy`) only once a press can reach it: never while a page transition runs,
+	// which hit-tests every press to the root (`#lib/view-transition.svelte.ts`).
 	// Each is a `segment` row in the item's annotations, its times in seconds (`t_start`, `t_end`), saved through the same
 	// door, draft and versions as a drawn shape, every change on the canvas's one undo stack.
 	//
@@ -37,6 +39,7 @@
 	import { formatClock } from '#lib/media/time/timeline.ts';
 	import { wholeView, xOf, zoomAt, type TimeView } from '#lib/media/time/view.ts';
 	import { rgba } from '#lib/gpu/rects.ts';
+	import { viewTransitions } from '#lib/view-transition.svelte.ts';
 	import { ArrowDataPlugin, InteractionManager, type PixiContext } from '../engine/index.ts';
 	import ClassPicker from '../ClassPicker.svelte';
 	import type { AnnotatorController } from '../controller.svelte.ts';
@@ -695,7 +698,8 @@
 	tabindex="0"
 	data-testid="temporal-canvas"
 	data-kind={kind}
-	data-ready={controller.table !== null && opened ? 'true' : 'false'}
+	data-ready={controller.table !== null && opened && !viewTransitions.running ? 'true' : 'false'}
+	aria-busy={controller.table === null || !opened || viewTransitions.running}
 	{onkeydown}
 >
 	<p id="temporal-keys" class="sr-only">

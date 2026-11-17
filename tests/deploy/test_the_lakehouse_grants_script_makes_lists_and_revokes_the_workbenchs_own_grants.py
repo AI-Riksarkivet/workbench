@@ -45,7 +45,6 @@ class _Catalog:
     def __init__(self) -> None:
         self.violations: list[str] = []
         self.requests: list[tuple[str, str, str]] = []
-        self.namespaces: set[str] = set()
         self.grants: set[tuple[str, str, str]] = set()
         catalog = self
 
@@ -94,12 +93,6 @@ class _Catalog:
         parts = path.split("/")
         if method == "GET" and path == "/management/v1/warehouses":
             return 200, [{"id": "acme", "bucket": "acme-bucket", "root_uri": "s3://acme-bucket", "project": "default"}]
-        if parts[1:3] == ["v1", "namespace"]:
-            namespace = unquote(parts[3])
-            if parts[4] == "exists":
-                return (200, {}) if namespace in self.namespaces else (404, {"error": "no such namespace", "code": 1})
-            self.namespaces.add(namespace)
-            return 200, {}
         kind, object_id, action = parts[3], unquote(parts[4]), parts[6]
         if action == "list":
             held = sorted({(relation, user) for k, o, relation in self.grants if (k, o) == (kind, object_id) for user in [PRINCIPAL]})
@@ -165,6 +158,8 @@ def _run(action: str, catalog: _Catalog, issuer: _Issuer, password_file: Path) -
         action,
         "--values",
         str(ROOT / "deploy/values-dev.yaml"),
+        "--reads",
+        "acme",
         "--catalog",
         catalog.url,
         "--issuer",
@@ -186,13 +181,12 @@ def test_the_grants_are_made_once_listed_and_revoked_at_the_published_doors(lake
 
     assert [run.returncode for run in runs] == [0] * 5, [run.stderr for run in runs]
     assert catalog.violations == []
-    assert catalog.namespaces == {"acme$workbench_annotations"}
-    assert [request for request in catalog.requests if request[1].endswith("/create")] == [("POST", "/v1/namespace/acme%24workbench_annotations/create", "{}")]
-    assert "writer on namespace acme$workbench_annotations" in runs[0].stdout
-    assert f"namespace acme$workbench_annotations: {PRINCIPAL} holds writer" in runs[2].stdout
+    # The workbench's own identity reads the warehouse and writes nothing: no namespace is made, no writer granted.
+    assert [request[1] for request in catalog.requests if "/v1/namespace/" in request[1]] == []
+    assert "reader on warehouse acme" in runs[0].stdout
     assert f"warehouse acme: {PRINCIPAL} holds reader" in runs[2].stdout
     assert catalog.grants == set()
-    assert f"namespace acme$workbench_annotations: {PRINCIPAL} holds nothing" in runs[4].stdout
+    assert f"warehouse acme: {PRINCIPAL} holds nothing" in runs[4].stdout
     # The password reaches the identity provider's token endpoint, and nothing else, and no run prints a token.
     assert all(PASSWORD in form for form in issuer.forms)
     assert not any(PASSWORD in raw for _method, _path, raw in catalog.requests)

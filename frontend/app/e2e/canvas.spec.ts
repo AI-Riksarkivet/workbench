@@ -361,17 +361,27 @@ test('a point and a line read back from the service are drawn as a point and a l
 	).toBe(0);
 });
 
-test('a box drawn with the mouse is saved and read back after a reload', async ({
+test('a box drawn with the mouse is saved and read back after a reload, and the history lists the save and travels to the one before', async ({
 	page,
 	context,
 }) => {
 	await as(context, 'Annotator');
 	await openItem(page);
+	const history = page.getByTestId('version-history');
+	await history.getByRole('button', { name: 'History' }).click();
+	await expect(history.getByRole('button', { name: /^v\d/ })).toHaveCount(1);
 	await drawBox(page, { x: 100, y: 20 }, { x: 140, y: 60 });
 	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(3);
 
 	await page.getByRole('button', { name: 'Save', exact: true }).click();
 	await expect(page.getByTestId('canvas-notice')).toHaveText('Annotations saved');
+	// The open panel reads the history again once the save lands: the new save is the current one, and who made it.
+	await expect(history.getByRole('button', { name: /^v\d/ })).toHaveText([
+		/^v2.*· current.+3$/,
+		/^v1.*2$/,
+	]);
+	await history.getByRole('button', { name: /^v1/ }).click();
+	await expect(history).toContainText('vs current: +1 −0 ~0');
 	await page.reload();
 	await expect(page.getByTestId('annotate-status')).toContainText('3 annotations');
 });
@@ -452,6 +462,26 @@ test('leaving an item saves it first, and a save that fails keeps the person on 
 	await expect(page).toHaveURL(/\/tasks\/pages-t2\?/);
 	await page.goBack();
 	await expect(page.getByTestId('annotate-status')).toContainText('3 annotations');
+});
+
+test('a submit whose save failed says so, and a later save that lands takes the refusal away', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await openItem(page);
+	await drawBox(page, { x: 100, y: 20 }, { x: 140, y: 60 });
+	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(3);
+
+	await fault(page, who, `/api/annotations/${UNIT}`, 'fail');
+	await page.getByTestId('task-submit').click();
+	await expect(page.getByTestId('task-failure')).toContainText('Not submitted:');
+	await expect(page.getByTestId('canvas-notice')).toContainText('Save failed:');
+
+	await fault(page, who, `/api/annotations/${UNIT}`, 'clear');
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(page.getByTestId('canvas-notice')).toHaveText('Annotations saved');
+	await expect(page.getByTestId('task-failure')).toHaveCount(0);
 });
 
 test('a save refused because the session ended keeps the edits through signing in again', async ({
@@ -542,7 +572,7 @@ test('a deleted annotation leaves the canvas at once, and its neighbour stays', 
 	await expect(detail).toContainText('figure');
 });
 
-test('a relation is drawn by two picks, undone and redone, and travels with the task’s draft', async ({
+test('a relation is drawn by two picks, undone and redone, and saved on its own into the task’s work', async ({
 	page,
 	context,
 }) => {
@@ -564,16 +594,22 @@ test('a relation is drawn by two picks, undone and redone, and travels with the 
 	await page.keyboard.press('Control+Shift+z');
 	await expect(links).toHaveCount(1);
 
-	// A save writes the shapes and the link into the task's draft.
-	await page.getByRole('textbox', { name: 'Group' }).fill('g1');
-	const drafted = page.waitForRequest(
-		(req) => req.method() === 'PUT' && req.url().endsWith('/api/annotator/tasks/pages-t1/draft'),
-	);
+	// The link alone is an edit: the save carries the item's links, and nothing else changed.
+	const save = saved(page);
 	await page.getByRole('button', { name: 'Save', exact: true }).click();
-	const draft = (await drafted).postDataJSON() as { links: { name: string }[] };
-	expect(draft.links.map((l) => l.name)).toEqual(['caption_of']);
+	const body = (await save).postDataJSON() as {
+		links: { name: string; from_shape: string; to_shape: string }[];
+		inserts: unknown[];
+		edits: unknown[];
+	};
+	expect([body.links, body.inserts, body.edits]).toEqual([
+		[{ name: 'caption_of', from_shape: 'fig-1', to_shape: 'cap-1' }],
+		[],
+		[],
+	]);
+	await expect(page.getByTestId('canvas-notice')).toHaveText('Annotations saved');
 
-	// Reopened, the task shows its link, read back from the draft.
+	// Reopened, the task shows its link, read back with its rows.
 	await page.reload();
 	await expect(page.getByTestId('annotate-status')).toContainText('2 annotations');
 	await page

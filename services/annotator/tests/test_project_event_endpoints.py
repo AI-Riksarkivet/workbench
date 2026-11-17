@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as ev
+from annotator.core.config import get_annotator_settings
 from annotator.projects.models import AnnotationProject, ProjectState, Task, TaskState
 from annotator.state.store import AnnotatorStore
 from client_kit.media.config import Settings
@@ -148,6 +149,27 @@ def test_publish_asks_the_projects_own_role_and_nothing_of_the_lakehouse(wired: 
     assert r.status_code == 200, r.text
     assert r.json()["state"] == "publishing"
     assert [(c["relation"], c["obj"]) for c in door.seen] == [("can_view", "project:p1"), ("can_publish", "project:p1")]
+
+
+def test_with_no_lakehouse_declared_a_publish_says_there_is_nowhere_to_publish_and_the_project_stays(
+    wired: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Labeling needs no lakehouse and a publish does: a deployment that declares none refuses the publish in plain
+    words before the project moves, so its work stays as it is."""
+    door = wired(ALL_PUBLISH_DOORS)
+    _seed(door, ProjectState.FROZEN)
+    monkeypatch.setenv("WORKBENCH_SOURCES", json.dumps([{"kind": "namespace", "name": "scans", "impl": "dir", "properties": {"root": str(tmp_path)}}]))
+    get_annotator_settings.cache_clear()
+
+    r = door.client.post("/projects/p1/events", json={"event": "publish"})
+
+    project = door.project()
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == (
+        "annotation project p1 cannot be published: this deployment reads no rask lakehouse, so there is nowhere to publish to. "
+        "Its work stays here until a lakehouse is declared among the sources."
+    )
+    assert project is not None and project.state is ProjectState.FROZEN
 
 
 @pytest.mark.parametrize(

@@ -168,6 +168,15 @@ class Shape(BaseModel):
     source: str | None = None
     model_version: str | None = None
     confidence: float | None = None
+    #: The canvas's review state of the row: `accepted` for drawn work, `prediction` for a model's proposal no person
+    #: has kept yet, and whatever the reviewer sets. Its active-learning `uncertainty` rides beside `confidence`.
+    status: str = "accepted"
+    uncertainty: float | None = None
+    #: Who last wrote the row and when it was made and last changed, stamped by the server on every save that touches
+    #: it (`annotator.annotations.work`), never taken from the caller.
+    reviewer: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class Link(BaseModel):
@@ -188,11 +197,14 @@ class Link(BaseModel):
 
 
 class Draft(BaseModel):
-    """ONE document per (task, author) holding the whole shape set as a single list (§4.3).
+    """ONE document per task holding its work in progress: the whole shape set of its item's unit as a single list
+    (§4.3), and the links between them.
 
-    Not a row per shape: that is the write-amplification fix made structural. A save is one keyed
-    write guarded by `revision`, so two tabs of the same annotator cannot silently lose each other's
-    work — the mismatch is a 409, the same contract the Arrow transport spells `X-Annotations-Version`.
+    It is the one store of work in progress: the canvas reads it and saves its changes to it (`annotator.annotations`),
+    the submit judges it, the review and the compare read it, and only the publish writes it to the lakehouse. Not a
+    row per shape: a save is one keyed write guarded by `revision`, which the canvas's door serves as
+    `X-Annotations-Version`, so two tabs cannot silently lose each other's work (a mismatch is a 409). Every revision
+    is kept in the bounded history (`annotator.state.store.MAX_DRAFT_HISTORY`).
     """
 
     task_id: str

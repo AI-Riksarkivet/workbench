@@ -8,12 +8,14 @@ read back after the service restarts.
 
 from __future__ import annotations
 
+import io
 import time
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
 import psycopg
+import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
@@ -80,7 +82,10 @@ def test_a_task_is_labelled_from_claim_to_review_and_the_state_survives_a_restar
     box = {"shape_type": "bbox", "label": "seal", "x": 1, "y": 2, "width": 3, "height": 4}
 
     claimed = _as(client, person, "alice").post(f"/tasks/{task}/events", json={"event": "claim"})
-    saved = client.put(f"/tasks/{task}/draft", json={"shapes": [box]})
+    sink = io.BytesIO()
+    with pa.ipc.new_stream(sink, (rows := pa.Table.from_pylist([box])).schema) as writer:
+        writer.write_table(rows)
+    saved = client.post(f"/tasks/{task}/import", content=sink.getvalue(), headers={"content-type": "application/vnd.apache.arrow.stream"})
     submitted = client.post(f"/tasks/{task}/events", json={"event": "submit"})
     accepted = _as(client, person, "bob").post(f"/tasks/{task}/events", json={"event": "accept"})
     assert [r.status_code for r in (claimed, saved, submitted, accepted)] == [200, 200, 200, 200], [r.text for r in (claimed, saved, submitted, accepted)]

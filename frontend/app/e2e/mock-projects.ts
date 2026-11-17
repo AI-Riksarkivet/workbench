@@ -94,12 +94,118 @@ export interface Task {
 	ontology?: Record<string, unknown>;
 }
 
-/** A task's draft: the shapes and links the publish reads, guarded by its revision. */
-interface Draft {
-	shapes: Record<string, unknown>[];
+/** One annotation row of a task's work, as the canvas sends and reads it. */
+export type Row = Record<string, unknown> & { id: string };
+
+/** A task's draft, its work in progress: the rows the canvas reads and saves, the links between them, its revision,
+ *  and its kept saves (`annotator.state.store`: the draft and its bounded history). */
+export interface Draft {
+	rows: Row[];
 	links: { name: string; from_shape: string; to_shape: string }[];
 	revision: number;
+	history: { version: number; timestamp: string; author: string; rows: Row[] }[];
 }
+
+/** A draft's rows as the service's `Shape`s, as `GET /tasks/{id}/draft` answers them. */
+function shapeOf(row: Row): Record<string, unknown> {
+	let attributes: Record<string, string> = {};
+	try {
+		const parsed: unknown = JSON.parse(String(row.metadata ?? '{}'));
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+			attributes = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
+	} catch {
+		attributes = {};
+	}
+	const offset = (v: unknown): number | null => (typeof v === 'number' && v >= 0 ? v : null);
+	return {
+		shape_id: row.id,
+		shape_type: row.shape_type,
+		x: row.x ?? null,
+		y: row.y ?? null,
+		width: row.width ?? null,
+		height: row.height ?? null,
+		polygon: row.polygon ?? [],
+		t_start: row.t_start ?? null,
+		t_end: row.t_end ?? null,
+		parent_id: row.parent_id || null,
+		char_start: offset(row.char_start),
+		char_end: offset(row.char_end),
+		label: row.label ?? null,
+		text: row.text ?? null,
+		group: row.group || null,
+		source: row.source ?? null,
+		status: row.status ?? 'accepted',
+		confidence: row.confidence ?? null,
+		attributes,
+	};
+}
+
+/** Two boxes on the first page of the canvas's item: a figure top left and a caption bottom right (the picture is
+ *  160 × 160), the work of every task of `pages` on that page that has no work of its own below. */
+const PAGE_ROWS: Row[] = [
+	{
+		id: 'fig-1',
+		shape_type: 'bbox',
+		x: 10,
+		y: 10,
+		width: 50,
+		height: 40,
+		polygon: [],
+		label: 'figure',
+		status: 'accepted',
+		source: 'human',
+		// Keys the attribute editor does not show, nested and not: an edit of one attribute keeps them.
+		metadata: '{"damaged":"false","provenance":{"source":"ocr","page":3}}',
+	},
+	{
+		id: 'cap-1',
+		shape_type: 'bbox',
+		x: 90,
+		y: 100,
+		width: 60,
+		height: 40,
+		polygon: [],
+		label: 'caption',
+		text: 'The harbour at dawn',
+		status: 'prediction',
+		source: 'model:seed',
+		uncertainty: 0.4,
+		// Metadata that is not an object: an attribute edit is refused rather than writing over it.
+		metadata: '"scribbled note"',
+	},
+];
+
+/** A box row of a consensus replica's work. */
+const box = (
+	id: string,
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	label: string,
+): Row => ({
+	id,
+	shape_type: 'bbox',
+	x,
+	y,
+	width,
+	height,
+	polygon: [],
+	label,
+	status: 'accepted',
+	source: 'human',
+});
+
+/** Each replica of the `pages` consensus item has its own work: the first its figure and caption, the second the figure
+ *  where the first has it, the caption called a figure, and a box the first has not. */
+const REPLICA_ROWS: Record<string, Row[]> = {
+	'pagesg-r1': [box('r1-fig', 10, 10, 50, 40, 'figure'), box('r1-cap', 90, 100, 60, 40, 'caption')],
+	'pagesg-r2': [
+		box('r2-fig', 11, 10, 50, 40, 'figure'),
+		box('r2-cap', 90, 100, 60, 40, 'figure'),
+		box('r2-new', 100, 10, 40, 30, 'figure'),
+	],
+};
 
 interface Project {
 	project_id: string;
@@ -432,32 +538,20 @@ function seed(sub: string): World {
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
-	// The second replica's work, in its task's draft: the figure where the first has it, the caption called a figure, and
-	// a box the first has not.
-	const box = (shape_id: string, x: number, y: number, width: number, height: number) => ({
-		shape_id,
-		shape_type: 'bbox',
-		x,
-		y,
-		width,
-		height,
-		label: 'figure',
-		source: 'human',
-	});
-	const drafts = new Map<string, Draft>([
-		[
-			'pagesg-r2',
-			{
-				shapes: [
-					box('r2-fig', 11, 10, 50, 40),
-					box('r2-cap', 90, 100, 60, 40),
-					box('r2-new', 100, 10, 40, 30),
-				],
-				links: [],
-				revision: 1,
-			},
-		],
-	]);
+	const drafts = new Map<string, Draft>();
+	const seededAt = new Date().toISOString();
+	for (const t of tasks.values()) {
+		const pages = t.project_id === 'pages' && t.source.keys[0] === 'letter-001/0';
+		const rows = REPLICA_ROWS[t.task_id] ?? (pages ? PAGE_ROWS : []);
+		if (rows.length === 0) continue;
+		const seeded = structuredClone(rows);
+		drafts.set(t.task_id, {
+			rows: seeded,
+			links: [],
+			revision: 1,
+			history: [{ version: 1, timestamp: seededAt, author: 'seed', rows: seeded }],
+		});
+	}
 	return { role, projects, tasks, grants, drafts };
 }
 
@@ -468,6 +562,15 @@ export const mayReadWork = (t: Task, sub: string, perms: string[]): boolean =>
 	t.assignee === sub ||
 	t.submitted_by === sub ||
 	perms.includes('can_review');
+
+/** The draft of one task of `sub`'s world, which the annotations door reads and changes: none before the first save. */
+export const draftOf = (sub: string, taskId: string): Draft | undefined =>
+	worldOf(sub).drafts.get(taskId);
+
+/** Write the draft of one task of `sub`'s world. */
+export const writeDraft = (sub: string, taskId: string, draft: Draft): void => {
+	worldOf(sub).drafts.set(taskId, draft);
+};
 
 /** One task of `sub`'s world, as the annotations door reads it to judge a unit. */
 export const taskOf = (sub: string, taskId: string): Task | undefined =>
@@ -681,6 +784,15 @@ export async function projectsDoor(
 					409,
 				);
 			p.ontology = ((await body()).ontology as Record<string, unknown>) ?? p.ontology;
+			// Every item of the project nobody has started takes it: unassigned, never held, no draft.
+			for (const t of world.tasks.values())
+				if (
+					t.project_id === id &&
+					t.state === 'unassigned' &&
+					!t.assignee &&
+					!world.drafts.has(t.task_id)
+				)
+					t.ontology = p.ontology;
 			return answer(withCounts(world, p));
 		}
 		if (rest === '/items' && req.method === 'POST') {
@@ -781,7 +893,7 @@ export async function projectsDoor(
 	}
 
 	const taskRead = /^\/tasks\/([\w-]+)(\/draft)?$/.exec(path);
-	if (taskRead && (req.method === 'GET' || (taskRead[2] && req.method === 'PUT'))) {
+	if (taskRead && req.method === 'GET') {
 		const [, id = '', draft] = taskRead;
 		const t = world.tasks.get(id);
 		const perms = t ? held(world, sub, t.project_id) : [];
@@ -791,40 +903,29 @@ export async function projectsDoor(
 			world.projects.get(t.project_id)?.state ?? '',
 		);
 		if (!draft) return answer({ ...t, legal_events: legalTask(t.state, frozen) });
-		const current = world.drafts.get(id);
-		const doc = (d: Draft) => ({
-			task_id: id,
-			project_id: t.project_id,
-			author: sub,
-			...d,
-			origin: 'human',
-		});
 		// A consensus replica's work is its annotator's and its reviewers' (`tasks.require_work_readable`).
-		if (req.method === 'GET' && !mayReadWork(t, sub, perms))
+		if (!mayReadWork(t, sub, perms))
 			return answer(
 				{
 					detail: `${sub.replace(/^user:/, '')} may not read replica ${id}'s work: only its annotator, or someone who may review it`,
 				},
 				403,
 			);
+		const current = world.drafts.get(id);
 		// No draft yet is an answer, null, as the service gives it.
-		if (req.method === 'GET') return answer(current ? doc(current) : null);
-		if (!perms.includes('can_annotate')) {
-			record(403);
-			return refuse(sub, 'can_annotate', `task:${id}`);
-		}
-		if (t.state !== 'claimed' || t.assignee !== sub)
-			return answer({ detail: `the task is held by ${t.assignee}` }, 409);
-		const b = (await body()) as Partial<Draft> & { base_revision?: number };
-		if ((b.base_revision ?? null) !== (current?.revision ?? null))
-			return answer({ detail: 'the draft moved: re-read it before saving' }, 409);
-		const next: Draft = {
-			shapes: b.shapes ?? [],
-			links: b.links ?? [],
-			revision: (current?.revision ?? 0) + 1,
-		};
-		world.drafts.set(id, next);
-		return answer(doc(next));
+		return answer(
+			current
+				? {
+						task_id: id,
+						project_id: t.project_id,
+						author: current.history.at(-1)?.author ?? sub,
+						shapes: current.rows.map(shapeOf),
+						links: current.links,
+						revision: current.revision,
+						origin: 'human',
+					}
+				: null,
+		);
 	}
 
 	const taskPath = /^\/tasks\/([\w-]+)\/(events|import)$/.exec(path);

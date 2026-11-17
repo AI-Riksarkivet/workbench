@@ -56,11 +56,27 @@ ALTER TABLE tasks ADD CONSTRAINT tasks_state_known CHECK (state IN ($task_states
 CREATE INDEX IF NOT EXISTS tasks_of_project ON tasks (project_id, task_id);
 CREATE INDEX IF NOT EXISTS tasks_of_group ON tasks (project_id, replica_of, task_id) WHERE replica_of IS NOT NULL;
 
--- One draft per task: the whole shape set, replaced on each save, guarded by its revision.
+-- One draft per task: its work in progress, the whole shape set, replaced on each save, guarded by its revision.
 CREATE TABLE IF NOT EXISTS drafts (
     task_id  text PRIMARY KEY REFERENCES tasks (task_id) ON DELETE CASCADE,
     revision integer NOT NULL,
     document jsonb   NOT NULL
+);
+
+-- Each task's last saves: who saved each revision and when, how many shapes it left, and what undoes it (the shapes as
+-- they were before it for every shape it changed or removed, the ids it added, and the links before it when it changed
+-- them), written in the transaction that writes the revision. A past save is rebuilt from the draft by undoing the saves
+-- after it (`annotator.state.store.AnnotatorStore.draft_at`). Bounded per task in saves and in bytes
+-- (`MAX_DRAFT_HISTORY`, `MAX_HISTORY_BYTES`): the oldest past the bound is deleted in that same transaction.
+CREATE TABLE IF NOT EXISTS draft_history (
+    task_id  text        NOT NULL REFERENCES tasks (task_id) ON DELETE CASCADE,
+    revision integer     NOT NULL,
+    saved_at timestamptz NOT NULL,
+    author   text        NOT NULL,
+    shapes   integer     NOT NULL,
+    bytes    integer     NOT NULL,
+    undo     jsonb       NOT NULL,
+    PRIMARY KEY (task_id, revision)
 );
 
 -- Each task's state as a reader sees it: a claim past its expiry is unassigned. The one statement of that rule in SQL;

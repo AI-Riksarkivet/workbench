@@ -135,6 +135,10 @@ export interface SavePayload {
 	 *  legal writer of offsets after birth; they are deliberately not free-form editable fields. */
 	spans: Array<{ id: string; char_start: number; char_end: number }>;
 	deletes: string[];
+	/** The item's links after this save, all of them, when they changed; absent leaves them as they are. A link names
+	 *  its shapes by id (`from_shape`, `to_shape`), and a deleted shape's links go with it either way. */
+	links?: Array<{ name: string; from_shape: string; to_shape: string }>;
+	/** The revision of the task's work the save was built on (0 before the first save). */
 	base_version: number | null;
 }
 
@@ -152,6 +156,8 @@ export function buildSavePayload(args: {
 	deletes: string[];
 	version: number | null;
 	resolveId: (index: number) => string | null;
+	/** The whole set of links, when they changed since the last save; null when they did not. */
+	links?: ReadonlyArray<{ name: string; from_shape: string; to_shape: string }> | null;
 }): SavePayload {
 	const id = (index: number) => args.resolveId(index) ?? String(index);
 
@@ -185,6 +191,7 @@ export function buildSavePayload(args: {
 			char_end: s.char_end,
 		})),
 		deletes: args.deletes,
+		...(args.links ? { links: args.links.map((l) => ({ ...l })) } : {}),
 		base_version: args.version,
 	};
 }
@@ -195,7 +202,8 @@ export const payloadIsEmpty = (p: SavePayload): boolean =>
 	p.deletes.length === 0 &&
 	p.geometry.length === 0 &&
 	p.temporal.length === 0 &&
-	p.spans.length === 0;
+	p.spans.length === 0 &&
+	p.links === undefined;
 
 /** POST a Save. `conflict` = the table advanced under the client (HTTP 409). */
 export async function postSave(

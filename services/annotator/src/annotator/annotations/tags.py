@@ -1,34 +1,28 @@
-"""Batch tag writes — the tag↔annotation unification.
+"""Batch tag writes — whole-item labels as tag rows of a task's work.
 
-Workflow chunk-tags become annotation ROWS: a human ``set`` over a chunk-level
-selection, written across MANY units in ONE merge_insert version. Not a model deriver,
-so it does NOT funnel through the jobs seam; the annotations table stays mode-blind
-(a tag is ``source='human'`` / ``status='accepted'``).
+A workflow's tags of a task's item become `tag` shapes in the task's draft (a human ``set``: ``source='human'``,
+``status='accepted'``), all of a batch in ONE revision. Not a model deriver, so it does not funnel through the jobs
+seam. An add is insert-if-absent by a deterministic id, so a re-tag is idempotent and never overwrites a reviewer's edit
+of the row; a removal deletes by that id.
 """
 
 import logging
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from urllib.parse import quote
 
-import pyarrow as pa
 from fastapi import APIRouter
 
 from annotator.annotations.access import EditableTask, require_task_units
-from annotator.annotations.commit import check_base_version_value, delete_by_ids, finalize_commit
-from annotator.annotations.schema import (
-    NewAnnotation,
-    SaveResult,
-    TagBatch,
-    TagWrite,
-    identity_values,
-)
-from annotator.api.security import READS_DATASET, AnnotationsDep, CallerDep, CurrentSubject
+from annotator.annotations.schema import SaveResult, TagBatch, TagWrite
+from annotator.api.dependencies import StoreDep
+from annotator.api.security import READS_DATASET, CallerDep, CurrentSubject
 from annotator.corpus import resolve
-from client_kit.lancekit.descriptor import Declared
+from annotator.projects.machines import IllegalTransition
+from annotator.projects.models import Draft, Link, Shape, TaskState
 from client_kit.lancekit.keys import validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
-from service_kit.exceptions import ValidationError
+from service_kit.exceptions import ConflictError
 
 
 logger = logging.getLogger(__name__)
@@ -37,106 +31,65 @@ router = APIRouter(tags=["annotate"])
 
 
 def tag_id(task: str, doc_id: str, keys: Sequence[int], label: str) -> str:
-    """Deterministic id for a chunk-level TAG row — ``tag:{task}:{doc}:{keys}:{enc(label)}``.
-    Idempotent (re-tagging the same chunk maps to the same id, so no duplicates); the
-    ``tag:`` prefix + percent-encoded label guarantee it can never collide with a drawn
-    shape's random id (so a tag merge_insert never clobbers a shape's geometry). The task is in it because two tasks
-    may hold one unit (a consensus item's replicas), each tagging it as its own work."""
+    """Deterministic id for a TAG row — ``tag:{task}:{doc}:{keys}:{enc(label)}``.
+    Idempotent (re-tagging the same unit maps to the same id, so no duplicates); the ``tag:`` prefix and the
+    percent-encoded label keep it from ever equalling a drawn shape's random id. The task is in it because two tasks may
+    hold one unit (a consensus item's replicas), each tagging it as its own work."""
     parts = [task, doc_id, *(str(k) for k in keys), quote(label, safe="")]
     return "tag:" + ":".join(parts)
 
 
-def check_keys_arity(declared: Declared, writes: Sequence[TagWrite]) -> None:
-    """Fail fast on a keys/identity arity mismatch (400), BEFORE any write.
+def tagged(current: Draft | None, batch: TagBatch, *, task: str, doc_ids: dict[int, str], author: str, now: datetime) -> tuple[list[Shape], list[Link]]:
+    """The draft's shapes and links once ``batch`` is applied: each add a tag row unless the draft holds its id, each
+    removal's row gone, with any link touching it. ``doc_ids`` is each write's validated doc key, by its place in
+    ``adds + removes``."""
+    shapes = {s.shape_id: s for s in (current.shapes if current else [])}
+    for place, write in enumerate(batch.adds):
+        for label in write.labels:
+            tid = tag_id(task, doc_ids[place], write.keys, label)
+            if tid not in shapes:
+                shapes[tid] = Shape(shape_id=tid, shape_type="tag", label=label, source="human", reviewer=author, created_at=now, updated_at=now)
+    gone = {tag_id(task, doc_ids[len(batch.adds) + place], write.keys, label) for place, write in enumerate(batch.removes) for label in write.labels}
+    links = [link for link in (current.links if current else []) if link.from_shape not in gone and link.to_shape not in gone]
+    return [s for sid, s in shapes.items() if sid not in gone], links
 
-    ``identity_values`` pairs the keys with the identity's fields as given, so client-supplied
-    ``TagWrite.keys`` must be validated here: a short list would otherwise commit
-    rows with NULL identity columns that no chunk filter ever matches (silent,
-    unreachable corruption), and extra keys would be silently dropped."""
-    expected = len(declared.identity.key_fields) - 1  # non-doc identity fields
-    for w in writes:
-        if len(w.keys) != expected:
-            raise ValidationError(f"tag keys arity {len(w.keys)} != descriptor identity arity {expected}")
 
-
-def tag_rows(adds: Sequence[TagWrite], declared: Declared, *, task: str, author: str, schema: pa.Schema) -> pa.Table:
-    """Full annotation rows for chunk tags: per-row identity stamped, ``shape_type='tag'``,
-    label carried, server author; every OTHER field comes from ``NewAnnotation``'s
-    defaults (human provenance, geometry/temporal zeroed) — the one row contract, not a
-    parallel literal. Rows are DEDUPED by id (a batch may repeat a chunk+label): Lance
-    merge_insert does not dedupe duplicate source keys, so two identical-id rows would
-    both insert — dedup here prevents that. Lifecycle stamps land at row birth only —
-    the tag write is insert-only, so an existing row's timestamps are never touched."""
-    now = datetime.now(UTC)
-    by_id: dict[str, dict[str, object]] = {}
-    for w in adds:
-        doc = validate_doc_key(declared, w.doc_id)
-        ident = {
-            **identity_values(declared, doc, w.keys),
-            "task_id": task,
-            "reviewer": author,
-            "created_at": now,
-            "updated_at": now,
-        }
-        for label in w.labels:
-            tid = tag_id(task, doc, w.keys, label)
-            if tid in by_id:
-                continue  # first wins — every row for a given id is identical anyway
-            row = NewAnnotation(id=tid, shape_type="tag", label=label).model_dump()
-            by_id[tid] = {**ident, **row}
-    return pa.Table.from_pylist(list(by_id.values()), schema=schema)
+def _unit_key(write: TagWrite) -> str:
+    return "/".join([write.doc_id, *(str(k) for k in write.keys)])
 
 
 @router.post("/annotations/tags", dependencies=[READS_DATASET])
-def apply_tags(
+async def apply_tags(
     task: EditableTask,
     caller: CallerDep,
     state: StateDep,
-    # The VERIFIED subject, never a header (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit": any caller could sign another
-    # person's name onto annotation provenance via `X-User`). `current_subject` is `anon` with
-    # OIDC off (byte-identical dev behaviour), the token's principal key with it on, 401 with no token,
-    # 503 when enabled-but-unwired — the same no-header-fallback rule the projects plane got.
+    store: StoreDep,
+    # The VERIFIED subject, never a header: `anon` with sign-in off, the token's principal with it on.
     author: CurrentSubject,
-    annotations: AnnotationsDep,
     body: TagBatch,
     dataset: DatasetParam = None,
 ) -> SaveResult:
-    """Apply a TagBatch to the project's own table: adds insert-if-absent (never clobbering a reviewer's edits to an
-    existing tag row), removes DELETE by the deterministic id. Idempotent re-Save; a removal reaches only this project's
-    rows."""
+    """Apply a TagBatch to the task's work: adds insert-if-absent, removes delete by the deterministic id. Idempotent; a
+    batch reaches only the named task's draft, and every unit it tags must be that task's (`require_task_units`)."""
     corpus = resolve(state, dataset, caller)
-    declared = corpus.declared
-    check_keys_arity(declared, [*body.adds, *body.removes])
-    # Every unit the batch tags is one of the named task's, which the caller may edit now (`EditableTask`).
-    require_task_units(task, ["/".join([w.doc_id, *(str(k) for k in w.keys)]) for w in [*body.adds, *body.removes]], dataset)
-    table = annotations(corpus.id)
-    existing = table.open()
-    # Optimistic concurrency degrades to table-GLOBAL for a cross-unit batch; optional +
-    # last-write-wins per deterministic id is the pragmatic contract. A table not yet made is version 0.
-    check_base_version_value(int(existing.version) if existing is not None else 0, body.base_version)
-    ds = existing if existing is not None else table.open_or_create(declared, author)
+    writes = [*body.adds, *body.removes]
+    require_task_units(task, [_unit_key(w) for w in writes], dataset)
+    doc_ids = {place: validate_doc_key(corpus.declared, w.doc_id) for place, w in enumerate(writes)}
 
-    delta = tag_rows(body.adds, declared, task=task.task_id, author=author, schema=ds.schema)
-    writer = table.writer(author)
-    touched = 0
-    if delta.num_rows:
-        # INSERT-ONLY (not upsert): a tag that already exists is left untouched, so a
-        # re-save never clobbers a reviewer's edits to that tag row (status/label/group).
-        # Re-tagging stays idempotent; humans own the row once it exists.
-        writer.merge_insert_only(delta, "id")
-        touched += delta.num_rows
+    def change(current: Draft | None, now: datetime) -> tuple[list[Shape], list[Link]]:
+        return tagged(current, body, task=task.task_id, doc_ids=doc_ids, author=author, now=now)
 
-    remove_ids = [tag_id(task.task_id, validate_doc_key(declared, w.doc_id), w.keys, label) for w in body.removes for label in w.labels]
-    if remove_ids:
-        delete_by_ids(writer, remove_ids)
-        touched += len(remove_ids)
-
-    result = finalize_commit(
-        table,
-        state.settings,
-        touched=touched,
-        unit_key=f"tags:{len(body.adds)}+{len(body.removes)}",
-    )
-    if touched:
-        logger.info("tagged → v%d (%d add-rows, %d remove)", result.version, delta.num_rows, len(remove_ids))
-    return result
+    try:
+        draft = await store.change_draft(
+            task.task_id,
+            author=author,
+            change=change,
+            base_revision=body.base_version,
+            require_base=False,
+            reviewing=task.state is TaskState.IN_REVIEW,
+        )
+    except IllegalTransition as exc:
+        raise ConflictError(str(exc)) from exc
+    touched = sum(len(w.labels) for w in writes)
+    logger.info("tagged task %s → v%d (%d add(s), %d removal(s))", task.task_id, draft.revision, len(body.adds), len(body.removes))
+    return SaveResult(saved=touched, version=draft.revision)

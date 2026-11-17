@@ -2,13 +2,7 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { EDGE } from './ports';
 import { grantsOf, lakehouseOf, person, signIn } from './session';
 import type { MockIdentity } from './mock-oidc';
-import {
-	APP_CLIENT,
-	LAKEHOUSE_AUDIENCE,
-	SERVICE_CLIENT,
-	audienceScope,
-	type Shape,
-} from './providers';
+import { APP_CLIENT, LAKEHOUSE_AUDIENCE, audienceScope, type Shape } from './providers';
 
 // Sign-in at whatever OIDC provider the deployment runs, in the two shapes the workbench meets (`providers.ts`), on
 // the built app: the provider's discovery decides DPoP, and the provider decides how a read reaches the lakehouse.
@@ -40,9 +34,9 @@ const DEX_CONFIG = {
 };
 
 /** How a request presents the token at each shape, and how the lakehouse is reached. */
-const EXPECTED: Record<Shape, { scheme: RegExp; read: string; service: string }> = {
-	keycloak: { scheme: /^DPoP /, read: 'exchanged', service: `service-account-${SERVICE_CLIENT}` },
-	dex: { scheme: /^Bearer /, read: 'passed-on', service: SERVICE_CLIENT },
+const EXPECTED: Record<Shape, { scheme: RegExp; read: string }> = {
+	keycloak: { scheme: /^DPoP /, read: 'exchanged' },
+	dex: { scheme: /^Bearer /, read: 'passed-on' },
 };
 
 async function at(
@@ -128,7 +122,7 @@ test('a deployment that requires bound tokens refuses a provider that offers no 
 
 for (const shape of ['keycloak', 'dex'] as const) {
 	test.describe(`at a ${shape}-shaped provider`, () => {
-		test('a person signs in, reads as themselves and writes through the annotator as the workbench', async ({
+		test('a person signs in, reads as themselves and labels through the annotator, which writes nothing to the lakehouse', async ({
 			page,
 			context,
 		}) => {
@@ -153,13 +147,8 @@ for (const shape of ['keycloak', 'dex'] as const) {
 				principal: who.sub,
 				admitted: true,
 			});
-			expect(calls).toContainEqual({
-				as: 'service',
-				token: 'own',
-				principal: EXPECTED[shape].service,
-				admitted: true,
-			});
-			expect(calls.filter((call) => !call.admitted)).toEqual([]);
+			// The save is the annotator's own until a publish: every lakehouse call was the person's read.
+			expect(calls.filter((call) => call.as !== 'person' || !call.admitted)).toEqual([]);
 		});
 
 		test('a session renews in place when its token ends, and sign-out ends it', async ({

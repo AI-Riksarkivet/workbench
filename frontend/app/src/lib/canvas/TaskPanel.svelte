@@ -36,20 +36,28 @@
 		`#${controller.reviewQueue.findIndex((r) => r.index === index) + 1}`;
 
 	let busy = $state<string | null>(null);
-	let failure = $state<string | null>(null);
+	/** What the last action here refused, with the save the canvas had made when it did: a later save that lands
+	 *  answers it, so it is shown only until then. */
+	let refused = $state<{ text: string; savedAt: number | null } | null>(null);
+	const failure = $derived(
+		refused !== null && refused.savedAt === controller.lastSavedAt ? refused.text : null,
+	);
+	const refuse = (text: string): void => {
+		refused = { text, savedAt: controller.lastSavedAt };
+	};
 	let noteOpen = $state(false);
 	let note = $state('');
 
 	async function fire(event: string, message?: string): Promise<void> {
 		if (busy) return;
 		busy = event;
-		failure = null;
+		refused = null;
 		if (event === 'submit') {
 			// What is submitted is what is saved: the item's unsaved edits go first, and a save that fails stops the submit.
 			await controller.save();
 			if (controller.dirty) {
 				busy = null;
-				failure = `Not submitted: ${controller.saveError ?? 'the edits were not saved'}.`;
+				refuse(`Not submitted: ${controller.saveError ?? 'the edits were not saved'}.`);
 				return;
 			}
 		}
@@ -64,7 +72,7 @@
 			noteOpen = false;
 			note = '';
 			onchanged(result.data);
-		} else failure = result.detail;
+		} else refuse(result.detail);
 	}
 
 	const LABELS: Record<string, string> = {

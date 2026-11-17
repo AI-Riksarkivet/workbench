@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints.projects import router
-from annotator.projects.models import AnnotationProject, ProjectState
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Task, TaskState
 from annotator.state.store import AnnotatorStore
 
 
@@ -94,6 +94,32 @@ def test_a_manager_replaces_the_ontology_while_the_project_takes_work(door: Any,
     assert [c["name"] for c in r.json()["ontology"]["classes"]] == ["region"]
     assert d.classes() == ["region"]
     assert [(c["relation"], c["obj"]) for c in record] == [("can_manage", "project:p1")]
+
+
+def test_an_edit_reaches_every_item_nobody_has_started_and_no_item_someone_has(door: Any) -> None:
+    """A project made with no classes (the send dialog's create-and-send) and given them afterwards: its items nobody has
+    started take the new ontology, so they can be classed; an item someone claimed (and released) or submitted keeps the
+    copy its work was done under."""
+    d = door()
+    d.seed(ProjectState.LABELING)
+
+    def item(task_id: str, **fields: Any) -> Task:
+        return Task.model_validate(
+            {"task_id": task_id, "project_id": "p1", "source": ItemSource(kind="chunks", keys=[task_id]), "media": MediaRef(kind="image"), **fields}
+        )
+
+    d.store(
+        lambda s: s.send_tasks(
+            "p1",
+            [item("fresh"), item("released", holders=["dave"]), item("submitted", state=TaskState.IN_REVIEW, holders=["dave"], submitted_by="dave")],
+        )
+    )
+
+    r = d.client.patch("/projects/p1/ontology", json={"ontology": BBOX})
+
+    assert r.status_code == 200, r.text
+    classes = {t.task_id: [c.name for c in t.ontology.classes] for t in d.store(lambda s: s.get_tasks("p1", ["fresh", "released", "submitted"]))}
+    assert classes == {"fresh": ["region"], "released": [], "submitted": []}
 
 
 def test_a_denied_caller_gets_403_and_writes_nothing(door: Any) -> None:
