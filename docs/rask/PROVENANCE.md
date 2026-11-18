@@ -9,7 +9,7 @@ The workbench is a client of a rask lakehouse and reaches it only through what r
 
 Data goes through stock `lance_namespace` and pylance on credentials the catalog vends.
 
-These four files are copied unchanged from `AI-Riksarkivet/rask` at `12f84fbeb` (`docs/`, 2026-11-17). Links inside
+These four files are copied unchanged from `AI-Riksarkivet/rask` at `4f83dba0d` (`docs/`, 2026-11-18). Links inside
 them that point at rask's own tree (`adr/`, `lance_docs/`) resolve in rask's repository, not here. Refresh them with:
 
 ```bash

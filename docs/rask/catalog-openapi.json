@@ -2221,6 +2221,32 @@
             "description": "Lower bound for search",
             "title": "Lower Bound"
           },
+          "maximum_nprobes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Maximum number of IVF partitions to search. When omitted, all partitions may be searched if needed.",
+            "title": "Maximum Nprobes"
+          },
+          "minimum_nprobes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Minimum number of IVF partitions to search before adaptive expansion.",
+            "title": "Minimum Nprobes"
+          },
           "nprobes": {
             "anyOf": [
               {
@@ -2231,7 +2257,7 @@
                 "type": "null"
               }
             ],
-            "description": "Number of probes for IVF index",
+            "description": "Legacy exact number of IVF partitions to search. Ignored when minimum_nprobes or maximum_nprobes is provided.",
             "title": "Nprobes"
           },
           "offset": {
@@ -7668,17 +7694,6 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
-          },
-          "truncated": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Truncated"
           }
         },
         "required": [
@@ -10420,6 +10435,32 @@
             "description": "Lower bound for search",
             "title": "Lower Bound"
           },
+          "maximum_nprobes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Maximum number of IVF partitions to search. When omitted, all partitions may be searched if needed.",
+            "title": "Maximum Nprobes"
+          },
+          "minimum_nprobes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Minimum number of IVF partitions to search before adaptive expansion.",
+            "title": "Minimum Nprobes"
+          },
           "nprobes": {
             "anyOf": [
               {
@@ -10430,7 +10471,7 @@
                 "type": "null"
               }
             ],
-            "description": "Number of probes for IVF index",
+            "description": "Legacy exact number of IVF partitions to search. Ignored when minimum_nprobes or maximum_nprobes is provided.",
             "title": "Nprobes"
           },
           "offset": {
@@ -12999,7 +13040,7 @@
     },
     "/management/v1/access/model": {
       "get": {
-        "description": "The authorization model \u2014 the checked-in ``model.fga`` DSL text plus the pinned model id.\n\nRead-only and estate-admin gated: the model reveals the whole privilege topology (which rungs derive\nwhich actions), the same platform-tier disclosure as the tuple listing.",
+        "description": "The authorization model: the checked-in ``model.fga`` DSL text plus the id of the model this catalog checks against.\n\nRead-only and estate-admin gated: the model reveals the whole privilege topology (which rungs derive\nwhich actions), the same platform-tier disclosure as the tuple listing.",
         "operationId": "get_access_model_management_v1_access_model_get",
         "parameters": [
           {
@@ -14616,7 +14657,7 @@
     },
     "/management/v1/maintenance/due": {
       "get": {
-        "description": "The tables a compaction or an index optimize is due on, listed to a caller holding ``can_maintain`` on each: what\nmade each due, the policy record that governed it, and how many datasets resolve their files through it. A record\nnames its table as the table is named now, which a rename since the sweep changed; one whose table is gone is listed\nto nobody, and the next sweep clears it.\n\nPaged in the order of the records' keys, each keyed by its table's uuid: the door lists the keys and reads, names and\njudges records only as its page fills (:func:`fga_deps.judged_page`, [[LH-562]]), so a walk a page at a time reads\neach record a few times at most, where reading every record for every page grew with the square of the list.",
+        "description": "The tables a compaction or an index optimize is due on, listed to a caller holding ``can_maintain`` on each: what\nmade each due and the policy record that governed it. A record names its table as the table is named now, which a\nrename since its pass changed; one whose table is gone is listed to nobody, and its next pass clears it.\n\nPaged in the order of the records' keys, each keyed by its table's uuid: the door lists the keys and reads, names and\njudges records only as its page fills (:func:`fga_deps.judged_page`, [[LH-562]]), so a walk a page at a time reads\neach record a few times at most, where reading every record for every page grew with the square of the list.",
         "operationId": "list_due_maintenance_management_v1_maintenance_due_get",
         "parameters": [
           {
@@ -16040,18 +16081,19 @@
           },
           {
             "in": "header",
-            "name": "authorization",
+            "name": "Idempotency-Key",
             "required": false,
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Authorization"
+              "title": "Idempotency-Key"
             }
           },
           {
@@ -17171,6 +17213,23 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -18476,7 +18535,7 @@
     },
     "/management/v1/table/{id}/blobs": {
       "get": {
-        "description": "Serve one blob payload over plain HTTP \u2014 the credential-less consumer path (\u00a79 P1).\n\nA browser/notebook/service with NO storage credentials fetches blob bytes straight from the\ncatalog: ``GET /v1/table/{id}/blobs?column=payload&row=3[&version=N]``. ``Range: bytes=\u2026`` is\nhonoured (206 + ``Content-Range``), an unsatisfiable range gets the RFC 416 + ``bytes */size``,\nand every response carries ``Accept-Ranges: bytes`` plus a strong ``ETag``\n(``\"<version>-<column>-<row>\"``) so clients can resume safely: an ``If-Range`` that no longer\nmatches (the table was overwritten mid-download) downgrades the range to a full 200 instead of\nsilently splicing bytes from two incarnations. The body is STREAMED in bounded windows (each a\nlazy ``BlobFile.read_range``), so a multi-GB payload never buffers in the catalog \u2014 the\nread-side mirror of the write-side body-limit OOM guard. ``row`` is the POSITIONAL index at the\nserved version (pin ``version`` for a stable address across overwrites).\n\nONE ROW PER REQUEST, and a client wanting the same byte range from MANY rows should not loop here\n([[LH-035]]). pylance's ``LanceDataset.read_blob_ranges(blob_column, requests, selector=\u2026)`` takes a\nsequence of ``(row, offset, length)`` tuples and plans them as ONE call \u2014 verified against\npylance 11.0.0, and its signature unchanged on 13.0.0 \u2014 so N loops over this endpoint become N round trips and N independent\nplans where the batched API makes one. This door is deliberately the credential-less SINGLE-blob\npath; it is not the shape to build a scan on, and nothing here would tell a caller that.\n\nAuthz: the router-level ``authorize`` maps the ``blobs`` suffix to reader-tier ``can_read_data``\n(same rung as ``/query``) \u2014 this endpoint serves DATA, so credential-vending tiers apply\nunchanged; it just removes the need for the credentials themselves.",
+        "description": "Serve one blob payload over plain HTTP \u2014 the credential-less consumer path (\u00a79 P1).\n\nA browser/notebook/service with NO storage credentials fetches blob bytes straight from the\ncatalog: ``GET /management/v1/table/{id}/blobs?column=payload&row=3[&version=N]``. ``Range: bytes=\u2026`` is\nhonoured (206 + ``Content-Range``), an unsatisfiable range gets the RFC 416 + ``bytes */size``,\nand every response carries ``Accept-Ranges: bytes`` plus a strong ``ETag``\n(``\"<version>-<column>-<row>\"``) so clients can resume safely: an ``If-Range`` that no longer\nmatches (the table was overwritten mid-download) downgrades the range to a full 200 instead of\nsilently splicing bytes from two incarnations. The body is STREAMED in bounded windows (each a\nlazy ``BlobFile.read_range``), so a multi-GB payload never buffers in the catalog \u2014 the\nread-side mirror of the write-side body-limit OOM guard. ``row`` is the POSITIONAL index at the\nserved version (pin ``version`` for a stable address across overwrites).\n\nONE ROW PER REQUEST, and a client wanting the same byte range from MANY rows should not loop here\n([[LH-035]]). pylance's ``LanceDataset.read_blob_ranges(blob_column, requests, selector=\u2026)`` takes a\nsequence of ``(row, offset, length)`` tuples and plans them as ONE call \u2014 verified against\npylance 11.0.0, and its signature unchanged on 13.0.0 \u2014 so N loops over this endpoint become N round trips and N independent\nplans where the batched API makes one. This door is deliberately the credential-less SINGLE-blob\npath; it is not the shape to build a scan on, and nothing here would tell a caller that.\n\nAuthz: the router-level ``authorize`` maps the ``blobs`` suffix to reader-tier ``can_read_data``\n(same rung as ``/query``) \u2014 this endpoint serves DATA, so credential-vending tiers apply\nunchanged; it just removes the need for the credentials themselves.",
         "operationId": "read_table_blob_management_v1_table__id__blobs_get",
         "parameters": [
           {
@@ -19648,7 +19707,7 @@
     },
     "/management/v1/table/{id}/maintenance/preview": {
       "post": {
-        "description": "Dry-run the old-version cleanup \u2014 the versions GC would reclaim + the tags protecting others. Owner-\ngated (``can_drop``); never mutates.\n\n``branch`` IS HONOURED, as on every door here (see the module header), and this is the one that\nneeds no containment argument: it calls ``_base_refs`` zero times and mutates nothing \u2014\n``preview_gc`` reads ``ds.version``, ``ds.versions()`` and the tag and child-branch pins and returns.\n\nPreviewing MAIN and labelling it the branch's answer is the failure this replaces, not a lesser\nversion of it: the caller acts on the version list, so\n``test_the_gc_preview_names_exactly_what_the_run_deletes.py`` compares the ANSWER, per ref, with\nwhat ``/run`` deletes on that ref rather than asserting which ref the door opened.",
+        "description": "Dry-run the old-version cleanup \u2014 the versions GC would reclaim + the tags protecting others. Owner-\ngated (``can_drop``); never mutates.\n\n``branch`` IS HONOURED, as on every door here (see the module header), and this is the one that\nneeds no containment argument: it mutates nothing \u2014\n``preview_gc`` reads ``ds.version``, ``ds.versions()`` and the tag and child-branch pins and returns.\n\nPreviewing MAIN and labelling it the branch's answer is the failure this replaces, not a lesser\nversion of it: the caller acts on the version list, so\n``test_the_gc_preview_names_exactly_what_the_run_deletes.py`` compares the ANSWER, per ref, with\nwhat ``/run`` deletes on that ref rather than asserting which ref the door opened.",
         "operationId": "preview_maintenance_management_v1_table__id__maintenance_preview_post",
         "parameters": [
           {
@@ -19742,7 +19801,7 @@
     },
     "/management/v1/table/{id}/maintenance/run": {
       "post": {
-        "description": "Reclaim old versions on demand (DESTRUCTIVE; tag-pinned versions are exempt). Owner-gated\n(``can_drop``) \u2014 the same bar as scheduling it via the retention policy.\n\n``branch`` IS HONOURED, and the containment is the LAYOUT's rather than this door's \u2014 see the\nmodule header for the measurement. The pre-pass below runs on both paths and is the same listing\neither way, because a branch handle's ``uri`` is the dataset root.\n\nReclaiming MAIN's history and reporting it as the branch's is the failure this replaces, and it is\nirreversible, so ``test_the_gc_run_reclaims_the_ref_the_request_names`` asserts what SURVIVED \u2014 the\nparent's data files, counted before and after \u2014 rather than which ref the door opened.",
+        "description": "Reclaim old versions on demand (DESTRUCTIVE; tag-pinned versions are exempt). Owner-gated\n(``can_drop``) \u2014 the same bar as scheduling it via the retention policy.\n\n``branch`` IS HONOURED, and the containment is the LAYOUT's rather than this door's \u2014 see the\nmodule header for the measurement.\n\nReclaiming MAIN's history and reporting it as the branch's is the failure this replaces, and it is\nirreversible, so ``test_the_gc_run_reclaims_the_ref_the_request_names`` asserts what SURVIVED \u2014 the\nparent's data files, counted before and after \u2014 rather than which ref the door opened.",
         "operationId": "run_maintenance_management_v1_table__id__maintenance_run_post",
         "parameters": [
           {
@@ -20326,6 +20385,23 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -21242,7 +21318,7 @@
     },
     "/management/v1/warehouses/{warehouse_id}": {
       "delete": {
-        "description": "Delete a warehouse: its namespaces (on ``?cascade=true``), its trash, its tuples and its registry record \u2014 and\nits BUCKET only if asked.\n\nGated on ``project#can_administer`` (`open_hierarchy_lifecycle.md` Decision 3), NOT on a relation of the\nwarehouse itself: destroying a tenant's storage is a tenant-level act, so it clears the tenant's own\nadmin bar rather than a rung someone could hold on this one warehouse.\n\nOrder, and every step is load-bearing:\n\n1. The record must exist (404), read by :func:`administered_warehouse`.\n2. **Authorize first**, in that same dependency. The gate runs before the protection and emptiness checks, so an unauthorized\n   caller never learns whether the warehouse is protected or what it holds \u2014 a 409 listing another\n   tenant's namespace names is a disclosure a 403 must beat to.\n3. Deletion protection (Decision 5) refuses 409 unless ``force=true``. ``force`` overrides the\n   PROTECTION ONLY \u2014 step 2 has already run, identically, with or without it.\n4. Emptiness: a warehouse still holding namespaces refuses 409 **naming them**; a refusal that does not\n   say what blocks it just moves the search to the user. ``?cascade=true`` removes exactly those, with\n   everything in them. Before anything is removed, every namespace's subtree is enumerated and held to\n   its protection (:func:`_cascade_subtrees`): a protected namespace or table refuses 409 naming it unless\n   ``force=true``, and that refusal changes nothing.\n5. The warehouse's own trash is ended first (``warehouses.trash_owned_by``): each trashed object's kept grants,\n   policy, claim and base record, its trash record last. A record is the warehouse's when its name begins with the\n   warehouse's id, so a re-issue after a failure here selects the same records. Then the cascade removes each\n   namespace's subtree against the warehouse's OWN bucket-rooted connection, one namespace fully finished before\n   the next: every table detached (:func:`_detach_table`; the bytes stay unless step 7 purges them) and the\n   namespaces dropped deepest first, and only then what each object held ended, its records before its grants\n   (``fga_deps.end_removed_subtree``), and the warehouse's own row in its catalog last.\n   ``namespaces_dropped`` names every namespace removed, nested ones included. The `dir` backend drops a\n   namespace Restrict whatever ``behavior`` says (measured: ``behavior=\"Cascade\"`` is ignored, not\n   refused), so emptying it first is what lets the drop land. A failure part-way leaves every object not\n   yet removed with every grant it had, and every step tolerates what an earlier attempt already removed,\n   so re-issuing the call finishes it.\n6. Tuples on ``warehouse:<id>``, then the bucket's purge and claim (step 7), then the registry record last: the\n   record is what this door is addressed by, so a failure before it leaves the warehouse for the re-issue.\n7. **Bytes only on ``?purge_bucket=true``.** A catalog entry is recoverable, a customer's bucket is not,\n   so the two never share a default; a record-less bucket is reported by the reconciler, not lost. And a\n   purge that would take bytes this warehouse does not solely own \u2014 a bucket a same-project sibling\n   still claims, or reserved platform storage \u2014 refuses BEFORE the cascade\n   (:func:`_require_bucket_purgeable`). A purge then releases the bucket's claim\n   (``warehouses.release_bucket_claim``), so another project may register the emptied bucket; a delete keeping\n   the bytes keeps the claim, so no other project adopts what the bucket still holds.\n\nRouting reads the warehouse's record on every request, so once the record is gone no name beneath the warehouse\nreaches its bucket.",
+        "description": "Delete a warehouse: its namespaces (on ``?cascade=true``), its trash, its tuples and its registry record \u2014 and\nits BUCKET only if asked.\n\nGated on ``project#can_administer`` (`open_hierarchy_lifecycle.md` Decision 3), NOT on a relation of the\nwarehouse itself: destroying a tenant's storage is a tenant-level act, so it clears the tenant's own\nadmin bar rather than a rung someone could hold on this one warehouse.\n\nOrder, and every step is load-bearing:\n\n1. The record must exist (404), read by :func:`administered_warehouse`.\n2. **Authorize first**, in that same read. The gate runs before the protection and emptiness checks, so an unauthorized\n   caller never learns whether the warehouse is protected or what it holds \u2014 a 409 listing another\n   tenant's namespace names is a disclosure a 403 must beat to.\n3. Deletion protection (Decision 5) refuses 409 unless ``force=true``. ``force`` overrides the\n   PROTECTION ONLY \u2014 step 2 has already run, identically, with or without it.\n4. Emptiness: a warehouse still holding namespaces refuses 409 **naming them**; a refusal that does not\n   say what blocks it just moves the search to the user. ``?cascade=true`` removes exactly those, with\n   everything in them. Before anything is removed, every namespace's subtree is enumerated and held to\n   its protection (:func:`_cascade_subtrees`): a protected namespace or table refuses 409 naming it unless\n   ``force=true``, and that refusal changes nothing.\n5. The warehouse's own trash is ended first (``warehouses.trash_owned_by``): each trashed object's kept grants,\n   policy, claim and base record, its trash record last. A record is the warehouse's when its name begins with the\n   warehouse's id, so a re-issue after a failure here selects the same records. Then the cascade removes each\n   namespace's subtree against the warehouse's OWN bucket-rooted connection, one namespace fully finished before\n   the next: every table detached (:func:`_detach_table`; the bytes stay unless step 7 purges them) and the\n   namespaces dropped deepest first, and only then what each object held ended, its records before its grants\n   (``fga_deps.end_removed_subtree``), and the warehouse's own row in its catalog last.\n   ``namespaces_dropped`` names every namespace removed, nested ones included. The `dir` backend drops a\n   namespace Restrict whatever ``behavior`` says (measured: ``behavior=\"Cascade\"`` is ignored, not\n   refused), so emptying it first is what lets the drop land. A failure part-way leaves every object not\n   yet removed with every grant it had, and every step tolerates what an earlier attempt already removed,\n   so re-issuing the call finishes it.\n6. Tuples on ``warehouse:<id>``, then the bucket's purge and claim (step 7), then the registry record last: the\n   record is what this door is addressed by, so a failure before it leaves the warehouse for the re-issue.\n7. **Bytes only on ``?purge_bucket=true``.** A catalog entry is recoverable, a customer's bucket is not,\n   so the two never share a default; a record-less bucket is reported by the reconciler, not lost. And a\n   purge that would take bytes this warehouse does not solely own \u2014 a bucket a same-project sibling\n   still claims, or reserved platform storage \u2014 refuses BEFORE the cascade\n   (:func:`_require_bucket_purgeable`). A purge then releases the bucket's claim\n   (``warehouses.release_bucket_claim``), so another project may register the emptied bucket; a delete keeping\n   the bytes keeps the claim, so no other project adopts what the bucket still holds.\n\nRouting reads the warehouse's record on every request, so once the record is gone no name beneath the warehouse\nreaches its bucket.",
         "operationId": "delete_warehouse_management_v1_warehouses__warehouse_id__delete",
         "parameters": [
           {
@@ -21300,6 +21376,23 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -22134,6 +22227,23 @@
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -22429,6 +22539,23 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -23480,22 +23607,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "x-lance-originator",
             "required": false,
             "schema": {
@@ -23644,22 +23755,6 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -24496,88 +24591,9 @@
       }
     },
     "/v1/table/{id}/count_rows": {
-      "get": {
-        "description": "Count the table's rows on the ref the request names \u2014 ``count_table_rows``; returns plain text.\n\nRouted through `dataplane` rather than straight to `native.call` so that `branch` is honoured. It\nwas not: the parameter reached the upstream implementation, which answered from main regardless,\nso a branch-scoped count returned a plausible number for the wrong dataset with a 200.",
-        "operationId": "count_table_rows_compat_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/CountTableRowsRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Body"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Count Table Rows",
-        "tags": [
-          "data"
-        ]
-      },
       "post": {
         "description": "Count the table's rows on the ref the request names \u2014 ``count_table_rows``; returns plain text.\n\nRouted through `dataplane` rather than straight to `native.call` so that `branch` is honoured. It\nwas not: the parameter reached the upstream implementation, which answered from main regardless,\nso a branch-scoped count returned a plausible number for the wrong dataset with a 200.",
-        "operationId": "count_table_rows",
+        "operationId": "count_table_rows_v1_table__id__count_rows_post",
         "parameters": [
           {
             "in": "path",
@@ -24717,7 +24733,7 @@
     },
     "/v1/table/{id}/create": {
       "post": {
-        "description": "Create a Lance table from an Arrow-IPC stream \u2014 ``create_table``; seeds ownership + lineage.\n\n``mode=Overwrite`` over an existing table writes a new version of it ([[LH-242]],\n``table_create``'s module docstring): a protected table refuses it 409 unless ``force=true``, which\nturns the protection lock only, as on drop.\n\n``properties`` is the spec-0.9 JSON-encoded query parameter. Client-supplied ``storage_options``\nare refused 400 (code 13), never dropped unread: storage access is the catalog's to vend (two-tier\nsecret model), so callers can't redirect writes or splice credentials, and a caller who sent them is\ntold they did not apply.\n\n``data_base`` (#3-B, repeatable) spreads the table's fragments across the named approved buckets (Lance\nmulti-base). Each MUST be on the ``LANCE_MULTIBASE_DATA_BASES`` allowlist \u2014 a caller can never point a\nbase at an arbitrary bucket. Omitted \u2192 a single-location table exactly as before.\n\n``external_blob_base`` ([[LH-209]]) asks to register ONE external blob base, so the table's blob\ncolumns may hold ``Blob.from_uri`` pointers under it. It must lie inside a ``LANCE_EXTERNAL_BLOB_BASES``\nentry and outside governed storage (``table_bases.requested_external_blob_base``). Omitted \u2192 no\nexternal base, and a pointer in the rows is refused.\n\nThe run the request's Context names (:mod:`catalog.core.run_context`) is stamped into the commit and its inputs\nbecome the create event's version-pinned inputs; the write judge has already refused a create under a namespace requiring a run that\nnames none, and an input the caller cannot read.",
+        "description": "Create a Lance table from an Arrow-IPC stream \u2014 ``create_table``; seeds ownership + lineage.\n\n``mode=Overwrite`` over an existing table writes a new version of it ([[LH-242]],\n``table_create``'s module docstring): a protected table refuses it 409 unless ``force=true``, which\nturns the protection lock only, as on drop.\n\n``properties`` is the spec-0.9 JSON-encoded query parameter. Client-supplied ``storage_options``\nare refused 400 (code 13), never dropped unread: storage access is the catalog's to vend (two-tier\nsecret model), so callers can't redirect writes or splice credentials, and a caller who sent them is\ntold they did not apply.\n\n``data_base`` (#3-B, repeatable) spreads the table's fragments across the named approved buckets (Lance\nmulti-base). Each MUST be on the ``LANCE_MULTIBASE_DATA_BASES`` allowlist \u2014 a caller can never point a\nbase at an arbitrary bucket. Omitted \u2192 a single-location table exactly as before.\n\n``external_blob_base`` ([[LH-209]]) asks to register ONE external blob base, so the table's blob\ncolumns may hold ``Blob.from_uri`` pointers under it. It must lie inside a ``LANCE_EXTERNAL_BLOB_BASES``\nentry approved for the table's warehouse and outside governed storage\n(``table_bases.requested_external_blob_base``). Omitted \u2192 no\nexternal base, and a pointer in the rows is refused.\n\nThe run the request's Context names (:mod:`catalog.core.run_context`) is stamped into the commit and its inputs\nbecome the create event's version-pinned inputs; the write judge has already refused a create under a namespace requiring a run that\nnames none, and an input the caller cannot read.",
         "operationId": "create_table_v1_table__id__create_post",
         "parameters": [
           {
@@ -24795,22 +24811,6 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -25265,6 +25265,23 @@
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -25417,22 +25434,6 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -26149,22 +26150,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "x-lance-originator",
             "required": false,
             "schema": {
@@ -26810,22 +26795,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "x-lance-originator",
             "required": false,
             "schema": {
@@ -27189,22 +27158,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
@@ -27518,22 +27471,6 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -28155,22 +28092,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
@@ -28354,22 +28275,6 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -28936,108 +28841,9 @@
       }
     },
     "/v1/table/{id}/tags/list": {
-      "get": {
-        "description": "List the table's tags, a page at a time \u2014 wraps lance_namespace ListTableTags.",
-        "operationId": "list_table_tags_compat_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "title": "Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "page_token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Page Token"
-            }
-          },
-          {
-            "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-            "in": "query",
-            "name": "delimiter",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
-              "title": "Delimiter"
-            }
-          },
-          {
-            "description": "An inclusive upper bound of the number of results. An absent limit, or one above 1000, is answered at most 1000 results and a page_token that continues the listing. Zero and below are refused 400.",
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "An inclusive upper bound of the number of results. An absent limit, or one above 1000, is answered at most 1000 results and a page_token that continues the listing. Zero and below are refused 400.",
-              "title": "Limit"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListTableTagsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "List Table Tags",
-        "tags": [
-          "tag"
-        ]
-      },
       "post": {
         "description": "List the table's tags, a page at a time \u2014 wraps lance_namespace ListTableTags.",
-        "operationId": "list_table_tags",
+        "operationId": "list_table_tags_v1_table__id__tags_list_post",
         "parameters": [
           {
             "in": "path",
@@ -29501,22 +29307,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "x-lance-originator",
             "required": false,
             "schema": {
@@ -29669,22 +29459,6 @@
           },
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "x-lance-originator",
             "required": false,
             "schema": {
@@ -29833,22 +29607,6 @@
               ],
               "description": "Identifier separator. Must match the server's, which is returned in the refusal when it does not.",
               "title": "Delimiter"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
