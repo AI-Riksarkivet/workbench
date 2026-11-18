@@ -1,4 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { ACCENT_SURFACES, ACCENT_TINTS } from '../../packages/ui/src/lib/appearance/appearance.ts';
+import { THEMES } from '../../packages/ui/src/lib/appearance/core.ts';
+import { accentOnSurfaces, textContrast } from './contrast';
 import { callsOf, person, signIn, watchCsp } from './session';
 import { EDGE } from './ports';
 
@@ -223,4 +226,133 @@ test('a /config.json the app cannot use is a 503 that says why, and calls no ser
 	).toBeVisible();
 	await expect(page.getByText('503')).toBeVisible();
 	expect(services).toEqual([]);
+});
+
+test('a theme and mode picked in the account menu are applied, kept, and on the page before the app runs', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await page.goto('/datasets');
+	const html = page.locator('html');
+	// A first visit opens dark in the default theme.
+	await expect(html).toHaveClass(/dark/);
+	await expect(html).toHaveAttribute('data-theme', 'ink');
+
+	await page.getByRole('button', { name: 'Account' }).click();
+	await page.getByRole('menuitemradio', { name: 'Fjord' }).click();
+	await page.getByRole('menuitemradio', { name: 'Light' }).click();
+	await expect(page.getByRole('menuitemradio', { name: 'Light' })).toHaveAttribute(
+		'aria-checked',
+		'true',
+	);
+	await expect(html).toHaveAttribute('data-theme', 'fjord');
+	await expect(html).not.toHaveClass(/dark/);
+	await page.keyboard.press('Escape');
+
+	// Kept across a reload, and applied by the boot script alone: with the app's code refused, the page still has it.
+	await page.route('**/_app/**', (route) => route.abort());
+	await page.reload();
+	await expect(html).toHaveAttribute('data-theme', 'fjord');
+	await expect(html).not.toHaveClass(/dark/);
+
+	// A record that is not one the app writes sets nothing it does not name: an unknown theme is the default, a stored
+	// token is ignored, and the record is written back clean.
+	await page.evaluate(() =>
+		localStorage.setItem(
+			'workbench-appearance',
+			JSON.stringify({ mode: 'dark', theme: '"><script>', vars: { '--background': 'red' } }),
+		),
+	);
+	await page.reload();
+	await expect(html).toHaveAttribute('data-theme', 'ink');
+	await expect(html).toHaveClass(/dark/);
+	expect(
+		await html.evaluate((el) => getComputedStyle(el).getPropertyValue('--background')),
+	).not.toBe('red');
+	expect(await html.evaluate((el) => el.getAttribute('style') ?? '')).not.toContain('--background');
+	expect(
+		JSON.parse((await page.evaluate(() => localStorage.getItem('workbench-appearance'))) ?? '{}'),
+	).toEqual({
+		v: 2,
+		theme: 'ink',
+		mode: 'dark',
+		accent: null,
+	});
+	await page.unroute('**/_app/**');
+});
+
+test('the system mode follows the system, and an accent too light to read is corrected and says so', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await page.emulateMedia({ colorScheme: 'light' });
+	await page.goto('/datasets');
+	const html = page.locator('html');
+	await page.getByRole('button', { name: 'Account' }).click();
+	await page.getByRole('menuitemradio', { name: 'System' }).click();
+	await expect(html).not.toHaveClass(/dark/);
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await expect(html).toHaveClass(/dark/);
+	await page.emulateMedia({ colorScheme: 'light' });
+	await expect(html).not.toHaveClass(/dark/);
+
+	// A pale yellow cannot carry text on a light page: it is darkened until the accent and the text on it read.
+	await page.getByRole('menuitem', { name: /Accent colour/ }).click();
+	const dialog = page.getByRole('dialog', { name: 'Accent colour' });
+	await dialog.getByRole('textbox', { name: 'Hex' }).fill('#ffe94d');
+	await expect(dialog.getByTestId('accent-report')).toContainText('Light: darkened');
+	await expect(html).toHaveAttribute('style', /--accent-l-light/);
+	const done = dialog.getByRole('button', { name: 'Done' });
+	expect(await textContrast(done)).toBeGreaterThanOrEqual(4.5);
+	await done.click();
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await expect(html).toHaveClass(/dark/);
+	await page.getByRole('button', { name: 'Account' }).click();
+	await page.getByRole('menuitem', { name: /Accent colour/ }).click();
+	expect(await textContrast(dialog.getByRole('button', { name: 'Done' }))).toBeGreaterThanOrEqual(
+		4.5,
+	);
+});
+
+test('an accent reads as text on every surface the theme paints and on its own tints, for every theme and any colour', async ({
+	page,
+	context,
+}) => {
+	test.setTimeout(120_000);
+	await signIn(context, person('Ada'));
+	await page.goto('/datasets');
+	const settled = page.getByRole('heading', { name: 'Datasets', level: 1 });
+	await expect(settled).toBeVisible();
+	// The themes' own accents, then colours chosen to fail: too light, too dark, no hue, the extremes.
+	const accents = [null, '#ff00ff', '#ffe94d', '#888888', '#0000ff', '#000000', '#ffffff'];
+	const table: Record<string, unknown>[] = [];
+	const failures: string[] = [];
+	for (const { id: theme } of THEMES) {
+		for (const accent of accents) {
+			await page.evaluate(
+				(record) => localStorage.setItem('workbench-appearance', record),
+				JSON.stringify({ v: 2, theme, mode: 'light', accent }),
+			);
+			// A reload signs in again (the session lives in the page): wait for the page it lands on.
+			await page.reload();
+			await expect(settled).toBeVisible();
+			await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+			if (accent) await expect(page.locator('html')).toHaveAttribute('style', /--accent-h/);
+			const measured = await accentOnSurfaces(page, [...ACCENT_SURFACES], [...ACCENT_TINTS]);
+			table.push({ theme, accent: accent ?? 'theme', ...measured });
+			for (const [mode, m] of Object.entries(measured)) {
+				if (m.onSurfaces < 4.5)
+					failures.push(`${theme} ${accent} ${mode}: ${m.onSurfaces} on ${m.worst}`);
+				if (m.textOnAccent < 4.5)
+					failures.push(`${theme} ${accent} ${mode}: text on it ${m.textOnAccent}`);
+			}
+		}
+	}
+	await test.info().attach('accent-on-surfaces.json', {
+		body: JSON.stringify(table),
+		contentType: 'application/json',
+	});
+	expect(failures).toEqual([]);
 });

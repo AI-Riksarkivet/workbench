@@ -13,7 +13,7 @@
 <BitsAlertDialog.Title
 	bind:ref
 	data-slot="alert-dialog-title"
-	class={cn('text-lg leading-none font-semibold tracking-tight', className)}
+	class={cn('text-xl', className)}
 	{...rest}
 >
 	{@render children?.()}

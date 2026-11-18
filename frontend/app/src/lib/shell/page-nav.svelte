@@ -126,7 +126,7 @@
 		<p
 			id={noteId(groupIndex, index)}
 			data-slot="sidebar-refusal"
-			class="text-sidebar-foreground/70 px-2 pt-1 text-xs group-data-[collapsible=icon]:hidden"
+			class="text-sidebar-foreground/70 px-2 pt-1 text-[0.6875rem] uppercase group-data-[collapsible=icon]:hidden"
 		>
 			{note}
 		</p>

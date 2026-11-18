@@ -375,7 +375,12 @@ test('dark mode is readable: a search match on its highlight and the Search butt
 	context,
 }) => {
 	await signIn(context, person('Margaret'));
-	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'dark'));
+	await page.addInitScript(() =>
+		localStorage.setItem(
+			'workbench-appearance',
+			JSON.stringify({ v: 2, theme: 'ink', mode: 'dark', accent: null }),
+		),
+	);
 	await page.goto('/datasets/lake~acme%24letters');
 	await searchFor(page, 'harbour');
 	const match = results(page).locator('mark').first();

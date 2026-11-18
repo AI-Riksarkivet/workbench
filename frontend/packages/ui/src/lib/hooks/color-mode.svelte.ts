@@ -1,6 +1,6 @@
 /**
  * Reactive app color mode — tracks the `.dark` class on `<html>` (toggled by the estate's
- * theme button / mode-watcher) so consumers update LIVE instead of reading it once at mount.
+ * theme button, `appearance` in this package) so consumers update LIVE instead of reading it once at mount.
  *
  * Call once at component init (it registers a `$effect` that observes the class) and read
  * `.current` / `.isDark`. `current` is `'dark' | 'light'` — a plain string, not a library

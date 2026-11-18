@@ -44,6 +44,8 @@
 <script lang="ts">
 	import { Bell, CircleCheck, CircleX } from '@lucide/svelte';
 	import { Button } from '@workbench/ui/button';
+	import { HoldToConfirm } from '@workbench/ui/hold-to-confirm';
+	import { RollingDigits } from '@workbench/ui/rolling-digits';
 	import * as Popover from '@workbench/ui/popover';
 	import { cn } from '@workbench/ui/utils';
 	import { formatZoned } from './timestamp.ts';
@@ -76,12 +78,16 @@
 	let openedAt = $state(0);
 	const groups = $derived(groupByDay(entries, openedAt));
 	// A count, not an inventory: past two digits the exact number stops being information.
-	const badge = $derived(unread > 99 ? '99+' : String(unread));
+	const badge = (n: number): string => (n > 99 ? '99+' : String(n));
+	// Clearing the log asks for a held press or a second one: a stray click would lose the reader's record. Reset on each
+	// opening.
+	let cleared = $state(false);
 </script>
 
 <Popover.Root
 	onOpenChange={(open) => {
 		if (!open) return;
+		cleared = false;
 		openedAt = clock();
 		onopen?.();
 	}}
@@ -92,16 +98,17 @@
 				{...props}
 				variant="ghost"
 				size="icon"
-				class={cn('relative rounded-full', className)}
+				class={cn('relative', className)}
 				aria-label={unread > 0 ? `Activity, ${unread} new` : 'Activity'}
 			>
 				<Bell class="size-4" aria-hidden="true" />
 				{#if unread > 0}
+					<!-- The button's name already says the number, so the count does not announce itself again. -->
 					<span
 						data-slot="activity-count"
-						class="bg-destructive absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[0.625rem] leading-none text-destructive-foreground font-semibold tabular-nums"
+						class="bg-primary text-primary-foreground absolute top-0 right-0 flex h-4 min-w-4 items-center justify-center px-1 text-[0.625rem] leading-none tracking-normal normal-case"
 					>
-						{badge}
+						<RollingDigits value={unread} format={badge} live={false} />
 					</span>
 				{/if}
 			</Button>
@@ -116,42 +123,45 @@
 		role="dialog"
 		aria-label="Activity"
 	>
-		<div class="border-border/60 flex items-center gap-2 border-b px-3 py-2">
-			<p class="text-sm font-medium">Activity</p>
-			<span class="text-muted-foreground text-xs">Your writes in this tab</span>
-			<Button
-				variant="ghost"
+		<div class="border-border flex items-center gap-2 border-b px-4 py-3">
+			<div class="grid gap-0.5">
+				<p class="text-lg leading-none">Activity</p>
+				<span class="text-muted-foreground text-xs">Your writes in this tab</span>
+			</div>
+			<HoldToConfirm
+				label="Clear"
+				armedLabel="Press again"
+				confirmedLabel="Cleared"
+				variant="destructive"
 				size="xs"
 				class="ml-auto"
-				disabled={entries.length === 0}
-				onclick={() => onclear?.()}
-			>
-				Clear
-			</Button>
+				duration={900}
+				disabled={entries.length === 0 && !cleared}
+				bind:confirmed={cleared}
+				onConfirm={() => onclear?.()}
+			/>
 		</div>
 		<div class="max-h-[60svh] overflow-y-auto" data-slot="activity-list">
 			{#if entries.length === 0}
-				<p class="text-muted-foreground px-3 py-6 text-center text-sm">
+				<p class="text-muted-foreground px-4 py-8 text-center text-sm">
 					Nothing yet. What you change here is listed with its outcome.
 				</p>
 			{:else}
 				{#each groups as group (group.key)}
 					<section aria-label={group.heading}>
-						<h3
-							class="text-muted-foreground bg-muted/40 px-3 py-1 text-[0.6875rem] font-semibold tracking-wide uppercase"
-						>
+						<h3 class="text-muted-foreground bg-muted px-4 py-1.5 text-[0.6875rem] uppercase">
 							{group.heading}
 						</h3>
 						<ul class="divide-border/60 divide-y">
 							{#each group.entries as entry (entry.id)}
-								<li class="flex items-start gap-2.5 px-3 py-2.5" data-slot="activity-entry">
+								<li class="flex items-start gap-3 px-4 py-2.5" data-slot="activity-entry">
 									{#if entry.ok}
 										<CircleCheck class="text-success mt-0.5 size-4 shrink-0" aria-hidden="true" />
 									{:else}
 										<CircleX class="text-destructive mt-0.5 size-4 shrink-0" aria-hidden="true" />
 									{/if}
 									<div class="min-w-0 flex-1">
-										<p class="text-sm font-medium break-words">{entry.label}</p>
+										<p class="text-sm break-words">{entry.label}</p>
 										<time
 											class="text-muted-foreground block text-xs tabular-nums"
 											datetime={new Date(entry.at).toISOString()}

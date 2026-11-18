@@ -23,7 +23,7 @@
 	 */
 	import { Hand, Lasso, Loader2, Settings2, X } from '@lucide/svelte';
 	import { Button } from '@workbench/ui/button';
-	import { useColorMode } from '@workbench/ui/color-mode';
+	import { appearance } from '@workbench/ui/appearance';
 	import { interpolateViridis } from 'd3-scale-chromatic';
 	import { derivedPoints, tableProfile } from '#lib/api/derived.api.ts';
 	import AtlasLegend from '#lib/atlas/AtlasLegend.svelte';
@@ -92,9 +92,9 @@
 	const selected = $derived(kept.key === key ? new Set(kept.selected) : new Set<number>());
 	const hidden = $derived(kept.key === key ? new Set(kept.hidden) : new Set<number>());
 
-	const theme = useColorMode();
-	const isDark = $derived(theme.isDark);
-	const background = $derived((void isDark, themeBackground()));
+	// The page's mode and its background, read again whenever the theme, mode or accent changes.
+	const isDark = $derived(appearance.dark);
+	const background = $derived((void appearance.resolved, themeBackground()));
 
 	const grid = $derived(pts ? buildGrid(pts.x, pts.y) : null);
 	const fitBounds = $derived.by(() => {

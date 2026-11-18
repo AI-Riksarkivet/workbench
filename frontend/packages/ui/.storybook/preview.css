@@ -1,0 +1,6 @@
+/* What the app's stylesheet gives a page, for the stories: Tailwind, the design's tokens and themes, and a scan of
+   this package's sources so their classes are generated. */
+@import 'tailwindcss';
+@import '../src/lib/styles/tokens.css';
+
+@source '../src';

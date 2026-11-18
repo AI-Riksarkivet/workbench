@@ -8,6 +8,7 @@
 	// and 0 shows the whole recording. A press on the ruler or the waveform seeks, unless `onpointer` takes it. While
 	// playing, the view follows the playhead.
 	import { onMount, untrack, type Snippet } from 'svelte';
+	import { appearance } from '@workbench/ui/appearance';
 	import { RectRenderer, rgba } from '#lib/gpu/rects.ts';
 	import { formatClock } from './timeline.ts';
 	import {
@@ -95,16 +96,15 @@
 		};
 	}
 
+	// The colours are the page's tokens: read again whenever the theme, mode or accent changes.
+	$effect(() => {
+		void appearance.resolved;
+		colours = readColours();
+		untrack(draw);
+	});
+
 	onMount(() => {
 		let alive = true;
-		const theme = new MutationObserver(() => {
-			colours = readColours();
-			draw();
-		});
-		theme.observe(document.documentElement, {
-			attributes: true,
-			attributeFilter: ['class', 'style'],
-		});
 		void (async () => {
 			if (!canvas) return;
 			const made = await RectRenderer.create(canvas);
@@ -117,7 +117,6 @@
 		})();
 		return () => {
 			alive = false;
-			theme.disconnect();
 			renderer?.destroy();
 			renderer = null;
 		};

@@ -3,12 +3,12 @@
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import MenuLink from './menu-link.svelte';
 	import { Button } from '@workbench/ui/button';
-	import { toggleMode } from 'mode-watcher';
-	import { Sun, Moon, LogIn, LogOut } from '@lucide/svelte';
+	import { AccentDialog, AppearanceMenu } from '@workbench/ui/appearance';
+	import { LogIn, LogOut } from '@lucide/svelte';
 	import type { NavUser } from './nav-config.ts';
 
-	// The shell's identity and theme control, at the right of the top row: an avatar trigger and its
-	// dropdown (identity, theme toggle, the auth control). Context-free (no sidebar
+	// The shell's identity and appearance control, at the right of the top row: an avatar trigger and its
+	// dropdown (identity, the person's mode, theme and accent, the auth control). Context-free (no sidebar
 	// dependency) so it renders on every page. The
 	// identity flows in as a plain prop from the app's root layout load (single-sourced via
 	// the app's sessionToUser) — the shared shell never imports app data.
@@ -42,36 +42,38 @@
 	);
 	// Return to the app the user signed in from (validated as a local path in the login route).
 	const loginHref = $derived(link(`/auth/login?redirect=${encodeURIComponent(pathname || '/')}`));
+	// The accent's dialog outlives the menu that opens it.
+	let accentOpen = $state(false);
 </script>
 
 <DropdownMenu.Root>
 	<DropdownMenu.Trigger>
 		{#snippet child({ props })}
-			<Button {...props} variant="ghost" size="icon" class="rounded-full" aria-label="Account">
-				<Avatar class="size-7 rounded-full">
-					<AvatarFallback class="rounded-full text-xs">{identity.initials ?? '—'}</AvatarFallback>
+			<Button {...props} variant="ghost" size="icon" aria-label="Account">
+				<Avatar class="size-7">
+					<AvatarFallback class="bg-secondary text-secondary-foreground text-xs tracking-normal"
+						>{identity.initials ?? '—'}</AvatarFallback
+					>
 				</Avatar>
 			</Button>
 		{/snippet}
 	</DropdownMenu.Trigger>
-	<DropdownMenu.Content class="min-w-56 rounded-lg" side="bottom" align="end" sideOffset={4}>
-		<DropdownMenu.Label class="p-0 font-normal">
-			<div class="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-				<Avatar class="size-8 rounded-lg">
-					<AvatarFallback class="rounded-lg">{identity.initials ?? '—'}</AvatarFallback>
+	<DropdownMenu.Content class="min-w-64" side="bottom" align="end" sideOffset={6}>
+		<DropdownMenu.Label class="text-foreground p-0 tracking-normal normal-case">
+			<div class="flex items-center gap-2.5 px-2 py-2 text-left text-sm">
+				<Avatar class="size-8">
+					<AvatarFallback class="bg-secondary text-secondary-foreground">
+						{identity.initials ?? '—'}
+					</AvatarFallback>
 				</Avatar>
 				<div class="grid flex-1 text-left text-sm leading-tight">
-					<span class="truncate font-medium">{identity.name}</span>
-					<span class="truncate text-xs">{identity.email ?? 'local'}</span>
+					<span class="truncate">{identity.name}</span>
+					<span class="text-muted-foreground truncate text-xs">{identity.email ?? 'local'}</span>
 				</div>
 			</div>
 		</DropdownMenu.Label>
 		<DropdownMenu.Separator />
-		<DropdownMenu.Item onclick={toggleMode}>
-			<Sun class="size-4 dark:hidden" />
-			<Moon class="hidden size-4 dark:block" />
-			Toggle theme
-		</DropdownMenu.Item>
+		<AppearanceMenu oncustom={() => (accentOpen = true)} />
 		{#if authEnabled}
 			<DropdownMenu.Separator />
 			{#if signedIn}
@@ -91,3 +93,5 @@
 		{/if}
 	</DropdownMenu.Content>
 </DropdownMenu.Root>
+
+<AccentDialog bind:open={accentOpen} />

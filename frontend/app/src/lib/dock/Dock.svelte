@@ -65,25 +65,6 @@
 	const titleOf = (id: Id): string =>
 		(plain ? PLAIN_TITLES[id] : undefined) ?? PANELS.find((p) => p.id === id)?.title ?? id;
 
-	/**
-	 * A popped-out panel is mounted in another document, which carries the page's stylesheets but
-	 * not its theme class: the page's `<html>` classes and `color-scheme` are mirrored onto it while
-	 * the panel lives there.
-	 */
-	function followTheme(node: HTMLElement): (() => void) | undefined {
-		const own = node.ownerDocument.documentElement;
-		const page = document.documentElement;
-		if (own === page) return undefined;
-		const copy = (): void => {
-			own.className = page.className;
-			own.style.colorScheme = page.style.colorScheme;
-		};
-		copy();
-		const watch = new MutationObserver(copy);
-		watch.observe(page, { attributes: true, attributeFilter: ['class', 'style'] });
-		return () => watch.disconnect();
-	}
-
 	const closed = $derived(closedPanels(layout));
 	/** A plain table's view that is not set up yet: its menu item reads "Set up…". */
 	const needsSetup = (id: PanelId): boolean =>
@@ -153,17 +134,17 @@
 </script>
 
 {#snippet results()}
-	<div class="dock-panel" {@attach followTheme}>
+	<div class="dock-panel">
 		{#if plain}<RowsPanel />{:else}<ResultsPanel />{/if}
 	</div>
 {/snippet}
 {#snippet player()}
-	<div class="dock-panel" {@attach followTheme}>
+	<div class="dock-panel">
 		{#if plain}<RowPanel />{:else}<PlayerPanel />{/if}
 	</div>
 {/snippet}
 {#snippet atlas()}
-	<div class="dock-panel" {@attach followTheme}>
+	<div class="dock-panel">
 		{#if gates.atlas !== null}
 			<UnavailablePanel title={titleOf('atlas')} reason={gates.atlas} {plain} />
 		{:else if plain}
@@ -174,7 +155,7 @@
 	</div>
 {/snippet}
 {#snippet graph()}
-	<div class="dock-panel" {@attach followTheme}>
+	<div class="dock-panel">
 		{#if gates.graph !== null}
 			<UnavailablePanel title={titleOf('graph')} reason={gates.graph} {plain} />
 		{:else if plain}
@@ -185,7 +166,7 @@
 	</div>
 {/snippet}
 {#snippet tree()}
-	<div class="dock-panel" {@attach followTheme}>
+	<div class="dock-panel">
 		{#if gates.tree !== null}
 			<UnavailablePanel title={titleOf('tree')} reason={gates.tree} {plain} />
 		{:else if plain}

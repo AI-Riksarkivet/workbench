@@ -335,25 +335,56 @@ function contrastOf(target: Locator): Promise<number> {
 	});
 }
 
-test('in the light theme the graph clears to the light background', async ({ page, context }) => {
+test('the graph clears to the page background, and to the new one when another theme of the same mode is picked', async ({
+	page,
+	context,
+}) => {
 	await signIn(context, person('Barbara'));
-	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'light'));
+	await page.addInitScript(() => {
+		if (!localStorage.getItem('workbench-appearance'))
+			localStorage.setItem(
+				'workbench-appearance',
+				JSON.stringify({ v: 2, theme: 'ink', mode: 'light', accent: null }),
+			);
+	});
 	await page.goto('/datasets/lake~acme%24letters/graph');
 	const canvas = page.locator('canvas').first();
 	await expect.poll(() => drawnPixels(page, canvas)).toBeGreaterThan(100);
-	// The canvas's corner, clear of nodes and overlays, is the page's light `--background`.
-	const corner = await page.evaluate(
-		async (bytes) => {
-			const bitmap = await createImageBitmap(
-				new Blob([new Uint8Array(bytes)], { type: 'image/png' }),
+	/** The canvas's corner, clear of nodes and overlays. */
+	const corner = async (): Promise<number[]> =>
+		page.evaluate(
+			async (bytes) => {
+				const bitmap = await createImageBitmap(
+					new Blob([new Uint8Array(bytes)], { type: 'image/png' }),
+				);
+				const scratch = new OffscreenCanvas(1, 1);
+				scratch.getContext('2d')!.drawImage(bitmap, -2, -2);
+				return Array.from(scratch.getContext('2d')!.getImageData(0, 0, 1, 1).data.slice(0, 3));
+			},
+			[...(await canvas.screenshot())],
+		);
+	/** The page's `--background` as the browser paints it. */
+	const pageBackground = (): Promise<number[]> =>
+		page.evaluate(() => {
+			const context = document.createElement('canvas').getContext('2d')!;
+			context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(
+				'--background',
 			);
-			const scratch = new OffscreenCanvas(1, 1);
-			scratch.getContext('2d')!.drawImage(bitmap, -2, -2);
-			return Array.from(scratch.getContext('2d')!.getImageData(0, 0, 1, 1).data.slice(0, 3));
-		},
-		[...(await canvas.screenshot())],
-	);
-	expect(Math.min(...corner)).toBeGreaterThan(230);
+			context.fillRect(0, 0, 1, 1);
+			return Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
+		});
+	const near = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - (b[i] ?? 0)) <= 3);
+	expect(Math.min(...(await corner()))).toBeGreaterThan(230);
+	expect(near(await corner(), await pageBackground())).toBe(true);
+
+	// Paper is light too: no light/dark swap, only the theme. The canvas follows it.
+	const before = await corner();
+	await page.getByRole('button', { name: 'Account' }).click();
+	await page.getByRole('menuitemradio', { name: 'Paper' }).click();
+	await page.keyboard.press('Escape');
+	const paper = await pageBackground();
+	expect(near(paper, before)).toBe(false);
+	await expect.poll(async () => near(await corner(), paper)).toBe(true);
 });
 
 /** Move to `path` client-side, as a link inside the app would, without leaving the dataset's layout. */

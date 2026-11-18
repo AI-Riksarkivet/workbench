@@ -13,7 +13,7 @@
 	 */
 	import { Loader2, Settings2, X } from '@lucide/svelte';
 	import { Button } from '@workbench/ui/button';
-	import { useColorMode } from '@workbench/ui/color-mode';
+	import { appearance } from '@workbench/ui/appearance';
 	import { derivedGraph, tableProfile } from '#lib/api/derived.api.ts';
 	import { buildHuePalette } from '#lib/atlas/atlas-colors.ts';
 	import { dockControl } from '#lib/dock/dock-control.svelte.ts';
@@ -60,15 +60,15 @@
 	let gpuReason = $state<string | null | undefined>(undefined);
 	void gpuUnsupportedReason().then((reason) => (gpuReason = reason));
 
-	const theme = useColorMode();
-	const background = $derived((void theme.isDark, themeBackground()));
+	// The page's background, read again whenever the theme, mode or accent changes.
+	const background = $derived((void appearance.resolved, themeBackground()));
 	/** The groups, most common first, each with its hue. */
 	const groups = $derived.by(() => {
 		if (!graph) return [];
 		const counts: Record<string, number> = {};
 		for (const node of graph.nodes) counts[node.type] = (counts[node.type] ?? 0) + 1;
 		const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-		const palette = buildHuePalette(Math.max(1, ranked.length), theme.isDark);
+		const palette = buildHuePalette(Math.max(1, ranked.length), appearance.dark);
 		return ranked.map(([name, count], i) => ({ name, count, rgb: palette[i]! }));
 	});
 	const nodeRgb = $derived.by(() => {

@@ -1,28 +1,29 @@
 <script lang="ts">
+	// Adapted from Baby UI's `tabs` (Apache-2.0; see THIRD_PARTY.md in this package). The selected state is Bits UI's
+	// own (`aria-selected`), so it can never drift from the primitive's idea of which tab is open.
 	import { Tabs as TabsPrimitive } from 'bits-ui';
 	import { cn } from '../../utils/cn.js';
+	import { getTabs } from './context.js';
+	import { tabsFrame } from './variants.js';
 
-	// The active tab is carried by `data-[state=active]` — Bits UI owns that attribute, so the
-	// selected state can never drift from the primitive's own idea of which tab is open. Colour comes
-	// from tokens (`bg-card`, `text-foreground`), so both modes theme at once.
 	let {
 		ref = $bindable(null),
+		value,
 		class: className,
 		...restProps
 	}: TabsPrimitive.TriggerProps = $props();
+
+	const tabs = getTabs();
+	const frame = $derived(
+		tabsFrame({ variant: tabs.variant, size: tabs.size, orientation: tabs.orientation }),
+	);
 </script>
 
 <TabsPrimitive.Trigger
 	bind:ref
+	{value}
 	data-slot="tabs-trigger"
-	class={cn(
-		`focus-visible:border-ring focus-visible:ring-ring/50 data-[state=active]:bg-card
-		 data-[state=active]:text-foreground inline-flex h-[calc(100%-1px)] flex-1 items-center
-		 justify-center gap-1.5 rounded-md border border-transparent px-3 py-1 text-sm font-medium
-		 whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px]
-		 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50
-		 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0`,
-		className,
-	)}
+	data-tab={value}
+	class={cn(frame.trigger(), className)}
 	{...restProps}
 />

@@ -21,7 +21,9 @@
 	const active = $derived(sortKey === col);
 </script>
 
-<th class="text-muted-foreground px-3 py-2 font-medium {className}">
+<th
+	class="text-muted-foreground px-3 py-2 text-[0.6875rem] font-normal tracking-[0.07em] uppercase {className}"
+>
 	<button
 		class="hover:text-foreground inline-flex items-center gap-1 transition-colors {active
 			? 'text-foreground'

@@ -2,7 +2,7 @@
 	import '../app.css';
 	import { onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { ModeWatcher } from 'mode-watcher';
+	import { appearance } from '@workbench/ui/appearance';
 	import type { Snippet } from 'svelte';
 	import { AppShell, type NavUser } from '#lib/shell/index.ts';
 	import { auth, RENEW_MARGIN_SECONDS, renewOrSignIn } from '#lib/auth.svelte.ts';
@@ -61,6 +61,10 @@
 		onclear: () => activity.clear(),
 	});
 
+	// The person's theme, light or dark, and accent: kept in this browser and already on the page before it painted
+	// (`static/appearance-boot.js`); from here the store owns it, and follows the system when the mode is `system`.
+	$effect(() => appearance.start());
+
 	onNavigate((navigation) => {
 		if (!document.startViewTransition) return;
 		// A change of the address alone (a page writing its view into it, `#lib/dock/link.ts`) stays on the
@@ -76,8 +80,6 @@
 		});
 	});
 </script>
-
-<ModeWatcher defaultMode="dark" />
 
 <!-- The sign-in round trip is no page of the app: it shows no sidebar or breadcrumb, only its own line. -->
 {#if page.route.id?.startsWith('/auth/')}

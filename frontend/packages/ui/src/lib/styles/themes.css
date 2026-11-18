@@ -1,0 +1,100 @@
+/* The shipped themes: each is only SEEDS (see `tokens.css`), named by `data-theme` on <html> and listed for the picker
+   in `appearance.ts` (`THEMES`). They differ in hue and temperature; the geometry, type and motion are the design's and
+   never change with a theme. Every accent here is in the sRGB gamut at both lightnesses, and every text/control pair
+   it produces was measured at WCAG 2.2 AA or better, in light and in dark, in the browser. */
+
+/* Ink, the default: neutral greys with a blue-violet accent. */
+:root,
+[data-theme='ink'] {
+	--tone-h: 270;
+	--tone-c: 0.004;
+	--accent-h: 268;
+	--accent-c-light: 0.17;
+	--accent-c-dark: 0.105;
+	--accent-l-light: 0.47;
+	--accent-l-dark: 0.79;
+	--on-accent-light: oklch(0.99 0.004 var(--accent-h));
+	--on-accent-dark: oklch(0.16 0.02 var(--accent-h));
+}
+
+/* Fjord: cool blue-grey surfaces with a sea-glass teal. */
+[data-theme='fjord'] {
+	--tone-h: 225;
+	--tone-c: 0.013;
+	--accent-h: 210;
+	--accent-c-light: 0.1;
+	--accent-c-dark: 0.1;
+	--accent-l-light: 0.44;
+	--accent-l-dark: 0.8;
+}
+
+/* Paper: warm paper surfaces with a sealing-wax red. */
+[data-theme='paper'] {
+	--tone-h: 78;
+	--tone-c: 0.016;
+	--accent-h: 24;
+	--accent-c-light: 0.15;
+	--accent-c-dark: 0.12;
+	--accent-l-light: 0.48;
+	--accent-l-dark: 0.77;
+}
+
+/* Moss: green-grey surfaces with a forest green. */
+[data-theme='moss'] {
+	--tone-h: 140;
+	--tone-c: 0.011;
+	--accent-h: 152;
+	--accent-c-light: 0.11;
+	--accent-c-dark: 0.13;
+	--accent-l-light: 0.445;
+	--accent-l-dark: 0.8;
+}
+
+/* Contrast: pure black and white, a saturated blue, stronger lines and secondary text (7:1 and better). */
+[data-theme='contrast'] {
+	--tone-h: 0;
+	--tone-c: 0;
+	--accent-h: 262;
+	--accent-c-light: 0.2;
+	--accent-c-dark: 0.09;
+	--accent-l-light: 0.4;
+	--accent-l-dark: 0.86;
+	--on-accent-light: oklch(1 0 0);
+	--on-accent-dark: oklch(0 0 0);
+}
+
+/* Contrast also sets the derived tokens a hue cannot reach: the surfaces, the secondary text and the lines. On any
+   element carrying the theme, so the appearance store's probe measures them too. */
+[data-theme='contrast']:not(.dark) {
+	--background: oklch(1 0 0);
+	--foreground: oklch(0 0 0);
+	--card: oklch(0.975 0 0);
+	--popover: oklch(1 0 0);
+	--muted: oklch(0.94 0 0);
+	--muted-foreground: oklch(0.33 0 0);
+	--accent: oklch(0.92 0.03 var(--accent-h));
+	--secondary: oklch(0.9 0.04 var(--accent-h));
+	--secondary-foreground: oklch(0.2 0.08 var(--accent-h));
+	--border: oklch(0 0 0 / 0.42);
+	--border-strong: oklch(0 0 0 / 0.75);
+	--input: oklch(1 0 0);
+	--field-line: oklch(0.2 0 0);
+	--sidebar: oklch(0.955 0 0);
+}
+
+[data-theme='contrast'].dark {
+	--background: oklch(0 0 0);
+	--foreground: oklch(1 0 0);
+	--card: oklch(0.17 0 0);
+	--popover: oklch(0.2 0 0);
+	--muted: oklch(0.22 0 0);
+	--muted-foreground: oklch(0.86 0 0);
+	--accent: oklch(0.28 0.04 var(--accent-h));
+	--secondary: oklch(0.3 0.06 var(--accent-h));
+	--secondary-foreground: oklch(0.97 0.02 var(--accent-h));
+	--border: oklch(1 0 0 / 0.45);
+	--border-strong: oklch(1 0 0 / 0.75);
+	--input: oklch(0.12 0 0);
+	--field-line: oklch(0.85 0 0);
+	--sidebar: oklch(0.1 0 0);
+}

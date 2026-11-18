@@ -29,14 +29,11 @@
 	--color-highlight: var(--highlight);
 }
 
-/* bits-ui's Popover content fades its opacity in and out; held to the popover surface and a visible
-   border, so a menu never renders faint over the results under it. */
+/* bits-ui's Popover content fades its opacity in and out; held to the popover surface and the one elevated shadow, so a
+   menu never renders faint over the results under it. */
 [data-popover-content][data-state='open'],
 [data-popover-content][data-state='closed'] {
 	background-color: var(--color-popover) !important;
 	opacity: 1 !important;
-	box-shadow:
-		0 0 0 1px var(--color-border),
-		0 10px 30px -8px rgba(0, 0, 0, 0.18),
-		0 4px 8px -2px rgba(0, 0, 0, 0.08);
+	box-shadow: var(--shadow-elevated);
 }

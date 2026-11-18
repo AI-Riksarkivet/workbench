@@ -56,7 +56,7 @@
 	import { Select } from '@workbench/ui/select';
 	import type { SelectOption } from '@workbench/ui/select';
 	import { Loader2, Lasso, X, Hand, Settings2 } from '@lucide/svelte';
-	import { useColorMode } from '@workbench/ui/color-mode';
+	import { appearance } from '@workbench/ui/appearance';
 
 	let {
 		active = $bindable(null),
@@ -130,8 +130,7 @@
 	let mapH = $state(0);
 
 	// theme follows the app's theme button (toggles `.dark` on <html>)
-	const theme = useColorMode();
-	const isDark = $derived(theme.isDark);
+	const isDark = $derived(appearance.dark);
 
 	// Spatial-grid hover picking (`buildGrid`/`nearestIndex`) lives in ./atlas-grid;
 	// lasso geometry in ./atlas-geometry; colour math in ./atlas-colors — all pure.
@@ -262,7 +261,8 @@
 	const OTHER_RGB = $derived(hexToRgb((isDark ? ATLAS_PALETTE.dark : ATLAS_PALETTE.light).other));
 	const ACCENT_RGB = $derived(hueRgb(1, 4, isDark));
 	// The canvas clears to the page's own `--background`, read again when the theme changes.
-	const BG_COLOR = $derived((void isDark, themeBackground()));
+	// Read again whenever the theme, mode or accent changes, not only when light and dark swap.
+	const BG_COLOR = $derived((void appearance.resolved, themeBackground()));
 
 	/**
 	 * THEME-INDEPENDENT size ranking. `slotOf` maps clusterId → its dense rank

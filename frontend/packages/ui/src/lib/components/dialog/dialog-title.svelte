@@ -10,10 +10,6 @@
 	}: WithoutChild<BitsDialog.TitleProps> = $props();
 </script>
 
-<BitsDialog.Title
-	bind:ref
-	class={cn('text-lg leading-none font-semibold tracking-tight', className)}
-	{...rest}
->
+<BitsDialog.Title bind:ref class={cn('text-xl', className)} {...rest}>
 	{@render children?.()}
 </BitsDialog.Title>

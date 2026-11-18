@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import * as Sidebar from '@workbench/ui/sidebar';
 	import { Separator } from '@workbench/ui/separator';
+	import { BlockMark } from '@workbench/ui/block-mark';
 	import AppSidebar from './app-sidebar.svelte';
 	import NavbarUser from './navbar-user.svelte';
 	import ActivityCenter from './activity-center.svelte';
@@ -150,7 +151,7 @@
 		<a
 			href={link(crumb.href)}
 			title={crumb.title}
-			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 truncate rounded-sm transition-colors outline-none focus-visible:ring-3"
+			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring truncate transition-colors outline-none focus-visible:ring-2"
 			>{crumb.label}</a
 		>
 	{/if}
@@ -159,7 +160,7 @@
 <!-- The first stop on every page: past the sidebar's rows straight to the page's own content. -->
 <a
 	href="#main-content"
-	class="bg-background text-foreground focus-visible:ring-ring/50 sr-only z-50 rounded-md border px-3 py-2 text-sm focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus-visible:ring-3"
+	class="bg-primary text-primary-foreground focus-visible:ring-ring sr-only z-50 px-3 py-2 text-xs uppercase focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus-visible:ring-2"
 	onclick={(e) => {
 		e.preventDefault();
 		document.getElementById('main-content')?.focus();
@@ -172,8 +173,17 @@
 		<!-- STATIC on purpose: a positioned header becomes the containing block of whatever chrome it
 		     opens. A page whose content paints over chrome lowers itself (the workbench's dock isolates
 		     its own stacking context); the shared shell is never raised. -->
-		<header class="border-border/60 flex h-12 min-w-0 shrink-0 items-center gap-2 border-b px-4">
-			<Sidebar.Trigger class="text-muted-foreground hover:text-foreground -ml-1 shrink-0" />
+		<header
+			class="border-border flex h-13 min-w-0 shrink-0 items-center gap-3 border-b px-4 md:px-6"
+		>
+			<Sidebar.Trigger class="text-muted-foreground hover:text-foreground -ml-1.5 shrink-0" />
+			<!-- The app's mark: the accent's ramp as a row of blocks, beside the product's name. -->
+			<span class="flex shrink-0 items-end gap-2" data-slot="app-mark">
+				<BlockMark />
+				<span class="text-foreground hidden text-[0.75rem] leading-none uppercase sm:inline"
+					>workbench</span
+				>
+			</span>
 			<Separator orientation="vertical" class="data-[orientation=vertical]:h-4" />
 			<!-- The breadcrumb takes the row's free width; a trail too long to fit folds its MIDDLE
 			     behind the ellipsis menu (`collapseCrumbs`) instead of shrinking the current page. -->
@@ -203,7 +213,7 @@
 										</button>
 									{/snippet}
 								</DropdownMenu.Trigger>
-								<DropdownMenu.Content class="min-w-40 rounded-lg" side="bottom" align="start">
+								<DropdownMenu.Content class="min-w-40" side="bottom" align="start">
 									{#each trail.hidden as crumb (crumb.id)}
 										{#if crumb.page === false}
 											<DropdownMenu.Item disabled>{crumb.label}</DropdownMenu.Item>

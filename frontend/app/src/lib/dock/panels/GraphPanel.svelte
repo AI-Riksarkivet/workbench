@@ -16,7 +16,7 @@
 	import { Button } from '@workbench/ui';
 	import { Input } from '@workbench/ui/input';
 	import { Select, type SelectOption } from '@workbench/ui/select';
-	import { useColorMode } from '@workbench/ui/color-mode';
+	import { appearance } from '@workbench/ui/appearance';
 	import { graphStatus } from '#lib/api/graph.api.ts';
 	import { failureText } from '#lib/failure.ts';
 	import GpuGraph from '#lib/graph/gpu-graph.svelte';
@@ -55,14 +55,13 @@
 		WORK: [234, 88, 12],
 		OTHER: [100, 116, 139],
 	};
-	const theme = useColorMode();
-	const typeRgb = $derived(theme.isDark ? TYPE_RGB_DARK : TYPE_RGB_LIGHT);
+	const typeRgb = $derived(appearance.dark ? TYPE_RGB_DARK : TYPE_RGB_LIGHT);
 	/** The canvas clears to the page's own `--background`, read again when the theme changes. */
-	const canvasBackground = $derived((void theme.isDark, themeBackground()));
+	const canvasBackground = $derived((void appearance.resolved, themeBackground()));
 	function nodeColor(type: string, videos: number): Rgb {
 		const base = typeRgb[type] ?? typeRgb.OTHER!;
 		if (videos <= 1) return base;
-		const toward = theme.isDark ? 255 : 0;
+		const toward = appearance.dark ? 255 : 0;
 		return [
 			Math.round(base[0] + (toward - base[0]) * 0.35),
 			Math.round(base[1] + (toward - base[1]) * 0.35),

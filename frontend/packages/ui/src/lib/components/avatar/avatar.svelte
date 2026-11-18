@@ -12,7 +12,7 @@
 
 <BitsAvatar.Root
 	bind:ref
-	class={cn('relative flex size-8 shrink-0 overflow-hidden rounded-md', className)}
+	class={cn('relative flex size-8 shrink-0 overflow-hidden rounded-none', className)}
 	{...rest}
 >
 	{@render children?.()}

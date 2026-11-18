@@ -1,18 +1,20 @@
 <script lang="ts" module>
 	import { type VariantProps, tv } from 'tailwind-variants';
 
+	// A tag, not a pill: a sharp tinted block with small uppercase text and a square of its tone at the start. The tone
+	// is carried by the square and the tint; the text stays the foreground, so every tone reads at AA on every theme.
 	export const badgeVariants = tv({
-		base: 'focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] [&>svg]:pointer-events-none [&>svg]:size-3',
+		base: "focus-visible:ring-ring aria-invalid:ring-destructive/40 inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1.5 overflow-hidden rounded-none border-0 px-1.5 text-[0.6875rem] leading-none tracking-[0.06em] whitespace-nowrap text-foreground uppercase transition-[color,background-color,box-shadow] before:size-1.5 before:shrink-0 before:bg-(--badge-tone) before:content-[''] focus-visible:ring-2 [&>svg]:pointer-events-none [&>svg]:size-3",
 		variants: {
 			variant: {
-				default: 'bg-primary text-primary-foreground [a&]:hover:bg-primary/90 border-transparent',
-				secondary:
-					'bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90 border-transparent',
+				default: 'bg-primary/14 [--badge-tone:var(--primary)] [a&]:hover:bg-primary/22',
+				secondary: 'bg-muted [--badge-tone:var(--muted-foreground)] [a&]:hover:bg-accent',
 				destructive:
-					'bg-destructive [a&]:hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/70 border-transparent text-white',
-				outline: 'text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground',
-				success: 'bg-success text-success-foreground [a&]:hover:bg-success/90 border-transparent',
-				warning: 'bg-warning text-warning-foreground [a&]:hover:bg-warning/90 border-transparent',
+					'bg-destructive/16 [--badge-tone:var(--destructive)] [a&]:hover:bg-destructive/24',
+				outline:
+					'bg-transparent shadow-[inset_0_0_0_1px_var(--border-strong)] [--badge-tone:var(--border-strong)] [a&]:hover:bg-accent',
+				success: 'bg-success/16 [--badge-tone:var(--success)] [a&]:hover:bg-success/24',
+				warning: 'bg-warning/22 [--badge-tone:var(--warning)] [a&]:hover:bg-warning/30',
 			},
 		},
 		defaultVariants: {

@@ -5,6 +5,8 @@ import { defineConfig } from 'vite';
 // Used by Storybook to render components
 export default defineConfig({
 	plugins: [tailwindcss(), svelte()],
+	// A component test mounts in a DOM (happy-dom), so Svelte resolves to its browser build there.
+	resolve: process.env['VITEST'] ? { conditions: ['browser'] } : undefined,
 	test: {
 		// SOURCE ONLY. `svelte-package` copies every src file — test files included — into `dist/` and
 		// `.svelte-kit/__package__`, and vitest's default discovery then collected all three copies, so

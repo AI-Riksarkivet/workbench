@@ -2,7 +2,7 @@
 	import { Avatar, AvatarFallback } from '../components/avatar/index.js';
 	import * as DropdownMenu from '../components/dropdown-menu/index.js';
 	import { Button } from '../components/button/index.js';
-	import { toggleMode } from 'mode-watcher';
+	import { appearance } from '../appearance/appearance.svelte.js';
 	import { Sun, Moon, Settings, LogIn, LogOut } from '@lucide/svelte';
 	import type { NavUser } from './nav-config.js';
 
@@ -62,7 +62,7 @@
 			</div>
 		</DropdownMenu.Label>
 		<DropdownMenu.Separator />
-		<DropdownMenu.Item onclick={toggleMode}>
+		<DropdownMenu.Item onclick={() => appearance.set({ mode: appearance.dark ? 'light' : 'dark' })}>
 			<Sun class="size-4 dark:hidden" />
 			<Moon class="hidden size-4 dark:block" />
 			Toggle theme

@@ -50,10 +50,10 @@
      card off the right edge of the screen. -->
 <div
 	data-slot="data-table-card"
-	class="border-border w-full max-w-full min-w-0 overflow-hidden rounded-lg border"
+	class="bg-card w-full max-w-full min-w-0 overflow-hidden rounded-none"
 >
 	<TablePrimitive.Root>
-		<TablePrimitive.Header class="bg-muted/50">
+		<TablePrimitive.Header>
 			{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
 				<TablePrimitive.Row class="hover:bg-transparent">
 					{#each headerGroup.headers as header (header.id)}
