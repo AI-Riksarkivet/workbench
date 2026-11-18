@@ -11,6 +11,8 @@ export interface AnnotationVersion {
 	timestamp: string;
 	/** Who saved it. */
 	author: string;
+	/** The name the author last wrote under in the annotator, where one is kept; null otherwise. */
+	authorName: string | null;
 	count: number;
 }
 
@@ -27,17 +29,25 @@ export function parseVersions(raw: unknown): AnnotationVersion[] {
 			version?: unknown;
 			timestamp?: unknown;
 			author?: unknown;
+			author_name?: unknown;
 			count?: unknown;
 		};
 		if (
 			typeof e.version !== 'number' ||
 			typeof e.timestamp !== 'string' ||
 			typeof e.author !== 'string' ||
-			typeof e.count !== 'number'
+			typeof e.count !== 'number' ||
+			(e.author_name != null && typeof e.author_name !== 'string')
 		) {
 			throw new Error(`versions[${i}] has a drifted shape`);
 		}
-		return { version: e.version, timestamp: e.timestamp, author: e.author, count: e.count };
+		return {
+			version: e.version,
+			timestamp: e.timestamp,
+			author: e.author,
+			authorName: typeof e.author_name === 'string' ? e.author_name : null,
+			count: e.count,
+		};
 	});
 }
 

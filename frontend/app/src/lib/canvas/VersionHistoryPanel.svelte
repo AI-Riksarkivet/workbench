@@ -11,6 +11,7 @@
 		type RowDiff,
 	} from '@workbench/labeling/history';
 	import { fetchVersions, fetchVersionSignatures } from '#lib/api/annotations.api.ts';
+	import { shortPrincipal } from '#lib/projects/people.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let { controller }: { controller: AnnotatorController } = $props();
@@ -90,7 +91,7 @@
 								{timeOf(v.timestamp)}{i === 0 ? ' · current' : ''}
 							</span>
 							<span class="text-muted-foreground max-w-24 truncate text-xs" title={v.author}>
-								{v.author}
+								{v.authorName ?? shortPrincipal(v.author)}
 							</span>
 							<span
 								class="text-muted-foreground text-xs tabular-nums"

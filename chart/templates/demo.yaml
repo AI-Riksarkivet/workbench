@@ -7,9 +7,10 @@ the media image carries), and that every service reading sources mounts READ-ONL
 The Job is a plain object of the release, not a hook: a hook re-runs and blocks every upgrade, and Argo CD would map it
 to a sync hook of its own. Its pod template is immutable, so its name carries the digest of that whole rendered
 template (the image, its pull policy, the command, the claim, the resources and every other field): a release that
-changes none of it leaves the completed Job as it is, and one that changes any of it replaces it with a Job of a new name. Every run is `--once`: a volume a completed seed filled is left untouched and
-the run exits 0, so a reinstall from git converges on the data already there and never rewrites tables a person's
-annotations name. The claim is kept when the release is uninstalled (`helm.sh/resource-policy: keep`); deleting it,
+changes none of it leaves the completed Job as it is, and one that changes any of it replaces it with a Job of a new name. Every run is `--once`: it writes each demo
+dataset the volume lacks (each one written has its marker under `.seeded.d/`) and leaves every other untouched, so a
+reinstall or an upgrade from git converges on the data already there, adds a dataset the seeder learned since, and never
+rewrites tables a person's annotations name. The claim is kept when the release is uninstalled (`helm.sh/resource-policy: keep`); deleting it,
 or the namespace, is the only way the data goes.
 */ -}}
 {{- if .Values.demo.enabled }}

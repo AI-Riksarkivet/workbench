@@ -79,48 +79,69 @@ export const fetchMembers = query(
 		readJSON(at(`/projects/${enc(projectId)}/members`), MemberListSchema, UPSTREAM),
 );
 
-/** The most task details one page of the listing carries (the annotator's own cap). */
-const TASK_PAGE = 200;
-/** A project holds at most this many pages the queue reads whole: past it, the listing says how many it shows. */
-const MAX_TASK_PAGES = 50;
-
-/** The work queue: states and counts, and with `details` every task's document and its own legal events, read a
- *  page at a time on the listing's cursor, so a project larger than one page is shown whole. */
-export const listTasks = query(
+/** One page of a project's items as the annotator filters, sorts and pages them (`GET /projects/{id}/tasks`), with
+ *  the project's index and publish precondition from the same snapshot: `filter` is the door's own query
+ *  (`#lib/projects/item-query.ts` builds it from the page's address), `around` the item the page is read around (a
+ *  canvas walking a pass), and `contributors` adds each person's part over the whole project. The browser never reads
+ *  more than one page: what it shows past it, the annotator counts. */
+export const pageTasks = query(
 	'unchecked',
-	async ({
+	({
 		projectId,
-		details,
+		filter = '',
+		limit = 25,
+		offset = 0,
+		around,
+		details = true,
+		contributors = false,
 	}: {
 		projectId: string;
+		filter?: string;
+		limit?: number;
+		offset?: number;
+		around?: string;
 		details?: boolean;
+		contributors?: boolean;
 	}): Promise<ApiResult<TaskListing>> => {
-		const base = `/projects/${enc(projectId)}/tasks`;
-		if (!details) return readJSON(at(base), TaskListingSchema, UPSTREAM);
-		const pages: TaskListing[] = [];
-		let cursor: string | null = null;
-		do {
-			const query = new URLSearchParams({ include: 'details', limit: String(TASK_PAGE) });
-			if (cursor !== null) query.set('cursor', cursor);
-			const result = await readJSON(at(`${base}?${query}`), TaskListingSchema, UPSTREAM);
-			if (!result.ok) return result;
-			pages.push(result.data);
-			cursor = result.data.next_cursor ?? null;
-		} while (cursor !== null && pages.length < MAX_TASK_PAGES);
-		const [first] = pages;
-		if (first === undefined)
-			return { ok: false, status: 502, detail: `${UPSTREAM} answered no page` };
-		return {
-			ok: true,
-			data: {
-				...first,
-				details: pages.flatMap((p) => p.details ?? []),
-				missing: pages.flatMap((p) => p.missing ?? []),
-				next_cursor: cursor,
-			},
-		};
+		const params = new URLSearchParams(filter);
+		if (details) params.append('include', 'details');
+		if (contributors) params.append('include', 'contributors');
+		params.set('limit', String(limit));
+		params.set('offset', String(offset));
+		if (around !== undefined) params.set('around', around);
+		return readJSON(at(`/projects/${enc(projectId)}/tasks?${params}`), TaskListingSchema, UPSTREAM);
 	},
 );
+
+/** The most items a bulk action over "every item matching the filter" takes: past it, a person narrows the filter. */
+export const BULK_CAP = 1000;
+
+/** Every item matching ``filter``, read a page of 200 at a time, at most `BULK_CAP`: what a bulk action over the whole
+ *  filter acts on. ``capped`` says when the filter matched more. */
+export async function allMatching(
+	projectId: string,
+	filter: string,
+): Promise<ApiResult<{ tasks: TaskDetail[]; capped: boolean }>> {
+	const tasks: TaskDetail[] = [];
+	let matched = 0;
+	do {
+		const params = new URLSearchParams(filter);
+		params.set('include', 'details');
+		params.set('limit', '200');
+		params.set('offset', String(tasks.length));
+		const result = await readJSON(
+			at(`/projects/${enc(projectId)}/tasks?${params}`),
+			TaskListingSchema,
+			UPSTREAM,
+		);
+		if (!result.ok) return result;
+		matched = result.data.matched;
+		const page = result.data.details ?? [];
+		tasks.push(...page);
+		if (page.length === 0) break;
+	} while (tasks.length < Math.min(matched, BULK_CAP));
+	return { ok: true, data: { tasks: tasks.slice(0, BULK_CAP), capped: matched > BULK_CAP } };
+}
 
 const CorpusRowsSchema = v.object({
 	rows: v.array(v.record(v.string(), v.unknown())),
@@ -350,7 +371,6 @@ export const dropTask = command(
 			`/projects/${enc(projectId)}/tasks/${enc(taskId)}`,
 			DropReceiptSchema,
 		);
-		if (result.ok) void listTasks({ projectId, details: true }).refresh();
 		return result;
 	},
 );
@@ -402,28 +422,50 @@ export const revokeMember = command(
 	},
 );
 
-/** Fire one task transition. `projectId` names the listing it changes, for its refresh; it is not sent. */
+/** Fire one task transition. The page that fired it reads its listing again (`onchanged`). */
 export const fireTaskEvent = command(
 	(input: { taskId: string; event: string }) => `${input.event} item ${input.taskId}`,
 	'unchecked',
-	async ({
+	({
 		taskId,
-		projectId,
 		...body
 	}: {
 		taskId: string;
 		event: string;
-		projectId?: string;
 		assignee?: string;
 		message?: string;
 		shape_ids?: string[];
 		lease_seconds?: number;
-	}): Promise<ApiResult<TaskDetail>> => {
-		const result = await send('POST', `/tasks/${enc(taskId)}/events`, body, TaskDetailSchema);
-		if (result.ok && projectId) void listTasks({ projectId, details: true }).refresh();
+	}): Promise<ApiResult<TaskDetail>> =>
+		send('POST', `/tasks/${enc(taskId)}/events`, body, TaskDetailSchema),
+);
+
+/** Change a project's title, description, instructions, review and claim settings or consensus; only the named ones. */
+export const updateProjectSettings = command(
+	(input: { projectId: string }) => `Change the settings of ${input.projectId}`,
+	'unchecked',
+	async ({
+		projectId,
+		settings,
+	}: {
+		projectId: string;
+		settings: ProjectSettings;
+	}): Promise<ApiResult<Project>> => {
+		const result = await send('PATCH', `/projects/${enc(projectId)}`, settings, ProjectSchema);
+		if (result.ok) void fetchProject({ projectId }).refresh();
 		return result;
 	},
 );
+
+/** The settings a project's settings door takes; an absent key is left as it is. */
+export interface ProjectSettings {
+	title?: string;
+	description?: string;
+	instructions?: string;
+	review_required?: boolean;
+	lease_seconds?: number;
+	consensus_n?: number;
+}
 
 /** Import annotations made elsewhere into a claimed task's draft, as an Arrow IPC stream, appended. */
 export const importAnnotations = command(

@@ -1,8 +1,10 @@
 <script lang="ts">
 	/**
-	 * One project: its queue (claim, annotate, review), its settings (what is labelled, and who holds which role) and
-	 * its publish. The project and its task details are read together and refreshed together after every action, so the
-	 * queue a reviewer looks at and the publish precondition beside it come from the same answer.
+	 * One project, in five tabs whose state is the address (`?tab=`, each tab's filters beside it): its items (the data
+	 * manager, `DataManager.svelte`), browsing its labeled work, reviewing what waits for the reader, its settings
+	 * (what is labeled, the review and claim rules, who holds which role) and its publish. The annotator filters, counts
+	 * and pages every list; the page reads the project and each person's part over all its items, and reads them again
+	 * after every action.
 	 *
 	 * What the reader may do comes with the project's read (`permissions`, from the workbench's store): an action the
 	 * reader's role does not allow is not offered, and the door refuses it regardless.
@@ -14,14 +16,18 @@
 	import { Button } from '@workbench/ui/button';
 	import * as Tabs from '@workbench/ui/tabs';
 	import { ArrowLeft, Inbox, Pencil, RefreshCw } from '@lucide/svelte';
-	import { fetchProject, fireProjectEvent, listTasks } from '#lib/api/projects.api.ts';
+	import { fetchProject, fireProjectEvent, pageTasks } from '#lib/api/projects.api.ts';
+	import { goto } from '$app/navigation';
 	import AdjudicationPanel from '#lib/projects/AdjudicationPanel.svelte';
 	import AnnotatorMetrics from '#lib/projects/AnnotatorMetrics.svelte';
 	import EditOntologyDialog from '#lib/projects/EditOntologyDialog.svelte';
 	import MembersPanel from '#lib/projects/MembersPanel.svelte';
 	import PublishPanel from '#lib/projects/PublishPanel.svelte';
 	import SendItemsDialog from '#lib/projects/SendItemsDialog.svelte';
-	import TaskQueue from '#lib/projects/TaskQueue.svelte';
+	import DataManager from '#lib/projects/DataManager.svelte';
+	import BrowsePanel from '#lib/projects/BrowsePanel.svelte';
+	import ReviewPanel from '#lib/projects/ReviewPanel.svelte';
+	import SettingsPanel from '#lib/projects/SettingsPanel.svelte';
 	import {
 		ANNOTATOR_HINT,
 		EVENT_LABELS,
@@ -39,16 +45,41 @@
 	const me = $derived(data.me?.sub ?? null);
 
 	const detailRead = $derived(fetchProject({ projectId }));
-	const listingRead = $derived(listTasks({ projectId, details: true }));
+	// The project's index and each person's part over every item: the counts and names the tabs share. Each tab reads
+	// its own page of items.
+	const contributorsRead = $derived(pageTasks({ projectId, details: false, contributors: true }));
 	const answer = $derived(detailRead.current);
 	const detail = $derived(answer?.ok ? answer.data : null);
-	const listing = $derived(listingRead.current?.ok ? listingRead.current.data : null);
+	const contributors = $derived(
+		contributorsRead.current?.ok ? contributorsRead.current.data : null,
+	);
 	const held = $derived(new Set(detail?.permissions ?? []));
+	const classNames = $derived((detail?.project.ontology.classes ?? []).map((c) => c.name));
 
 	function refresh(): void {
 		void detailRead.refresh();
-		void listingRead.refresh();
+		void contributorsRead.refresh();
 	}
+
+	// THE ADDRESS IS THE VIEW: the tab is `?tab=`, and each tab's filters ride beside it (`item-query.ts`). Changing tab
+	// keeps the project and leaves the other tab's filters behind.
+	const TABS = ['items', 'browse', 'review', 'settings', 'publish'] as const;
+	type Tab = (typeof TABS)[number];
+	const tab = $derived<Tab>(
+		(TABS as readonly string[]).includes(page.url.searchParams.get('tab') ?? '')
+			? (page.url.searchParams.get('tab') as Tab)
+			: 'items',
+	);
+	function openTab(next: Tab): void {
+		const address = new URLSearchParams();
+		const project = page.url.searchParams.get('project');
+		if (project !== null) address.set('project', project);
+		if (next !== 'items') address.set('tab', next);
+		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the same path, its query changed
+		void goto(`?${address}`, { reset: false });
+	}
+	const TAB_CLASS =
+		'flex min-w-0 flex-col gap-4 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3';
 
 	// Past `frozen` a publish is being prepared against the answer set, so nothing may still change what this project
 	// will publish: editing the ontology and removing an item are both that. The doors enforce each on their own.
@@ -206,132 +237,155 @@
 				<p class="text-destructive text-sm break-words" role="alert">{notice}</p>
 			{/if}
 
-			<Tabs.Root value="labeling">
-				<Tabs.List>
-					<Tabs.Trigger value="labeling" data-testid="tab-labeling">Labeling</Tabs.Trigger>
+			<Tabs.Root value={tab} onValueChange={(v) => openTab(v as Tab)}>
+				<Tabs.List class="max-w-full overflow-x-auto">
+					<Tabs.Trigger value="items" data-testid="tab-items">Items</Tabs.Trigger>
+					<Tabs.Trigger value="browse" data-testid="tab-browse">Browse</Tabs.Trigger>
+					<Tabs.Trigger value="review" data-testid="tab-review">Review</Tabs.Trigger>
 					<Tabs.Trigger value="settings" data-testid="tab-settings">Settings</Tabs.Trigger>
 					<Tabs.Trigger value="publish" data-testid="tab-publish">Publish</Tabs.Trigger>
 				</Tabs.List>
 
-				<Tabs.Content
-					value="labeling"
-					class="flex min-w-0 flex-col gap-4 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
-				>
-					{#if listingRead.current && !listingRead.current.ok}
-						<LoadFailure
-							what="The project's items could not be read."
-							detail={listingRead.current.detail}
-							hint={ANNOTATOR_HINT}
-							onretry={() => void listingRead.refresh()}
+				<Tabs.Content value="items" class={TAB_CLASS}>
+					{#if tab === 'items'}
+						<AnnotatorMetrics
+							rows={contributors?.contributors ?? []}
+							people={contributors?.people ?? {}}
 						/>
-					{:else if !listing}
-						<p class="text-muted-foreground text-sm" role="status">Reading the items…</p>
-					{:else}
-						<AnnotatorMetrics tasks={listing.details ?? []} />
-						<TaskQueue
+						<DataManager
 							{projectId}
 							permissions={detail.permissions}
 							droppable={stillMutable && held.has('can_manage')}
-							tasks={listing.details ?? []}
+							classes={classNames}
+							contributors={contributors?.contributors ?? []}
+							contributorPeople={contributors?.people ?? {}}
 							{me}
 							consensusN={project.consensus_n ?? 1}
 							adjudications={project.adjudications ?? {}}
 							onchanged={refresh}
 						/>
-						{#if listing.next_cursor}
-							<p class="text-warning text-xs" role="status">
-								The first {(listing.details ?? []).length.toLocaleString()} of {listing.total.toLocaleString()}
-								items are listed.
+					{/if}
+				</Tabs.Content>
+
+				<Tabs.Content value="browse" class={TAB_CLASS}>
+					{#if tab === 'browse'}
+						<BrowsePanel
+							{projectId}
+							permissions={detail.permissions}
+							{me}
+							classes={classNames}
+							consensusN={project.consensus_n ?? 1}
+						/>
+					{/if}
+				</Tabs.Content>
+
+				<Tabs.Content value="review" class={TAB_CLASS}>
+					{#if tab === 'review'}
+						<ReviewPanel
+							{projectId}
+							permissions={detail.permissions}
+							{me}
+							consensusN={project.consensus_n ?? 1}
+						/>
+					{/if}
+				</Tabs.Content>
+
+				<Tabs.Content value="settings" class="{TAB_CLASS} max-w-3xl">
+					{#if tab === 'settings'}
+						<SettingsPanel
+							{project}
+							mayManage={held.has('can_manage')}
+							holdsItems={(contributors?.total ?? 0) > 0}
+							onsaved={refresh}
+						/>
+						<section class="flex flex-col gap-2 border-t pt-3" data-testid="settings-labels">
+							<h2 class="text-muted-foreground text-xs font-medium uppercase">Labels</h2>
+							{#if project.ontology.kind}
+								<div class="flex items-center gap-1.5 text-sm" data-testid="task-kind-chip">
+									<span class="text-muted-foreground text-xs">Task type:</span>
+									<Badge>{project.ontology.kind}</Badge>
+								</div>
+							{/if}
+							{#if project.ontology.classes.length > 0}
+								<div
+									class="flex flex-wrap items-center gap-1.5 text-sm"
+									data-testid="label-taxonomy"
+								>
+									{#each project.ontology.classes as labelClass (labelClass.name)}
+										<Badge variant={labelClass.required ? 'default' : 'outline'}>
+											{labelClass.name}
+											{#if labelClass.tools.length > 0}
+												<span class={labelClass.required ? '' : 'text-muted-foreground'}
+													>· {labelClass.tools.join('/')}</span
+												>
+											{/if}
+											{#if labelClass.required}
+												<span>· required</span>
+											{/if}
+										</Badge>
+									{/each}
+								</div>
+							{:else}
+								<p class="text-muted-foreground text-sm">
+									No labels are defined: any label may be drawn.
+								</p>
+							{/if}
+							{#if project.ontology.relations.length > 0}
+								<div class="flex flex-wrap items-center gap-1.5 text-sm" data-testid="relations">
+									<span class="text-muted-foreground text-xs">Relations:</span>
+									{#each project.ontology.relations as rel (rel.name)}
+										<Badge variant="outline">{rel.name}</Badge>
+									{/each}
+								</div>
+							{/if}
+							{#if stillMutable && held.has('can_manage')}
+								<div>
+									<Button
+										variant="outline"
+										size="sm"
+										data-testid="edit-ontology-trigger"
+										onclick={() => (ontologyOpen = true)}
+									>
+										<Pencil class="size-3.5" />
+										{project.ontology.classes.length > 0 ? 'Edit the labels' : 'Define the labels'}
+									</Button>
+								</div>
+							{/if}
+							<p class="text-muted-foreground text-xs">
+								The labels change while the project takes work (draft or labeling). Items nobody has
+								started take the new labels; an item someone has claimed, drawn on or submitted
+								keeps the labels it was sent with, so its work is judged by them.
 							</p>
-						{/if}
+						</section>
+						<section class="border-t pt-3">
+							{#if held.has('can_manage')}
+								<MembersPanel {projectId} />
+							{:else}
+								<p class="text-muted-foreground text-sm" data-testid="members-not-shown">
+									Who holds a role on this project is shown to its managers.
+								</p>
+							{/if}
+						</section>
 					{/if}
 				</Tabs.Content>
 
-				<Tabs.Content
-					value="settings"
-					class="flex max-w-3xl flex-col gap-4 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
-				>
-					{#if project.ontology.kind}
-						<div class="flex items-center gap-1.5 text-sm" data-testid="task-kind-chip">
-							<span class="text-muted-foreground text-xs">Task type:</span>
-							<Badge>{project.ontology.kind}</Badge>
-						</div>
-					{/if}
-					{#if project.ontology.classes.length > 0}
-						<div class="flex flex-wrap items-center gap-1.5 text-sm" data-testid="label-taxonomy">
-							<span class="text-muted-foreground text-xs">Labels:</span>
-							{#each project.ontology.classes as labelClass (labelClass.name)}
-								<Badge variant={labelClass.required ? 'default' : 'outline'}>
-									{labelClass.name}
-									{#if labelClass.tools.length > 0}
-										<span class={labelClass.required ? '' : 'text-muted-foreground'}
-											>· {labelClass.tools.join('/')}</span
-										>
-									{/if}
-									{#if labelClass.required}
-										<span>· required</span>
-									{/if}
-								</Badge>
-							{/each}
-						</div>
-					{:else}
-						<p class="text-muted-foreground text-sm">
-							No labels are defined: any label may be drawn.
-						</p>
-					{/if}
-					{#if stillMutable && held.has('can_manage')}
-						<div>
-							<Button
-								variant="outline"
-								size="sm"
-								data-testid="edit-ontology-trigger"
-								onclick={() => (ontologyOpen = true)}
-							>
-								<Pencil class="size-3.5" />
-								{project.ontology.classes.length > 0 ? 'Edit the labels' : 'Define the labels'}
-							</Button>
-						</div>
-					{/if}
-					{#if project.ontology.relations.length > 0}
-						<div class="flex flex-wrap items-center gap-1.5 text-sm" data-testid="relations">
-							<span class="text-muted-foreground text-xs">Relations:</span>
-							{#each project.ontology.relations as rel (rel.name)}
-								<Badge variant="outline">{rel.name}</Badge>
-							{/each}
-						</div>
-					{/if}
-					{#if held.has('can_manage')}
-						<MembersPanel {projectId} />
-					{:else}
-						<p class="text-muted-foreground text-sm" data-testid="members-not-shown">
-							Who holds a role on this project is shown to its managers.
-						</p>
-					{/if}
-				</Tabs.Content>
-
-				<Tabs.Content
-					value="publish"
-					class="flex max-w-3xl flex-col gap-3 focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
-				>
-					<PublishPanel
-						{project}
-						{listing}
-						{canPublish}
-						mayPublish={held.has('can_publish')}
-						onchanged={refresh}
-					/>
-					<AdjudicationPanel
-						{projectId}
-						tasks={listing?.details ?? []}
-						adjudications={project.adjudications ?? {}}
-						mayManage={held.has('can_manage')}
-						onchanged={refresh}
-					/>
-					{#if (listing?.missing?.length ?? 0) > 0}
-						<p class="text-warning text-xs">
-							{listing?.missing?.length} item(s) are listed but hold no state: sending them again repairs
-							them.
-						</p>
+				<Tabs.Content value="publish" class="{TAB_CLASS} max-w-3xl">
+					{#if tab === 'publish'}
+						<PublishPanel
+							{project}
+							listing={contributors}
+							contributors={contributors?.contributors ?? []}
+							people={contributors?.people ?? {}}
+							{canPublish}
+							mayPublish={held.has('can_publish')}
+							onchanged={refresh}
+						/>
+						<AdjudicationPanel
+							{projectId}
+							adjudications={project.adjudications ?? {}}
+							mayManage={held.has('can_manage')}
+							onchanged={refresh}
+						/>
 					{/if}
 				</Tabs.Content>
 			</Tabs.Root>

@@ -19,7 +19,7 @@ import pytest_asyncio
 
 from annotator.core.config import AnnotatorSettings
 from annotator.projects.machines import IllegalTransition
-from annotator.projects.models import AnnotationProject, ItemSource, Link, MediaRef, ProjectState, Shape, Task, TaskState
+from annotator.projects.models import AnnotationProject, ItemSource, Link, MediaRef, ProjectSettings, ProjectState, Shape, Task, TaskState
 from annotator.projects.ontology import LabelOntology
 from annotator.state.store import AnnotatorStore
 from tests.postgres import StateDatabase
@@ -39,8 +39,22 @@ def _task(**kw: Any) -> Task:
 
 
 async def _seed(store: AnnotatorStore, *tasks: Task) -> None:
-    await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="charters", state=ProjectState.LABELING))
-    await store.send_tasks("p1", list(tasks) or [_task()])
+    """A labeling project whose settings are the first task's, and the tasks sent into it: a send captures what the
+    project holds (`AnnotatorStore.send_tasks`)."""
+    sent = list(tasks) or [_task()]
+    first = sent[0]
+    await store.create_project(
+        AnnotationProject(
+            project_id="p1",
+            tenant="acme",
+            slug="charters",
+            state=ProjectState.LABELING,
+            review_required=first.review_required,
+            lease_seconds=first.lease_seconds,
+            ontology=first.ontology,
+        )
+    )
+    await store.send_tasks("p1", sent)
 
 
 async def _claimed(store: AnnotatorStore, **kw: Any) -> None:
@@ -106,16 +120,38 @@ async def test_a_principal_cannot_fire_the_edge_a_lapsed_lease_causes(store: Ann
 
 @pytest.mark.asyncio
 async def test_submit_honours_the_review_required_captured_on_the_task(store: AnnotatorStore) -> None:
-    """Captured at send time from the project, never read from the caller: a caller-supplied `review_required` would
-    let the submitting annotator waive their own review."""
-    await _seed(store, _task(task_id="waived", review_required=False), _task(task_id="required"))
-    for task_id in ("waived", "required"):
-        await store.fire_task(task_id, event="claim", actor="gina")
+    """Captured at send from the project as the send's own transaction holds it, never from the caller nor from a copy
+    read before: the item sent (and started) while review was off is accepted on submit; the one sent after the manager
+    turned review on goes to review, although the task handed to the send (built, as a send door builds it, from an earlier read) still
+    says review is off."""
+    await _seed(store, _task(task_id="waived", review_required=False))
+    await store.fire_task("waived", event="claim", actor="gina")
+    await store.update_settings("p1", ProjectSettings(review_required=True))
+    await store.send_tasks("p1", [_task(task_id="required", review_required=False)])
+    await store.fire_task("required", event="claim", actor="gina")
 
     waived = await store.fire_task("waived", event="submit", actor="gina")
     required = await store.fire_task("required", event="submit", actor="gina")
 
     assert (waived.state, required.state, required.submitted_by) == (TaskState.ACCEPTED, TaskState.IN_REVIEW, "gina")
+
+
+@pytest.mark.asyncio
+async def test_a_send_makes_the_replicas_and_takes_the_ontology_the_project_holds_when_it_lands(store: AnnotatorStore) -> None:
+    """The consensus and the ontology are the project's as the send's transaction reads them: an item built while the
+    project had no consensus and no classes lands as the three replicas and with the classes the manager set since."""
+    await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="charters", state=ProjectState.LABELING))
+    await store.update_settings("p1", ProjectSettings(consensus_n=3))
+    await store.set_ontology("p1", LabelOntology.model_validate({"classes": [{"name": "seal", "tools": ["bbox"]}]}))
+
+    created = await store.send_tasks("p1", [_task(task_id="g1")])
+
+    sent = await store.get_tasks("p1", created)
+    assert [(t.task_id, t.replica_of, [c.name for c in t.ontology.classes]) for t in sent] == [
+        ("g1-r1", "g1", ["seal"]),
+        ("g1-r2", "g1", ["seal"]),
+        ("g1-r3", "g1", ["seal"]),
+    ]
 
 
 @pytest.mark.asyncio

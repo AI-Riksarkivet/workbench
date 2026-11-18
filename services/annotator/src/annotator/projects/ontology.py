@@ -34,9 +34,12 @@ lives in the classes and relations below.
 from __future__ import annotations
 
 import math
-from typing import Literal
+from collections.abc import Sequence
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from annotator.text import Text
 
 
 #: The drawable primitives. A class declares which of these it may be drawn with, so "allowed tools"
@@ -56,11 +59,11 @@ class OutputAttr(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=64)
+    name: Annotated[Text, Field(min_length=1, max_length=64)]
     type: AttrType = "free"
     #: `enum` only — the closed set of legal values. Ignored (and rejected) for other types, because
     #: silently accepting `choices` on a `free` field advertises a constraint nothing applies.
-    choices: list[str] = Field(default_factory=list)
+    choices: list[Text] = Field(default_factory=list)
     required: bool = False
 
     @model_validator(mode="after")
@@ -83,9 +86,9 @@ class LabelClass(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=128)
+    name: Annotated[Text, Field(min_length=1, max_length=128)]
     #: Rendered by the canvas and the sidebar. Optional, but no longer silently dropped.
-    colour: str | None = None
+    colour: Text | None = None
     #: Which primitives this class may be drawn with. Empty = any (an unconstrained class).
     tools: list[ShapeType] = Field(default_factory=list)
     #: This class's regions CARRY TRANSCRIBED TEXT (the row's `text` facet) — an OCR paragraph
@@ -98,7 +101,7 @@ class LabelClass(BaseModel):
     transcribe: bool = False
     #: Per-class typed fields. Replaces the project-level attribute list, which could not say WHICH
     #: class an attribute belonged to.
-    attributes: list[OutputAttr] = Field(default_factory=list)
+    attributes: Sequence[OutputAttr] = Field(default_factory=list)
     #: At-least-once: a completed item must carry this class on some shape.
     required: bool = False
 
@@ -122,10 +125,10 @@ class RelationClass(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=64)
+    name: Annotated[Text, Field(min_length=1, max_length=64)]
     #: Class names permitted at each end. Empty = any declared class.
-    from_classes: list[str] = Field(default_factory=list)
-    to_classes: list[str] = Field(default_factory=list)
+    from_classes: list[Text] = Field(default_factory=list)
+    to_classes: list[Text] = Field(default_factory=list)
     #: A link is directed unless this says otherwise (key→value is directed; "same-entity" is not).
     directed: bool = True
     #: At-least-once: a completed item must carry at least one link of this kind.
@@ -147,10 +150,11 @@ class LabelOntology(BaseModel):
     #: A shared VOCABULARY, not an enforced type — align with Hugging Face pipeline ids by
     #: convention (`object-detection`, `document-question-answering`, `token-classification`, …).
     #: Free-form on purpose: a new task type must not require editing Python and a redeploy.
-    kind: str = Field(default="", max_length=64)
+    kind: Annotated[Text, Field(max_length=64)] = ""
     modality: MediaKind = "image"
-    classes: list[LabelClass] = Field(default_factory=list)
-    relations: list[RelationClass] = Field(default_factory=list)
+    #: Sequences, read-only to every reader, so the request ontology may narrow their items to its bounded classes.
+    classes: Sequence[LabelClass] = Field(default_factory=list)
+    relations: Sequence[RelationClass] = Field(default_factory=list)
     #: An ontology with classes refuses an EMPTY submission by default: every other rule is a
     #: per-shape test, so zero shapes satisfies them all vacuously — claim, submit, done, without
     #: drawing anything. A blank page is a real archival outcome, so it stays expressible; it just
@@ -204,6 +208,45 @@ class LabelOntology(BaseModel):
 
     def klass(self, name: str | None) -> LabelClass | None:
         return next((c for c in self.classes if c.name == name), None)
+
+
+#: What one ontology a request brings may hold. A stored ontology is read as it was written, so these bound only what
+#: comes in: the request classes below are the stored ones with the bounds added, and Pydantic names the field past one.
+MAX_COLOUR: Final = 32
+MAX_CHOICES: Final = 256
+MAX_CHOICE: Final = 128
+MAX_RELATION_CLASSES: Final = 256
+
+
+class OutputAttrIn(OutputAttr):
+    """An attribute as a request declares it."""
+
+    choices: list[Annotated[Text, Field(max_length=MAX_CHOICE)]] = Field(default_factory=list, max_length=MAX_CHOICES)
+
+
+class LabelClassIn(LabelClass):
+    """A class as a request declares it."""
+
+    colour: Annotated[Text, Field(max_length=MAX_COLOUR)] | None = None
+    attributes: list[OutputAttrIn] = Field(default_factory=list)
+
+
+class RelationClassIn(RelationClass):
+    """A relation as a request declares it."""
+
+    from_classes: list[Text] = Field(default_factory=list, max_length=MAX_RELATION_CLASSES)
+    to_classes: list[Text] = Field(default_factory=list, max_length=MAX_RELATION_CLASSES)
+
+
+class RequestOntology(LabelOntology):
+    """An ontology as a request brings it: the stored shape, held to the bounds of what comes in."""
+
+    classes: list[LabelClassIn] = Field(default_factory=list)
+    relations: list[RelationClassIn] = Field(default_factory=list)
+
+    def stored(self) -> LabelOntology:
+        """The ontology as the store keeps it."""
+        return LabelOntology.model_validate(self.model_dump())
 
 
 class ShapeLike(BaseModel):

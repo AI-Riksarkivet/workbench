@@ -54,6 +54,38 @@ CREATE TABLE IF NOT EXISTS tasks (
 ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_state_known;
 ALTER TABLE tasks ADD CONSTRAINT tasks_state_known CHECK (state IN ($task_states));
 CREATE INDEX IF NOT EXISTS tasks_of_project ON tasks (project_id, task_id);
+
+-- What the data manager filters and sorts a project's items on, read from the document by Postgres itself: a stored
+-- generated column is recomputed on every write of the row and computed for every row already there when it is added,
+-- so the document stays the one truth and no write path can leave a column behind it. A listing reads these narrow
+-- columns and never the (toasted) document of a row it does not answer.
+--
+-- An instant in the document is read only when it is written as ISO 8601 with an explicit offset
+-- (`2026-11-10T09:30:00.123456Z`, `...+01:00`), as the store writes every instant it stamps (the database's clock, aware).
+-- Such a text names one instant whatever the session's TimeZone or DateStyle, so the cast below is truly immutable, which
+-- a generated column needs: a text of any other shape (no offset, `now`, a day-first date) would depend on the session,
+-- so it reads as no instant (NULL: it sorts last and falls outside every range) rather than as a guess.
+CREATE OR REPLACE FUNCTION annotator_instant(value text) RETURNS timestamptz
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
+    'SELECT CASE WHEN $$1 ~ ''^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$$'' THEN $$1::timestamptz END';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dataset text GENERATED ALWAYS AS (document #>> '{source,where}') STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS submitted_by text GENERATED ALWAYS AS (document ->> 'submitted_by') STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reviewed_by text GENERATED ALWAYS AS (document ->> 'reviewed_by') STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_action text GENERATED ALWAYS AS (document ->> 'review_action') STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS holders jsonb GENERATED ALWAYS AS (coalesce(document -> 'holders', '[]'::jsonb)) STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS predicted jsonb
+    GENERATED ALWAYS AS (jsonb_path_query_array(document, '$$.prediction[*].label')) STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sent_at timestamptz GENERATED ALWAYS AS (annotator_instant(document ->> 'sent_at')) STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS submitted_at timestamptz GENERATED ALWAYS AS (annotator_instant(document ->> 'submitted_at')) STORED;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reviewed_at timestamptz GENERATED ALWAYS AS (annotator_instant(document ->> 'reviewed_at')) STORED;
+-- The last transition's instant, or the send's for an item nobody has touched.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz GENERATED ALWAYS AS (
+    coalesce(annotator_instant(jsonb_path_query_first(document, '$$.transitions[last].at') #>> '{}'), annotator_instant(document ->> 'sent_at'))
+) STORED;
+-- The filter by dataset offers the project's datasets (`SELECT DISTINCT dataset … WHERE project_id`): read off this
+-- index rather than the project's rows. The listing's other filters and sorts read the project's rows through
+-- `tasks_of_project` (measured on 100,000 items in one project: tens of milliseconds a statement, `task_query`).
+CREATE INDEX IF NOT EXISTS tasks_by_dataset ON tasks (project_id, dataset);
 CREATE INDEX IF NOT EXISTS tasks_of_group ON tasks (project_id, replica_of, task_id) WHERE replica_of IS NOT NULL;
 
 -- One draft per task: its work in progress, the whole shape set, replaced on each save, guarded by its revision.
@@ -62,6 +94,8 @@ CREATE TABLE IF NOT EXISTS drafts (
     revision integer NOT NULL,
     document jsonb   NOT NULL
 );
+-- The classes the draft's shapes carry, for the data manager's filter by class (generated as the task's columns are).
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS labels jsonb GENERATED ALWAYS AS (jsonb_path_query_array(document, '$$.shapes[*].label')) STORED;
 
 -- Each task's last saves: who saved each revision and when, how many shapes it left, and what undoes it (the shapes as
 -- they were before it for every shape it changed or removed, the ids it added, and the links before it when it changed
@@ -79,10 +113,20 @@ CREATE TABLE IF NOT EXISTS draft_history (
     PRIMARY KEY (task_id, revision)
 );
 
--- Each task's state as a reader sees it: a claim past its expiry is unassigned. The one statement of that rule in SQL;
--- `annotator.projects.machines.lapse_expired_claim` is the same rule on a document, against the same clock.
+-- Each task's state as a reader sees it: a claim past its expiry is unassigned. `annotator.projects.machines.lapse_expired_claim`
+-- is the same rule on a document, and `annotator.state.task_query` the same rule over the listing's columns. The clock is
+-- the transaction's (`now()`), so every statement of one repeatable-read answer reads a lapse at one instant.
 CREATE OR REPLACE VIEW task_states AS
 SELECT task_id,
        project_id,
-       CASE WHEN state = 'claimed' AND lease_expires_at <= clock_timestamp() THEN 'unassigned' ELSE state END AS state
+       CASE WHEN state = 'claimed' AND lease_expires_at <= now() THEN 'unassigned' ELSE state END AS state
 FROM tasks;
+
+-- The name each person's own verified token carried the last time they wrote through a door (`annotator.people`): what
+-- the app shows for a principal, the principal itself its tooltip. Never a name a request body states. Bounded where it
+-- is read from the token (`people.display_name`) and again here.
+CREATE TABLE IF NOT EXISTS people (
+    principal text        PRIMARY KEY CHECK (char_length(principal) BETWEEN 1 AND 512),
+    name      text        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 120),
+    seen_at   timestamptz NOT NULL
+);

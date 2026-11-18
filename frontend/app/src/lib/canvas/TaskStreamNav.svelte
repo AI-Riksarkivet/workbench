@@ -4,17 +4,34 @@
 	// Anchors, not buttons-with-goto: a stream hop is a navigation to a real URL, so it must be
 	// middle-clickable, copyable and restorable by reload — the canvas is URL-driven throughout.
 	import { ChevronLeft, ChevronRight } from '@lucide/svelte';
+	import { goto } from '$app/navigation';
+	import { keyIsNotTheCanvas } from './walk-keys.ts';
 	import { Button } from '@workbench/ui/button';
 
 	import type { StreamPosition } from './task-stream.ts';
 
-	let { stream }: { stream: StreamPosition } = $props();
+	let { stream, label = 'Your labeling queue' }: { stream: StreamPosition; label?: string } =
+		$props();
+
+	/** Page Up and Page Down step to the previous and next item, from anywhere but a control that takes them
+	 *  (`walk-keys.ts`). */
+	function onKeydown(e: KeyboardEvent): void {
+		if ((e.key !== 'PageDown' && e.key !== 'PageUp') || e.defaultPrevented) return;
+		if (keyIsNotTheCanvas(e)) return;
+		const to = e.key === 'PageDown' ? stream.nextHref : stream.prevHref;
+		if (!to) return;
+		e.preventDefault();
+		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the stream's hrefs are resolved (`linkWith`)
+		void goto(to);
+	}
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 {#if stream.active}
 	<nav
 		class="border-border bg-card/90 text-card-foreground pointer-events-auto absolute top-2 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-lg border p-1 shadow-sm backdrop-blur"
-		aria-label="Your labeling queue"
+		aria-label={label}
 		data-testid="task-stream-nav"
 	>
 		<!-- A boundary is a DISABLED control, not a missing one: the arrow keeps its place so the
@@ -26,18 +43,13 @@
 				variant="ghost"
 				size="icon-xs"
 				href={stream.prevHref}
-				aria-label="Previous item in your queue"
+				aria-label="Previous item"
 				data-testid="task-stream-prev"
 			>
 				<ChevronLeft class="size-4" />
 			</Button>
 		{:else}
-			<Button
-				variant="ghost"
-				size="icon-xs"
-				disabled
-				aria-label="This is the first item you claimed"
-			>
+			<Button variant="ghost" size="icon-xs" disabled aria-label="This is the first item">
 				<ChevronLeft class="size-4" />
 			</Button>
 		{/if}
@@ -53,18 +65,13 @@
 				variant="ghost"
 				size="icon-xs"
 				href={stream.nextHref}
-				aria-label="Next item in your queue"
+				aria-label="Next item"
 				data-testid="task-stream-next"
 			>
 				<ChevronRight class="size-4" />
 			</Button>
 		{:else}
-			<Button
-				variant="ghost"
-				size="icon-xs"
-				disabled
-				aria-label="This is the last item you claimed"
-			>
+			<Button variant="ghost" size="icon-xs" disabled aria-label="This is the last item">
 				<ChevronRight class="size-4" />
 			</Button>
 		{/if}

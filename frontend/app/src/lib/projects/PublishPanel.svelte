@@ -15,17 +15,23 @@
 	import { Rocket, RotateCcw } from '@lucide/svelte';
 
 	import { fireProjectEvent } from '#lib/api/projects.api.ts';
-	import type { Project, TaskListing } from './types.ts';
+	import { personName } from './people.ts';
+	import type { Contributor, People, Project, TaskListing } from './types.ts';
 
 	let {
 		project,
 		listing,
+		contributors = [],
+		people = {},
 		canPublish,
 		mayPublish = true,
 		onchanged,
 	}: {
 		project: Project;
 		listing: TaskListing | null;
+		/** Each person's part over every item, and their names: whose names travel with the published rows. */
+		contributors?: readonly Contributor[];
+		people?: People;
 		/** Whether `publish` is a legal event RIGHT NOW (from the backend's legal_events). */
 		canPublish: boolean;
 		/** Whether the READER holds `can_publish` on the project (the manager's role). */
@@ -43,18 +49,10 @@
 	const accepted = $derived(listing?.counts['accepted'] ?? 0);
 	const skipped = $derived(listing?.counts['skipped'] ?? 0);
 	const annotators = $derived(
-		[
-			...new Set(
-				(listing?.details ?? []).map((t) => t.submitted_by).filter((s): s is string => !!s),
-			),
-		].sort(),
+		contributors.filter((c) => c.submitted > 0).map((c) => personName(c.principal, people)),
 	);
 	const reviewers = $derived(
-		[
-			...new Set(
-				(listing?.details ?? []).map((t) => t.reviewed_by).filter((s): s is string => !!s),
-			),
-		].sort(),
+		contributors.filter((c) => c.reviewed > 0).map((c) => personName(c.principal, people)),
 	);
 
 	async function publish(): Promise<void> {

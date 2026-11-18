@@ -56,12 +56,16 @@ describe('the canvas’s side panel', () => {
 		expect([panel.mode, panel.title, panel.actions]).toEqual(['held', 'Held by bo', []]);
 	});
 
-	it('is a review of another’s submission, offering accept and send back', () => {
-		const panel = panelState(task('in_review', { submitted_by: 'dex~bo' }), REVIEWER, 'dex~ada');
+	it('is a review of another’s submission by their name, offering accept, fix and accept, and send back', () => {
+		const panel = panelState(
+			task('in_review', { submitted_by: 'dex~bo', people: { 'dex~bo': 'Bo Ek' } }),
+			REVIEWER,
+			'dex~ada',
+		);
 		expect([panel.mode, panel.title, panel.actions]).toEqual([
 			'reviewing',
-			'Reviewing bo’s work',
-			['accept', 'request_changes'],
+			'Reviewing Bo Ek’s work',
+			['accept', 'fix_and_accept', 'request_changes'],
 		]);
 	});
 

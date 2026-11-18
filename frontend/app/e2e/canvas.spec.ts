@@ -442,7 +442,7 @@ test('leaving an item saves it first, and a save that fails keeps the person on 
 	await openItem(page);
 	const next = page
 		.getByRole('navigation', { name: 'Your labeling queue' })
-		.getByRole('link', { name: 'Next item in your queue' });
+		.getByRole('link', { name: 'Next item' });
 	await drawBox(page, { x: 100, y: 20 }, { x: 140, y: 60 });
 	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(3);
 
@@ -734,7 +734,8 @@ for (const { who, task, key, reason } of [
 		who: 'Annotator',
 		task: 'pages-held',
 		key: 'A letter about the harvest · page 1',
-		reason: 'This item is held by user:someone-else: the canvas is read-only.',
+		// By the name the holder last wrote under: the annotator keeps it from their own token.
+		reason: 'This item is held by Sam Else: the canvas is read-only.',
 	},
 ]) {
 	test(`a reader who may not edit the item (${who} on ${task}) is offered View, and the canvas opens read-only`, async ({
@@ -868,7 +869,7 @@ test('the queue’s next claimed item is one step away, in the stream and the fi
 		content:
 			'::view-transition-old(*), ::view-transition-new(*) { animation-duration: 3s !important; }',
 	});
-	await stream.getByRole('link', { name: 'Next item in your queue' }).click();
+	await stream.getByRole('link', { name: 'Next item' }).click();
 	await expect(page).toHaveURL(/\/projects\/pages\/tasks\/pages-t2\?project=pages$/);
 	const region = page.getByRole('application', {
 		name: 'Labeling canvas: A map of the harbour · page 1',
@@ -938,9 +939,8 @@ test('a reviewer opens someone’s submission, reads it as theirs to review, and
 	await as(context, 'Reviewer');
 	await page.goto('/projects/pages/tasks/pages-review?project=pages');
 	const panel = page.getByTestId('task-panel');
-	await expect(panel.getByTestId('task-panel-title')).toHaveText(
-		/^Reviewing .*someone-else’s work$/,
-	);
+	// The submitter by the name they last wrote under, their principal its tooltip nowhere lost.
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Sam Else’s work');
 	await expect(panel.getByTestId('task-submit')).toHaveCount(0);
 
 	const fired = page.waitForRequest((req) => req.url().includes('/tasks/pages-review/events'));
@@ -1279,4 +1279,83 @@ test('a model asked from the canvas proposes shapes to keep or reject: a detecto
 	await list.getByRole('button', { name: /^object/ }).click();
 	await page.keyboard.press('a');
 	await expect(page.getByTestId('shape-status')).toHaveText(/2 kept\s*1 proposed\s*1 rejected/);
+});
+
+test('a reviewer judges three items in one pass by key: accepts one, sends one back, fixes and accepts one on the canvas', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/judging?tab=review');
+	await page.getByTestId('review-start').click();
+	const panel = page.getByTestId('task-panel');
+	const walk = page.getByRole('navigation', { name: 'Reviewing' });
+	await ready(page);
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Alma Alpha’s work');
+	await expect(walk).toContainText('item 1 / 3');
+
+	const accepted = page.waitForRequest((req) => req.url().includes('/tasks/judging-a/events'));
+	await page.keyboard.press('Shift+A');
+	expect((await accepted).postDataJSON()).toEqual({ event: 'accept' });
+	await expect(page).toHaveURL(/\/tasks\/judging-b\?pass=review/);
+	await ready(page);
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Bert Beta’s work');
+
+	await page.keyboard.press('Shift+R');
+	const dialog = page.getByTestId('send-back-dialog');
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the seal too.');
+	const sentBack = page.waitForRequest((req) => req.url().includes('/tasks/judging-b/events'));
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+	expect((await sentBack).postDataJSON()).toEqual({
+		event: 'request_changes',
+		message: 'Box the seal too.',
+	});
+	await expect(page).toHaveURL(/\/tasks\/judging-c\?pass=review/);
+	await ready(page);
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Sam Else’s work');
+
+	// The fix is made on the canvas itself and saved before the verdict that carries it.
+	const calls = annotationCalls(page);
+	await drawBox(page, { x: 100, y: 20 }, { x: 140, y: 60 });
+	const fixed = page.waitForRequest((req) => req.url().includes('/tasks/judging-c/events'));
+	await page.keyboard.press('Shift+F');
+	expect((await fixed).postDataJSON()).toEqual({ event: 'fix_and_accept' });
+	const saves = calls.filter(
+		(req) => req.method() === 'POST' && req.url().includes('task=judging-c'),
+	);
+	expect(saves.map((req) => (req.postDataJSON() as { inserts: unknown[] }).inserts.length)).toEqual(
+		[1],
+	);
+
+	// Past the last item the pass ends where it started, with nothing left to review.
+	await expect(page).toHaveURL(/\/projects\/judging\?tab=review/);
+	await expect(page.getByTestId('review-waiting')).toHaveText(
+		'Nothing is waiting for your review.',
+	);
+});
+
+test('a person browses a project’s labeled work read-only, one item after another, its filter in the address', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/judging?tab=browse&label=figure');
+	await expect(page.getByTestId('browse-list').getByRole('link')).toHaveCount(4);
+	await page.getByTestId('browse-start').click();
+
+	await ready(page);
+	await expect(page).toHaveURL(/\/tasks\/judging-a\?label=figure&pass=browse/);
+	const walk = page.getByRole('navigation', { name: 'Browsing' });
+	await expect(walk).toContainText('item 1 / 4');
+	await expect(page.getByTestId('canvas-read-only')).toHaveText(
+		'Browsing: the canvas is read-only.',
+	);
+	await expect(page.getByRole('button', { name: 'Rectangle', exact: true })).toHaveCount(0);
+	await expect(page.getByTestId('task-panel').getByRole('button')).toHaveCount(0);
+
+	await page.keyboard.press('PageDown');
+	await expect(page).toHaveURL(/\/tasks\/judging-b\?label=figure&pass=browse/);
+	await expect(walk).toContainText('item 2 / 4');
+	await page.reload();
+	await expect(page.getByRole('navigation', { name: 'Browsing' })).toContainText('item 2 / 4');
 });

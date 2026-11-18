@@ -22,13 +22,14 @@ provenance as a drawn one instead of appearing in the lakehouse having been seen
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+import pydantic
 
 from annotator.projects.models import Link, Shape
 from annotator.projects.ontology import ShapeLike, membership_violation
+from annotator.text import MAX_ID, MAX_METADATA, MAX_NAME, embedded_json
 from client_kit.lancekit.arrow_body import decode_arrow_stream_or_file
 from service_kit.arrow_ipc import ArrowBodyError
 from service_kit.exceptions import ValidationError
@@ -103,6 +104,8 @@ def shapes_from_ipc(
 
     shapes: list[Shape] = []
     links: list[Link] = []
+    # A string the store cannot hold (a NUL, a lone surrogate), in a cell or in JSON a cell carries, is refused where the
+    # draft is written (`annotator.text.storable_json`), on the document the rows become.
     for index, row in enumerate(table.to_pylist()):
         shape = _shape(row, index, taken)
         taken.add(shape.shape_id)
@@ -168,6 +171,8 @@ def _shape(row: dict[str, Any], index: int, taken: set[str]) -> Shape:
     # cannot carry links.
     supplied = _cell(row, "shape_id") or _cell(row, "id")
     shape_id = str(supplied) if supplied else None
+    if shape_id is not None and len(shape_id) > MAX_ID:
+        raise ValidationError(f"import refused — row {index} has a shape id longer than {MAX_ID} characters")
     if shape_id is not None and shape_id in taken:
         # Re-keying silently would re-point any link that named it at a DIFFERENT annotation, which
         # is a wrong answer rather than a failed import. Refuse and name it.
@@ -215,9 +220,9 @@ def _attributes(row: dict[str, Any], index: int) -> dict[str, str]:
         return {}
     if isinstance(raw, str):
         try:
-            raw = json.loads(raw) if raw else {}
-        except json.JSONDecodeError as exc:
-            raise ValidationError(f"import refused — row {index} has attributes that are not valid JSON ({exc})") from exc
+            raw = embedded_json(raw, max_chars=MAX_METADATA) if raw else {}
+        except ValueError as exc:
+            raise ValidationError(f"import refused — row {index}'s attributes cell {exc}") from exc
     if not isinstance(raw, dict):
         raise ValidationError(f"import refused — row {index} has attributes that are not an object")
     return {str(k): ("" if v is None else str(v)) for k, v in raw.items()}
@@ -236,9 +241,9 @@ def _links(row: dict[str, Any], shape_id: str, index: int) -> list[Link]:
         return []
     if isinstance(raw, str):
         try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValidationError(f"import refused — row {index} has links that are not valid JSON ({exc})") from exc
+            raw = embedded_json(raw, max_chars=None)
+        except ValueError as exc:
+            raise ValidationError(f"import refused — row {index}'s links cell {exc}") from exc
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -251,5 +256,13 @@ def _links(row: dict[str, Any], shape_id: str, index: int) -> list[Link]:
         name, to_shape = entry.get("name"), entry.get("to_shape")
         if not name or not to_shape:
             raise ValidationError(f"import refused — row {index} has a link without a name and a to_shape")
-        out.append(Link(name=str(name), from_shape=str(entry.get("from_shape") or shape_id), to_shape=str(to_shape)))
+        link = {"name": str(name), "from_shape": str(entry.get("from_shape") or shape_id), "to_shape": str(to_shape)}
+        if len(link["name"]) > MAX_NAME:
+            raise ValidationError(f"import refused — row {index} has a link name longer than {MAX_NAME} characters")
+        if any(len(link[end]) > MAX_ID for end in ("from_shape", "to_shape")):
+            raise ValidationError(f"import refused — row {index} has a link end longer than {MAX_ID} characters")
+        try:
+            out.append(Link.model_validate(link))
+        except pydantic.ValidationError as exc:
+            raise ValidationError(f"import refused — row {index} has a link that is not valid ({exc})") from exc
     return out

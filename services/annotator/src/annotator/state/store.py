@@ -55,7 +55,6 @@ from annotator.projects.machines import (
     edit_violation,
     identity_violation,
     lapse_expired_claim,
-    may_publish,
     project_transition,
     refuse_unreadable_ontology,
     submit_target,
@@ -68,6 +67,7 @@ from annotator.projects.models import (
     Draft,
     DraftOrigin,
     Link,
+    ProjectSettings,
     ProjectState,
     PublishRecord,
     ReviewNote,
@@ -77,7 +77,9 @@ from annotator.projects.models import (
     Transition,
     new_id,
 )
-from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, validate_against_ontology
+from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, membership_violation, validate_against_ontology
+from annotator.state.task_query import Contributor, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, page_of
+from annotator.text import storable_json, storable_text
 from service_kit.exceptions import ConflictError, DomainError
 
 
@@ -171,22 +173,30 @@ class ReverseChange(BaseModel):
         return list(kept.values()), list(links if self.links is None else self.links)
 
 
-def _refuse_past_caps(draft: Draft) -> int:
-    """The draft's serialized size, or the refusal naming the cap it passes."""
+def _stored(kind: str, document: Any) -> Jsonb:
+    """``document`` as the store writes it: THE write boundary every jsonb value passes. Its text is serialised and
+    checked once (`annotator.text.storable_json`), and that checked text is what is sent, so nothing can come between
+    the check and the write; ``kind`` names the document in a refusal."""
+    text = storable_json(kind, document)
+    return Jsonb(document, dumps=lambda _document: text)
+
+
+def _stored_draft(draft: Draft) -> Jsonb:
+    """The draft as it is written, once it fits its caps: its size is the size of the text written."""
     if len(draft.shapes) > MAX_DRAFT_SHAPES:
         raise DraftTooLarge(f"this change leaves the task's work at {len(draft.shapes)} shapes, past its cap of {MAX_DRAFT_SHAPES} shapes")
     if len(draft.links) > MAX_DRAFT_LINKS:
         raise DraftTooLarge(f"this change leaves the task's work at {len(draft.links)} links, past its cap of {MAX_DRAFT_LINKS} links")
-    size = len(draft.model_dump_json().encode())
+    text = storable_json("the task's work", draft.model_dump(mode="json"))
+    size = len(text.encode())
     if size > MAX_DRAFT_BYTES:
         raise DraftTooLarge(f"this change leaves the task's work at {size} bytes, past its cap of {MAX_DRAFT_BYTES} bytes")
-    return size
+    return Jsonb(None, dumps=lambda _document: text)
 
 
 class TaskIndex(BaseModel):
-    """A project's tasks and the publish precondition, read in one statement."""
+    """How many of a project's tasks are in each state, and the publish precondition, read in one statement."""
 
-    tasks: dict[str, TaskState]
     counts: dict[TaskState, int]
     total: int
     terminal: int
@@ -320,7 +330,7 @@ class AnnotatorStore:
             "publish_owner = CASE WHEN %s = 'publishing' THEN publish_owner END, "
             "publish_lease_until = CASE WHEN %s = 'publishing' THEN publish_lease_until END "
             "WHERE project_id = %s",
-            (str(project.state), Jsonb(document), str(project.state), str(project.state), project.project_id),
+            (str(project.state), _stored("the project", document), str(project.state), str(project.state), project.project_id),
         )
 
     @staticmethod
@@ -342,7 +352,7 @@ class AnnotatorStore:
             document = project.model_dump(mode="json", exclude={"counts"})
             await conn.execute(
                 "INSERT INTO projects (project_id, tenant, state, created_at, document) VALUES (%s, %s, %s, %s, %s)",
-                (project.project_id, project.tenant, str(project.state), project.created_at, Jsonb(document)),
+                (project.project_id, project.tenant, str(project.state), project.created_at, _stored("the project", document)),
             )
             return (await self._with_counts(conn, [project]))[0]
 
@@ -472,18 +482,56 @@ class AnnotatorStore:
                     message=f"project {project_id} is {project.state.value} — the ontology is editable only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
                 )
             project.ontology = ontology
-            # Every task nobody has started takes the new ontology: one still unassigned, never held (a release leaves
-            # its holder in `holders`) and with no draft. A task someone claimed, drew on or submitted keeps the copy it
-            # captured, so a definition edited mid-flight never re-judges work already done. Under the project's write
-            # lock, which every task transition and every send waits on, so no task starts between the read and the
-            # write.
-            await conn.execute(
-                "UPDATE tasks t SET document = jsonb_set(t.document, '{ontology}', %s) "
-                "WHERE t.project_id = %s AND t.state = 'unassigned' "
-                "AND jsonb_array_length(coalesce(t.document -> 'holders', '[]'::jsonb)) = 0 "
-                "AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = t.task_id)",
-                (Jsonb(ontology.model_dump(mode="json")), project_id),
-            )
+            await _update_unstarted(conn, project_id, {"ontology": ontology.model_dump(mode="json")})
+
+        return await self._update_project(project_id, change)
+
+    async def update_settings(self, project_id: str, settings: ProjectSettings) -> AnnotationProject:
+        """Change the settings ``settings`` names, each when the project still lets it change:
+
+        - title, description and instructions until a publish starts (`FROZEN_PROJECT_STATES`);
+        - whether review is required and how long a claim lasts while the project takes work (`PROJECT_SEND_STATES`),
+          taken by every item nobody has started as the ontology is (`set_ontology`), and kept by the rest, which
+          captured theirs at send;
+        - the consensus only while the project holds no item: each sent item was made into that many replicas, so a
+          changed count would leave groups with too many or too few.
+        """
+        named = settings.model_dump(exclude_unset=True, exclude_none=True)
+
+        async def change(conn: Connection, project: AnnotationProject) -> None:
+            if project.state in FROZEN_PROJECT_STATES:
+                raise IllegalTransition(
+                    "project",
+                    project.state,
+                    "update_settings",
+                    message=f"project {project_id} is {project.state.value}: its settings are fixed once a publish starts",
+                )
+            captured = {key: named[key] for key in ("review_required", "lease_seconds") if key in named}
+            if captured and project.state not in PROJECT_SEND_STATES:
+                raise IllegalTransition(
+                    "project",
+                    project.state,
+                    "update_settings",
+                    message=f"project {project_id} is {project.state.value}: review and claim settings change only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
+                )
+            if named.get("consensus_n", project.consensus_n) != project.consensus_n:
+                # Items, not tasks: on a consensus project each sent item is its replicas, one group.
+                held = await (
+                    await conn.execute("SELECT count(DISTINCT coalesce(replica_of, task_id)) FROM tasks WHERE project_id = %s", (project_id,))
+                ).fetchone()
+                items = int(held[0]) if held else 0
+                if items > 0:
+                    replicas = "1 replica" if project.consensus_n == 1 else f"{project.consensus_n} replicas"
+                    raise IllegalTransition(
+                        "project",
+                        project.state,
+                        "update_settings",
+                        message=f"project {project_id} holds {items} item{'' if items == 1 else 's'}, each sent as {replicas}: the consensus is fixed once items are sent",
+                    )
+            for key, value in named.items():
+                setattr(project, key, value)
+            if captured:
+                await _update_unstarted(conn, project_id, captured)
 
         return await self._update_project(project_id, change)
 
@@ -539,8 +587,17 @@ class AnnotatorStore:
     # Sending and dropping tasks
     # ---------------------------------------------------------------------------------------------
 
-    async def send_tasks(self, project_id: str, tasks: Iterable[Task]) -> list[str]:
+    async def send_tasks(self, project_id: str, tasks: Iterable[Task], *, cap: int | None = None) -> list[str]:
         """Add tasks to the project in one transaction, and answer the ids this call created.
+
+        **What a task captures from its project is decided here, from the project row this transaction holds**, never
+        from a copy the caller read earlier: its `review_required`, `lease_seconds` and ontology are stamped from that
+        row, its predictions are judged against that ontology, and on a project with consensus N an item sent as one task
+        (no `replica_of`) is made into its N replicas `{id}-r{k}` here. The row is held `FOR SHARE`, which conflicts with
+        the `FOR NO KEY UPDATE` every settings and ontology change takes (`_update_project`), so none of them can commit
+        between this read and this write: a send and a settings change are ordered, and the send's tasks carry the
+        settings of the one it comes after. A task already a replica is written as it is (a caller that names its own
+        groups). ``cap`` bounds the tasks one send makes, replicas included, counted against the consensus read here.
 
         Idempotent on the task id: one already in this project is left as it is (a re-send must not reset a claim
         somebody holds). One that belongs to ANOTHER project, or a replica of a consensus group another project holds,
@@ -549,11 +606,19 @@ class AnnotatorStore:
         Rows are written in key order, groups then tasks, each sorted by id: two sends naming overlapping ids in
         different orders then wait on one another rather than deadlock.
         """
-        ordered = sorted(tasks, key=lambda t: t.task_id)
         async with self._transaction() as conn:
             project = await self._lock_project(conn, project_id, write=False)
             if project.state not in PROJECT_SEND_STATES:
                 raise IllegalTransition("project", project.state, "send")
+            ordered = sorted(_captured(project, list(tasks)), key=lambda t: t.task_id)
+            if cap is not None and len(ordered) > cap:
+                raise ConflictError(f"this send makes {len(ordered)} tasks (consensus_n={project.consensus_n}), over the {cap}-task send cap — split the send")
+            now = await _clock(conn)
+            for task in ordered:
+                task.sent_at = now
+                task.trim_history()
+            # Every document passes the write boundary before anything is written: a group id is one of their values.
+            rows = [_task_row(task) for task in ordered]
             for group in sorted({t.replica_of for t in ordered if t.replica_of}):
                 await conn.execute(
                     "INSERT INTO replica_groups (replica_of, project_id) VALUES (%s, %s) ON CONFLICT (replica_of) DO NOTHING", (group, project_id)
@@ -562,13 +627,12 @@ class AnnotatorStore:
                 if holder is not None and holder[0] != project_id:
                     raise ConflictError(f"consensus group {group} already belongs to project {holder[0]} — refusing to send its replicas into {project_id}")
             created: list[str] = []
-            for task in ordered:
-                task.trim_history()
+            for task, values in zip(ordered, rows, strict=True):
                 row = await (
                     await conn.execute(
                         "INSERT INTO tasks (task_id, project_id, state, assignee, lease_expires_at, replica_of, document) "
                         "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (task_id) DO NOTHING RETURNING task_id",
-                        _task_row(task),
+                        values,
                     )
                 ).fetchone()
                 if row is not None:
@@ -648,6 +712,55 @@ class AnnotatorStore:
     async def task_index(self, project_id: str) -> TaskIndex:
         async with self._transaction() as conn:
             return await _task_index(conn, project_id)
+
+    async def task_page(
+        self,
+        project_id: str,
+        filters: TaskFilter,
+        *,
+        sort: TaskSort,
+        order: SortOrder,
+        limit: int,
+        offset: int,
+        around: str | None = None,
+        contributors: bool = False,
+    ) -> tuple[TaskIndex, TaskPage, list[Task], list[Contributor] | None]:
+        """The project's index, one filtered page of its items with their documents in the page's order, and with
+        ``contributors`` each person's part, all from ONE snapshot (a repeatable-read transaction), so the page, its
+        counts and the publish precondition beside it never disagree."""
+        async with self._pool.connection() as raw, raw.transaction():
+            conn = cast("Connection", raw)
+            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            index = await _task_index(conn, project_id)
+            page = await page_of(conn, project_id, filters, sort=sort, order=order, limit=limit, offset=offset, around=around)
+            rows = await (
+                await conn.execute("SELECT document, clock_timestamp() FROM tasks WHERE project_id = %s AND task_id = ANY(%s)", (project_id, page.task_ids))
+            ).fetchall()
+            people = await contributors_of(conn, project_id) if contributors else None
+        by_id: dict[str, Task] = {}
+        for document, now in rows:
+            task = _task(document)
+            lapse_expired_claim(task, now)
+            by_id[task.task_id] = task
+        return index, page, [by_id[tid] for tid in page.task_ids if tid in by_id], people
+
+    async def remember_person(self, principal: str, name: str) -> None:
+        """Keep the name ``principal``'s own verified token carried, replacing an older one; writes only on a change."""
+        async with self._transaction() as conn:
+            await conn.execute(
+                "INSERT INTO people (principal, name, seen_at) VALUES (%s, %s, clock_timestamp()) "
+                "ON CONFLICT (principal) DO UPDATE SET name = EXCLUDED.name, seen_at = EXCLUDED.seen_at WHERE people.name IS DISTINCT FROM EXCLUDED.name",
+                (storable_text("a person's principal", principal), storable_text("a person's name", name)),
+            )
+
+    async def names_of(self, principals: Iterable[str]) -> dict[str, str]:
+        """The kept name of each of ``principals`` that has one."""
+        wanted = sorted(set(principals))
+        if not wanted:
+            return {}
+        async with self._transaction() as conn:
+            rows = await (await conn.execute("SELECT principal, name FROM people WHERE principal = ANY(%s)", (wanted,))).fetchall()
+        return {str(p): str(n) for p, n in rows}
 
     async def publish_material(self, project_id: str) -> list[tuple[Task, Draft | None]]:
         """Every task of the project with its draft, in task-id order: what a publish builds its plan from."""
@@ -846,16 +959,15 @@ class AnnotatorStore:
                 updated_at=now,
                 origin=origin,
             )
-            _refuse_past_caps(draft)
             await conn.execute(
                 "INSERT INTO drafts (task_id, revision, document) VALUES (%s, %s, %s) "
                 "ON CONFLICT (task_id) DO UPDATE SET revision = EXCLUDED.revision, document = EXCLUDED.document",
-                (task_id, draft.revision, Jsonb(draft.model_dump(mode="json"))),
+                (task_id, draft.revision, _stored_draft(draft)),
             )
-            undo = ReverseChange.of(current, shapes, links).model_dump_json()
+            undo = storable_json("the save's history", ReverseChange.of(current, shapes, links).model_dump(mode="json"))
             await conn.execute(
                 "INSERT INTO draft_history (task_id, revision, saved_at, author, shapes, bytes, undo) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
-                (task_id, draft.revision, now, author, len(shapes), len(undo.encode()), undo),
+                (task_id, draft.revision, now, storable_text("the save's author", author), len(shapes), len(undo.encode()), undo),
             )
             await _trim_history(conn, task_id)
             if task.state is TaskState.CLAIMED:
@@ -894,6 +1006,40 @@ class AnnotatorStore:
         return Draft(task_id=task_id, project_id=current.project_id, author=str(author), shapes=shapes, links=links, revision=revision, updated_at=saved_at)
 
 
+async def _update_unstarted(conn: Connection, project_id: str, fields: dict[str, Any]) -> None:
+    """Write ``fields`` into every task of the project nobody has started: one still unassigned, never held (a release
+    leaves its holder in `holders`) and with no draft. A task someone claimed, drew on or submitted keeps what it captured
+    at send, so a setting changed mid-flight never re-judges work already done. Called under the project's write lock,
+    which every task transition and every send waits on, so no task starts between the read and the write."""
+    await conn.execute(
+        "UPDATE tasks t SET document = t.document || %s "
+        "WHERE t.project_id = %s AND t.state = 'unassigned' "
+        "AND jsonb_array_length(coalesce(t.document -> 'holders', '[]'::jsonb)) = 0 "
+        "AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = t.task_id)",
+        (_stored("the project's settings", fields), project_id),
+    )
+
+
+def _captured(project: AnnotationProject, tasks: list[Task]) -> list[Task]:
+    """The tasks as the project held now makes them: each stamped with its review rule, claim lease and ontology, its
+    predictions judged against that ontology, and on a consensus project a single item made into its replicas."""
+    out: list[Task] = []
+    for index, task in enumerate(tasks):
+        violation = membership_violation(project.ontology, [ShapeLike.model_validate(s.model_dump()) for s in task.prediction])
+        if violation is not None:
+            raise ConflictError(f"item {index + 1} of {len(tasks)}: {violation}")
+        captured = task.model_copy(
+            update={"review_required": project.review_required, "lease_seconds": project.lease_seconds, "ontology": project.ontology.model_copy(deep=True)}
+        )
+        if project.consensus_n == 1 or task.replica_of is not None:
+            out.append(captured)
+            continue
+        out.extend(
+            captured.model_copy(update={"task_id": f"{task.task_id}-r{k}", "replica_of": task.task_id}, deep=True) for k in range(1, project.consensus_n + 1)
+        )
+    return out
+
+
 async def _trim_history(conn: Connection, task_id: str) -> None:
     """Keep the task's newest saves: at most `MAX_DRAFT_HISTORY`, and as many of them as `MAX_HISTORY_BYTES` holds."""
     rows = await (await conn.execute("SELECT revision, bytes FROM draft_history WHERE task_id = %s ORDER BY revision DESC", (task_id,))).fetchall()
@@ -930,38 +1076,29 @@ async def _draft(conn: Connection, task_id: str) -> Draft | None:
 
 
 def _task_row(task: Task) -> tuple[Any, ...]:
-    return (
-        task.task_id,
-        task.project_id,
-        str(task.state),
-        task.assignee,
-        task.lease_expires_at,
-        task.replica_of,
-        Jsonb(task.model_dump(mode="json")),
-    )
+    # The document is checked first: every text column below is a copy of one of its values.
+    document = _stored("the task", task.model_dump(mode="json"))
+    return (task.task_id, task.project_id, str(task.state), task.assignee, task.lease_expires_at, task.replica_of, document)
 
 
 async def _write_task(conn: Connection, task: Task) -> None:
     # The history is bounded here, at the one seam every task write goes through: the document is rewritten whole, so an
     # unbounded trail would make each event cost more than the last.
     task.trim_history()
+    document = _stored("the task", task.model_dump(mode="json"))
     await conn.execute(
         "UPDATE tasks SET state = %s, assignee = %s, lease_expires_at = %s, document = %s WHERE task_id = %s",
-        (str(task.state), task.assignee, task.lease_expires_at, Jsonb(task.model_dump(mode="json")), task.task_id),
+        (str(task.state), task.assignee, task.lease_expires_at, document, task.task_id),
     )
 
 
 async def _task_index(conn: Connection, project_id: str) -> TaskIndex:
-    rows = await (await conn.execute("SELECT task_id, state FROM task_states WHERE project_id = %s ORDER BY task_id", (project_id,))).fetchall()
-    tasks = {str(task_id): TaskState(state) for task_id, state in rows}
+    """How many of the project's tasks are in each state, as a reader sees them, and the publish precondition: one
+    aggregate over the project's rows, whatever their number, never a list of them."""
+    rows = await (await conn.execute("SELECT state, count(*) FROM task_states WHERE project_id = %s GROUP BY state", (project_id,))).fetchall()
     counts = dict.fromkeys(TaskState, 0)
-    for state in tasks.values():
-        counts[state] += 1
-    states = list(tasks.values())
-    return TaskIndex(
-        tasks=tasks,
-        counts=counts,
-        total=len(states),
-        terminal=sum(1 for s in states if s in TERMINAL_TASK_STATES),
-        may_publish=may_publish(states),
-    )
+    for state, count in rows:
+        counts[TaskState(state)] = int(count)
+    total = sum(counts.values())
+    terminal = sum(counts[s] for s in TERMINAL_TASK_STATES)
+    return TaskIndex(counts=counts, total=total, terminal=terminal, may_publish=terminal == total)

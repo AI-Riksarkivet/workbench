@@ -47,8 +47,8 @@ PersistentVolumeClaim `workbench-demo` (k3s's default `local-path` class, 1Gi) a
 that runs `scripts/seed_demo_corpus.py --once` from the media image into it; the viewer, search and the annotator mount
 the claim read-only, and only the Job mounts it writable. The Job is a plain object of the release, named by the digest
 of its whole rendered pod template (which a Job cannot change in place), so an upgrade that changes nothing in it leaves
-it as it is, and one that changes anything starts a new Job that finds the completed seed (`.seeded` on the volume) and
-exits 0 without writing. The claim carries
+it as it is, and one that changes anything starts a new Job that writes only the demo datasets the volume lacks (each
+written dataset has its marker under `.seeded.d/` on the volume) and leaves every other as it is. The claim carries
 `helm.sh/resource-policy: keep`: an uninstall leaves the data, a reinstall from git adopts it, and only deleting the
 claim (or `make undeploy-dev`, which deletes the namespace) seeds again. Its readers are four of the dev Dex's demo
 people (alice, bob, carol and dave, as `dex~<user id>`), granted `reader` on `source:demo` by the model writer; erin is

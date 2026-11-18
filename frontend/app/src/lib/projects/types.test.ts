@@ -44,7 +44,6 @@ describe('ProjectDetailSchema', () => {
 describe('TaskListingSchema', () => {
 	it('decodes the details listing including missing ghosts', () => {
 		const listing = v.parse(TaskListingSchema, {
-			tasks: { t1: 'claimed' },
 			counts: { claimed: 1 },
 			total: 1,
 			terminal: 0,

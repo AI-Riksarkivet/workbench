@@ -3,7 +3,7 @@
 	// submission, waiting for a review, reading it), what still keeps it from being submitted, and the transitions they
 	// may make now. A submit saves first; a review that sends the item back carries a note, which its annotator reads
 	// here when they open it again.
-	import { Check, CornerUpLeft, Hand, Send, Undo } from '@lucide/svelte';
+	import { Check, CheckCheck, CornerUpLeft, Hand, Send, Undo } from '@lucide/svelte';
 	import { Button } from '@workbench/ui/button';
 	import { Dialog } from '@workbench/ui/dialog';
 	import { Textarea } from '@workbench/ui/textarea';
@@ -12,7 +12,8 @@
 	import type { TaskDetail } from '#lib/projects/types.ts';
 	import { submittable } from './classes.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
-	import { panelState } from './task-panel.ts';
+	import { panelState, REVIEW_KEYS } from './task-panel.ts';
+	import { keyIsNotTheCanvas } from './walk-keys.ts';
 
 	let {
 		controller,
@@ -52,19 +53,21 @@
 		if (busy) return;
 		busy = event;
 		refused = null;
-		if (event === 'submit') {
-			// What is submitted is what is saved: the item's unsaved edits go first, and a save that fails stops the submit.
+		if (event === 'submit' || event === 'fix_and_accept') {
+			// What is submitted (or accepted with a reviewer's fixes) is what is saved: the item's unsaved edits go first,
+			// and a save that fails stops the transition.
 			await controller.save();
 			if (controller.dirty) {
 				busy = null;
-				refuse(`Not submitted: ${controller.saveError ?? 'the edits were not saved'}.`);
+				refuse(
+					`Not ${event === 'submit' ? 'submitted' : 'accepted'}: ${controller.saveError ?? 'the edits were not saved'}.`,
+				);
 				return;
 			}
 		}
 		const result = await fireTaskEvent({
 			taskId: task.task_id,
 			event,
-			projectId: task.project_id,
 			...(message ? { message } : {}),
 		});
 		busy = null;
@@ -75,14 +78,31 @@
 		} else refuse(result.detail);
 	}
 
+	const REVIEW_HINTS: Record<string, string> = {
+		accept: 'Accept the work as it was submitted (Shift+A)',
+		fix_and_accept: 'Save the fixes you made here and accept the work with them (Shift+F)',
+		request_changes: 'Send it back to its annotator with a note (Shift+R)',
+	};
 	const LABELS: Record<string, string> = {
 		submit: 'Submit for review',
 		release: 'Put back',
 		accept: 'Accept',
+		fix_and_accept: 'Accept with my fixes',
 		request_changes: 'Send back…',
 		claim: 'Claim',
 	};
 	/** What the unclassed marks are called: spans of a text, regions of a picture or a recording, marks when both. */
+	/** A reviewer's verdict by key, from anywhere on the page but a field: Shift+A accepts, Shift+F accepts with the
+	 *  fixes made here, Shift+R opens the note that sends it back. Only what the panel offers. */
+	function onKeydown(e: KeyboardEvent): void {
+		if (panel.mode !== 'reviewing' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (keyIsNotTheCanvas(e)) return;
+		const event = REVIEW_KEYS[e.key.toLowerCase()];
+		if (!event || !panel.actions.includes(event) || noteOpen) return;
+		e.preventDefault();
+		if (event === 'request_changes') noteOpen = true;
+		else void fire(event);
+	}
 	const unlabelledNoun = $derived.by(() => {
 		const spans = blockers.unlabelled.filter((index) => {
 			const row = controller.rows.find((r) => r.index === index);
@@ -91,6 +111,8 @@
 		return spans === 0 ? 'region' : spans === blockers.unlabelled.length ? 'span' : 'mark';
 	});
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <section
 	class="border-border flex flex-col gap-2 border-b px-3 py-2.5"
@@ -166,12 +188,15 @@
 						: 'outline'}
 					class={cn(event === 'submit' && 'flex-1')}
 					disabled={busy !== null || (event === 'submit' && !ready)}
-					title={event === 'submit' && !ready ? 'Fix what the list above names first' : undefined}
+					title={event === 'submit' && !ready
+						? 'Fix what the list above names first'
+						: REVIEW_HINTS[event]}
 					data-testid={`task-${event}`}
 					onclick={() => (event === 'request_changes' ? (noteOpen = true) : void fire(event))}
 				>
 					{#if event === 'submit'}<Send class="size-3.5" />
 					{:else if event === 'accept'}<Check class="size-3.5" />
+					{:else if event === 'fix_and_accept'}<CheckCheck class="size-3.5" />
 					{:else if event === 'request_changes'}<CornerUpLeft class="size-3.5" />
 					{:else if event === 'claim'}<Hand class="size-3.5" />
 					{:else}<Undo class="size-3.5" />{/if}

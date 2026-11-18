@@ -26,6 +26,8 @@ class AnnotationVersion(BaseModel):
     version: int
     timestamp: str
     author: str
+    #: The name the author last wrote under, where one is kept (`annotator.people`).
+    author_name: str | None = None
     count: int
 
 
@@ -39,4 +41,7 @@ async def annotation_versions(
 ) -> list[AnnotationVersion]:
     """The unit's edit history, most recent first: each save the history keeps of the task's work."""
     kept = await store.draft_history(task.task_id, limit=limit)
-    return [AnnotationVersion(version=r.revision, timestamp=r.saved_at.isoformat(), author=r.author, count=r.shapes) for r in kept]
+    names = await store.names_of(r.author for r in kept)
+    return [
+        AnnotationVersion(version=r.revision, timestamp=r.saved_at.isoformat(), author=r.author, author_name=names.get(r.author), count=r.shapes) for r in kept
+    ]

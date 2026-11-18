@@ -86,8 +86,12 @@ export interface Task {
 	review_required: boolean;
 	replica_of: string | null;
 	submitted_by: string | null;
+	submitted_at?: string | null;
 	reviewed_by: string | null;
+	reviewed_at?: string | null;
 	review_action: string | null;
+	sent_at?: string | null;
+	holders?: string[];
 	prediction: { shape_type: string; label: string; source: string }[];
 	review_notes: { by: string; at: string; action: string; message: string }[];
 	/** The ontology captured onto the task at send, which the canvas reads its rules from. */
@@ -216,6 +220,7 @@ interface Project {
 	instructions: string;
 	state: string;
 	review_required: boolean;
+	lease_seconds?: number;
 	consensus_n: number;
 	adjudications: Record<string, { task_id: string; by: string; at: string }>;
 	ontology: Record<string, unknown>;
@@ -231,7 +236,19 @@ interface World {
 	tasks: Map<string, Task>;
 	grants: Map<string, { user: string; relation: string }[]>;
 	drafts: Map<string, Draft>;
+	/** The name each principal's own token carried when they last wrote (`annotator.people`). */
+	people: Map<string, string>;
 }
+
+/** The names the seeded people wrote under, as the annotator would have kept them from their tokens. `user:gone` never
+ *  wrote, so the pages show their principal. */
+const SEEDED_NAMES: Record<string, string> = {
+	'user:alpha': 'Alma Alpha',
+	'user:beta': 'Bert Beta',
+	'user:someone-else': 'Sam Else',
+	'user:reviewer-x': 'Rex Reviewer',
+	'user:other-annotator': 'Otto Other',
+};
 
 const worlds = new Map<string, World>();
 /** A lease an hour from the seed, as a claim takes one. */
@@ -535,13 +552,40 @@ function seed(sub: string): World {
 			media: { kind: 'text', image_url: null, media_url: null },
 		}),
 	);
+	// A project a reviewer judges one item at a time: three items in review, each another annotator's, and one already
+	// accepted, for browsing. Every item holds the two boxes of `PAGE_ROWS`, a figure and a caption.
+	projects.set('judging', project('judging', { title: 'Judging', ontology: pagesOntology }));
+	for (const [id, state, key, by] of [
+		['judging-a', 'in_review', 'letter-001/0', 'user:alpha'],
+		['judging-b', 'in_review', 'letter-002/0', 'user:beta'],
+		['judging-c', 'in_review', 'map-003/0', 'user:someone-else'],
+		['judging-d', 'accepted', 'letter-001/1', 'user:alpha'],
+	] as const)
+		tasks.set(
+			id,
+			task('judging', id, state, key, {
+				submitted_by: by,
+				submitted_at: '2026-11-17T10:00:00Z',
+				holders: [by],
+				...(state === 'accepted'
+					? {
+							reviewed_by: 'user:reviewer-x',
+							reviewed_at: '2026-11-17T11:00:00Z',
+							review_action: 'accepted',
+						}
+					: {}),
+				ontology: pagesOntology,
+			}),
+		);
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
 	const drafts = new Map<string, Draft>();
 	const seededAt = new Date().toISOString();
 	for (const t of tasks.values()) {
-		const pages = t.project_id === 'pages' && t.source.keys[0] === 'letter-001/0';
+		const pages =
+			(t.project_id === 'pages' && t.source.keys[0] === 'letter-001/0') ||
+			t.project_id === 'judging';
 		const rows = REPLICA_ROWS[t.task_id] ?? (pages ? PAGE_ROWS : []);
 		if (rows.length === 0) continue;
 		const seeded = structuredClone(rows);
@@ -552,7 +596,7 @@ function seed(sub: string): World {
 			history: [{ version: 1, timestamp: seededAt, author: 'seed', rows: seeded }],
 		});
 	}
-	return { role, projects, tasks, grants, drafts };
+	return { role, projects, tasks, grants, drafts, people: new Map(Object.entries(SEEDED_NAMES)) };
 }
 
 /** Whether `sub` may read a task's work: any task they may view, but a consensus replica only when it is theirs or
@@ -642,10 +686,26 @@ export async function projectsDoor(
 	sub: string,
 	record: (status: number) => void,
 	fault: 'fail' | 'unbuilt' | 'slow' | undefined,
+	name?: string,
 ): Promise<Response | null> {
 	const path = url.pathname;
 	if (!path.startsWith('/projects') && !path.startsWith('/tasks/')) return null;
 	const world = worldOf(sub);
+	// A write keeps the name the caller's own token carries (`annotator.people.record_person`).
+	if (req.method !== 'GET' && name) world.people.set(sub, name);
+	const namesOf = (principals: Iterable<string | null | undefined>): Record<string, string> =>
+		Object.fromEntries(
+			[...new Set(principals)]
+				.filter((p): p is string => !!p && world.people.has(p))
+				.map((p) => [p, world.people.get(p) ?? '']),
+		);
+	const principalsOf = (t: Task): (string | null | undefined)[] => [
+		t.assignee,
+		t.submitted_by,
+		t.reviewed_by,
+		...(t.holders ?? []),
+		...t.review_notes.map((n) => n.by),
+	];
 	const answer = (body: unknown, status = 200): Response => {
 		record(status);
 		return json(body, status);
@@ -723,23 +783,179 @@ export async function projectsDoor(
 			const refused = unseen();
 			if (refused) return refused;
 			const all = [...world.tasks.values()].filter((t) => t.project_id === id);
-			const states = Object.fromEntries(all.map((t) => [t.task_id, t.state]));
 			const terminal = all.filter((t) => TERMINAL.has(t.state)).length;
 			const frozen = p !== undefined && ['publishing', 'published', 'archived'].includes(p.state);
+			const q = url.searchParams;
+			const include = q.getAll('include');
+			// The annotator's filters (`annotator.state.task_query.TaskFilter`), each over what the mock's tasks hold.
+			const labelsOf = (t: Task): string[] => [
+				...(world.drafts.get(t.task_id)?.rows ?? []).map((r) => String(r.label ?? '')),
+				...t.prediction.map((s) => s.label),
+			];
+			const holder = q.get('holder');
+			const matches = (t: Task, withStates: boolean): boolean =>
+				(!withStates || q.getAll('state').length === 0 || q.getAll('state').includes(t.state)) &&
+				(q.get('assignee') === null || t.assignee === q.get('assignee')) &&
+				(q.get('reviewer') === null || t.reviewed_by === q.get('reviewer')) &&
+				(q.get('submitter') === null || t.submitted_by === q.get('submitter')) &&
+				(q.get('not_submitter') === null || t.submitted_by !== q.get('not_submitter')) &&
+				(holder === null ||
+					t.assignee === holder ||
+					t.submitted_by === holder ||
+					(t.holders ?? []).includes(holder)) &&
+				(q.get('label') === null || labelsOf(t).includes(q.get('label') ?? '')) &&
+				(q.get('dataset') === null || t.source.where === q.get('dataset')) &&
+				(q.get('group') === null || t.replica_of === q.get('group')) &&
+				(q.get('replicas') !== 'true' || t.replica_of !== null);
+			const ORDER = [
+				'unassigned',
+				'claimed',
+				'changes_requested',
+				'in_review',
+				'accepted',
+				'skipped',
+			];
+			const sort = q.get('sort') ?? 'item';
+			const keyOf = (t: Task): string | number | null =>
+				sort === 'state'
+					? ORDER.indexOf(t.state)
+					: sort === 'assignee'
+						? t.assignee
+						: sort === 'submitted'
+							? (t.submitted_at ?? null)
+							: sort === 'reviewed'
+								? (t.reviewed_at ?? null)
+								: sort === 'sent'
+									? (t.sent_at ?? null)
+									: t.task_id;
+			const desc = q.get('order') === 'desc';
+			const matched = all
+				.filter((t) => matches(t, true))
+				.sort((a, b) => {
+					const ka = keyOf(a);
+					const kb = keyOf(b);
+					if (sort === 'item')
+						return desc ? b.task_id.localeCompare(a.task_id) : a.task_id.localeCompare(b.task_id);
+					if (ka !== kb) {
+						if (ka === null) return 1;
+						if (kb === null) return -1;
+						return (ka < kb ? -1 : 1) * (desc ? -1 : 1);
+					}
+					return a.task_id.localeCompare(b.task_id);
+				});
+			const limit = Number(q.get('limit') ?? 100);
+			let offset = Number(q.get('offset') ?? 0);
+			const around = q.get('around');
+			const position = around === null ? -1 : matched.findIndex((t) => t.task_id === around);
+			if (position >= 0) offset = Math.max(0, position - Math.floor(limit / 2));
+			const pageOf = matched.slice(offset, offset + limit);
+			const stateCounts: Record<string, number> = Object.fromEntries(ORDER.map((st) => [st, 0]));
+			for (const t of all)
+				if (matches(t, false)) stateCounts[t.state] = (stateCounts[t.state] ?? 0) + 1;
+			const contributors = new Map<
+				string,
+				{
+					principal: string;
+					submitted: number;
+					accepted: number;
+					changes_requested: number;
+					open: number;
+					reviewed: number;
+				}
+			>();
+			const of = (who: string) => {
+				const row = contributors.get(who) ?? {
+					principal: who,
+					submitted: 0,
+					accepted: 0,
+					changes_requested: 0,
+					open: 0,
+					reviewed: 0,
+				};
+				contributors.set(who, row);
+				return row;
+			};
+			for (const t of all) {
+				if (t.submitted_by) {
+					const row = of(t.submitted_by);
+					row.submitted += 1;
+					if (t.state === 'accepted') row.accepted += 1;
+					else if (t.review_action === 'request_changes' || t.state === 'changes_requested')
+						row.changes_requested += 1;
+				}
+				if (
+					t.assignee &&
+					!t.submitted_by &&
+					['unassigned', 'claimed', 'changes_requested'].includes(t.state)
+				)
+					of(t.assignee).open += 1;
+				if (t.reviewed_by) of(t.reviewed_by).reviewed += 1;
+			}
+			const people = [
+				...(include.includes('details') ? pageOf.flatMap(principalsOf) : []),
+				...(include.includes('contributors') ? [...contributors.keys()] : []),
+			];
 			return answer({
-				tasks: states,
 				counts: counts(world, id),
 				total: all.length,
 				terminal,
 				may_publish: all.length > 0 && terminal === all.length,
-				...(url.searchParams.get('include') === 'details'
+				...(include.includes('details')
 					? {
-							details: all.map((t) => ({ ...t, legal_events: legalTask(t.state, frozen) })),
+							details: pageOf.map((t) => ({ ...t, legal_events: legalTask(t.state, frozen) })),
 							missing: [],
-							next_cursor: null,
+							matched: matched.length,
+							state_counts: stateCounts,
+							offset,
+							position: position >= 0 ? position : null,
+							datasets: [
+								...new Set(all.map((t) => t.source.where).filter((w): w is string => !!w)),
+							].sort(),
 						}
 					: {}),
+				...(include.includes('contributors')
+					? {
+							contributors: [...contributors.values()].sort(
+								(a, b) =>
+									b.submitted - a.submitted ||
+									b.open - a.open ||
+									b.reviewed - a.reviewed ||
+									a.principal.localeCompare(b.principal),
+							),
+						}
+					: {}),
+				...(people.length > 0 ? { people: namesOf(people) } : {}),
 			});
+		}
+		if (rest === '' && req.method === 'PATCH') {
+			const refused = gate('can_manage');
+			if (refused) return refused;
+			if (!p) return answer({ detail: `annotation project ${id} does not exist` }, 404);
+			const b = await body();
+			if (['publishing', 'published', 'archived'].includes(p.state))
+				return answer(
+					{ detail: `project ${id} is ${p.state}: its settings are fixed once a publish starts` },
+					409,
+				);
+			if (
+				b.consensus_n !== undefined &&
+				b.consensus_n !== p.consensus_n &&
+				[...world.tasks.values()].some((t) => t.project_id === id)
+			)
+				return answer(
+					{ detail: `project ${id} holds items: the consensus is fixed once items are sent` },
+					409,
+				);
+			for (const key of [
+				'title',
+				'description',
+				'instructions',
+				'review_required',
+				'lease_seconds',
+				'consensus_n',
+			] as const)
+				if (b[key] !== undefined) (p as unknown as Record<string, unknown>)[key] = b[key];
+			return answer(withCounts(world, p));
 		}
 		if (rest === '/events' && req.method === 'POST') {
 			const hidden = unseen();
@@ -838,6 +1054,7 @@ export async function projectsDoor(
 			const list = () => ({
 				members: [...grants].sort((a, b) => a.user.localeCompare(b.user)),
 				grantable: [...ROLES],
+				people: namesOf(grants.map((g) => `user:${g.user.replace(/^user:/, '')}`)),
 			});
 			if (req.method === 'GET') return gate('can_manage') ?? answer(list());
 			const { user, relation } =
@@ -867,7 +1084,7 @@ export async function projectsDoor(
 					409,
 				);
 			world.grants.set(id, left);
-			return answer({ members: left, grantable: [...ROLES] });
+			return answer({ ...list(), members: left });
 		}
 		const adjudication = /^\/adjudications\/([\w-]+)$/.exec(rest);
 		if (adjudication && p) {
@@ -902,7 +1119,12 @@ export async function projectsDoor(
 		const frozen = ['publishing', 'published', 'archived'].includes(
 			world.projects.get(t.project_id)?.state ?? '',
 		);
-		if (!draft) return answer({ ...t, legal_events: legalTask(t.state, frozen) });
+		if (!draft)
+			return answer({
+				...t,
+				legal_events: legalTask(t.state, frozen),
+				people: namesOf(principalsOf(t)),
+			});
 		// A consensus replica's work is its annotator's and its reviewers' (`tasks.require_work_readable`).
 		if (!mayReadWork(t, sub, perms))
 			return answer(
@@ -977,20 +1199,30 @@ export async function projectsDoor(
 		if (event === 'claim') {
 			t.assignee = sub;
 			t.lease_expires_at = later();
+			t.holders = [...new Set([...(t.holders ?? []), sub])];
 		}
 		if (event === 'assign') {
 			t.assignee = assignee ?? null;
 			t.lease_expires_at = null;
 		}
 		if (event === 'release') t.assignee = null;
-		if (event === 'submit') t.submitted_by = sub;
+		if (event === 'submit') {
+			t.submitted_by = sub;
+			t.submitted_at = new Date().toISOString();
+			t.assignee = null;
+		}
 		if (['accept', 'fix_and_accept', 'request_changes'].includes(event)) {
 			t.reviewed_by = sub;
+			t.reviewed_at = new Date().toISOString();
 			t.review_action = event === 'accept' ? 'accepted' : event;
 			if (message)
 				t.review_notes.push({ by: sub, at: new Date().toISOString(), action: event, message });
 		}
-		return answer({ ...t, legal_events: legalTask(t.state, false) });
+		return answer({
+			...t,
+			legal_events: legalTask(t.state, false),
+			people: namesOf(principalsOf(t)),
+		});
 	}
 	return null;
 }

@@ -30,8 +30,9 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as ev
-from annotator.projects.models import AnnotationProject, Draft, ProjectState, Task
+from annotator.projects.models import MAX_SOURCE_KEYS, AnnotationProject, Draft, ProjectState, Task
 from annotator.state.store import AnnotatorStore
+from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
@@ -67,7 +68,7 @@ class _Door:
 
     def tasks(self) -> list[Task]:
         async def held(store: AnnotatorStore) -> list[Task]:
-            return await store.get_tasks("p1", sorted((await store.task_index("p1")).tasks))
+            return (await store.task_page("p1", TaskFilter(), sort=TaskSort.ITEM, order=SortOrder.ASC, limit=200, offset=0))[2]
 
         return self.call(held)
 
@@ -188,3 +189,31 @@ def test_every_replica_carries_the_same_prediction(wired: Any) -> None:
 
     assert r.status_code == 201, r.text
     assert [(t.task_id, [s.label for s in t.prediction]) for t in door.tasks()] == [(f"t1-r{k}", ["letter"]) for k in (1, 2, 3)]
+
+
+@pytest.mark.parametrize(
+    ("item", "field"),
+    [
+        pytest.param(
+            _item([{"shape_type": "tag", "label": "x", "attributes": {"da\x00te": "1701"}}]),
+            "body.items.0.prediction.0.attributes.da\x00te.[key]",
+            id="a-nul-in-an-attribute-name",
+        ),
+        pytest.param(_item([{"shape_type": "spaceship", "label": "x"}]), "body.items.0.prediction.0.shape_type", id="a-shape-type-no-shape-has"),
+        pytest.param(
+            {**_item(), "source": {"kind": "chunks", "keys": [f"page-{i}" for i in range(MAX_SOURCE_KEYS + 1)]}},
+            "body.items.0.source.keys",
+            id="more-keys-than-a-source-names",
+        ),
+    ],
+)
+def test_an_item_the_send_cannot_store_is_refused_naming_its_field(wired: Any, item: dict[str, Any], field: str) -> None:
+    """A NUL in a prediction's attribute NAME (a mapping's key, four levels into the body), a shape type no stored shape
+    has, or a source past what a sender may name, is a 422 that names its place, and nothing is sent."""
+    door = wired(ontology={})
+
+    r = door.client.post("/projects/p1/items", json={"items": [item]})
+
+    assert r.status_code == 422, r.text
+    assert [e["field"] for e in r.json()["errors"]] == [field]
+    assert door.tasks() == []

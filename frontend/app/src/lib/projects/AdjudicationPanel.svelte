@@ -7,25 +7,31 @@
 	import { Button } from '@workbench/ui/button';
 	import { Card } from '@workbench/ui/card';
 
-	import { adjudicate, clearAdjudication } from '#lib/api/projects.api.ts';
+	import { adjudicate, clearAdjudication, pageTasks } from '#lib/api/projects.api.ts';
 	import { taskStateVariant } from './presentation.ts';
 	import type { Adjudication, TaskDetail } from './types.ts';
 
 	let {
 		projectId,
-		tasks,
 		adjudications,
 		mayManage = true,
 		onchanged,
 	}: {
 		projectId: string;
-		tasks: TaskDetail[];
 		adjudications: Record<string, Adjudication>;
 		/** Whether the READER holds `can_manage`: picking the canonical replica is a manager's. */
 		mayManage?: boolean;
 		/** Fired after a successful pick so the page refetches ONE snapshot. */
 		onchanged: () => void;
 	} = $props();
+
+	// The project's replicas, a page of them in item order, so each group's members are read together.
+	const REPLICA_PAGE = 200;
+	const read = $derived(
+		pageTasks({ projectId, filter: 'replicas=true&sort=item', limit: REPLICA_PAGE }),
+	);
+	const listing = $derived(read.current?.ok ? read.current.data : null);
+	const tasks = $derived<TaskDetail[]>(listing?.details ?? []);
 
 	const groups = $derived.by(() => {
 		const byGroup = new Map<string, TaskDetail[]>();
@@ -53,6 +59,7 @@
 		const result = await adjudicate({ projectId, groupId: group, taskId });
 		busy = null;
 		if (result.ok) {
+			void read.refresh();
 			onchanged();
 			return;
 		}
@@ -66,6 +73,7 @@
 		const result = await clearAdjudication({ projectId, groupId: group });
 		busy = null;
 		if (result.ok) {
+			void read.refresh();
 			onchanged();
 			return;
 		}
@@ -88,6 +96,11 @@
 		</div>
 		{#if notice}
 			<p class="text-destructive text-xs">{notice}</p>
+		{/if}
+		{#if (listing?.matched ?? 0) > tasks.length}
+			<p class="text-warning text-xs" role="status">
+				The first {tasks.length} of {listing?.matched} replicas, in item order, are shown here.
+			</p>
 		{/if}
 		{#each groups as { group, members } (group)}
 			{@const current = adjudications[group]}

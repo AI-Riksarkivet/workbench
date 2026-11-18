@@ -23,9 +23,19 @@ from annotator.api.dependencies import StoreDep
 from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, require_view, unseen_project
 from annotator.api.v1.responses import LegalEvent, ProjectDetail, ProjectListing
 from annotator.audit_actions import AnnotatorAuditAction
+from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import IllegalTransition, legal_project_events
-from annotator.projects.models import AnnotationProject, ProjectState
-from annotator.projects.ontology import LabelOntology
+from annotator.projects.models import (
+    DESCRIPTION_MAX,
+    INSTRUCTIONS_MAX,
+    LEASE_MAX_SECONDS,
+    TITLE_MAX,
+    AnnotationProject,
+    ProjectSettings,
+    ProjectState,
+)
+from annotator.projects.ontology import RequestOntology
+from annotator.text import Text
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Authorizer, Grant, user_object
@@ -34,7 +44,7 @@ from service_kit.naming import CONTROL_ID_PATTERN
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["annotation-projects"])
+router = APIRouter(prefix="/projects", tags=["annotation-projects"], dependencies=RECORDS_PERSON)
 
 #: The relation guarding creation, on the organisation: labeling is ordinary org work, and the creator becomes the new
 #: project's owner.
@@ -54,22 +64,22 @@ READER_PERMISSIONS: Final[tuple[str, ...]] = ("can_administer", "can_manage", "c
 class CreateProjectRequest(BaseModel):
     """The create payload. `tenant` is the authz parent, so it is required and never inferred."""
 
-    tenant: str = Field(min_length=1)
+    tenant: Annotated[Text, Field(min_length=1, max_length=256)]
     #: The lakehouse warehouse publishes land in; empty means the warehouse named like the tenant.
     warehouse: str = Field(default="", pattern=rf"^(?:{CONTROL_ID_PATTERN})?$")
-    slug: str = Field(min_length=1)
-    title: str = ""
-    description: str = ""
+    slug: Annotated[Text, Field(min_length=1, max_length=128)]
+    title: Annotated[Text, Field(max_length=TITLE_MAX)] = ""
+    description: Annotated[Text, Field(max_length=DESCRIPTION_MAX)] = ""
     #: Annotator-facing labeling instructions (how to label) — distinct from `description` (what/why).
-    instructions: str = Field(default="", max_length=20_000)
+    instructions: Annotated[Text, Field(max_length=INSTRUCTIONS_MAX)] = ""
     review_required: bool = True
-    lease_seconds: int = Field(default=1800, gt=0)
+    lease_seconds: int = Field(default=1800, gt=0, le=LEASE_MAX_SECONDS)
     #: Consensus v1 — create-only by design: `send` derives the replica count from it and the
     #: claim guard enumerates siblings with it, so changing it mid-flight would orphan replicas.
     consensus_n: int = Field(default=1, ge=1, le=5)
     #: The whole task definition — taxonomy, per-class tools, attributes, relations. Validated by
     #: its own model; absent means an unconstrained project.
-    ontology: LabelOntology = Field(default_factory=LabelOntology)
+    ontology: RequestOntology = Field(default_factory=RequestOntology)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -102,7 +112,7 @@ async def create_annotation_project(
         review_required=payload.review_required,
         lease_seconds=payload.lease_seconds,
         consensus_n=payload.consensus_n,
-        ontology=payload.ontology,
+        ontology=payload.ontology.stored(),
         state=ProjectState.DRAFT,
         created_by=subject,
     )
@@ -151,7 +161,7 @@ class ListedFor(StrEnum):
 
 @router.get("")
 async def list_projects(
-    tenant: Annotated[str, Query(min_length=1)],
+    tenant: Annotated[Text, Query(min_length=1, max_length=256)],
     checker: CheckerDep,
     authz: AuthorizerDep,
     subject: CurrentSubject,
@@ -201,7 +211,7 @@ async def get_project(project_id: ProjectId, checker: CheckerDep, subject: Curre
 class UpdateOntologyRequest(BaseModel):
     """The whole ontology, replaced. Not a partial merge — see the route."""
 
-    ontology: LabelOntology
+    ontology: RequestOntology
 
 
 #: Editing the task definition is a MANAGE act, not a labeling one: it changes what every future
@@ -232,8 +242,35 @@ async def update_project_ontology(
     if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
     try:
-        stored = await store.set_ontology(project_id, payload.ontology)
+        stored = await store.set_ontology(project_id, payload.ontology.stored())
     except IllegalTransition as exc:
         raise ConflictError(str(exc)) from exc
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_ONTOLOGY, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=MANAGE_RELATION)
+    return stored
+
+
+@router.patch("/{project_id}")
+async def update_project_settings(
+    project_id: ProjectId,
+    payload: ProjectSettings,
+    checker: CheckerDep,
+    subject: CurrentSubject,
+    store: StoreDep,
+) -> AnnotationProject:
+    """Change a project's title, description, instructions, review and claim settings, or its consensus.
+
+    403 without `can_manage`; 404 for no such project; 409 when the project's state, or the items it already holds, keep a
+    setting fixed (`AnnotatorStore.update_settings` names which). Only the fields the body names change.
+    """
+    obj = f"project:{project_id}"
+    if not await checker(user=subject, relation=MANAGE_RELATION, obj=obj):
+        audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_SETTINGS, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation=MANAGE_RELATION)
+        raise ForbiddenError(f"{subject} lacks {MANAGE_RELATION} on {obj}")
+    if await store.get_project(project_id) is None:
+        raise NotFoundError(f"annotation project {project_id} does not exist")
+    try:
+        stored = await store.update_settings(project_id, payload)
+    except IllegalTransition as exc:
+        raise ConflictError(str(exc)) from exc
+    audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_SETTINGS, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=MANAGE_RELATION)
     return stored

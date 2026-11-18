@@ -6,6 +6,9 @@
  * The holder of a claim edits it, with `can_annotate`; a reviewer edits work in review they did not submit, with
  * `can_review` (a fix before `fix_and_accept`). Everyone else reads.
  */
+import { personName } from '#lib/projects/people.ts';
+import type { People } from '#lib/projects/types.ts';
+
 export interface EditableTask {
 	state: string;
 	assignee?: string | null;
@@ -17,12 +20,13 @@ export function readOnlyReason(
 	task: EditableTask,
 	permissions: readonly string[],
 	me: string | null,
+	people: People = {},
 ): string | null {
 	if (task.state === 'claimed') {
 		if (!permissions.includes('can_annotate'))
 			return 'You view this project: the canvas is read-only.';
 		if (task.assignee !== me)
-			return `This item is held by ${task.assignee ?? 'someone else'}: the canvas is read-only.`;
+			return `This item is held by ${task.assignee ? personName(task.assignee, people) : 'someone else'}: the canvas is read-only.`;
 		return null;
 	}
 	if (task.state === 'in_review') {

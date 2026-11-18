@@ -18,7 +18,8 @@
 	import { EVENT_LABELS, taskStateVariant } from './presentation.ts';
 	import { neighbours } from './quick-view.ts';
 	import { taskImageUrl } from './task-media.ts';
-	import type { TaskDetail } from './types.ts';
+	import PersonName from './PersonName.svelte';
+	import type { People, TaskDetail } from './types.ts';
 
 	let {
 		open = $bindable(false),
@@ -28,6 +29,7 @@
 		onfire,
 		canvasHref,
 		canvasVerb,
+		people = {},
 	}: {
 		open?: boolean;
 		/** Which task is open. Bindable so prev/next move it without the parent mediating. */
@@ -41,6 +43,8 @@
 		onfire?: (task: TaskDetail, event: string) => void;
 		/** The item's labeling page, for one that needs shapes drawn. */
 		canvasHref: (task: TaskDetail) => string;
+		/** The names of the people the tasks name. */
+		people?: People;
 		/** What opening it does for this reader: annotate, or view read-only. */
 		canvasVerb: (task: TaskDetail) => string;
 	} = $props();
@@ -134,7 +138,10 @@
 		{#if task.review_notes.length > 0}
 			<ul class="text-muted-foreground flex flex-col gap-1 text-xs">
 				{#each task.review_notes as note, i (i)}
-					<li><span class="font-medium">{note.by}:</span> {note.message}</li>
+					<li>
+						<span class="font-medium"><PersonName principal={note.by} {people} />:</span>
+						{note.message}
+					</li>
 				{/each}
 			</ul>
 		{/if}

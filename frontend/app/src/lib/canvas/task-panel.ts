@@ -5,6 +5,7 @@
  * The panel offers only the transitions the task's own `legal_events` list and the person's permissions would let
  * through; the door decides (`annotator.projects.machines`).
  */
+import { personName as nameIn } from '#lib/projects/people.ts';
 import type { TaskDetail } from '#lib/projects/types.ts';
 
 export type PanelMode =
@@ -29,10 +30,6 @@ export interface PanelState {
 	note: { by: string; message: string } | null;
 }
 
-/** What a principal is called in the panel: the subject after its idp (`dex~ada` reads `ada`). */
-const personName = (principal: string | null | undefined): string =>
-	!principal ? 'someone' : (principal.split('~').at(-1) ?? principal);
-
 /** The transitions this person may fire from the task's state now, among `wanted`. */
 function offered(task: TaskDetail, permissions: readonly string[], wanted: string[]): string[] {
 	return task.legal_events
@@ -45,6 +42,9 @@ export function panelState(
 	permissions: readonly string[],
 	me: string | null,
 ): PanelState {
+	// People by the name they last wrote under, where the annotator keeps one (`#lib/projects/people.ts`).
+	const personName = (principal: string | null | undefined): string =>
+		nameIn(principal, task.people);
 	const notes = task.review_notes.filter((n) => n.message);
 	const last = notes.at(-1);
 	const sentBack =
@@ -75,8 +75,9 @@ export function panelState(
 				return {
 					mode: 'reviewing',
 					title: `Reviewing ${personName(task.submitted_by)}’s work`,
-					detail: 'Accept it, or send it back with a note saying what to change.',
-					actions: offered(task, permissions, ['accept', 'request_changes']),
+					detail:
+						'Accept it, fix it here and accept it with your fixes, or send it back with a note saying what to change.',
+					actions: offered(task, permissions, ['accept', 'fix_and_accept', 'request_changes']),
 					note: null,
 				};
 			return {
@@ -127,3 +128,10 @@ export function panelState(
 			};
 	}
 }
+
+/** The keys a reviewer judges an item by (with Shift, so the canvas's own A and R keep judging one annotation). */
+export const REVIEW_KEYS: Record<string, string> = {
+	a: 'accept',
+	f: 'fix_and_accept',
+	r: 'request_changes',
+};

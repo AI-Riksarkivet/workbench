@@ -13,11 +13,13 @@ import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from annotator.projects.models import Link, ShapeType
+from annotator.text import MAX_ID, MAX_MASK, MAX_METADATA, MAX_TEXT, Id, Name, Text
 
 
-#: An annotation's id: the canvas mints ids of a few dozen characters, and a chunk tag's id names its document, its keys
-#: and its percent-encoded label (`annotator.annotations.tags.tag_id`), a few hundred at most.
-MAX_ID_LENGTH = 1024
+#: An annotation's id, and either end of a link, which names one: the canvas mints ids of a few dozen characters, a chunk
+#: tag's id names its document, its keys and its percent-encoded label (`annotator.annotations.tags.tag_id`), and an
+#: import carries the ids another tool minted. One bound for every door that takes a shape id (`annotator.text.MAX_ID`).
+MAX_ID_LENGTH = MAX_ID
 
 #: A track's group: the canvas mints a dozen characters (`trk-` and a base-36 number).
 MAX_GROUP_LENGTH = 128
@@ -29,10 +31,10 @@ MAX_SAVE_ROWS = 5000
 #: The links one save may state: the whole set of the item's relations, which a person draws one by one.
 MAX_SAVE_LINKS = 5000
 
-RowId = Annotated[str, Field(min_length=1, max_length=MAX_ID_LENGTH)]
+RowId = Annotated[Text, Field(min_length=1, max_length=MAX_ID_LENGTH)]
 #: A tag's label: a class name, as long as a sender's prediction label may be.
-Label = Annotated[str, Field(min_length=1, max_length=128)]
-Group = Annotated[str, Field(max_length=MAX_GROUP_LENGTH)]
+Label = Annotated[Text, Field(min_length=1, max_length=128)]
+Group = Annotated[Text, Field(max_length=MAX_GROUP_LENGTH)]
 #: A moment in the item's media, in seconds from its start.
 Seconds = Annotated[float, Field(ge=0.0)]
 #: The largest offset the table's `char_start`/`char_end` (int32) holds.
@@ -66,12 +68,12 @@ class AnnotationEdit(BaseModel):
     """One reviewed annotation: its id + only the fields that changed."""
 
     id: RowId
-    label: str | None = None
-    status: str | None = None
-    text: str | None = None
+    label: Annotated[Text, Field(max_length=128)] | None = None
+    status: Name | None = None
+    text: Annotated[Text, Field(max_length=MAX_TEXT)] | None = None
     group: Group | None = None
-    reviewer: str | None = None
-    metadata: str | None = None
+    reviewer: Name | None = None
+    metadata: Annotated[Text, Field(max_length=MAX_METADATA)] | None = None
 
 
 class NewAnnotation(BaseModel):
@@ -95,26 +97,26 @@ class NewAnnotation(BaseModel):
     polygon: list[float] = Field(default_factory=list)
     t_start: Seconds = 0.0
     t_end: Seconds = 0.0
-    text: str = ""
-    label: str = ""
-    status: str = "accepted"
-    source: str = "human"
+    text: Annotated[Text, Field(max_length=MAX_TEXT)] = ""
+    label: Annotated[Text, Field(max_length=128)] = ""
+    status: Name = "accepted"
+    source: Name = "human"
     group: Group = ""
-    mask: str = ""
+    mask: Annotated[Text, Field(max_length=MAX_MASK)] = ""
     #: The TEXTUAL facet — a span INTO another row's ``text`` (token classification, the value half
     #: of KIE). Sentinels match the client's ``makeInsertRow``: empty/-1 on every non-span row, so a
     #: default never fakes a zero-length span at offset 0. These MUST be declared here even though
     #: the table schema already carries the columns: pydantic ignores unknown payload fields, so an
     #: undeclared field is not a 422 — it is a column that silently lands null. Text spans shipped
     #: exactly that way: rendered from the client overlay, saved, and read back pointing at nothing.
-    parent_id: str = ""
+    parent_id: Id = ""
     char_start: Annotated[int, Field(ge=-1, le=INT32_MAX)] = -1
     char_end: Annotated[int, Field(ge=-1, le=INT32_MAX)] = -1
     #: Per-row ATTRIBUTES — the ontology's typed per-class fields (`reading order`, `script`,
     #: `damaged`…), as a JSON object of string values (the submit validator parses int/bool/enum
     #: from strings). ``{}`` rather than ``""``: the column is `pa.json_()` and an empty string is
     #: not valid JSON.
-    metadata: str = "{}"
+    metadata: Annotated[Text, Field(max_length=MAX_METADATA)] = "{}"
     #: The active-learning scores a PREDICTION row carries (the review queue ranks by them). None —
     #: the human-drawn default — lands as null: a person's shape has no model score, and inventing
     #: one (1.0 "confidence") would let human rows shuffle into the model-ranked half of the queue.
@@ -178,6 +180,17 @@ class SpanEdit(BaseModel):
         return self
 
 
+class LinkIn(BaseModel):
+    """A link as a save states it: the stored `Link`, held to the bounds of what comes in."""
+
+    name: Name
+    from_shape: RowId
+    to_shape: RowId
+
+    def stored(self) -> Link:
+        return Link(name=self.name, from_shape=self.from_shape, to_shape=self.to_shape)
+
+
 class SaveAnnotations(BaseModel):
     """The change a Save makes to one unit's work, applied to the task's draft in one transaction: field edits, newly
     drawn shapes, moved geometry, resized times, re-anchored spans, deleted ids and, when the relations changed, the
@@ -195,7 +208,7 @@ class SaveAnnotations(BaseModel):
     deletes: list[RowId] = Field(default_factory=list)
     #: The item's links after this save, all of them, or None to leave them as they are (a deleted shape's links go
     #: with it either way).
-    links: list[Link] | None = Field(default=None, max_length=MAX_SAVE_LINKS)
+    links: list[LinkIn] | None = Field(default=None, max_length=MAX_SAVE_LINKS)
     base_version: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
@@ -221,7 +234,7 @@ class TagWrite(BaseModel):
     """One unit + the tag labels to set on it. ``keys`` are the NON-doc identity fields, positional — they pair with
     ``descriptor.identity.key_fields`` minus the doc key (a chunk tag sends ``keys=[speech_id, chunk_id]``)."""
 
-    doc_id: str
+    doc_id: Id
     keys: list[int] = Field(default_factory=list, max_length=16)
     labels: list[Label] = Field(default_factory=list, max_length=MAX_SAVE_ROWS)
 

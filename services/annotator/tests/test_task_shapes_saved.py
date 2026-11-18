@@ -27,6 +27,7 @@ from annotator.core.config import AnnotatorSettings
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Task
 from annotator.projects.ontology import LabelOntology
 from annotator.state.store import AnnotatorStore
+from annotator.text import MAX_JSON_DEPTH, MAX_MASK
 
 
 UNIT = f"/api/annotations/{'a' * 16}/0/19"
@@ -125,7 +126,7 @@ async def test_assist_predictions_are_filtered_by_the_composite_ontology(state_s
     )
     store = await AnnotatorStore.open(state_settings)
     try:
-        await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="layout", state=ProjectState.LABELING))
+        await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="layout", state=ProjectState.LABELING, ontology=ontology))
         await store.send_tasks(
             "p1", [Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks", keys=["d1"]), media=MediaRef(kind="image"), ontology=ontology)]
         )
@@ -147,3 +148,88 @@ async def test_assist_predictions_are_filtered_by_the_composite_ontology(state_s
     # `rectangle` (a producer dialect) normalized to `bbox` and accepted; `mask` refused.
     assert [s.shape_type for s in kept] == ["polygon", "bbox"]
     assert len(dropped) == 1 and "mask" in dropped[0]
+
+
+@pytest.mark.parametrize(
+    ("mask_chars", "status"),
+    [
+        pytest.param(1_324_798, 200, id="a-whole-page-brushed-mask"),
+        pytest.param(MAX_MASK + 1, 422, id="past-the-bound"),
+    ],
+)
+def test_a_mask_is_kept_up_to_its_bound_and_one_past_it_is_refused_naming_it(work_client: TestClient, mask_chars: int, status: int) -> None:
+    """A mask is a PNG data URL of the region over its box; a 4096 x 4096 page with a brushed region measures 1.32 MB.
+    One past `MAX_MASK` (half a draft's 8 MiB) is refused before its content is read, the field named."""
+    mask = "data:image/png;base64," + "A" * (mask_chars - 22)
+
+    r = work_client.post(UNIT, params=QUERY, json={"base_version": 0, "inserts": [{"id": "m1", "shape_type": "mask", "mask": mask}]})
+
+    assert r.status_code == status, r.text[:300]
+    if status == 422:
+        assert [e["field"] for e in r.json()["errors"]] == ["body.inserts.0.mask"]
+
+
+_BOX = {"shape_type": "bbox", "x": 1.0, "y": 1.0, "width": 2.0, "height": 2.0}
+
+
+UNSTORABLE = (422, "the task's work cannot be kept: ")
+
+
+def _nested(levels: int) -> str:
+    """An attributes object whose one value nests ``levels - 1`` arrays: ``levels`` deep in all."""
+    return '{"k":' + "[" * (levels - 1) + "]" * (levels - 1) + "}"
+
+
+@pytest.mark.parametrize(
+    ("change", "answer"),
+    [
+        pytest.param({"inserts": [{**_BOX, "id": "m1", "metadata": json.dumps({"k": "\x00"})}]}, UNSTORABLE, id="insert-a-nul-in-a-value"),
+        pytest.param({"inserts": [{**_BOX, "id": "m1", "metadata": json.dumps({"k": "\ud800"})}]}, UNSTORABLE, id="insert-a-lone-surrogate-in-a-value"),
+        pytest.param({"inserts": [{**_BOX, "id": "m1", "metadata": json.dumps({"\x00": "v"})}]}, UNSTORABLE, id="insert-a-nul-in-a-key"),
+        pytest.param({"edits": [{"id": "m0", "metadata": json.dumps({"k": "\x00"})}]}, UNSTORABLE, id="edit-a-nul-in-a-value"),
+        pytest.param({"edits": [{"id": "m0", "metadata": json.dumps({"k": "\ud800"})}]}, UNSTORABLE, id="edit-a-lone-surrogate-in-a-value"),
+        pytest.param({"edits": [{"id": "m0", "metadata": json.dumps({"k": "\\\x00"})}]}, UNSTORABLE, id="a-backslash-then-a-nul"),
+        pytest.param(
+            {"inserts": [{**_BOX, "id": "m1", "metadata": _nested(10_000)}]},
+            (400, f"metadata nests deeper than {MAX_JSON_DEPTH} levels"),
+            id="insert-json-ten-thousand-deep",
+        ),
+        pytest.param(
+            {"edits": [{"id": "m0", "metadata": _nested(MAX_JSON_DEPTH + 1)}]},
+            (400, f"metadata nests deeper than {MAX_JSON_DEPTH} levels"),
+            id="one-level-past-the-depth-bound",
+        ),
+        pytest.param(
+            {"edits": [{"id": "m0", "metadata": '{"k":' + "9" * 5000 + "}"}]},
+            (400, "metadata is not valid JSON (Exceeds the limit (4300 digits)"),
+            id="a-number-past-the-digit-limit",
+        ),
+        pytest.param(
+            {"edits": [{"id": "m0", "metadata": _nested(MAX_JSON_DEPTH)}]},
+            {"k": "[" * (MAX_JSON_DEPTH - 1) + "]" * (MAX_JSON_DEPTH - 1)},
+            id="at-the-depth-bound",
+        ),
+        pytest.param({"edits": [{"id": "m0", "metadata": json.dumps({"k": "\\u0000"})}]}, {"k": "\\u0000"}, id="a-backslash-then-the-text-u0000"),
+        pytest.param({"edits": [{"id": "m0", "metadata": json.dumps({"k": "\\\\u0000"})}]}, {"k": "\\\\u0000"}, id="two-backslashes-then-the-text"),
+        pytest.param({"edits": [{"id": "m0", "metadata": json.dumps({"skrift": "kursiv å 😀"})}]}, {"skrift": "kursiv å 😀"}, id="non-ascii-text"),
+    ],
+)
+def test_a_save_the_store_cannot_hold_is_refused_whole_and_any_other_is_kept(
+    work_client: TestClient, change: dict[str, Any], answer: tuple[int, str] | dict[str, str]
+) -> None:
+    """Attributes ride the save as JSON text the door decodes. That text is decoded to a bounded depth (deeper is the
+    door's 400, never the interpreter's recursion limit), and the store's write boundary holds the rest: a NUL or a lone
+    surrogate anywhere in the document, a key included, is a 422 naming the task's work. A refused save leaves the draft as
+    it was. A backslash followed by the text `u0000` is text, and is kept, as non-ASCII text is."""
+    _saved(work_client, inserts=[{**_BOX, "id": "m0", "metadata": '{"k": "v"}'}])
+
+    r = work_client.post(UNIT, params=QUERY, json={"base_version": 1, **change})
+
+    rows = {row["id"]: row for row in pa.ipc.open_stream(work_client.get(UNIT, params=QUERY).content).read_all().to_pylist()}
+    if isinstance(answer, tuple):
+        status, detail = answer
+        assert (r.status_code, r.json()["detail"].startswith(detail)) == (status, True), r.text[:300]
+        assert (sorted(rows), json.loads(rows["m0"]["metadata"])) == (["m0"], {"k": "v"})
+    else:
+        assert r.status_code == 200, r.text[:300]
+        assert json.loads(rows["m0"]["metadata"]) == answer

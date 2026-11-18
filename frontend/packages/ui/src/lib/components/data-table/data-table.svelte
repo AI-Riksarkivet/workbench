@@ -39,7 +39,8 @@
 	const pageIndex = $derived(table.getState().pagination.pageIndex);
 	const pageSize = $derived(String(table.getState().pagination.pageSize));
 	const totalRows = $derived(table.getCoreRowModel().rows.length);
-	const showPagination = $derived(totalRows > (PAGE_SIZES[0] ?? 10));
+	// Shown once there is a second page (a page the server cuts counts its own pages) or the rows outgrow the smallest size.
+	const showPagination = $derived(pageCount > 1 || totalRows > (PAGE_SIZES[0] ?? 10));
 </script>
 
 <!-- The table CARD owns containment: `min-w-0` + `max-w-full` so a wide table can never push the

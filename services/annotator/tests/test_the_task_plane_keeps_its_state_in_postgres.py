@@ -102,7 +102,7 @@ def test_a_task_is_labelled_from_claim_to_review_and_the_state_survives_a_restar
     assert [(e["event"], e["permission"]) for e in read["legal_events"]] == [("reopen", "can_manage")]
     assert [(t["event"], t["by"]) for t in read["transitions"]] == [("claim", "alice"), ("submit", "alice"), ("accept", "bob")]
     assert (draft["revision"], draft["author"], [(s["shape_type"], s["label"]) for s in draft["shapes"]]) == (1, "alice", [("bbox", "seal")])
-    assert (listing["tasks"], listing["terminal"], listing["may_publish"]) == ({"t1": "accepted"}, 1, True)
+    assert (listing["counts"]["accepted"], listing["total"], listing["terminal"], listing["may_publish"]) == (1, 1, 1, True)
 
 
 def test_of_two_concurrent_claims_of_one_task_exactly_one_wins(service: Any, person: _Person, state_database: StateDatabase) -> None:
@@ -154,7 +154,7 @@ def test_a_claim_whose_lease_ran_out_is_released_to_the_next_person(service: Any
     refused_while_held = _as(client, person, "bob").post(f"/tasks/{task}/events", json={"event": "claim"})
     deadline = time.monotonic() + 10
     # Read off the project's listing, which the database answers on its own clock (`task_states`).
-    while client.get(f"/projects/{project}/tasks").json()["tasks"][task] != "unassigned":
+    while client.get(f"/projects/{project}/tasks").json()["counts"]["unassigned"] != 1:
         assert time.monotonic() < deadline, "the lapsed claim was never read as released"
         time.sleep(0.1)
     taken = client.post(f"/tasks/{task}/events", json={"event": "claim"})
@@ -191,3 +191,16 @@ def test_the_local_person_belongs_to_the_local_organisation(service: Any) -> Non
     client = service()
 
     assert client.get("/me").json() == {"sub": "anon", "name": None, "email": None, "estate_admin": True, "orgs": [{"org": "local", "role": "admin"}]}
+
+
+def test_a_body_past_the_annotators_cap_is_refused_before_it_is_read(service: Any) -> None:
+    """An item's work is held to 8 MiB, so a body of 17 MiB could never be kept: the door refuses it whole, by size."""
+    client = service()
+
+    refused = client.post(
+        "/projects",
+        content=b'{"tenant": "local", "slug": "x", "description": "' + b"a" * (17 * 1024 * 1024) + b'"}',
+        headers={"content-type": "application/json"},
+    )
+
+    assert refused.status_code == 413, refused.text

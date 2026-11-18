@@ -19,6 +19,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from annotator.projects.models import AnnotationProject, Draft, Task
+from annotator.state.task_query import Contributor
 
 
 class LegalEvent(BaseModel):
@@ -59,24 +60,37 @@ class TaskDetail(Task):
     """
 
     legal_events: list[LegalEvent] = Field(default_factory=list)
+    #: Each principal the task names → the name they last wrote under, where one is kept (`annotator.people`). A single
+    #: task's read carries it; a listing's details share the listing's `people` instead.
+    people: dict[str, str] = Field(default_factory=dict)
 
 
 class TaskListing(BaseModel):
-    """`GET /projects/{id}/tasks` — the index and the publish precondition from ONE snapshot.
+    """`GET /projects/{id}/tasks` — the index and the publish precondition, and the page the filter asked for, from ONE
+    snapshot.
 
-    The last three are present only for `?include=details`, and their ABSENCE is load-bearing: the
-    route is declared `response_model_exclude_unset=True` so the plain listing publishes exactly the
-    five keys it always did. Emitting them as `null` instead would be a wire change.
+    Every key past the first five is present only for the `include` that asks for it, and their ABSENCE is
+    load-bearing: the route is declared `response_model_exclude_unset=True`, so the plain listing publishes exactly the
+    four keys the index is.
     """
 
-    tasks: dict[str, str]
     counts: dict[str, int]
     total: int
     terminal: int
     may_publish: bool
     details: list[TaskDetail] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)
-    next_cursor: str | None = None
+    #: How many items the filter matches, and how many each state holds under every other filter.
+    matched: int = 0
+    state_counts: dict[str, int] = Field(default_factory=dict)
+    #: Where the page starts in the filtered order, and where `around`'s item sits in it (None: the filter leaves it out).
+    offset: int = 0
+    position: int | None = None
+    #: The datasets the project's items come from (what the filter by dataset offers).
+    datasets: list[str] = Field(default_factory=list)
+    contributors: list[Contributor] = Field(default_factory=list)
+    #: Each principal this answer names → the name they last wrote under (`annotator.people`), where one is kept.
+    people: dict[str, str] = Field(default_factory=dict)
 
 
 class SendReceipt(BaseModel):

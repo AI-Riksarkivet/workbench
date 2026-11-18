@@ -180,6 +180,11 @@ export const ProjectDetailSchema = v.object({
 });
 export type ProjectDetail = v.InferOutput<typeof ProjectDetailSchema>;
 
+/** Each principal an answer names → the name they last wrote under in the annotator, where one is kept: shown in
+ *  place of the principal, the principal its tooltip (`PersonName.svelte`). */
+const PeopleSchema = v.optional(v.record(v.string(), v.string()), {});
+export type People = Record<string, string>;
+
 const ReviewNoteSchema = v.object({
 	by: v.string(),
 	at: v.string(),
@@ -242,7 +247,12 @@ export const TaskDetailSchema = v.object({
 		[],
 	),
 	review_notes: v.optional(v.array(ReviewNoteSchema), []),
+	/** Everyone who ever held the item, in order. */
+	holders: v.optional(v.array(v.string()), []),
+	sent_at: v.nullish(v.string()),
 	legal_events: v.optional(v.array(LegalEventSchema), []),
+	/** A single task's read names its people here; a listing's details share the listing's `people`. */
+	people: PeopleSchema,
 	// The ontology CAPTURED onto this item at send. The server has always sent the capture —
 	// valibot's `v.object` strips unknown keys, so declaring it here is what lets the canvas see the
 	// contract it will be judged against, instead of learning the rule from a 409 after the work.
@@ -250,16 +260,34 @@ export const TaskDetailSchema = v.object({
 });
 export type TaskDetail = v.InferOutput<typeof TaskDetailSchema>;
 
+/** One person's part in a project over all its items (the listing's `include=contributors`). */
+export const ContributorSchema = v.object({
+	principal: v.string(),
+	submitted: v.number(),
+	accepted: v.number(),
+	changes_requested: v.number(),
+	open: v.number(),
+	reviewed: v.number(),
+});
+export type Contributor = v.InferOutput<typeof ContributorSchema>;
+
 export const TaskListingSchema = v.object({
-	tasks: v.record(v.string(), v.string()),
 	counts: v.record(v.string(), v.number()),
 	total: v.number(),
 	terminal: v.number(),
 	may_publish: v.boolean(),
 	details: v.optional(v.array(TaskDetailSchema)),
 	missing: v.optional(v.array(v.string())),
-	/** The next page's cursor, when the details listing has more. */
-	next_cursor: v.nullish(v.string()),
+	/** How many items the filter matches, and how many each state holds under every other filter. */
+	matched: v.optional(v.number(), 0),
+	state_counts: v.optional(v.record(v.string(), v.number()), {}),
+	/** Where this page starts in the filtered order, and where the `around` item sits (null: filtered out). */
+	offset: v.optional(v.number(), 0),
+	position: v.nullish(v.number()),
+	/** The datasets the project's items come from, for the filter by dataset. */
+	datasets: v.optional(v.array(v.string()), []),
+	contributors: v.optional(v.array(ContributorSchema), []),
+	people: PeopleSchema,
 });
 export type TaskListing = v.InferOutput<typeof TaskListingSchema>;
 
@@ -346,5 +374,6 @@ export const MemberListSchema = v.object({
 	/** The rungs the API will grant, supplied by the SERVER so a UI never keeps a second copy of the
 	 *  authorization model's ladder. */
 	grantable: v.optional(v.array(v.string()), []),
+	people: PeopleSchema,
 });
 export type MemberList = v.InferOutput<typeof MemberListSchema>;

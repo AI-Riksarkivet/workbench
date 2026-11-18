@@ -18,12 +18,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from annotator.projects.ontology import LabelOntology
+from annotator.text import MAX_ID, MAX_NAME, Text
 from service_kit.naming import CONTROL_ID_PATTERN
 
 
@@ -86,8 +87,8 @@ class ItemSource(BaseModel):
     """The send capture (§4.5): what selection produced this task."""
 
     kind: Literal["chunks", "scope", "corpus"]
-    keys: list[str] = Field(default_factory=list)
-    where: str | None = None
+    keys: list[Text] = Field(default_factory=list)
+    where: Text | None = None
     #: The version of `table` the sender was looking at when they sent the item (§4.5's reproducibility capture). The
     #: sender names it; the send keeps it only once the catalog confirms `table` has that version, as the sender reads it
     #: (`project_events._refuse_unheld_versions`), and drops it when the source names no table. Every kept
@@ -98,7 +99,19 @@ class ItemSource(BaseModel):
     #: sender: the source itself when it names a table, else its dataset's default row table as the catalog showed the
     #: sender (`annotator.corpus.input_tables`); None for a dataset that declares no search. Only this table is ever a
     #: publish's input.
-    table: str | None = None
+    table: Text | None = None
+
+
+#: The most keys one sent item's source names.
+MAX_SOURCE_KEYS: Final = 64
+
+
+class SentSource(ItemSource):
+    """An item's source as a sender states it: the stored shape, held to the bounds of what comes in. A stored source is
+    read as it was written, so the bounds are here only, where Pydantic names the field past one."""
+
+    keys: list[Annotated[Text, Field(max_length=MAX_ID)]] = Field(default_factory=list, max_length=MAX_SOURCE_KEYS)
+    where: Annotated[Text, Field(max_length=MAX_NAME)] | None = None
 
 
 class Transition(BaseModel):
@@ -256,6 +269,11 @@ class PublishRecord(BaseModel):
 #: and what falls off the end is counted in `transitions_dropped` / `review_notes_dropped`. The
 #: durable audit record of a transition is the lineage/audit plane, not this document.
 MAX_TRANSITIONS: Final = 200
+#: The longest title, description and instructions a project takes, and its longest claim lease (a week).
+TITLE_MAX: Final = 200
+DESCRIPTION_MAX: Final = 4_000
+INSTRUCTIONS_MAX: Final = 20_000
+LEASE_MAX_SECONDS: Final = 7 * 24 * 3600
 MAX_REVIEW_NOTES: Final = 50
 
 
@@ -302,6 +320,8 @@ class Task(BaseModel):
     #: skip or a lapsed lease clears `assignee` but not this: on a replica it is what keeps a person who saw one
     #: replica's work off every sibling, and it is never trimmed, since it holds each person once.
     holders: list[str] = Field(default_factory=list)
+    #: When the item was sent into the project, on the database's clock: stamped by the store's send, never by the sender.
+    sent_at: datetime | None = None
     submitted_by: str | None = None
     submitted_at: datetime | None = None
     reviewed_by: str | None = None
@@ -330,6 +350,23 @@ class Task(BaseModel):
         if len(self.review_notes) > MAX_REVIEW_NOTES:
             self.review_notes_dropped += len(self.review_notes) - MAX_REVIEW_NOTES
             self.review_notes = self.review_notes[-MAX_REVIEW_NOTES:]
+
+
+class ProjectSettings(BaseModel):
+    """A change of a project's settings: each field named replaces its value, each absent one is left as it is.
+
+    The bounds are the create's (`CreateProjectRequest`). When each may change is the store's rule
+    (`AnnotatorStore.update_settings`), stated where the app offers them.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    title: Annotated[Text, Field(max_length=TITLE_MAX)] | None = None
+    description: Annotated[Text, Field(max_length=DESCRIPTION_MAX)] | None = None
+    instructions: Annotated[Text, Field(max_length=INSTRUCTIONS_MAX)] | None = None
+    review_required: bool | None = None
+    lease_seconds: int | None = Field(default=None, gt=0, le=LEASE_MAX_SECONDS)
+    consensus_n: int | None = Field(default=None, ge=1, le=5)
 
 
 def publish_warehouse_of(project: Mapping[str, object]) -> str:

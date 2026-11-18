@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * The labeling canvas over a task's unit: the tool bar above, the claimed items down the left, the image with its
+	 * The labeling canvas over a task's unit: the tool bar above, the items it walks down the left, the image with its
 	 * overlays in the middle and the review inspector on the right; below 740 px the inspector goes under the image and
 	 * the items collapse into the queue's arrows. It owns the controller and the keyboard; every child is controlled. The
 	 * page remounts it per task (`{#key}`), so each item loads fresh.
@@ -33,6 +33,7 @@
 	import ClassificationBar from './ClassificationBar.svelte';
 	import ClassPicker from './ClassPicker.svelte';
 	import TaskPanel from './TaskPanel.svelte';
+	import { REVIEW_KEYS } from './task-panel.ts';
 	import TemporalCanvas from './temporal/TemporalCanvas.svelte';
 	import TextCanvas from './text/TextCanvas.svelte';
 	import TextLane from './text/TextLane.svelte';
@@ -57,7 +58,7 @@
 		readOnly,
 		person,
 		stream,
-		claimed,
+		walk,
 		exitHref,
 		link,
 		permissions,
@@ -78,8 +79,18 @@
 		/** Who is signed in, whose unsaved edits this tab keeps across a sign-in. */
 		person: string;
 		stream: StreamPosition;
-		/** The reader's claimed items in the project, for the filmstrip. */
-		claimed: TaskDetail[];
+		/** The items this canvas walks (the reader's claims, or a browse or a review), for the filmstrip: a page of the
+		 *  walk around the open item, where it starts in the walk, its length, each item's app path and its name. */
+		walk: {
+			items: TaskDetail[];
+			offset: number;
+			total: number;
+			hrefOf: (task: TaskDetail, projectId: string) => string;
+			label: string;
+			stripLabel: string;
+			/** A browse takes no transitions: the side panel says what the item is and offers nothing. */
+			browsing: boolean;
+		};
 		exitHref: string;
 		link: (path: string) => string;
 		/** The reader's permissions on the project: which of the task's transitions the side panel offers. */
@@ -332,6 +343,8 @@
 		}
 		if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
 		const k = e.key.toLowerCase();
+		// Shift+A, Shift+F and Shift+R judge the whole item (the side panel's review keys, `REVIEW_KEYS`), not one annotation.
+		if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && REVIEW_KEYS[k]) return;
 		if (e.ctrlKey || e.metaKey) {
 			if (k === 'z') {
 				e.preventDefault();
@@ -563,7 +576,7 @@
 			>
 				{statusText}{controller.saveStatus ? ` · ${controller.saveStatus}` : ''}
 			</Badge>
-			<TaskStreamNav {stream} />
+			<TaskStreamNav {stream} label={walk.label} />
 			{#if media.kind === 'image'}
 				<ZoomControls target={controller} class={narrow ? 'bottom-10' : undefined} />
 			{/if}
@@ -575,7 +588,13 @@
 {/snippet}
 
 {#snippet taskPanel()}
-	<TaskPanel {controller} {task} {permissions} {me} onchanged={ontaskchange} />
+	<TaskPanel
+		{controller}
+		{task}
+		permissions={walk.browsing ? [] : permissions}
+		{me}
+		onchanged={ontaskchange}
+	/>
 	<!-- Another replica's work is offered only to someone who may review the item: the replicas are independent until
 	     then (`require_work_readable`). -->
 	<ComparePanel {controller} replicas={permissions.includes('can_review') ? replicas : []} />
@@ -605,7 +624,16 @@
 		</div>
 	{:else}
 		<div class="flex min-h-0 flex-1">
-			<Filmstrip items={claimed} activeTaskId={task.task_id} projectId={task.project_id} {link} />
+			<Filmstrip
+				items={walk.items}
+				activeTaskId={task.task_id}
+				projectId={task.project_id}
+				{link}
+				hrefOf={walk.hrefOf}
+				offset={walk.offset}
+				total={walk.total}
+				label={walk.stripLabel}
+			/>
 			<div class="min-w-0 flex-1">
 				<ResizableSplit storageKey="workbench-canvas" initial={0.72} minLeft={420} minRight={320}>
 					{#snippet left()}
@@ -682,6 +710,10 @@
 			<dd>Delete the selected annotation</dd>
 			<dt class="font-mono">A · R</dt>
 			<dd>Accept · reject the selected annotation, and go to the next</dd>
+			<dt class="font-mono">Shift+A · Shift+F · Shift+R</dt>
+			<dd>Reviewing: accept the item · accept it with your fixes · send it back with a note</dd>
+			<dt class="font-mono">Page Up · Page Down</dt>
+			<dd>The previous · next item of the walk you are on</dd>
 			<dt class="font-mono">J · K</dt>
 			<dd>Next · previous annotation</dd>
 			<dt class="font-mono">Ctrl+Z · Ctrl+Shift+Z</dt>

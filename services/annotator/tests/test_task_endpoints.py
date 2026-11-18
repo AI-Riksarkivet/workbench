@@ -38,6 +38,7 @@ from annotator.projects.machines import TASK_EDGES
 from annotator.projects.models import AnnotationProject, Draft, ItemSource, MediaRef, ProjectState, Shape, Task, TaskState
 from annotator.projects.ontology import LabelOntology
 from annotator.state.store import AnnotatorStore
+from annotator.text import MAX_ID, MAX_JSON_DEPTH
 from tests.postgres import StateDatabase
 
 
@@ -63,8 +64,13 @@ class _Door:
         return portal
 
     def seed(self, *tasks: Task, consensus_n: int = 1) -> None:
-        """A labeling project holding ``tasks`` exactly as given: the store writes a task in the state it is handed."""
+        """A labeling project holding ``tasks`` in the states they are handed, the project's settings the first task's (a
+        send captures what the project holds)."""
         project = AnnotationProject(project_id=PROJECT_ID, tenant="acme", slug="charters", state=ProjectState.LABELING, consensus_n=consensus_n)
+        if tasks:
+            project = project.model_copy(
+                update={"review_required": tasks[0].review_required, "lease_seconds": tasks[0].lease_seconds, "ontology": tasks[0].ontology}
+            )
         self.portal.call(self.store.create_project, project)
         self.portal.call(self.store.send_tasks, PROJECT_ID, list(tasks))
 
@@ -436,6 +442,60 @@ def test_the_tasks_own_ontology_refuses_a_foreign_label(door: Callable[..., _Doo
     assert r.status_code == 400, r.text
     assert "spaceship" in r.text
     assert d.draft() is None, "a refused import still wrote to the draft"
+
+
+_IMPORTED_BOX = {"shape_type": "bbox", "id": "s1", "x": 1.0, "y": 1.0, "width": 2.0, "height": 2.0}
+
+
+@pytest.mark.parametrize(
+    "cells",
+    [
+        pytest.param({"attributes": json.dumps({"k": "\x00"})}, id="a-nul-in-an-attribute-value"),
+        pytest.param({"attributes": json.dumps({"k": "\ud800"})}, id="a-lone-surrogate-in-an-attribute-value"),
+        pytest.param({"attributes": json.dumps({"\x00": "v"})}, id="a-nul-in-an-attribute-key"),
+        pytest.param({"links": json.dumps([{"name": "r\x00", "to_shape": "s1"}])}, id="a-nul-in-a-link-name"),
+        pytest.param({"x": float("nan")}, id="a-number-json-cannot-spell"),
+    ],
+)
+def test_an_import_the_store_cannot_hold_is_a_422_and_writes_nothing(cells: dict[str, Any], door: Callable[..., _Door]) -> None:
+    """A cell's JSON is decoded after the request is read, so what it decodes to is judged where the draft is written:
+    one refusal for the whole import, naming the task's work, and no draft."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
+
+    r = d.client.post("/tasks/t1/import", content=_ipc([{**_IMPORTED_BOX, **cells}]))
+
+    assert (r.status_code, r.json()["type"]) == (422, "about:blank#unstorable-document"), r.text[:300]
+    assert d.draft() is None
+
+
+def test_an_import_takes_another_tools_long_ids_and_refuses_by_row_what_it_cannot_take(door: Callable[..., _Door]) -> None:
+    """An import carries ids another tool minted: a 3000-character id and a link to it are kept as they are. A link to a
+    shape the import and the draft do not hold is refused by name, an id past the one bound every shape-id door shares
+    (`annotator.text.MAX_ID`) is refused naming it, and an attributes or links cell nesting past the depth the annotator
+    decodes (`annotator.text.MAX_JSON_DEPTH`) is refused naming its row, whatever the interpreter's recursion limit."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
+    long_id = "y" * 3000
+    rows = [{**_IMPORTED_BOX, "id": long_id, "links": None}, {**_IMPORTED_BOX, "id": "s2", "links": json.dumps([{"name": "r", "to_shape": long_id}])}]
+    deep = "[" * 10_000 + "]" * 10_000
+
+    unknown = d.client.post("/tasks/t1/import", content=_ipc([{**_IMPORTED_BOX, "links": json.dumps([{"name": "r", "to_shape": "x" * 2000}])}]))
+    too_long = d.client.post("/tasks/t1/import", content=_ipc([{**_IMPORTED_BOX, "links": json.dumps([{"name": "r", "to_shape": "x" * (MAX_ID + 1)}])}]))
+    deep_attributes = d.client.post("/tasks/t1/import", content=_ipc([{**_IMPORTED_BOX, "attributes": '{"k":' + deep + "}"}]))
+    deep_links = d.client.post("/tasks/t1/import", content=_ipc([{**_IMPORTED_BOX, "links": deep}]))
+    kept = d.client.post("/tasks/t1/import", content=_ipc(rows))
+
+    assert (unknown.status_code, "points at unknown shape" in unknown.json()["detail"]) == (400, True), unknown.text[:300]
+    assert (too_long.status_code, too_long.json()["detail"]) == (400, f"import refused — row 0 has a link end longer than {MAX_ID} characters")
+    assert [(r.status_code, r.json()["detail"]) for r in (deep_attributes, deep_links)] == [
+        (400, f"import refused — row 0's attributes cell nests deeper than {MAX_JSON_DEPTH} levels"),
+        (400, f"import refused — row 0's links cell nests deeper than {MAX_JSON_DEPTH} levels"),
+    ]
+    assert kept.status_code == 200, kept.text[:300]
+    stored = d.draft()
+    assert stored is not None
+    assert ([s.shape_id for s in stored.shapes], [(link.from_shape, link.to_shape) for link in stored.links]) == ([long_id, "s2"], [("s2", long_id)])
 
 
 @pytest.mark.parametrize("state", [TaskState.ACCEPTED])

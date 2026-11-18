@@ -44,6 +44,7 @@ volume its demo source reads (`chart/templates/demo.yaml`).
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -52,8 +53,9 @@ import os
 import struct
 import sys
 import wave
-from collections.abc import Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from fractions import Fraction
+from functools import partial
 
 import av
 import lance
@@ -66,6 +68,7 @@ from lance_namespace import (
     CreateNamespaceRequest,
     DropTableRequest,
     LanceNamespace,
+    LanceNamespaceError,
     ListTablesRequest,
     NamespaceAlreadyExistsError,
     TableNotFoundError,
@@ -746,14 +749,20 @@ def seed_letters(client: LanceNamespace, connection: lancedb.DBConnection, names
     _index_and_stamp(client, connection, namespace, "paragraphs", declared)
 
 
+#: The stamped datasets of the lakehouse stand-in, by namespace under its warehouse, and the function that writes each.
+STAMPED: dict[str, Callable[[LanceNamespace, lancedb.DBConnection, list[str]], None]] = {
+    PAGES: seed_pages,
+    RECORDINGS: seed_recordings,
+    FILMS: seed_films,
+    LETTERS: seed_letters,
+}
+
+
 def seed(client: LanceNamespace, connection: lancedb.DBConnection, warehouse: str) -> list[str]:
-    """Write the four stamped datasets into ``warehouse``; their ids in the catalog."""
-    pages, recordings, films, letters = [warehouse, PAGES], [warehouse, RECORDINGS], [warehouse, FILMS], [warehouse, LETTERS]
-    seed_pages(client, connection, pages)
-    seed_recordings(client, connection, recordings)
-    seed_films(client, connection, films)
-    seed_letters(client, connection, letters)
-    return [CATALOG_DELIMITER.join(d) for d in (pages, recordings, films, letters)]
+    """Write every stamped dataset into ``warehouse``; their ids in the catalog."""
+    for name, seeder in STAMPED.items():
+        seeder(client, connection, [warehouse, name])
+    return [CATALOG_DELIMITER.join([warehouse, name]) for name in STAMPED]
 
 
 #: The unstamped fixture's namespace in the archive catalog, two levels deep, and its table.
@@ -875,22 +884,53 @@ def seed_loose(root: str) -> str:
     return path
 
 
-#: The file a completed seed leaves under its root, written after every table; its presence is what ``--once`` reads.
-SEEDED_MARKER = ".seeded"
+#: Where each demo dataset's marker lives under the root: one file per dataset, written once its tables are on the disk.
+#: Its presence is what ``--once`` reads, so a dataset this seeder learns later is written into a volume an earlier run
+#: filled, and the datasets already there are left as they are.
+SEEDED_MARKERS = ".seeded.d"
+#: The single marker an earlier seeder left over a whole volume (`_adopt_whole_volume_marker`).
+WHOLE_VOLUME_MARKER = ".seeded"
 
 
-def _mark_seeded(root: str) -> None:
-    """Record that every table under ``root`` was written, by a rename, so a seed cut short leaves no marker.
+def _mark_seeded(root: str, dataset: str) -> None:
+    """Record that ``dataset``'s tables under ``root`` were written, by a rename, so a seed cut short leaves no marker.
 
     The tree is flushed to the disk before the marker is, and the marker's rename after it: a node that crashes cannot
     leave a marker standing over tables still in its page cache."""
     os.sync()
-    pending = os.path.join(root, f"{SEEDED_MARKER}.pending")
+    markers = os.path.join(root, SEEDED_MARKERS)
+    os.makedirs(markers, exist_ok=True)
+    pending = os.path.join(markers, f"{dataset}.pending")
     with open(pending, "w", encoding="utf-8") as marker:
         marker.write("seeded by scripts/seed_demo_corpus.py\n")
         marker.flush()
         os.fsync(marker.fileno())
-    os.replace(pending, os.path.join(root, SEEDED_MARKER))
+    os.replace(pending, os.path.join(markers, dataset))
+    directory = os.open(markers, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _seeded(root: str, dataset: str) -> bool:
+    return os.path.isfile(os.path.join(root, SEEDED_MARKERS, dataset))
+
+
+def _adopt_whole_volume_marker(root: str, present: Mapping[str, Callable[[], bool]]) -> None:
+    """TEMPORARY, until the development cluster's demo volume has been converted (one run of the Job): an earlier seeder
+    left ONE file, ``.seeded``, over every dataset it wrote, at whatever commit it ran. Each dataset the volume actually
+    holds (``present``, what a completed write of it leaves true) is given its own marker under ``.seeded.d`` and kept;
+    every other is written. The old file goes only after every new marker is on the disk, so a run cut short at any point
+    leaves it, and the next run converts again from the same evidence and writes nothing the volume holds. Delete this
+    function and its call once that volume holds no ``.seeded`` file."""
+    legacy = os.path.join(root, WHOLE_VOLUME_MARKER)
+    if not os.path.isfile(legacy):
+        return
+    for name, holds in present.items():
+        if not _seeded(root, name) and holds():
+            _mark_seeded(root, name)
+    os.remove(legacy)
     directory = os.open(root, os.O_RDONLY)
     try:
         os.fsync(directory)
@@ -898,15 +938,65 @@ def _mark_seeded(root: str) -> None:
         os.close(directory)
 
 
+def _stamped_present(client: LanceNamespace, namespace: list[str]) -> bool:
+    """Whether the catalog holds ``namespace`` as a completed seed leaves it: every table it lists opens, and one carries
+    the descriptor, which each stamped seeder writes last (`_index_and_stamp`)."""
+    try:
+        names = client.list_tables(ListTablesRequest(id=namespace)).tables or []
+        metadata = [lance.dataset(namespace_client=client, table_id=[*namespace, name]).schema.metadata or {} for name in names]
+    except (LanceNamespaceError, OSError, ValueError):
+        return False
+    return any(DESCRIPTOR_METADATA_KEY in m for m in metadata)
+
+
+def _table_present(uri: str) -> bool:
+    """Whether a bare table opens at ``uri`` with rows (its seeder writes it in one write)."""
+    try:
+        return lance.dataset(uri).count_rows() > 0
+    except (OSError, ValueError):
+        return False
+
+
+def _archive_present(root: str) -> bool:
+    """Whether the archive catalog at ``root`` holds its table with the vector index its seeder builds last."""
+    try:
+        ds = lance.dataset(namespace_client=lance_namespace.connect("dir", {"root": root}), table_id=[*ARCHIVE_NAMESPACE, OBSERVATIONS])
+        return ds.count_rows() > 0 and any(index.field_names == ["embedding"] for index in ds.describe_indices())
+    except (LanceNamespaceError, OSError, ValueError):
+        return False
+
+
+@contextlib.contextmanager
+def _seeding(root: str) -> Generator[None]:
+    """Hold the root's seed lock (an exclusive ``flock`` on ``<root>/.seeding.lock``) for the whole run: a second Job
+    started while one runs waits for it, then finds its markers and writes only what is still missing. The markers
+    themselves are written by an atomic rename (`_mark_seeded`), so a run cut short leaves none half-written."""
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, ".seeding.lock"), "a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _print_tables(client: LanceNamespace, dataset: str) -> None:
+    namespace = dataset.split(CATALOG_DELIMITER)
+    for name in sorted(client.list_tables(ListTablesRequest(id=namespace)).tables or []):
+        ds = lance.dataset(namespace_client=client, table_id=[*namespace, name])
+        print(f"  {dataset}${name}: {ds.count_rows()} rows, v{ds.version}")
+
+
 def main() -> None:
     """Seed every demo source under one root: the stamped datasets in ``<root>/lakehouse`` (a directory catalog standing
     in for a lakehouse), an unstamped table in ``<root>/archive`` and a bare table at ``<root>/loose/scans.lance``, the
     three the local stack declares (`scripts/local-sources.json`).
 
-    With ``--once`` (the chart's demo Job, `chart/templates/demo.yaml`), a root a completed seed already filled is left
-    as it is and the run exits 0, so a release installed again from git never rewrites data a person's annotations refer
-    to; a root holding a seed cut short (no marker) is seeded again from nothing, which every table's drop-and-create
-    makes safe. Without it every table is rewritten, as the local stack wants on each start."""
+    With ``--once`` (the chart's demo Job, `chart/templates/demo.yaml`), each dataset a completed seed already wrote (its
+    marker under ``<root>/.seeded.d``) is left as it is and every other is written, so a release installed or upgraded from
+    git converges: it adds a dataset this seeder learned since, and never rewrites data a person's annotations refer to. A
+    dataset whose seed was cut short (no marker) is written again from nothing, which every table's drop-and-create makes
+    safe. Without ``--once`` every table is rewritten, as the local stack wants on each start."""
     args = sys.argv[1:]
     once = args[:1] == ["--once"]
     if once:
@@ -914,21 +1004,48 @@ def main() -> None:
     if len(args) != 1:
         raise SystemExit("usage: seed_demo_corpus.py [--once] <root>")
     root = args[0]
-    if once and os.path.exists(os.path.join(root, SEEDED_MARKER)):
-        print(f"{root} holds a completed seed ({SEEDED_MARKER}): nothing written")
-        return
     properties = {"root": os.path.join(root, "lakehouse")}
     client, connection = lance_namespace.connect("dir", properties), lancedb.connect_namespace("dir", properties)
-    for dataset in seed(client, connection, DEFAULT_WAREHOUSE):
-        namespace = dataset.split(CATALOG_DELIMITER)
-        for name in sorted(client.list_tables(ListTablesRequest(id=namespace)).tables or []):
-            ds = lance.dataset(namespace_client=client, table_id=[*namespace, name])
-            print(f"  {dataset}${name}: {ds.count_rows()} rows, v{ds.version}")
-        print(f"seeded lakehouse {dataset}")
-    for dataset in seed_archive(os.path.join(root, "archive")):
-        print(f"seeded archive {dataset} (no descriptor)")
-    print(f"seeded {seed_loose(os.path.join(root, 'loose'))} (a bare table)")
-    _mark_seeded(root)
+    stamped = {name: (seeder, [DEFAULT_WAREHOUSE, name]) for name, seeder in STAMPED.items()}
+    # Every dataset, by its marker's name, and how to write it.
+    writers: dict[str, Callable[[], str]] = {
+        **{f"lakehouse-{name}": partial(_seed_stamped, client, connection, seeder, namespace) for name, (seeder, namespace) in stamped.items()},
+        "archive": lambda: f"archive {', '.join(seed_archive(os.path.join(root, 'archive')))} (no descriptor)",
+        "loose": lambda: f"{seed_loose(os.path.join(root, 'loose'))} (a bare table)",
+    }
+    if once:
+        with _seeding(root):
+            present: dict[str, Callable[[], bool]] = {
+                **{f"lakehouse-{name}": partial(_stamped_present, client, namespace) for name, (_seeder, namespace) in stamped.items()},
+                "archive": partial(_archive_present, os.path.join(root, "archive")),
+                "loose": lambda: _table_present(os.path.join(root, "loose", f"{SCANS}.lance")),
+            }
+            _adopt_whole_volume_marker(root, present)
+            _write(root, writers, once=True)
+    else:
+        _write(root, writers, once=False)
+
+
+def _write(root: str, writers: Mapping[str, Callable[[], str]], *, once: bool) -> None:
+    """Write each dataset (with ``once``, each one with no marker) and mark it written."""
+    written = 0
+    for name, write in writers.items():
+        if once and _seeded(root, name):
+            continue
+        print(f"seeded {write()}")
+        _mark_seeded(root, name)
+        written += 1
+    if once and written == 0:
+        print(f"{root} holds every demo dataset ({SEEDED_MARKERS}): nothing written")
+
+
+def _seed_stamped(
+    client: LanceNamespace, connection: lancedb.DBConnection, seeder: Callable[[LanceNamespace, lancedb.DBConnection, list[str]], None], namespace: list[str]
+) -> str:
+    seeder(client, connection, namespace)
+    dataset = CATALOG_DELIMITER.join(namespace)
+    _print_tables(client, dataset)
+    return f"lakehouse {dataset}"
 
 
 if __name__ == "__main__":

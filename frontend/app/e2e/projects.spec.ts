@@ -366,10 +366,10 @@ test('adjudication: a manager picks the canonical replica, the pick is PUT, and 
 	await expect(adjudication.getByText('canonical', { exact: true })).toBeVisible();
 	await expect(adjudication.getByRole('button', { name: 'Pick', exact: true })).toHaveCount(0);
 	await expect(adjudication.getByRole('button', { name: 'Re-pick' })).toHaveCount(1);
-	await page.getByTestId('tab-labeling').click();
+	await page.getByTestId('tab-items').click();
 	const replica = (key: string, by: string) => row(page, key).filter({ hasText: by });
-	await expect(replica('letter-001/0', 'user:alpha').getByText('canonical')).toBeVisible();
-	await expect(replica('letter-001/0', 'user:beta').getByText('canonical')).toHaveCount(0);
+	await expect(replica('letter-001/0', 'Alma Alpha').getByText('canonical')).toBeVisible();
+	await expect(replica('letter-001/0', 'Bert Beta').getByText('canonical')).toHaveCount(0);
 	expect(await annotatorCalls(page, who)).toContainEqual({
 		service: 'annotator',
 		method: 'PUT',
@@ -383,11 +383,12 @@ test('assign names a recipient, and the item is theirs', async ({ page, context 
 	await letters(page);
 
 	await row(page, 'letter-001/0').getByRole('button', { name: 'Assign…' }).click();
-	await page.getByRole('dialog').getByRole('textbox').fill('kc~fay');
+	await page.getByRole('dialog').getByRole('textbox', { name: 'Their principal' }).fill('kc~fay');
 	await page.getByRole('dialog').getByRole('button', { name: 'Assign', exact: true }).click();
 
 	await expect(row(page, 'letter-001/0')).toContainText('claimed');
-	await expect(row(page, 'letter-001/0')).toContainText('kc~fay');
+	// fay has written nothing, so no name is kept for her: her principal's subject, the principal its tooltip.
+	await expect(row(page, 'letter-001/0').getByTitle(/kc~fay/)).toContainText('fay · pinned');
 });
 
 test('a bulk accept fires one gated event per item, and a partial failure names what failed and what landed', async ({
@@ -405,8 +406,8 @@ test('a bulk accept fires one gated event per item, and a partial failure names 
 	await expect(
 		page.getByText(/^1 of 2 — .*a reviewer may not review their own submission$/),
 	).toBeVisible();
-	await expect(replicas.filter({ hasText: 'user:alpha' })).toContainText('accepted');
-	await expect(replicas.filter({ hasNotText: 'user:alpha' })).toContainText('in review');
+	await expect(replicas.filter({ hasText: 'Alma Alpha' })).toContainText('accepted');
+	await expect(replicas.filter({ hasNotText: 'Alma Alpha' })).toContainText('in review');
 });
 
 test('annotations made elsewhere are imported into the item the reader holds', async ({
@@ -590,4 +591,105 @@ test('a session that ended on the project page signs the person in again, never 
 	await expect(page.getByRole('heading', { level: 1, name: /Letters/ })).toBeVisible();
 	await expect(page).toHaveURL(/\/projects\/letters/);
 	await expect(page.getByText('that you can see')).toHaveCount(0);
+});
+
+test('the data manager filters, counts and sorts in the annotator, and its address restores the view', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Manager');
+	await page.goto('/projects/judging');
+	await expect(page.getByTestId('state-in_review')).toContainText('3');
+	await expect(page.getByTestId('state-accepted')).toContainText('1');
+
+	const filtered = page.waitForRequest((req) =>
+		req.url().includes('/projects/judging/tasks?state=in_review'),
+	);
+	await page.getByTestId('state-in_review').click();
+	await filtered;
+	await page.getByRole('button', { name: 'item', exact: true }).click();
+	await expect(page).toHaveURL(/[?&]state=in_review.*&order=desc/);
+	await page.reload();
+
+	await expect(page.getByTestId('state-in_review')).toHaveAttribute('aria-pressed', 'true');
+	await expect(page.getByTestId('filter-count')).toContainText('3 of 4 items match.');
+	const rows = page
+		.locator('[data-slot="data-table-card"]')
+		.getByRole('row')
+		.filter({ has: page.getByTestId('person') });
+	await expect(rows).toHaveCount(3);
+	// The newest item first, and each submitter by the name they last wrote under, their principal the tooltip.
+	await expect(rows.first()).toContainText('Sam Else');
+	await expect(rows.first().getByTitle('user:someone-else')).toHaveText('Sam Else');
+	await expect(rows.nth(1)).toContainText('Bert Beta');
+	await expect(rows.nth(2)).toContainText('Alma Alpha');
+});
+
+test('a bulk assign over the items a filter matches assigns each one to the person named', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Manager');
+	await page.goto('/projects/letters?state=unassigned');
+	const unassigned = page.getByRole('row').filter({ hasText: 'unassigned' });
+	await expect(unassigned.first()).toBeVisible();
+	const count = await unassigned.count();
+	expect(count).toBeGreaterThan(0);
+	await page.getByRole('checkbox', { name: 'Select all rows' }).check();
+
+	await page.getByTestId('bulk-assign').click();
+	await page.getByRole('dialog').getByRole('textbox', { name: 'Their principal' }).fill('kc~fay');
+	await page.getByRole('dialog').getByRole('button', { name: 'Assign', exact: true }).click();
+
+	await expect(page.getByTestId('queue-notice')).toHaveText(
+		`Assigned to fay: ${count} item${count === 1 ? '' : 's'}.`,
+	);
+	await expect(page.getByTestId('state-unassigned')).toContainText('0');
+	await page.getByTestId('clear-filter').click();
+	await expect(page.getByText('fay · pinned')).toHaveCount(count);
+});
+
+test('a manager changes the settings, and what may no longer change says why', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Manager');
+	await page.goto('/projects/letters?tab=settings');
+	await expect(page.getByTestId('settings-consensus')).toBeDisabled();
+	await expect(
+		page.getByText('Fixed: items were sent, each made into this many replicas.'),
+	).toBeVisible();
+	await page.getByTestId('settings-title').fill('Harbour letters');
+	await page
+		.getByTestId('settings-instructions')
+		.fill('Tag a page that is a letter, and only those.');
+
+	const patched = page.waitForRequest(
+		(req) => req.method() === 'PATCH' && req.url().endsWith('/api/annotator/projects/letters'),
+	);
+	await page.getByTestId('settings-save').click();
+
+	expect((await patched).postDataJSON()).toEqual({
+		title: 'Harbour letters',
+		instructions: 'Tag a page that is a letter, and only those.',
+	});
+	await expect(page.getByRole('heading', { level: 1, name: /Harbour letters/ })).toBeVisible();
+	await expect(page.getByTestId('instructions')).toContainText('and only those');
+	await expect(page).toHaveURL(/tab=settings/);
+});
+
+test('the review tab lists the work waiting for the reviewer by its annotators’ names, and none of their own', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/judging?tab=review');
+
+	await expect(page.getByTestId('review-waiting')).toHaveText('3 items wait for your review.');
+	const list = page.getByTestId('review-list');
+	await expect(list.getByTestId('person')).toHaveText(['Alma Alpha', 'Bert Beta', 'Sam Else']);
+	await expect(page.getByTestId('review-start')).toHaveAttribute(
+		'href',
+		/\/projects\/judging\/tasks\/judging-a\?pass=review&project=judging$/,
+	);
 });

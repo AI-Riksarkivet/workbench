@@ -31,6 +31,7 @@ from annotator.api.dependencies import StoreDep, get_store
 from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep, require_view, unseen_task
 from annotator.api.v1.responses import DraftImport, LegalEvent, TaskDetail
 from annotator.audit_actions import AnnotatorAuditAction
+from annotator.people import RECORDS_PERSON
 from annotator.projects.imports import shapes_from_ipc
 from annotator.projects.machines import (
     EDIT_PERMISSION,
@@ -45,13 +46,15 @@ from annotator.projects.machines import (
 )
 from annotator.projects.models import Draft, Link, Shape, Task, TaskState
 from annotator.state.store import AnnotatorStore
+from annotator.state.task_query import principals_in
+from annotator.text import Id, Text
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Grant
 from service_kit.governed.principal import is_principal
 
 
-router = APIRouter(prefix="/tasks", tags=["annotation-tasks"], dependencies=[Depends(get_store)])
+router = APIRouter(prefix="/tasks", tags=["annotation-tasks"], dependencies=[Depends(get_store), *RECORDS_PERSON])
 
 #: Edges whose `TASK_EDGES` permission is `None` — caused by the system (a lease running out), never by
 #: a principal. They are REFUSED on the HTTP surface rather than waved through: "no permission
@@ -71,7 +74,7 @@ class FireRequest(BaseModel):
     pass it would submit with review waived and self-accept.
     """
 
-    event: str = Field(min_length=1)
+    event: Annotated[Text, Field(min_length=1, max_length=64)]
     #: Optional override; absent means "the project's lease", captured on the task at send. A
     #: hardcoded default HERE would silently outvote the project's configuration on every claim.
     lease_seconds: int | None = Field(default=None, gt=0, le=86_400)
@@ -79,10 +82,10 @@ class FireRequest(BaseModel):
     #: distribution mechanism rather than a self-claim. Safe as a request field because it names the
     #: RECIPIENT, not the caller: the caller's own authority is still `can_manage`, checked against
     #: the task's project.
-    assignee: str | None = Field(default=None, max_length=128)
+    assignee: Annotated[Text, Field(max_length=128)] | None = None
     #: `request_changes` only — the reviewer's reason, appended as a `ReviewNote`.
-    message: str = Field(default="", max_length=4000)
-    shape_ids: list[str] = Field(default_factory=list, max_length=500)
+    message: Annotated[Text, Field(max_length=4000)] = ""
+    shape_ids: list[Id] = Field(default_factory=list, max_length=500)
 
 
 async def _authorize(checker: Checker, subject: str, permission: str, task: Task, what: AnnotatorAuditAction, **context: str) -> None:
@@ -225,7 +228,9 @@ async def with_legal_events(store: AnnotatorStore, task: Task) -> TaskDetail:
     project = await store.get_project(task.project_id)
     frozen = project is not None and project.state in FROZEN_PROJECT_STATES
     events = [] if frozen else [LegalEvent.model_validate(e) for e in legal_task_events(task.state)]
-    return TaskDetail.model_validate({**task.model_dump(), "legal_events": events})
+    return TaskDetail.model_validate(
+        {**task.model_dump(), "legal_events": events, "people": await store.names_of(principals_in([task.model_dump(mode="json")]))}
+    )
 
 
 @router.get("/{task_id}")

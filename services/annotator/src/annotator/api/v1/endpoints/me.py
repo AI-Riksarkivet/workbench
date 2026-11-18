@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from annotator.api.security import AuthorizerDep, CurrentToken, SettingsDep
+from annotator.people import display_name
 
 
 router = APIRouter(tags=["identity"])
@@ -58,7 +59,7 @@ async def me(caller: CurrentToken, authz: AuthorizerDep, settings: SettingsDep) 
     standing.sort(key=lambda s: s.org)
     return Me(
         sub=caller.subject,
-        name=claims.get("name") if isinstance(claims.get("name"), str) else None,
+        name=display_name(claims),
         email=claims.get("email") if isinstance(claims.get("email"), str) else None,
         estate_admin=bool(admin),
         orgs=standing,

@@ -28,6 +28,7 @@ from annotator.api.v1.endpoints.project_events import router
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.models import AnnotationProject, ProjectState, Task
 from annotator.state.store import AnnotatorStore
+from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
 from client_kit.media.config import Settings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
@@ -59,7 +60,7 @@ def _send(state_app: Callable[..., FastAPI], settings: Settings, body: dict[str,
             await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="vasa", state=ProjectState.LABELING))
 
         async def held() -> list[Task]:
-            return await store.get_tasks("p1", sorted((await store.task_index("p1")).tasks))
+            return (await store.task_page("p1", TaskFilter(), sort=TaskSort.ITEM, order=SortOrder.ASC, limit=200, offset=0))[2]
 
         portal = client.portal
         assert portal is not None, "the client runs no app"

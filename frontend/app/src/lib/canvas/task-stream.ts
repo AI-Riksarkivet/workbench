@@ -92,9 +92,28 @@ export function taskCanvasHref(task: StreamTask, projectId: string): string {
 	return `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.task_id)}`;
 }
 
+/**
+ * The labeling page of a task walked as part of a pass (`browse`, `review`), its filter carried in the address so the
+ * canvas walks the same items the screen listed, and a reload or a shared link walks them again.
+ */
+export function passHref(
+	task: StreamTask,
+	projectId: string,
+	pass: 'browse' | 'review',
+	filter: URLSearchParams = new URLSearchParams(),
+): string {
+	const query = new URLSearchParams(filter);
+	query.delete('tab');
+	query.delete('page');
+	query.delete('size');
+	query.set('pass', pass);
+	return `${taskCanvasHref(task, projectId)}?${query}`;
+}
+
 /** What the canvas needs to render the stream control: position, bounds, and where the arrows go. */
 export interface StreamPosition {
-	/** 1-based for display; 0 when the open item is not in the stream. */
+	/** 1-based for display, counted over the whole walk (a stream is one page of it, `window`); 0 when the open item is
+	 *  not in the stream. */
 	position: number;
 	total: number;
 	prevHref: string | null;
@@ -119,6 +138,8 @@ export function streamPosition(
 	taskId: string | null,
 	projectId: string | null,
 	link: (path: string) => string = (path) => path,
+	window: { offset: number; total: number } = { offset: 0, total: stream.length },
+	hrefOf: (task: StreamTask, projectId: string) => string = taskCanvasHref,
 ): StreamPosition {
 	const at = streamIndex(stream, taskId);
 	// No project → the canvas was not opened from a queue, so there is no stream to show. Rendering
@@ -127,10 +148,10 @@ export function streamPosition(
 	const prev = active ? neighbour(stream, taskId, -1) : null;
 	const next = active ? neighbour(stream, taskId, 1) : null;
 	return {
-		position: at + 1,
-		total: stream.length,
-		prevHref: prev && projectId ? link(taskCanvasHref(prev, projectId)) : null,
-		nextHref: next && projectId ? link(taskCanvasHref(next, projectId)) : null,
+		position: at < 0 ? 0 : window.offset + at + 1,
+		total: window.total,
+		prevHref: prev && projectId ? link(hrefOf(prev, projectId)) : null,
+		nextHref: next && projectId ? link(hrefOf(next, projectId)) : null,
 		active,
 		// The strip renders whenever there IS a queue, even standing on an item outside it (a lapsed
 		// lease, or a canvas opened from the browser while you hold other items). `active` gates the

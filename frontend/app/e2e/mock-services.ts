@@ -1453,6 +1453,7 @@ Bun.serve({
 			who.sub,
 			ok,
 			fault === 'fail' || fault === 'unbuilt' || fault === 'slow' ? fault : undefined,
+			who.name,
 		);
 		if (projects) return projects;
 		ok(404);

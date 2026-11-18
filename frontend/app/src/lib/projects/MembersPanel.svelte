@@ -14,10 +14,14 @@
 	import { Select } from '@workbench/ui/select';
 
 	import { fetchMembers, grantMember, revokeMember } from '#lib/api/projects.api.ts';
+	import PersonName from './PersonName.svelte';
+	import type { People } from './types.ts';
 
 	let { projectId }: { projectId: string } = $props();
 
 	let members = $state<{ user: string; relation: string }[]>([]);
+	/** The members' names, where the annotator keeps one (`people.ts`). */
+	let people = $state<People>({});
 	/** Supplied by the SERVER so this never keeps a second copy of the model's ladder. */
 	let grantable = $state<string[]>([]);
 	let loaded = $state(false);
@@ -44,6 +48,7 @@
 		}
 		loadError = '';
 		members = result.data.members;
+		people = result.data.people;
 		grantable = result.data.grantable;
 		if (grantable.length > 0 && !grantable.includes(rung)) rung = grantable[0]!;
 	}
@@ -55,6 +60,7 @@
 		busy = false;
 		if (result.ok) {
 			members = result.data.members;
+			people = result.data.people;
 			who = '';
 			actionError = '';
 		} else actionError = result.detail;
@@ -69,6 +75,7 @@
 		// a silent no-op, because a project nobody can administer cannot be undone from inside.
 		if (result.ok) {
 			members = result.data.members;
+			people = result.data.people;
 			actionError = '';
 		} else actionError = result.detail;
 	}
@@ -94,14 +101,13 @@
 		<ul class="flex flex-col gap-1">
 			{#each members as m (m.user + m.relation)}
 				<li class="flex items-center gap-2 text-sm" data-testid="member-row">
-					<!-- An OIDC `sub` is an opaque base64 blob — printed raw it fills the row with
-					     `user:CiQwOGE4Njg0Yi1kYjg4…` and tells nobody anything. `Subject` ellipsizes the
-					     opaque ones in the MIDDLE (keeping both ends, which is what distinguishes two
-					     subjects) while leaving readable identifiers verbatim, and always carries the FULL
-					     value on `title` so hover and copy still yield what a tuple write needs. Never
-					     `subjectDisplay(...).label` — the component is what makes that title invariant
-					     structural. -->
-					<Subject value={m.user} class="text-xs" />
+					<!-- By the name they last wrote under where one is kept; an OIDC `sub` with none is shortened in the
+					     middle by `Subject`, the full value always its tooltip, which a revoke sends back. -->
+					{#if people[m.user.replace(/^user:/, '')]}
+						<PersonName principal={m.user.replace(/^user:/, '')} {people} />
+					{:else}
+						<Subject value={m.user} class="text-xs" />
+					{/if}
 					<Badge variant="outline">{m.relation}</Badge>
 					<Button
 						variant="ghost"
@@ -109,7 +115,7 @@
 						class="ml-auto"
 						disabled={busy}
 						data-testid="revoke-member"
-						aria-label="Revoke {m.relation} from {m.user}"
+						aria-label="Revoke {m.relation} from {people[m.user.replace(/^user:/, '')] ?? m.user}"
 						title="Revoke {m.relation} from {m.user}"
 						onclick={() => void revoke(m.user, m.relation)}
 					>

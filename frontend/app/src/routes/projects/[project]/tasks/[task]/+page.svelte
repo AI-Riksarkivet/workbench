@@ -19,7 +19,8 @@
 	 * edits (`readOnlyReason`); otherwise it opens read-only and says why. The doors decide on their own.
 	 */
 	import { untrack } from 'svelte';
-	import { corpusRows, fetchProject, fetchTask, listTasks } from '#lib/api/projects.api.ts';
+	import { corpusRows, fetchProject, fetchTask, pageTasks } from '#lib/api/projects.api.ts';
+	import { passParams, readItemQuery, readPass, writeItemQuery } from '#lib/projects/item-query.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
 	import { documentParts, documentTurns } from '#lib/api/timeline.api.ts';
 	import { itemName } from '#lib/projects/item-name.ts';
@@ -40,7 +41,13 @@
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import CanvasShell from '#lib/canvas/CanvasShell.svelte';
 	import { readOnlyReason } from '#lib/canvas/editability.ts';
-	import { claimedStream, streamPosition, taskCanvasHref } from '#lib/canvas/task-stream.ts';
+	import {
+		claimedStream,
+		passHref,
+		streamPosition,
+		taskCanvasHref,
+		type StreamTask,
+	} from '#lib/canvas/task-stream.ts';
 
 	let { data } = $props();
 
@@ -59,9 +66,18 @@
 	let changed = $state<TaskDetail | null>(null);
 	const task = $derived(changed?.task_id === taskId ? changed : answer?.ok ? answer.data : null);
 	function ontaskchange(next: TaskDetail): void {
+		// A review pass moves on once the item leaves review: to the next item of the walk as it was before the verdict
+		// (the item has left the filter, so the walk read again would not hold its neighbours), or, past the last, back
+		// to the project's Review tab.
+		const moveTo =
+			pass === 'review' && next.state !== 'in_review'
+				? (stream.nextHref ?? stream.prevHref ?? reviewDoneHref)
+				: null;
 		changed = next;
 		void taskRead.refresh().then(() => (changed = null));
-		void listingRead.refresh();
+		void walkRead.refresh();
+		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the walk's hrefs are resolved (`linkWith`)
+		if (moveTo !== null) void goto(moveTo);
 	}
 	const elsewhere = $derived(task !== null && task.project_id !== projectId);
 
@@ -78,16 +94,56 @@
 		detailRead?.current?.ok ? detailRead.current.data.permissions : null,
 	);
 
-	// The label stream: the reader's claimed items in this project, in the queue's order.
-	const listingRead = $derived(listTasks({ projectId, details: true }));
-	const claimed = $derived(
-		claimedStream(
-			listingRead.current?.ok ? (listingRead.current.data.details ?? []) : [],
-			me,
-			data.authEnabled,
+	// THE WALK the canvas steps through, named by the address (`?pass=`, its filter beside it): the reader's own claims
+	// (labeling, the default), the labeled work a browse filtered (read-only), or the work waiting for this reviewer.
+	// The annotator filters it and answers the page around the open item, and where that page sits in the whole walk.
+	const pass = $derived(readPass(page.url.searchParams));
+	const passQuery = $derived(readItemQuery(page.url.searchParams));
+	const WALK_PAGE = 200;
+	const walkRead = $derived(
+		pageTasks({
+			projectId,
+			filter: passParams(pass, passQuery, me).toString(),
+			limit: WALK_PAGE,
+			around: taskId,
+		}),
+	);
+	const walkListing = $derived(walkRead.current?.ok ? walkRead.current.data : null);
+	const walkItems = $derived(
+		pass === 'label'
+			? claimedStream(walkListing?.details ?? [], me, data.authEnabled)
+			: (walkListing?.details ?? []),
+	);
+	const passFilter = $derived(writeItemQuery({ ...passQuery, page: 1 }, new URLSearchParams()));
+	const hrefOf = (t: StreamTask, project: string): string =>
+		pass === 'label' ? taskCanvasHref(t, project) : passHref(t, project, pass, passFilter);
+	const stream = $derived(
+		streamPosition(
+			walkItems,
+			taskId,
+			projectId,
+			link,
+			{
+				offset: walkListing?.offset ?? 0,
+				total: pass === 'label' ? walkItems.length : (walkListing?.matched ?? 0),
+			},
+			hrefOf,
 		),
 	);
-	const stream = $derived(streamPosition(claimed, taskId, projectId, link));
+	/** What the walk's controls are called: the arrows over the canvas, and the strip of its items. */
+	const WALK_LABELS = {
+		label: { nav: 'Your labeling queue', strip: 'Your claimed items' },
+		browse: { nav: 'Browsing', strip: 'The items you browse' },
+		review: { nav: 'Reviewing', strip: 'The items waiting for your review' },
+	} as const;
+	const reviewDoneHref = $derived(link(`/projects/${encodeURIComponent(projectId)}?tab=review`));
+	const readOnlyWhy = $derived(
+		task && permissions
+			? pass === 'browse'
+				? 'Browsing: the canvas is read-only.'
+				: readOnlyReason(task, permissions, me, task.people)
+			: null,
+	);
 
 	const unitKey = $derived(task?.source.keys[0] ?? null);
 	const dataset = $derived(task?.source.where ?? null);
@@ -183,12 +239,19 @@
 	}
 
 	// The item's other replicas (its consensus group), whose versions the canvas compares with its own.
-	const replicas = $derived(
+	const groupRead = $derived(
 		task?.replica_of
-			? (listingRead.current?.ok ? (listingRead.current.data.details ?? []) : []).filter(
-					(t) => t.replica_of === task.replica_of && t.task_id !== task.task_id,
-				)
-			: [],
+			? pageTasks({
+					projectId,
+					filter: new URLSearchParams({ group: task.replica_of }).toString(),
+					limit: 10,
+				})
+			: null,
+	);
+	const replicas = $derived(
+		(groupRead?.current?.ok ? (groupRead.current.data.details ?? []) : []).filter(
+			(t) => t.task_id !== task?.task_id,
+		),
 	);
 
 	// A 401 is a session that ended: the reader signs in again and comes back here, once. Refused again right after,
@@ -228,10 +291,18 @@
 					dataset,
 					key: unitKey,
 				})}
-				readOnly={readOnlyReason(task, permissions, me)}
+				readOnly={readOnlyWhy}
 				person={me ?? 'anonymous'}
 				{stream}
-				{claimed}
+				walk={{
+					items: walkItems,
+					offset: walkListing?.offset ?? 0,
+					total: stream.total,
+					hrefOf,
+					label: WALK_LABELS[pass].nav,
+					stripLabel: WALK_LABELS[pass].strip,
+					browsing: pass === 'browse',
+				}}
 				{exitHref}
 				{link}
 				{replicas}

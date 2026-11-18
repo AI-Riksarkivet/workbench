@@ -6,13 +6,18 @@
 
 	import { wallClock } from './clock.svelte.ts';
 	import { leaseView, formatLease } from './lease.ts';
-	import type { TaskDetail } from './types.ts';
+	import { personName } from './people.ts';
+	import type { People, TaskDetail } from './types.ts';
 
 	let {
 		task,
 		me,
-	}: { task: Pick<TaskDetail, 'state' | 'assignee' | 'lease_expires_at'>; me: string | null } =
-		$props();
+		people = {},
+	}: {
+		task: Pick<TaskDetail, 'state' | 'assignee' | 'lease_expires_at'>;
+		me: string | null;
+		people?: People;
+	} = $props();
 
 	// ONE CLOCK FOR THE WHOLE QUEUE, not one per row (`./clock.svelte.ts`): it holds the single interval and the POLL REASON (the wall clock is genuinely the only signal: no
 	// event means "one more second passed").
@@ -32,19 +37,22 @@
 {#if view.kind === 'held'}
 	<Badge
 		variant={view.mine ? 'default' : 'secondary'}
-		title="lease expires in {formatLease(view.secondsLeft)}"
+		title="{view.assignee}: lease expires in {formatLease(view.secondsLeft)}"
 	>
-		{view.mine ? 'yours' : view.assignee} · {formatLease(view.secondsLeft)}
+		{view.mine ? 'yours' : personName(view.assignee, people)} · {formatLease(view.secondsLeft)}
 	</Badge>
 {:else if view.kind === 'pinned'}
-	<Badge variant="secondary" title="assigned by a manager — the lease never expires">
-		{view.assignee} · pinned
+	<Badge
+		variant="secondary"
+		title="{view.assignee}: assigned by a manager — the lease never expires"
+	>
+		{personName(view.assignee, people)} · pinned
 	</Badge>
 {:else if view.kind === 'expired'}
 	<Badge
 		variant="destructive"
 		title="the lease lapsed — this claim is gone; the task returns to the queue"
 	>
-		{view.assignee} · expired
+		{personName(view.assignee, people)} · expired
 	</Badge>
 {/if}

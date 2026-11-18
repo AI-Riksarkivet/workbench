@@ -20,6 +20,7 @@ import pyarrow as pa
 from annotator.annotations.schema import EMPTY_SCHEMA, NewAnnotation, SaveAnnotations
 from annotator.annotations.unit import Unit
 from annotator.projects.models import Draft, Link, Shape
+from annotator.text import MAX_METADATA, embedded_json
 from service_kit.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -32,12 +33,12 @@ def attributes_of(metadata: str) -> dict[str, str]:
     boolean spelled as JSON is the same value), nested values as their JSON text.
 
     Raises:
-        ValidationError: ``metadata`` is not a JSON object.
+        ValidationError: ``metadata`` is not a JSON object, or nests deeper than `annotator.text.MAX_JSON_DEPTH`.
     """
     try:
-        parsed = json.loads(metadata) if metadata else {}
-    except json.JSONDecodeError as exc:
-        raise ValidationError(f"metadata is not valid JSON ({exc})") from exc
+        parsed = embedded_json(metadata, max_chars=MAX_METADATA) if metadata else {}
+    except ValueError as exc:
+        raise ValidationError(f"metadata {exc}") from exc
     if not isinstance(parsed, dict):
         raise ValidationError("metadata is a JSON object of attributes")
     return {str(k): v if isinstance(v, str) else ("" if v is None else json.dumps(v, separators=(",", ":"))) for k, v in parsed.items()}
@@ -129,7 +130,7 @@ def apply_save(draft: Draft | None, body: SaveAnnotations, *, author: str, now: 
         del shapes[shape_id]
 
     if body.links is not None:
-        links = list({(link.name, link.from_shape, link.to_shape): link for link in body.links}.values())
+        links = list({(link.name, link.from_shape, link.to_shape): link.stored() for link in body.links}.values())
         if dangling := sorted({end for link in links for end in (link.from_shape, link.to_shape)} - shapes.keys()):
             raise ValidationError(f"link(s) name shape(s) {dangling[:NAMED_IDS]} this task's work does not hold")
     else:

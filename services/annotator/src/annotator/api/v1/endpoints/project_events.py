@@ -22,7 +22,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Path, Query, status
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from annotator.api.dependencies import PublishRunnerDep, StoreDep
@@ -31,6 +31,7 @@ from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import get_annotator_settings
 from annotator.corpus import input_tables, not_annotatable, unheld_versions
+from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import (
     FROZEN_PROJECT_STATES,
     PROJECT_EDGES,
@@ -39,10 +40,12 @@ from annotator.projects.machines import (
     legal_task_events,
     project_transition,
 )
-from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Shape, Task, new_id
+from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, SentSource, Shape, ShapeType, Task, TaskState, new_id
 from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.projects.publish import publish_namespace, require_in_warehouse
 from annotator.state.store import AnnotatorStore
+from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, SortOrder, TaskFilter, TaskSort, principals_in
+from annotator.text import MAX_MASK, MAX_TEXT, Id, Name, Text
 from client_kit.media.deps import StateDep
 from client_kit.media.source_gate import require_read
 from client_kit.media.state import AppState
@@ -55,7 +58,7 @@ from service_kit.governed.token_exchange import LakehouseCaller
 logger = logging.getLogger(__name__)
 
 
-router = APIRouter(prefix="/projects", tags=["annotation-projects"])
+router = APIRouter(prefix="/projects", tags=["annotation-projects"], dependencies=RECORDS_PERSON)
 
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
 
@@ -75,10 +78,10 @@ class ProjectEventRequest(BaseModel):
     so a caller cannot name the object its own permission is checked against.
     """
 
-    event: str = Field(min_length=1)
+    event: Annotated[Text, Field(min_length=1, max_length=64)]
     #: Empty means the project's default target (`<warehouse>$<ANNOTATOR_PUBLISH_NAMESPACE>`), resolved by the door
     #: once it has loaded the project; a named one must be a namespace of the project's own warehouse.
-    target_namespace: str = ""
+    target_namespace: Name = ""
 
 
 class PredictionShape(BaseModel):
@@ -94,8 +97,9 @@ class PredictionShape(BaseModel):
     error; the fields it may not write simply do not land.
     """
 
-    shape_type: str = Field(min_length=1, max_length=32)
-    label: str | None = Field(default=None, max_length=128)
+    #: The stored shape's own type, so a prediction the door takes is always a `Shape` the send can build.
+    shape_type: ShapeType
+    label: Annotated[Text, Field(max_length=128)] | None = None
     x: float | None = None
     y: float | None = None
     width: float | None = None
@@ -104,17 +108,17 @@ class PredictionShape(BaseModel):
     polygon: list[float] = Field(default_factory=list)
     t_start: float | None = None
     t_end: float | None = None
-    parent_id: str | None = None
+    parent_id: Id | None = None
     char_start: int | None = None
     char_end: int | None = None
-    mask: str | None = None
-    text: str | None = None
-    attributes: dict[str, str] = Field(default_factory=dict)
-    group: str | None = None
+    mask: Annotated[Text, Field(max_length=MAX_MASK)] | None = None
+    text: Annotated[Text, Field(max_length=MAX_TEXT)] | None = None
+    attributes: dict[Annotated[Text, Field(max_length=64)], Annotated[Text, Field(max_length=4096)]] = Field(default_factory=dict, max_length=64)
+    group: Annotated[Text, Field(max_length=128)] | None = None
     #: A producer's OWN confidence. Unlike `source` this is the sender's to state — it describes the
     #: suggestion, not who made it — and the uncertainty selector (`open_browse.md` §4) reads it.
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-    model_version: str | None = Field(default=None, max_length=128)
+    model_version: Annotated[Text, Field(max_length=128)] | None = None
 
 
 class SendItem(BaseModel):
@@ -128,8 +132,8 @@ class SendItem(BaseModel):
     below are `PredictionShape` and not `Shape`.
     """
 
-    task_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    source: ItemSource
+    task_id: Annotated[Text, Field(max_length=64, pattern=r"^[A-Za-z0-9_-]+$")] | None = None
+    source: SentSource
     media: MediaRef
     #: PRE-ANNOTATIONS for this item — the bulk-labeling payload. Empty for an ordinary send. Capped
     #: because a prediction rides the task document: an unbounded list is an unbounded row.
@@ -219,7 +223,7 @@ class AdjudicationRequest(BaseModel):
     """The manager's pick for one replica group — just the winning replica's id. The group comes
     from the path and the picker from the verified subject, so neither can be forged in the body."""
 
-    task_id: str = Field(min_length=1, max_length=80)
+    task_id: Annotated[Text, Field(min_length=1, max_length=80)]
 
 
 GroupId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
@@ -397,43 +401,29 @@ async def send_items(
     tables = await run_in_threadpool(_refuse_unknown_datasets, state, payload, caller)
     await run_in_threadpool(_refuse_unheld_versions, state, payload, tables, caller)
 
-    # Consensus v1: N>1 writes N independent replica items per source item, deterministic sibling ids (`{gid}-r{k}`).
-    consensus_n = project.consensus_n
-    if len(payload.items) * consensus_n > SEND_CAP:
-        raise ConflictError(f"{len(payload.items)} items × consensus_n={consensus_n} exceeds the {SEND_CAP}-task send cap — split the send")
+    # Consensus v1: N>1 makes N independent replicas per source item. Refused here early on the project as read; the
+    # store makes the replicas and checks the cap again on the project its transaction holds.
+    if len(payload.items) * project.consensus_n > SEND_CAP:
+        raise ConflictError(f"{len(payload.items)} items × consensus_n={project.consensus_n} exceeds the {SEND_CAP}-task send cap — split the send")
 
     # Every prediction validated against the project's taxonomy and stamped BEFORE anything is written: a half-applied
-    # bulk action is worse than a refused one.
+    # bulk action is worse than a refused one. The store judges them again against the ontology it holds.
     predictions = _validated_predictions(project, payload)
 
+    # One task per item, built from the two client-supplied descriptive fields. Every provenance and state field takes its
+    # model default, so a sender cannot pre-set `state=accepted` or name another annotator; what the task captures from
+    # the project (review, lease, ontology, its replicas) the store decides on the row it locks (`send_tasks`).
     tasks: list[Task] = []
     for index, item in enumerate(payload.items):
-        # Built HERE from the two client-supplied descriptive fields plus the project's own config. Every provenance and
-        # state field takes its model default, so a sender cannot pre-set `state=accepted` or name another annotator.
-        group_id = item.task_id or new_id()
         # The input table is the server's to name, whatever the sender put there, and a version is kept only as a version
         # of that table, which `_refuse_unheld_versions` checked the catalog holds.
         table = tables.get(item.source.where or "")
-        source = item.source.model_copy(update={"table": table, "dataset_version": item.source.dataset_version if table else None})
-        capture: dict[str, Any] = {
-            # Captured from the PROJECT: `submit` reads review_required, the claim reads lease_seconds, and submit judges
-            # the item against ITS copy of the ontology, so a mid-flight edit cannot retroactively invalidate work.
-            "review_required": project.review_required,
-            "lease_seconds": project.lease_seconds,
-            "ontology": project.ontology,
-            # Every replica of a group gets the SAME suggestion: consensus asks several people the same question.
-            "prediction": predictions[index],
-        }
-        if consensus_n == 1:
-            tasks.append(Task(task_id=group_id, project_id=project_id, source=source, media=item.media, **capture))
-        else:
-            tasks.extend(
-                Task(task_id=f"{group_id}-r{k}", project_id=project_id, replica_of=group_id, source=source, media=item.media, **capture)
-                for k in range(1, consensus_n + 1)
-            )
+        source = ItemSource.model_validate(item.source.model_dump() | {"table": table, "dataset_version": item.source.dataset_version if table else None})
+        # Every replica of a group gets the SAME suggestion: consensus asks several people the same question.
+        tasks.append(Task(task_id=item.task_id or new_id(), project_id=project_id, source=source, media=item.media, prediction=predictions[index]))
 
     try:
-        created = await store.send_tasks(project_id, tasks)
+        created = await store.send_tasks(project_id, tasks, cap=SEND_CAP)
     except IllegalTransition as exc:
         raise ConflictError(str(exc)) from exc
 
@@ -450,49 +440,100 @@ async def send_items(
 
 
 class TaskInclude(StrEnum):
-    """What extra payload the task listing should carry. A closed set makes a typo a 422 naming the legal values
-    instead of a 200 carrying the wrong shape."""
+    """What extra payload the task listing carries. A closed set makes a typo a 422 naming the legal values instead of a
+    200 carrying the wrong shape."""
 
+    #: A page of the tasks' whole documents, each with its legal events, and the page's counts.
     DETAILS = "details"
+    #: Each person's part in the project over all its items.
+    CONTRIBUTORS = "contributors"
 
 
-# `exclude_unset`: the plain listing publishes FIVE keys and the details listing publishes eight.
+#: The most principals one answer names (`people`): a page of 200 items names a few people in practice.
+MAX_NAMED: Final = 1000
+
+TextFilter = Annotated[Text | None, Query(min_length=1, max_length=MAX_FILTER)]
+
+
+# `exclude_unset`: the plain listing publishes FOUR keys; each `include` adds its own.
 @router.get("/{project_id}/tasks", response_model_exclude_unset=True)
 async def list_project_tasks(
     project_id: ProjectId,
     checker: CheckerDep,
     subject: CurrentSubject,
     store: StoreDep,
-    include: TaskInclude | None = None,
+    include: Annotated[list[TaskInclude] | None, Query(max_length=len(TaskInclude))] = None,
+    state: Annotated[list[TaskState] | None, Query(max_length=len(TaskState))] = None,
+    assignee: TextFilter = None,
+    reviewer: TextFilter = None,
+    submitter: TextFilter = None,
+    not_submitter: TextFilter = None,
+    holder: TextFilter = None,
+    label: TextFilter = None,
+    dataset: TextFilter = None,
+    group: TextFilter = None,
+    replicas: bool = False,
+    date: DateField = DateField.UPDATED,
+    since: AwareDatetime | None = None,
+    until: AwareDatetime | None = None,
+    sort: TaskSort = TaskSort.ITEM,
+    order: SortOrder = SortOrder.ASC,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
-    # Keyset on the task id, so the tail stays reachable rather than merely slow.
-    cursor: Annotated[str | None, Query()] = None,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
+    around: TextFilter = None,
 ) -> TaskListing:
-    """The task index plus the publish precondition, computed from ONE snapshot.
+    """The task index plus the publish precondition, and with ``include=details`` one filtered, sorted page of the items.
 
-    ``include=details`` adds a page of the tasks' whole documents (assignee, lease, media, review notes), each with its
-    ``legal_events`` from `machines.legal_task_events`, the single source the queue renders its actions from.
+    The index and the precondition are read over every task whatever the filter (a page that changed `may_publish`
+    would be a far worse bug than an unpaged listing). ``include=details`` filters, orders and pages in Postgres
+    (`annotator.state.task_query`): ``matched`` items match, ``state_counts`` is what each state would leave under the
+    other filters, ``offset`` is where the page starts, and with ``around`` the page is the one holding that item near its
+    middle, at ``position``. Each item comes with its ``legal_events`` (`machines.legal_task_events`), the single source
+    the queue renders its actions from; ``include=contributors`` adds each person's part over all items. Every principal
+    the answer names is in ``people`` with the name they last wrote under, where one is kept (`annotator.people`).
     """
     await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
-    index = await store.task_index(project_id)
+    includes = set(include or [])
+    filters = TaskFilter(
+        states=list(dict.fromkeys(state or [])),
+        assignee=assignee,
+        reviewer=reviewer,
+        submitter=submitter,
+        not_submitter=not_submitter,
+        holder=holder,
+        label=label,
+        dataset=dataset,
+        group=group,
+        replicas=replicas,
+        date_field=date,
+        since=since,
+        until=until,
+    )
+    index, page, tasks, contributors = await store.task_page(
+        project_id, filters, sort=sort, order=order, limit=limit, offset=offset, around=around, contributors=TaskInclude.CONTRIBUTORS in includes
+    )
     listing: dict[str, Any] = index.model_dump(mode="json")
-    if include is not TaskInclude.DETAILS:
-        return TaskListing.model_validate(listing)
-
-    # Rule 5 (§5.2): once the project is publishing/published/archived, EVERY task transition is
-    # refused — so the details must not hand the UI actions that can only 409.
-    project = await store.get_project(project_id)
-    project_frozen = project is not None and project.state in FROZEN_PROJECT_STATES
-
-    task_ids = sorted(index.tasks)
-    if cursor is not None:
-        task_ids = [tid for tid in task_ids if tid > cursor]
-    page_ids = task_ids[:limit]
-    next_cursor = page_ids[-1] if len(task_ids) > limit else None
-
-    details = [
-        {**task.model_dump(mode="json"), "legal_events": [] if project_frozen else legal_task_events(task.state)}
-        for task in await store.get_tasks(project_id, page_ids)
-    ]
-    found = {d["task_id"] for d in details}
-    return TaskListing.model_validate({**listing, "details": details, "missing": [tid for tid in page_ids if tid not in found], "next_cursor": next_cursor})
+    named: set[str] = set()
+    if TaskInclude.DETAILS in includes:
+        # Rule 5 (§5.2): once the project is publishing/published/archived, EVERY task transition is refused, so the
+        # details must not hand the UI actions that can only 409.
+        project = await store.get_project(project_id)
+        project_frozen = project is not None and project.state in FROZEN_PROJECT_STATES
+        details = [{**task.model_dump(mode="json"), "legal_events": [] if project_frozen else legal_task_events(task.state)} for task in tasks]
+        found = {d["task_id"] for d in details}
+        listing |= {
+            "details": details,
+            "missing": [tid for tid in page.task_ids if tid not in found],
+            "matched": page.matched,
+            "state_counts": {str(k): v for k, v in page.state_counts.items()},
+            "offset": page.offset,
+            "position": page.position,
+            "datasets": page.datasets,
+        }
+        named |= principals_in(details)
+    if contributors is not None:
+        listing["contributors"] = [c.model_dump() for c in contributors]
+        named |= {c.principal for c in contributors}
+    if named:
+        listing["people"] = await store.names_of(sorted(named)[:MAX_NAMED])
+    return TaskListing.model_validate(listing)

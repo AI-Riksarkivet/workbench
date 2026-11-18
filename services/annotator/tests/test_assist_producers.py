@@ -145,7 +145,8 @@ def test_the_returns_table_uses_the_SAME_longest_prefix_rule_as_the_registry() -
 async def _store_with_task(settings: AnnotatorSettings, ontology: dict[str, Any]) -> AnnotatorStore:
     """A store holding task t1, whose captured ontology is ``ontology``; the caller closes it."""
     store = await AnnotatorStore.open(settings)
-    await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="p1"))
-    task = Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks"), media=MediaRef(kind="image"), ontology=LabelOntology.model_validate(ontology))
+    captured = LabelOntology.model_validate(ontology)
+    await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="p1", ontology=captured))
+    task = Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks"), media=MediaRef(kind="image"), ontology=captured)
     await store.send_tasks("p1", [task])
     return store

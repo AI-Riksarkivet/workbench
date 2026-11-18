@@ -22,6 +22,10 @@
 		activeTaskId,
 		projectId,
 		link,
+		hrefOf = taskCanvasHref,
+		offset = 0,
+		total = items.length,
+		label = 'Your claimed items',
 	}: {
 		/** The claimed stream, already filtered and ordered by `claimedStream`. */
 		items: TaskDetail[];
@@ -29,6 +33,12 @@
 		projectId: string;
 		/** Resolves an app path, carrying the reader's project (`linkWith`). */
 		link: (path: string) => string;
+		/** An item's app path on the walk the strip shows (a pass carries its filter). */
+		hrefOf?: (task: TaskDetail, projectId: string) => string;
+		/** Where the strip's first item sits in the whole walk, and how long the walk is. */
+		offset?: number;
+		total?: number;
+		label?: string;
 	} = $props();
 
 	/** Keep the open item in view as you walk the queue with the arrows or the keyboard.
@@ -48,7 +58,7 @@
 	     because it silently removes navigation instead of making it smaller. -->
 	<nav
 		class="border-border bg-card/40 flex w-24 shrink-0 flex-col gap-1.5 overflow-y-auto border-r p-1.5"
-		aria-label="Your claimed items"
+		aria-label={label}
 		data-testid="filmstrip"
 	>
 		{#each items as task, i (task.task_id)}
@@ -56,7 +66,7 @@
 			<!-- `link` is `linkWith`, which resolves the path through `$app/paths`. -->
 			<!-- eslint-disable svelte/no-navigation-without-resolve -->
 			<a
-				href={link(taskCanvasHref(task, projectId))}
+				href={link(hrefOf(task, projectId))}
 				class={cn(
 					'group relative block overflow-hidden rounded-md border transition-colors',
 					active
@@ -64,7 +74,7 @@
 						: 'border-border hover:border-muted-foreground',
 				)}
 				aria-current={active ? 'true' : undefined}
-				aria-label={`Item ${i + 1} of ${items.length}`}
+				aria-label={`Item ${offset + i + 1} of ${total}`}
 				data-testid="filmstrip-item"
 				data-active={active ? 'true' : 'false'}
 				{@attach active ? keepInView : () => {}}
@@ -77,7 +87,7 @@
 				<span
 					class="bg-background/80 text-muted-foreground absolute bottom-0.5 left-0.5 rounded px-1 text-[10px] tabular-nums backdrop-blur"
 				>
-					{i + 1}
+					{offset + i + 1}
 				</span>
 			</a>
 		{/each}

@@ -20,6 +20,7 @@ from annotator.annotations.work import apply_save
 from annotator.api.dependencies import StoreDep
 from annotator.api.security import READS_DATASET, CallerDep, CurrentSubject
 from annotator.corpus import resolve
+from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import Draft, Link, Shape, TaskState
 from client_kit.media.deps import DatasetParam, StateDep
@@ -28,7 +29,7 @@ from service_kit.exceptions import ConflictError
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["annotate"])
+router = APIRouter(tags=["annotate"], dependencies=RECORDS_PERSON)
 
 
 @router.post("/annotations/{key:path}", dependencies=[READS_DATASET])

@@ -25,13 +25,15 @@ import logging
 from typing import Annotated
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Path, Query, status
+from fastapi import APIRouter, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
 from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, SettingsDep
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AnnotatorSettings
+from annotator.people import RECORDS_PERSON, names_for
 from annotator.projects.roles import ADMINISTRATIVE, GRANTABLE, MemberGrant, Role
+from annotator.text import Text
 from service_kit.exceptions import ConflictError, ForbiddenError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.deps import FgaChecker
@@ -41,7 +43,7 @@ from service_kit.governed.principal import is_principal
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["members"])
+router = APIRouter(prefix="/projects", tags=["members"], dependencies=RECORDS_PERSON)
 
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
 
@@ -51,11 +53,17 @@ class MemberList(BaseModel):
     members: list[MemberGrant]
     #: The roles this API will grant, so a UI does not hardcode a second copy of the ladder.
     grantable: list[str] = Field(default_factory=lambda: list(GRANTABLE))
+    #: Each member's principal → the name they last wrote under, where one is kept (`annotator.people`).
+    people: dict[str, str] = Field(default_factory=dict)
+
+
+async def _listed(request: Request, members: list[MemberGrant]) -> MemberList:
+    return MemberList(members=members, people=await names_for(request, (m.user for m in members)))
 
 
 class GrantRequest(BaseModel):
     #: The person's principal key. A `user:`-prefixed id an earlier reader echoed back is accepted as the key it names.
-    user: str = Field(min_length=1, max_length=256)
+    user: Annotated[Text, Field(min_length=1, max_length=256)]
     relation: Role
 
 
@@ -104,32 +112,33 @@ async def _members(authz: Authorizer, project_id: str) -> list[MemberGrant]:
 
 
 @router.get("/{project_id}/members")
-async def list_members(project_id: ProjectId, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject) -> MemberList:
+async def list_members(request: Request, project_id: ProjectId, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject) -> MemberList:
     """Who holds which role directly on this project.
 
     DIRECT grants only. An org admin who owns every project of the org is not listed, because they are not revocable
     here and showing an entry whose remove button cannot work is worse than not showing it.
     """
     await _require(checker, subject, project_id, AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_LIST)
-    return MemberList(members=await _members(_store(authz), project_id))
+    return await _listed(request, await _members(_store(authz), project_id))
 
 
 @router.put("/{project_id}/members", status_code=status.HTTP_200_OK)
 async def grant_member(
-    project_id: ProjectId, payload: GrantRequest, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject, settings: SettingsDep
+    request: Request, project_id: ProjectId, payload: GrantRequest, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject, settings: SettingsDep
 ) -> MemberList:
     """Grant one role to one person. Idempotent — re-granting what someone already has is a no-op."""
     await _require(checker, subject, project_id, AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_GRANT, _guarding(payload.relation))
     store = _store(authz)
     await store.write([Grant(user=user_object(_person(payload.user, settings)), relation=payload.relation, object=f"project:{project_id}")])
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_GRANT, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=payload.relation)
-    return MemberList(members=await _members(store, project_id))
+    return await _listed(request, await _members(store, project_id))
 
 
 @router.delete("/{project_id}/members", status_code=status.HTTP_200_OK)
 async def revoke_member(
+    request: Request,
     project_id: ProjectId,
-    user: Annotated[str, Query(min_length=1, max_length=256)],
+    user: Annotated[Text, Query(min_length=1, max_length=256)],
     relation: Role,
     checker: CheckerDep,
     authz: AuthorizerDep,
@@ -156,4 +165,4 @@ async def revoke_member(
         await store.write([grant])
         raise ConflictError(refusal)
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_REVOKE, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=relation)
-    return MemberList(members=left)
+    return await _listed(request, left)

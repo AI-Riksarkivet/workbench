@@ -12,7 +12,7 @@ catalog transport). Shapes are in IMAGE coordinates — the annotator's own spac
 """
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -30,6 +30,7 @@ from annotator.projects.generation_schema import generation_schema
 from annotator.projects.machines import UnreadableOntology
 from annotator.projects.ontology import LabelOntology
 from annotator.state.store import AnnotatorStore
+from annotator.text import Text
 from client_kit.media.deps import StateDep
 from client_kit.media.frames import chunk_frame_path
 from client_kit.media.state import AppState
@@ -118,8 +119,8 @@ class AssistRequest(BaseModel):
     text-prompt backend reads ``prompt``. Everything is optional so one wire shape serves
     every producer family."""
 
-    producer: str = Field(default="grounding-dino", min_length=1, max_length=128)
-    prompt: str | None = Field(default=None, max_length=MAX_PROMPT)
+    producer: Annotated[Text, Field(min_length=1, max_length=128)] = "grounding-dino"
+    prompt: Annotated[Text, Field(max_length=MAX_PROMPT)] | None = None
     region: Region | None = None
     #: The interactive point-prompt session: every point clicked so far, in order. The
     #: request is the whole session state — re-running with one more point REFINES the
@@ -128,7 +129,7 @@ class AssistRequest(BaseModel):
     #: The labeling task this assist is for: the unit must be one of its item's, and the SERVER reads its captured
     #: ontology — the client does not send the rules it is judged by, same posture as `review_required` and the
     #: submit-time contract check. Optional on the model, which the producers' own tests build; the door requires it.
-    task_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    task_id: Annotated[Text, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")] | None = None
 
 
 #: Producer tool-name -> the canonical vocabulary the draft, ontology and published table speak.

@@ -23,6 +23,7 @@ from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints.project_events import router
 from annotator.projects.models import AnnotationProject, ProjectState, Task
 from annotator.state.store import AnnotatorStore
+from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
 
 
 def _client(state_app: Callable[..., FastAPI], *, allow: bool = True, seen: list[dict[str, Any]] | None = None) -> tuple[TestClient, FastAPI]:
@@ -75,7 +76,11 @@ def _seed(client: TestClient, app: FastAPI, state: ProjectState = ProjectState.L
 
 
 def _held(client: TestClient, app: FastAPI) -> list[str]:
-    return sorted(_call(client, app, lambda s: s.task_index("p1")).tasks)
+    async def held(store: AnnotatorStore) -> list[str]:
+        _index, page, _tasks, _people = await store.task_page("p1", TaskFilter(), sort=TaskSort.ITEM, order=SortOrder.ASC, limit=200, offset=0)
+        return page.task_ids
+
+    return _call(client, app, held)
 
 
 def test_a_manager_drops_an_unfinishable_item(state_app: Callable[..., FastAPI]) -> None:

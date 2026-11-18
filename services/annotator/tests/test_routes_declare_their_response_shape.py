@@ -108,17 +108,18 @@ def test_a_stored_document_that_has_drifted_does_not_reach_the_client(client: Te
             ("submit", "in_review", "can_annotate"),
         ]
     ]
-    assert body == {**_full_task().model_dump(mode="json"), "legal_events": events}
+    sent_at = body.pop("sent_at")
+    assert body == {**_full_task().model_dump(mode="json", exclude={"sent_at"}), "legal_events": events, "people": {}}
+    assert isinstance(sent_at, str), "the send stamps when the item was sent"
 
 
-def test_the_plain_task_listing_publishes_its_five_keys_and_no_details(client: TestClient) -> None:
+def test_the_plain_task_listing_publishes_its_four_keys_and_no_details(client: TestClient) -> None:
     """`details`/`missing` are `v.optional(...)` on the far side of the wire — valibot's optional accepts UNDEFINED, not
     null. Publishing them as `null` on the plain listing (which a declared response model does by default) would fail
     the app's boundary parse for every queue read."""
     body = client.get("/projects/p1/tasks").json()
 
     assert body == {
-        "tasks": {"g1-r1": "claimed"},
         "counts": {**dict.fromkeys((s.value for s in TaskState), 0), "claimed": 1},
         "total": 1,
         "terminal": 0,

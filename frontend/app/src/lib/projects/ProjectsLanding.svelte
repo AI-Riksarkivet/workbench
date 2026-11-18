@@ -353,7 +353,8 @@
 										aria-label="Items finished in {project.title || project.slug}"
 									/>
 									<p class="text-muted-foreground text-xs">
-										{progress.done}/{progress.total} items finished
+										{progress.done}/{progress.total}
+										{(project.consensus_n ?? 1) > 1 ? 'replicas' : 'items'} finished
 										{#if project.publish_error}
 											· <span class="text-destructive">publish failed</span>
 										{:else if project.state === 'publishing'}

@@ -45,6 +45,10 @@ class AssistBackend(BaseModel):
 class AnnotatorSettings(GovernedMediaSettings):
     service_name: str = "annotator"
     service_port: int = Field(default=8103, alias="ANNOTATOR_PORT")
+    #: The largest request body the annotator reads. An item's whole work is held to 8 MiB (`state.store.MAX_DRAFT_BYTES`)
+    #: and an import to this same bound once inflated, so a body twice that leaves room for JSON's own overhead and no
+    #: room for a body whose content could never be kept; the media apps' 32 MiB is for uploads the annotator takes none of.
+    max_body_bytes: int = Field(default=16 * 1024 * 1024, ge=0, alias="MEDIA_MAX_BODY_BYTES")
 
     #: The namespace of a project's warehouse a publish lands in when it names none: `<warehouse>$<this>`. One segment;
     #: the lakehouse gives the name no meaning, so a project's admin creates it, under the run rule if they choose.

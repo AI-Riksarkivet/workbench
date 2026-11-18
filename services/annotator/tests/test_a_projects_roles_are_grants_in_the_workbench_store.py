@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from annotator.annotations import save, tags, wire
+from annotator.annotations import save, tags, versions, wire
 from annotator.api.security import authenticate, current_subject, get_authorizer
 from annotator.api.v1.endpoints import me, members, projects
 from annotator.api.v1.endpoints import tasks as task_doors
@@ -59,6 +59,13 @@ class _Door:
 
 
 DOC = "a" * 16
+#: The name claims each person's token carries beyond the subject: alice's name with a control character and runs of
+#: spaces in it, bob a username and an address, rex only an address.
+CLAIMS: dict[str, dict[str, str]] = {
+    "keycloak~alice": {"name": " Alice\u0007  Ek ", "email": "alice@acme.example"},
+    "keycloak~bob": {"preferred_username": "bob", "email": "bob@acme.example"},
+    "keycloak~rex": {"email": "rex@acme.example"},
+}
 DATASET = "lake~acme$media"
 #: The unit a task of the test's project names, and one it does not.
 UNIT = f"{DOC}/0/19"
@@ -89,12 +96,15 @@ def door(openfga_store: OpenFgaStore, state_settings: AnnotatorSettings, tmp_pat
     app.include_router(members.router)
     app.include_router(tags.router)
     app.include_router(save.router)
+    app.include_router(versions.router)
     app.include_router(wire.router)
     app.include_router(me.router)
     app.include_router(task_doors.router)
     app.dependency_overrides[current_subject] = lambda: who[0]
     app.dependency_overrides[authenticate] = lambda: Caller(
-        principal=Principal.parse(who[0]), claims=IDToken(iss="i", sub=who[0], aud="workbench", exp=1, iat=1), access_token=SecretStr("t")
+        principal=Principal.parse(who[0]),
+        claims=IDToken.model_validate({"iss": "i", "sub": who[0], "aud": "workbench", "exp": 1, "iat": 1, **CLAIMS.get(who[0], {})}),
+        access_token=SecretStr("t"),
     )
     app.dependency_overrides[get_authorizer] = _authz_of
     with respx.mock(assert_all_mocked=True, assert_all_called=False), TestClient(app) as client:
@@ -384,8 +394,8 @@ def test_a_viewer_reads_the_unit_of_a_task_and_no_other(door: _Door, openfga_sto
 def test_me_is_the_persons_standing_in_each_organisation_the_store_holds(door: _Door) -> None:
     by_admin, by_member, by_stranger = (door.as_(person).get("/me").json() for person in ("olga", "alice", "mallory"))
 
-    assert (by_admin["estate_admin"], by_admin["orgs"]) == (True, [{"org": "acme", "role": "admin"}])
-    assert (by_member["estate_admin"], by_member["orgs"]) == (False, [{"org": "acme", "role": "member"}])
+    assert (by_admin["estate_admin"], by_admin["orgs"], by_admin["name"]) == (True, [{"org": "acme", "role": "admin"}], None)
+    assert (by_member["estate_admin"], by_member["orgs"], by_member["name"]) == (False, [{"org": "acme", "role": "member"}], "Alice Ek")
     assert (by_stranger["sub"], by_stranger["estate_admin"], by_stranger["orgs"]) == ("keycloak~mallory", False, [])
 
 
@@ -420,3 +430,28 @@ def test_a_listing_narrowed_to_sending_names_only_the_projects_the_caller_may_se
         return [p["project_id"] for p in r.json()["projects"]]
 
     assert (listed("vic"), listed("vic", can="can_send_items"), listed("fay", can="can_send_items")) == ([project], [], [project])
+
+
+def test_a_person_is_named_by_what_their_own_token_carried_when_they_last_wrote(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """alice's create keeps her token's name (cleaned); bob, granted a role, is shown by his principal until his own
+    write (a claim; reading the task is not one) keeps the username his token carries; rex's token names only an
+    address, which is never shown in place of his principal. The names ride beside the principals of the reads that show
+    them: the members list, the task and its history of saves."""
+    project = _create(door, "alice").json()["project_id"]
+    granted = door.as_("alice").put(f"/projects/{project}/members", json={"user": "keycloak~bob", "relation": "annotator"})
+    door.as_("alice").put(f"/projects/{project}/members", json={"user": "keycloak~rex", "relation": "annotator"})
+    _task(door, project, "t1", state="unassigned", assignee=None)
+    _task(door, project, "t2", state="unassigned", assignee=None)
+    door.as_("bob").get("/tasks/t1")
+    before_writing = door.as_("alice").get(f"/projects/{project}/members").json()["people"]
+
+    claimed = door.as_("bob").post("/tasks/t1/events", json={"event": "claim"})
+    saved = _save(door, "bob", project, inserts=[{"id": "b1", "shape_type": "bbox", "label": "a"}])
+    door.as_("rex").post("/tasks/t2/events", json={"event": "claim"})
+
+    assert granted.json()["people"] == before_writing == {"keycloak~alice": "Alice Ek"}, "a read is not a write: it keeps no name"
+    assert (claimed.status_code, saved.status_code) == (200, 200), saved.text
+    history = door.as_("alice").get(f"/annotations/{UNIT}/versions", params={"project": project, "task": "t1", "dataset": DATASET}).json()
+    assert [(v["author"], v["author_name"]) for v in history] == [("keycloak~bob", "bob")]
+    assert door.as_("alice").get(f"/projects/{project}/members").json()["people"] == {"keycloak~alice": "Alice Ek", "keycloak~bob": "bob"}
+    assert door.as_("alice").get("/tasks/t2").json()["people"] == {}
