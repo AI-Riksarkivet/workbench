@@ -218,7 +218,8 @@ auth:
   fga:
     # The platform's OpenFGA. Required.
     apiUrl: ""
-    # The store's name: the model writer creates it, and the annotator finds it by it.
+    # The store's name: the model writer creates it, and the annotator finds it by it, as do the viewer and search beside
+    # a source the workbench authorizes itself (any but a lakehouse read as the person).
     store: workbench
     # The Secret holding the store's preshared key, mounted as a file; empty presents none, which only an OpenFGA
     # authenticating nobody admits.

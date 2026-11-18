@@ -6,7 +6,10 @@ holds that table alone; and no segment can be read as a path (empty, ``.``, ``..
 character, a delimiter). The declaration is refused at load when a deployment could not be read as written: no source, a
 declaration given twice, two sources of one name, two lakehouses, a key the allow-list does not hold (every documented
 credential spelling among them; `client_kit.source_keys`), a credential in a location, a REST lakehouse read as nobody,
-or a default dataset no source holds; and a harmless key the old deny-list refused is accepted.
+or a default dataset no source holds; and a harmless key the old deny-list refused is accepted. A media service that
+signs people in refuses to start beside a source the workbench decides for (its declared readers) unless the
+workbench's own OpenFGA is wired, since unwired every check would allow, and beside a directory stand-in read as nobody,
+which no check is ever asked of.
 """
 
 from __future__ import annotations
@@ -17,7 +20,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from client_kit.media.config import Settings
+from annotator.core.config import AnnotatorSettings
+from client_kit.media.config import GovernedMediaSettings, Settings
+from search.core.config import SearchSettings
+from viewer.core.config import ViewerSettings
 
 
 SOURCES = [
@@ -139,3 +145,42 @@ def test_a_harmless_storage_key_the_deny_list_refused_is_accepted() -> None:
     settings = Settings.model_validate({"WORKBENCH_SOURCES": [{**SOURCES[2], "storage": harmless}]})
 
     assert settings.sources.named("one").model_dump()["storage"] == harmless
+
+
+#: What a signed-in deployment cannot be served without: (the source it declares, the store's settings, the refusal).
+UNDECIDED = {
+    "self-authorized-without-the-store": (
+        {**SOURCES[1], "readers": {"people": ["corp~ada"]}},
+        {},
+        r"the sources \['archive'\] are read only by their declared readers",
+    ),
+    "directory-stand-in-read-as-nobody": (
+        SOURCES[0],
+        {"WORKBENCH_FGA_ENABLED": "true", "WORKBENCH_FGA_API_URL": "http://fga.invalid:8080"},
+        r"the sources \['lake'\] are directory catalogs standing in for a lakehouse",
+    ),
+}
+
+
+@pytest.mark.parametrize(("declared", "store", "refusal"), UNDECIDED.values(), ids=UNDECIDED.keys())
+@pytest.mark.parametrize("service", [ViewerSettings, SearchSettings, AnnotatorSettings], ids=["viewer", "search", "annotator"])
+def test_a_service_signing_people_in_refuses_to_start_beside_a_source_nobody_decides_for_them(
+    service: type[GovernedMediaSettings], declared: dict[str, object], store: dict[str, str], refusal: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The settings a pod reads at start, from its environment, with sign-in on: a source only its declared readers read,
+    with no `WORKBENCH_FGA_*` (every check would allow), and a directory stand-in read as nobody, store or not (no check
+    is ever asked of it), are each refused."""
+    pod = {
+        "WORKBENCH_OIDC_ENABLED": "true",
+        "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": "false",
+        "WORKBENCH_OIDC_ISSUER": "https://id.example",
+        "WORKBENCH_OIDC_AUDIENCE": "workbench",
+        "WORKBENCH_OIDC_IDP_ID": "corp",
+        "WORKBENCH_SOURCES": json.dumps([declared]),
+        **store,
+    }
+    monkeypatch.delenv("WORKBENCH_FGA_ENABLED", raising=False)
+    for name, value in pod.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError, match=refusal):
+        service()

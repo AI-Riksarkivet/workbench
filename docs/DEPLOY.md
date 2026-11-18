@@ -50,8 +50,10 @@ of its whole rendered pod template (which a Job cannot change in place), so an u
 it as it is, and one that changes anything starts a new Job that finds the completed seed (`.seeded` on the volume) and
 exits 0 without writing. The claim carries
 `helm.sh/resource-policy: keep`: an uninstall leaves the data, a reinstall from git adopts it, and only deleting the
-claim (or `make undeploy-dev`, which deletes the namespace) seeds again. Its readers are the dev Dex's demo people
-(alice, bob, carol, dave and erin, as `dex~<user id>`), granted `reader` on `source:demo` by the model writer.
+claim (or `make undeploy-dev`, which deletes the namespace) seeds again. Its readers are four of the dev Dex's demo
+people (alice, bob, carol and dave, as `dex~<user id>`), granted `reader` on `source:demo` by the model writer; erin is
+left out on purpose, so a signed-in person who is not a reader is refused the demo's list entry, its rows, its signed
+links and its search, and that refusal can be read back on the cluster.
 
 The demo source is read-only, as every source but a rask lakehouse is, and marked `annotatable: true`, so its items are
 sent to a project, labelled and reviewed: each records the table it was read from and the version the sender saw, and
@@ -119,9 +121,15 @@ storeIdentity: { audience: sts.amazonaws.com }
 token. Every other source (a `namespace` or `tables` source, and a lakehouse read as the workbench, `identity: service`)
 knows nobody, so the workbench's own OpenFGA decides: the model writer grants `reader` on `source:<name>` to exactly the
 organisations and people its `readers` names, and removes what git no longer declares. A source with no `readers` is
-read by nobody. Every door that touches such a source asks first (the dataset list omits it; a descriptor, a page of rows,
-a row, a search, a page, a signed link's mint and its serve refuse it, 403), and a signed link stops serving once the
-person it was signed for is no longer a reader. With sign-in off (the local stack) every check allows.
+read by nobody. Every read of such a source is checked as it resolves the source it reads, the default dataset included,
+whatever else the request names (the dataset list omits it; a descriptor, a page of rows, a row, a search, a page, a
+signed link's mint and its serve refuse it, 403), and a signed link stops serving once the person it was signed for is
+no longer a reader. What such a read answers is cached by the reader's own browser alone (`Cache-Control: private`). The viewer and search ask the same store as the annotator: beside such a
+source the chart gives each of them `auth.fga` (the store's settings and its preshared key, mounted), and a service that
+signs people in refuses to start beside such a source without the store, rather than let every check allow, and refuses a
+`rask` directory stand-in (`identity: none`) outright. A store or model not there by the boot deadline is looked for again
+while the service runs, its doors answering 503 until it is found. Only with sign-in off (the local stack, where
+everyone is `anon`) does every check allow.
 
 **No credential in git.** A source's properties and storage options are held to an allow-list
 (`chart/files/source-keys.json`, the same list the services enforce, `client_kit.source_keys`): no key, token, signature,

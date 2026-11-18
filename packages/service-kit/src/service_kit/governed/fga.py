@@ -69,6 +69,8 @@ MAX_TUPLES_PER_WRITE: Final = 100
 _MAX_PAGES: Final = 400
 #: How long a booting service waits for the model writer to have written its image's model.
 RESOLVE_DEADLINE_SECONDS: Final = 120.0
+#: How far apart a service looks again for the store and its model while they are not there.
+RESOLVE_POLL_SECONDS: Final = 5.0
 
 #: The aiohttp transport raises an unreachable server as a raw transport error, not an ``ApiException``.
 _TRANSIENT_NETWORK: Final[tuple[type[BaseException], ...]] = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
@@ -287,7 +289,7 @@ async def resolve(
     credential_file: str | None,
     store_name: str = DEFAULT_STORE_NAME,
     deadline_seconds: float = RESOLVE_DEADLINE_SECONDS,
-    poll_seconds: float = 5.0,
+    poll_seconds: float = RESOLVE_POLL_SECONDS,
 ) -> tuple[str, str] | None:
     """Find the store named ``store_name`` and the model this image carries in it, read-only; ``None`` past the deadline.
 
@@ -407,13 +409,21 @@ class Authorizer:
             await self._client.close()
 
 
-async def build_authorizer(api_url: str, *, credential_file: str | None, store_name: str, model_id: str | None) -> Authorizer | None:
+async def build_authorizer(
+    api_url: str,
+    *,
+    credential_file: str | None,
+    store_name: str,
+    model_id: str | None,
+    deadline_seconds: float = RESOLVE_DEADLINE_SECONDS,
+    poll_seconds: float = RESOLVE_POLL_SECONDS,
+) -> Authorizer | None:
     """The authorizer on the store named ``store_name``, pinned to ``model_id`` or to the model this image carries.
 
-    ``None`` when the store or the model is not there by :data:`RESOLVE_DEADLINE_SECONDS`.
+    ``None`` when the store or the model is not there by ``deadline_seconds``.
     """
     if model_id is None:
-        resolved = await resolve(api_url, credential_file=credential_file, store_name=store_name)
+        resolved = await resolve(api_url, credential_file=credential_file, store_name=store_name, deadline_seconds=deadline_seconds, poll_seconds=poll_seconds)
         if resolved is None:
             return None
         store_id, model_id = resolved

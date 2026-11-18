@@ -9,10 +9,13 @@ character would answer 401. This drives the real viewer, with its real lifespan,
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.identity import IDP_ID, WORKBENCH_AUDIENCE, BrowserKey, Provider
+from tests.openfga import OpenFgaStore
 from viewer import main as main_mod
 from viewer.core.config import ViewerSettings, get_viewer_settings
 
@@ -24,9 +27,16 @@ from viewer.core.config import ViewerSettings, get_viewer_settings
         pytest.param("http://testserver/api/datasets/acme%24l%65tters/descriptor", id="an-unreserved-letter-encoded"),
     ],
 )
-def test_a_proof_for_a_percent_encoded_path_is_accepted(signed: str, monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider) -> None:
+def test_a_proof_for_a_percent_encoded_path_is_accepted(
+    signed: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oidc_provider: Provider, openfga_store: OpenFgaStore
+) -> None:
     settings = ViewerSettings.model_validate(
         {
+            "WORKBENCH_SOURCES": [{"kind": "namespace", "name": "archive", "impl": "dir", "properties": {"root": str(tmp_path)}}],
+            "WORKBENCH_FGA_ENABLED": True,
+            "WORKBENCH_FGA_API_URL": openfga_store.url,
+            "WORKBENCH_FGA_STORE": openfga_store.name,
+            "WORKBENCH_FGA_MODEL_ID": openfga_store.model_id,
             "WORKBENCH_OIDC_ENABLED": True,
             "WORKBENCH_OIDC_ISSUER": oidc_provider.issuer,
             "WORKBENCH_OIDC_AUDIENCE": WORKBENCH_AUDIENCE,
@@ -48,5 +58,5 @@ def test_a_proof_for_a_percent_encoded_path_is_accepted(signed: str, monkeypatch
     finally:
         main_mod.app.dependency_overrides.clear()
 
-    # Past the door: the dataset is unknown to this empty catalog, which is the viewer's answer, not the verifier's.
+    # Past the door: the dataset names no declared source, which is the viewer's answer, not the verifier's.
     assert response.status_code == 404, response.text

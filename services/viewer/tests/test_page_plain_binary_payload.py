@@ -100,6 +100,8 @@ def test_the_bytes_route_serves_a_plain_binary_payload() -> None:
     assert r.status_code == 200
     assert r.content == _JPEG
     assert r.headers["content-type"] == "image/jpeg", "the sniff must run on the plain shape too"
+    # Read as the person, so kept by their own browser alone and keyed on the token it was read with.
+    assert (r.headers["cache-control"], r.headers["vary"]) == ("private, max-age=300", "Authorization")
 
 
 @pytest.mark.usefixtures("_plain_dataset")

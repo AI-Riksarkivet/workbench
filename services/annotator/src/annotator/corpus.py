@@ -25,7 +25,7 @@ from client_kit.lancekit.catalog import bounded
 from client_kit.lancekit.descriptor import Declared
 from client_kit.lancekit.registry import DatasetHandle
 from client_kit.media.state import dataset_handle
-from client_kit.sources import RaskSource, annotatable, connect_source
+from client_kit.sources import RaskSource, annotatable, connect_as
 from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseCaller
 
@@ -106,7 +106,7 @@ def input_tables(state: AppState, names: list[str], caller: LakehouseCaller) -> 
     for name in names:
         try:
             located = sources.locate(name)
-            client = connect_source(located.source, person=caller.token, service=caller.service)
+            client = connect_as(located.source, caller)
             if len(located.identifier) >= (3 if isinstance(located.source, RaskSource) else 1) and _is_table(client, located.identifier):
                 found[name] = name
             else:
@@ -146,7 +146,7 @@ def unheld_versions(state: AppState, captured: set[tuple[str, int]], caller: Lak
         except ValueError:
             unheld.append(f"version {version} of {table}")
             continue
-        client = connect_source(located.source, person=caller.token, service=caller.service)
+        client = connect_as(located.source, caller)
         try:
             bounded(lambda c=client, i=located.identifier, v=version: lance.dataset(namespace_client=c, table_id=i, version=v))
         except (ValueError, OSError) as exc:

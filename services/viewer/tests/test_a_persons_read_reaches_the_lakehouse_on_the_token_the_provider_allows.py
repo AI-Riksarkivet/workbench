@@ -228,7 +228,8 @@ def test_a_passed_on_read_presents_the_persons_latest_token_and_none_past_its_ex
 
 
 #: A token from a further issuer: (that issuer's `lakehouse` entry, the lakehouse source's identity, the status of its
-#: person's read, whether that issuer exchanged it). A lakehouse read as the workbench needs no way to read as the person.
+#: person's read, whether that issuer exchanged it). A lakehouse read as the workbench needs no way to read as the person,
+#: and is read by the readers the workbench's own OpenFGA names, the person among them.
 FURTHER_ISSUER = {
     "names-no-delegation": (None, "person", 503, False),
     "exchanges-at-itself": ({"delegation": "exchange", "client_id": CLIENT_ID}, "person", 200, True),
@@ -238,7 +239,13 @@ FURTHER_ISSUER = {
 
 @pytest.mark.parametrize(("lakehouse", "identity", "status", "exchanged"), FURTHER_ISSUER.values(), ids=FURTHER_ISSUER.keys())
 def test_a_token_is_exchanged_only_at_the_issuer_that_signed_it(
-    lakehouse: dict[str, str] | None, identity: str, status: int, exchanged: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    lakehouse: dict[str, str] | None,
+    identity: str,
+    status: int,
+    exchanged: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     primary, further = Provider(), Provider()
     table = write_table(tmp_path, ["wh", "ns", "chunks"], _ROWS, descriptor=_DESCRIPTOR)
@@ -248,8 +255,19 @@ def test_a_token_is_exchanged_only_at_the_issuer_that_signed_it(
     entry: dict[str, object] = {"issuer": further.issuer, "idp_id": "further", "allow_insecure": True}
     if lakehouse is not None:
         entry["lakehouse"] = lakehouse | {"client_secret_file": str(secret)}
-    sources = [{"kind": "rask", "name": "lake", "uri": catalog.url, "identity": identity}]
-    settings = _settings(primary, catalog, secret, WORKBENCH_OIDC_PROVIDERS=[entry], WORKBENCH_SOURCES=sources)
+    source: dict[str, object] = {"kind": "rask", "name": "lake", "uri": catalog.url, "identity": identity}
+    store: dict[str, object] = {}
+    if identity == "service":
+        openfga_store: OpenFgaStore = request.getfixturevalue("openfga_store")
+        openfga_store.write((user_object("further~ada"), "reader", "source:lake"))
+        source["readers"] = {"people": ["further~ada"]}
+        store = {
+            "WORKBENCH_FGA_ENABLED": True,
+            "WORKBENCH_FGA_API_URL": openfga_store.url,
+            "WORKBENCH_FGA_STORE": openfga_store.name,
+            "WORKBENCH_FGA_MODEL_ID": openfga_store.model_id,
+        }
+    settings = _settings(primary, catalog, secret, WORKBENCH_OIDC_PROVIDERS=[entry], WORKBENCH_SOURCES=[source], **store)
     browser = BrowserKey()
     token = further.mint("ada", jkt=browser.jkt)
     try:
@@ -284,7 +302,8 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
 ) -> None:
     """A lance-namespace source knows nobody, and a lakehouse read as the workbench sees only the workbench: the
     workbench's own OpenFGA decides who reads either (`reader` on `source:<name>`, from git). A declared reader lists,
-    opens and has a cell signed; a signed-in stranger sees the source omitted, is refused the dataset and the signing;
+    opens, reads its rows and has a cell signed; a signed-in stranger sees the source omitted, is refused the dataset, its
+    rows and the signing;
     and a link signed for the reader stops serving once they are no longer a reader. A set-up's derived reads (a column
     profile, the atlas, the graph, the tree) stand behind the same gate."""
     dex = Provider("dex")
@@ -329,7 +348,12 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
     try:
         with _viewer(settings, monkeypatch) as client:
             listed = {sub: [s["name"] for s in client.get("/api/datasets", headers=bearer(sub)).json()["sources"]] for sub in ("reader", "stranger")}
-            opened = {sub: client.get("/api/datasets/src~wh%24ns", headers=bearer(sub)).status_code for sub in ("reader", "stranger")}
+            opened = {
+                sub: [
+                    client.get(path, headers=bearer(sub)).status_code for path in ("/api/datasets/src~wh%24ns", "/api/datasets/src~wh%24ns/tables/chunks/rows")
+                ]
+                for sub in ("reader", "stranger")
+            }
             derived = {
                 sub: [
                     client.get(f"/api/datasets/src~wh%24ns/tables/chunks/{read}", params=picks, headers=bearer(sub)).status_code
@@ -346,6 +370,51 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
         catalog.close()
         dex.close()
 
-    assert (listed, opened) == ({"reader": ["src"], "stranger": []}, {"reader": 200, "stranger": 403})
+    assert (listed, opened) == ({"reader": ["src"], "stranger": []}, {"reader": [200, 200], "stranger": [403, 403]})
     assert derived == {"reader": [200] * len(DERIVED_READS), "stranger": [403] * len(DERIVED_READS)}
     assert ({sub: answer.status_code for sub, answer in signing.items()}, served, served_after) == ({"reader": 200, "stranger": 403}, 200, 403)
+
+
+#: Reads of the default dataset, each naming something else beside it that is no dataset id the door reads.
+DEFAULT_READS = ["/api/doc-chunks/a", "/api/doc-chunks/a?table=junk", "/api/doc-chunks/a?corpus=junk", "/api/columns?table=x"]
+
+
+def test_the_default_dataset_is_read_only_by_its_sources_readers_whatever_else_the_request_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, openfga_store: OpenFgaStore
+) -> None:
+    """A request naming no dataset reads the deployment's default, and the source checked is the one each read resolves:
+    a query parameter that names no dataset the door reads (an unknown ``table``, a ``corpus`` it takes no notice of)
+    neither stands in for the default nor hides it, so the declared reader is answered and a signed-in stranger refused."""
+    dex = Provider("dex")
+    root = tmp_path / "catalog"
+    write_table(root, ["wh", "ns", "chunks"], pa.table({"doc_id": ["a"], "text": ["a ship sails"]}), descriptor=_DESCRIPTOR)
+    settings = ViewerSettings.model_validate(
+        {
+            "WORKBENCH_SOURCES": [
+                {"kind": "namespace", "name": "src", "impl": "dir", "properties": {"root": str(root)}, "readers": {"people": [f"{IDP_ID}~reader"]}}
+            ],
+            "MEDIA_DEFAULT_DATASET": "src~wh$ns",
+            "WORKBENCH_OIDC_ENABLED": True,
+            "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
+            "WORKBENCH_OIDC_ISSUER": dex.issuer,
+            "WORKBENCH_OIDC_AUDIENCE": WORKBENCH_AUDIENCE,
+            "WORKBENCH_OIDC_IDP_ID": IDP_ID,
+            "WORKBENCH_OIDC_ALLOW_INSECURE": True,
+            "WORKBENCH_DPOP_REQUIRED": False,
+            "WORKBENCH_FGA_ENABLED": True,
+            "WORKBENCH_FGA_API_URL": openfga_store.url,
+            "WORKBENCH_FGA_STORE": openfga_store.name,
+            "WORKBENCH_FGA_MODEL_ID": openfga_store.model_id,
+        }
+    )
+    openfga_store.write((user_object(f"{IDP_ID}~reader"), "reader", "source:src"))
+    try:
+        with _viewer(settings, monkeypatch) as client:
+            answered = {
+                sub: [client.get(path, headers={"Authorization": f"Bearer {dex.mint(sub)}"}).status_code for path in DEFAULT_READS]
+                for sub in ("reader", "stranger")
+            }
+    finally:
+        dex.close()
+
+    assert answered == {"reader": [200] * len(DEFAULT_READS), "stranger": [403] * len(DEFAULT_READS)}

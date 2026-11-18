@@ -18,7 +18,8 @@ from typing import Self
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from client_kit.sources import Source, SourceIdentity, Sources
+from client_kit.sources import RaskSource, Source, SourceIdentity, Sources, workbench_decides
+from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
 class MediaSettings(BaseSettings):
@@ -128,6 +129,37 @@ class MediaSettings(BaseSettings):
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
+
+
+class GovernedMediaSettings(GovernedAuthSettings, LakehouseTokenSettings, MediaSettings):
+    """A media service's settings with the person it serves: the viewer's, search's and the annotator's base.
+
+    A source no catalog decides for per person (`client_kit.sources.workbench_decides`) is read only by its declared
+    readers, which only the workbench's own OpenFGA can answer; with authorization off every check allows. So a service
+    that signs people in and declares such a source refuses to start without that store, rather than serve the source
+    to every signed-in person. A ``rask`` directory catalog read as nobody (``identity: none``) is decided by no one at all,
+    so with sign-in on it is refused outright. Sign-in off (`WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED`, the local stack)
+    serves everyone as `anon` and needs no store.
+    """
+
+    @model_validator(mode="after")
+    def _every_source_is_decided_for_a_signed_in_person(self) -> Self:
+        if not self.oidc_enabled:
+            return self
+        stand_ins = sorted(source.name for source in self.sources.items if isinstance(source, RaskSource) and source.identity is SourceIdentity.NONE)
+        if stand_ins:
+            raise ValueError(
+                f"the sources {stand_ins} are directory catalogs standing in for a lakehouse, which authenticate nobody and are "
+                "decided by nobody: a development stand-in for sign-in off, never served to signed-in people"
+            )
+        if not self.fga_enabled:
+            decided = sorted(source.name for source in self.sources.items if workbench_decides(source))
+            if decided:
+                raise ValueError(
+                    f"the sources {decided} are read only by their declared readers, which the workbench's own OpenFGA decides: "
+                    "set WORKBENCH_FGA_ENABLED and its store, or the service would serve them to every signed-in person"
+                )
+        return self
 
 
 @lru_cache

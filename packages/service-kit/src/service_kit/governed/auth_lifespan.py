@@ -5,11 +5,15 @@ it; ``app.state.authz`` asks the workbench's own OpenFGA store; ``app.state.lake
 for one addressed to the lakehouse (under `LakehouseDelegation.EXCHANGE`) and takes the workbench's own. Each is ``None`` when its settings leave it off.
 
 A failure to BUILD one is logged and leaves it ``None``: the door that needs it then answers 503, never a permissive
-fallback, which would turn a broken authorization layer into an open one. Nothing is built at import.
+fallback, which would turn a broken authorization layer into an open one. Nothing is built at import. The store alone
+is looked for again while the service runs (`_resolve_until_found`): an OpenFGA, a store or a model that arrives after
+the boot deadline (a model writer that ran late, a store restored) is taken up without restarting the pod, and until
+then its doors keep answering 503.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -20,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from service_kit.governed.fga import Authorizer
     from service_kit.governed.settings import OidcProvider
     from service_kit.governed.token_exchange import Delegation, LakehouseTokens, PersonTokens
 
@@ -106,17 +111,43 @@ async def attach_auth(app: FastAPI, settings: _AuthSettings, *, service: str) ->
         app.state.lakehouse_tokens, app.state.delegations = _lakehouse_clients(settings, providers, app.state.person_tokens)
         if app.state.lakehouse_tokens is None:
             log.warning("%s: no confidential client named; a lakehouse that authenticates refuses every read made as this service", service)
+    app.state.authz_resolving = None
     if isinstance(settings, _FgaSettings) and settings.fga_enabled:
-        try:
-            from service_kit.governed.fga import build_authorizer
-
-            app.state.authz = await build_authorizer(
-                settings.fga_api_url, credential_file=settings.fga_credential_file, store_name=settings.fga_store, model_id=settings.fga_model_id
-            )
-        except Exception:
-            log.exception("%s: OpenFGA client failed to build; every authorized route will answer 503", service)
+        app.state.authz = await _build_authorizer(settings, service)
         if app.state.authz is None:
-            log.error("%s: no OpenFGA store %r holding this image's model; every authorized route will answer 503", service, settings.fga_store)
+            log.error("%s: no OpenFGA store %r holding this image's model; every authorized route answers 503 until it is found", service, settings.fga_store)
+            app.state.authz_resolving = asyncio.create_task(_resolve_until_found(app, settings, service))
+
+
+async def _build_authorizer(settings: _FgaSettings, service: str) -> Authorizer | None:
+    """The store's authorizer, or ``None`` when it is not there by the deadline or its client cannot be built."""
+    from service_kit.governed import fga
+
+    try:
+        return await fga.build_authorizer(
+            settings.fga_api_url,
+            credential_file=settings.fga_credential_file,
+            store_name=settings.fga_store,
+            model_id=settings.fga_model_id,
+            deadline_seconds=fga.RESOLVE_DEADLINE_SECONDS,
+            poll_seconds=fga.RESOLVE_POLL_SECONDS,
+        )
+    except Exception:
+        log.exception("%s: OpenFGA client failed to build; every authorized route answers 503", service)
+        return None
+
+
+async def _resolve_until_found(app: FastAPI, settings: _FgaSettings, service: str) -> None:
+    """Look for the store until it is there, then put its authorizer in place; cancelled by `dispose`."""
+    from service_kit.governed import fga
+
+    while True:
+        await asyncio.sleep(fga.RESOLVE_POLL_SECONDS)
+        authz = await _build_authorizer(settings, service)
+        if authz is not None:
+            app.state.authz = authz
+            log.info("%s: OpenFGA store %r found; authorized routes answer again", service, settings.fga_store)
+            return
 
 
 def _lakehouse_clients(settings: object, providers: list[OidcProvider], people: PersonTokens) -> tuple[LakehouseTokens | None, dict[str, Delegation]]:
@@ -169,6 +200,11 @@ def _lakehouse_clients(settings: object, providers: list[OidcProvider], people: 
 async def dispose(app: object) -> None:
     """Close what `attach_auth` opened. Suppressed: a shutdown that raises hides whatever came after it."""
     state = getattr(app, "state", None)
+    resolving: asyncio.Task[None] | None = getattr(state, "authz_resolving", None)
+    if resolving is not None:
+        resolving.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await resolving
     authz = getattr(state, "authz", None)
     if authz is not None:
         await authz.close()

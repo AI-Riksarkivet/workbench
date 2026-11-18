@@ -2,7 +2,7 @@
 # The chart's refusals, rendered: each misconfiguration a template refuses (its `fail`, or a `required` value left out) is
 # rendered over the development overlay, and the render must fail with the template's own message. A refusal that stops
 # firing, or fires with another message, fails `make chart-check`, so a misconfiguration never reaches a cluster as a
-# release that renders.
+# release that renders. Beside them, the wiring a pod cannot start without is rendered and read back (`carries`).
 #
 #   bash scripts/chart-refusals.sh        # from the repository root; needs helm
 set -euo pipefail
@@ -35,6 +35,40 @@ refuses() {
 
 # The overlay itself renders: every refusal below is the one change named.
 helm template workbench chart -n workbench "${APIS[@]}" "${BASE[@]}" >/dev/null
+
+# deployment <name>: the Deployment of that name among the manifests on stdin.
+deployment() {
+  awk -v want="$1" '
+    /^---/ { if (kind && named) printf "%s", doc; doc = ""; kind = 0; named = 0; next }
+    { doc = doc $0 "\n" }
+    /^kind: Deployment$/ { kind = 1 }
+    $0 == "  name: " want { named = 1 }
+    END { if (kind && named) printf "%s", doc }'
+}
+
+# carries <what> <line> <helm args beyond the base...>: the viewer's and search's Deployments each render that line.
+carries() {
+  local what="$1" line="$2"
+  shift 2
+  local out
+  out="$(helm template workbench chart -n workbench "$@" --show-only templates/media.yaml)"
+  for service in viewer search; do
+    checked=$((checked + 1))
+    if ! deployment "workbench-$service" <<<"$out" | grep -qF -- "$line"; then
+      echo "NOT CARRIED: workbench-$service renders no \"$line\" ($what)" >&2
+      echo "  rendered with: $*" >&2
+      failed=$((failed + 1))
+    fi
+  done
+}
+
+# A source the workbench authorizes itself (the overlay's `demo`, read only by its declared readers) is read by the
+# viewer and search only through the workbench's own OpenFGA: with sign-in on and no store they refuse to start.
+carries "the workbench's store, on" 'WORKBENCH_FGA_ENABLED, value: "true"' "${APIS[@]}" "${BASE[@]}"
+carries "the store's preshared key, as a file" "WORKBENCH_FGA_CREDENTIAL_FILE, value: /var/run/secrets/workbench/fga/preshared-key" \
+  "${APIS[@]}" "${BASE[@]}"
+carries "the store's preshared key, mounted" "name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true" \
+  "${APIS[@]}" "${BASE[@]}"
 
 # The platform's prerequisites, named when a cluster does not serve them.
 refuses "CloudNativePG is a prerequisite" --api-versions generators.external-secrets.io/v1alpha1/Password "${BASE[@]}"
@@ -131,7 +165,7 @@ refuses "is not a storage option a source may declare" "${APIS[@]}" "${BASE[@]}"
   --set 'sources[2].storage.aws_secret_access_key=x'
 
 if [ "$failed" -gt 0 ]; then
-  echo "$failed of $checked refusals did not fire as declared" >&2
+  echo "$failed of $checked checks did not hold as declared" >&2
   exit 1
 fi
-echo "the chart refuses all $checked misconfigurations, each with its own message"
+echo "the chart passes all $checked checks: each misconfiguration refused with its own message, each wiring carried"

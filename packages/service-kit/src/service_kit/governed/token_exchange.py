@@ -60,14 +60,18 @@ HTTP_TIMEOUT_SECONDS: Final = 10.0
 
 class LakehouseCaller(BaseModel):
     """The person a lakehouse read is made as: their principal key, which every per-caller cache is keyed on, a function
-    answering their current token addressed to the lakehouse (``None`` with authentication off), and one answering the
-    workbench's own, for a source the deployment reads as the workbench (``None`` where no client is configured)."""
+    answering their current token addressed to the lakehouse (``None`` with authentication off), one answering the
+    workbench's own, for a source the deployment reads as the workbench (``None`` where no client is configured), and the
+    names of the sources they may read as the workbench's own store answered (every source it does not decide among them;
+    `client_kit.media.source_gate.admit`). A caller nobody admitted reads no source the workbench decides for
+    (`client_kit.sources.require_admitted`) and lists none."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     subject: str
     token: Callable[[], str] | None = None
     service: Callable[[], str] | None = None
+    admitted: frozenset[str] = frozenset()
 
 
 class _Discovery(BaseModel):

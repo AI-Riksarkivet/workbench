@@ -32,7 +32,11 @@ the lakehouse is written once, at publish, through the catalog's doors. So label
 deployment with no `rask` source labels any source marked annotatable, and its publish says plainly there is nowhere to
 publish to), and the workbench holds no write grant in a lakehouse while people label. **Who reads what:** a lakehouse read as the person decides every read itself; every other
 source, and a lakehouse read as the workbench (`identity: service`), is decided by the workbench's own OpenFGA, `reader`
-on `source:<name>` from the source's `readers` in git (`client_kit.media.source_gate`; none means nobody). No source
+on `source:<name>` from the source's `readers` in git (`client_kit.media.source_gate`; none means nobody), which the
+viewer, search and the annotator each ask: the request's caller carries the answer (`source_gate.admit`) and every read
+checks it as it resolves its source (`client_kit.sources.require_admitted`). A service that signs people in refuses to
+start beside such a source without that store, and beside a `rask` directory stand-in read as nobody
+(`client_kit.media.config.GovernedMediaSettings`), so only sign-in off lets every check allow. No source
 names a credential: properties and storage options are an allow-list (`client_kit.source_keys`, the chart's copy in
 `chart/files/source-keys.json`), and every id segment a request names is checked (`client_kit.source_names`). A dataset with no `lance_media.descriptor` (or an invalid one) is shown from its
 schema as a plain table (`viewer.services.plain_rows`, the dock's Rows and Row panels, `#lib/plain`): paging, sorting where
@@ -102,7 +106,7 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_SOURCES_FILE` | the sources declaration (`{"sources": [...]}`, `client_kit.sources`), a file the chart renders from `sources` (`<release>-sources`); a relative local path in it is read beside the file. `WORKBENCH_SOURCES` gives the list inline (tests). No source names a credential: a property or storage option off the allow-list (`client_kit.source_keys`) is refused at load, by name |
 | `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
 | `ANNOTATOR_PUBLISH_LEASE_SECONDS`, `_REDRIVE_SECONDS`, `_CONCURRENCY` | a publish run's lease on its project (default 300 s), how often each replica sweeps for publishes no live run holds (30 s, jittered), and how many runs one replica drives at once (2, below the pool size) |
-| `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned |
+| `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned; required with sign-in on beside a source the workbench authorizes, and the chart gives it to the viewer and search there as to the annotator |
 | `VIEWER_MEDIA_URL_KEY_FILE` | a credential: the mounted file holding the viewer's media-URL signing key, base64 of at least 32 random bytes (`openssl rand -base64 32`), read on every use; unset or short, the signing door answers 503 |
 | `VIEWER_MEDIA_URL_TTL_SECONDS` | how long a signed media URL serves its cell: default 300, from 10 to 3600 |
 | `WORKBENCH_FLOWS_SERVE_TOKEN_FILE` | a credential: the mounted projected ServiceAccount token (audience `serve`) flows presents to Ray Serve, read on every call; unset, every call to Serve is refused |

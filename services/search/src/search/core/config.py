@@ -9,15 +9,15 @@ from functools import lru_cache
 
 from pydantic import Field
 
-from client_kit.media.config import Settings
-from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
+from client_kit.media.config import GovernedMediaSettings
 
 
-class SearchSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
-    """The search service's config: the media plane's, the workbench's sign-in, and its client for lakehouse tokens.
+class SearchSettings(GovernedMediaSettings):
+    """The search service's config: the media plane's, the workbench's sign-in and store, and its client for lakehouse tokens.
 
-    Search reads every corpus as the person asking, on a token it exchanges for them, so the lakehouse decides what they
-    may search; it checks nothing of its own on a corpus.
+    A lakehouse read as the person decides what they may search, on a token search exchanges or passes on for them; every
+    other source is searched only by its declared readers, which the workbench's own OpenFGA decides
+    (`GovernedMediaSettings`).
     """
 
     service_name: str = "search"

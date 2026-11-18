@@ -51,7 +51,7 @@ from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, DatasetDescr
 from client_kit.lancekit.introspect import TableInfo, dataset_info
 from client_kit.media.config import MediaSettings
 from client_kit.source_names import check_segments
-from client_kit.sources import NamespaceSource, RaskSource, TablesSource, annotatable, connect_source, qualify
+from client_kit.sources import NamespaceSource, RaskSource, TablesSource, annotatable, connect_as, qualify, require_admitted
 from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.outage import reads_as_store_outage
@@ -505,8 +505,8 @@ class DatasetRegistry:
 
     def client(self, source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller) -> LanceNamespace:
         """The namespace client ``source`` is read through for ``caller``: a lakehouse with the token its identity names,
-        any other source with none (`client_kit.sources.connect_source`)."""
-        return connect_source(source, person=caller.token, service=caller.service)
+        any other source with none, once the caller may read it (`client_kit.sources.connect_as`)."""
+        return connect_as(source, caller)
 
     def _survey(self, source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller, deadline: float) -> Survey:
         try:
@@ -528,10 +528,11 @@ class DatasetRegistry:
                 found.unlisted.append(Unlisted(id=dataset_id, reason=reason_for(exc)))
         return survey
 
-    def survey(self, caller: LakehouseCaller, only: set[str]) -> list[Survey]:
-        """The sources named ``only``, each surveyed on its own within :data:`DISCOVERY_DEADLINE_S`, in the declaration's
-        order: one that cannot be read, or does not answer in time, is reported as such and never hides the others."""
-        sources = [source for source in self._settings.sources.items if source.name in only]
+    def survey(self, caller: LakehouseCaller) -> list[Survey]:
+        """The sources the caller is admitted to (``caller.admitted``), each surveyed on its own within
+        :data:`DISCOVERY_DEADLINE_S`, in the declaration's order: one that cannot be read, or does not answer in time, is
+        reported as such and never hides the others."""
+        sources = [source for source in self._settings.sources.items if source.name in caller.admitted]
         deadline = time.monotonic() + DISCOVERY_DEADLINE_S
         futures: list[Future[Survey]] = []
         for source in sources:
@@ -556,17 +557,20 @@ class DatasetRegistry:
         Raises:
             UnknownDatasetError: The id names no declared source, is not a namespace id the source admits, or the source
                 holds no such namespace.
+            ForbiddenError: The source is the workbench's to decide and the caller is not one of its readers; asked before
+                the caller's cached handle is served (`client_kit.sources.require_admitted`).
         """
+        try:
+            located = self._settings.sources.dataset(dataset_id)
+        except ValueError as exc:
+            raise UnknownDatasetError(f"invalid dataset id {dataset_id!r}: {exc}") from exc
+        require_admitted(located.source, caller)
         key = (caller.subject, dataset_id)
         with self._lock:
             handle = self._handles.get(key)
             if handle is not None:
                 self._handles.move_to_end(key)
                 return handle
-        try:
-            located = self._settings.sources.dataset(dataset_id)
-        except ValueError as exc:
-            raise UnknownDatasetError(f"invalid dataset id {dataset_id!r}: {exc}") from exc
         client = self.client(located.source, caller)
         sessions = self._caller_sessions(located.source.name, caller.subject)
         try:

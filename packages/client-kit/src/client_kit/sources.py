@@ -54,7 +54,7 @@ from client_kit.lancekit.catalog import connect_catalog
 from client_kit.lancekit.confined import ConfinedNamespace
 from client_kit.source_keys import check_location, check_properties, check_storage
 from client_kit.source_names import SOURCE_SEPARATOR, check_segments
-from service_kit.exceptions import ServiceUnavailableError
+from service_kit.exceptions import ForbiddenError, ServiceUnavailableError
 from service_kit.governed.principal import PrincipalKey
 from service_kit.naming import CATALOG_DELIMITER
 
@@ -63,6 +63,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lance_namespace import LanceNamespace
+
+    from service_kit.governed.token_exchange import LakehouseCaller
 
 
 #: A source's name: a DNS label, so it survives every place an id travels (a URL path segment, a table digest, a log).
@@ -338,6 +340,30 @@ def workbench_decides(source: RaskSource | NamespaceSource | TablesSource) -> bo
     return True
 
 
+def require_admitted(source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller) -> None:
+    """Refuse (403) a read of ``source`` the workbench decides for (:func:`workbench_decides`) by a caller its store did not
+    admit (``caller.admitted``, from `client_kit.media.source_gate.admit`). Every read of a source resolves it here first,
+    a dataset's (`client_kit.lancekit.registry.DatasetRegistry.get`) and a table's (:func:`connect_as`) alike, so the
+    source a door reads is the source that was checked, whatever the request named.
+
+    Raises:
+        ForbiddenError: The source is the workbench's to decide and the caller is not one of its readers.
+    """
+    if workbench_decides(source) and source.name not in caller.admitted:
+        raise ForbiddenError(f"{caller.subject} may not read source {source.name!r}")
+
+
+def connect_as(source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller) -> LanceNamespace:
+    """``caller``'s namespace client on ``source`` (:func:`connect_source` on their tokens), once :func:`require_admitted`
+    lets them read it.
+
+    Raises:
+        ForbiddenError: As :func:`require_admitted`.
+    """
+    require_admitted(source, caller)
+    return connect_source(source, person=caller.token, service=caller.service)
+
+
 def annotatable(source: RaskSource | NamespaceSource | TablesSource) -> str | None:
     """Why a dataset of ``source`` cannot be annotated, or ``None`` when it can: a lakehouse's always can, and any other
     source's only when git marks it ``annotatable``."""
@@ -397,7 +423,9 @@ __all__ = [
     "Sources",
     "TablesSource",
     "annotatable",
+    "connect_as",
     "connect_source",
     "qualify",
+    "require_admitted",
     "workbench_decides",
 ]

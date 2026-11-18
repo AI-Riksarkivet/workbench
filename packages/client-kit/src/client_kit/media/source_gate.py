@@ -3,19 +3,21 @@
 A lakehouse read as the person decides every read itself, on the person's token, and is not asked here. Every other
 source (a lance-namespace catalog, a bare table, a lakehouse read as the workbench) has no catalog that knows the
 person, so the workbench's own OpenFGA decides: ``can_read`` on ``source:<name>``, which the model writer converges from
-the source's declared readers. Every door that touches such a source's data asks here first; with authorization off
-(the local stack, sign-in off) the checker allows everything, as it does for every other check.
+the source's declared readers. A request's caller carries the answer (:func:`admit`), and every read of a source checks
+it as it resolves the source (`client_kit.sources.require_admitted`); a door naming its sources up front (a signing, a
+send, a fan-out) asks :func:`require_read` too, to refuse before any work. The checker allows
+everything only with authorization off, which a service declaring such a source runs only with sign-in off too (the local
+stack, where everyone is `anon`): with sign-in on it refuses to start without the store (`GovernedMediaSettings`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from starlette.requests import Request
-
 from client_kit.sources import Sources, workbench_decides
 from service_kit.exceptions import ForbiddenError
 from service_kit.governed.deps import FgaChecker
+from service_kit.governed.token_exchange import LakehouseCaller
 
 
 def source_object(name: str) -> str:
@@ -48,17 +50,16 @@ async def require_read(sources: Sources, check: FgaChecker, subject: str, names:
             raise ForbiddenError(f"{subject} may not read source {source.name!r}")
 
 
-def named_in(request: Request, default: str | None) -> list[str]:
-    """The dataset and table ids a request names (``{dataset_id}``, ``?dataset=``, ``?table=``, each ``?corpus=``), or
-    the default dataset a request naming none reads."""
-    named = [v for v in (request.path_params.get("dataset_id"), request.query_params.get("dataset"), request.query_params.get("table")) if v]
-    named += request.query_params.getlist("corpus")
-    return named or ([default] if default else [])
-
-
 async def readable(sources: Sources, check: FgaChecker, subject: str) -> set[str]:
     """The names of the sources ``subject`` may read."""
     return {source.name for source in sources.items if await may_read(sources, check, subject, source.name)}
 
 
-__all__ = ["may_read", "named_in", "readable", "require_read", "source_object"]
+async def admit(caller: LakehouseCaller, sources: Sources, check: FgaChecker) -> LakehouseCaller:
+    """``caller``, carrying the sources the workbench's store admits them to read (`LakehouseCaller.admitted`), which
+    every read of a source checks as it resolves it (`client_kit.sources.require_admitted`). So the gate is the read
+    itself: a dataset a door reads, the default included, is checked whatever else the request names."""
+    return caller.model_copy(update={"admitted": frozenset(await readable(sources, check, caller.subject))})
+
+
+__all__ = ["admit", "may_read", "readable", "require_read", "source_object"]

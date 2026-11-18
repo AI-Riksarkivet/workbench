@@ -89,9 +89,9 @@ class OpenFgaServer:
 class OpenFgaStore:
     """A store of one test's own on the server, holding the model the services load, provisioned as the writer does."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, name: str | None = None) -> None:
         self.url = url
-        self.name = f"test-{uuid.uuid4().hex}"
+        self.name = name or f"test-{uuid.uuid4().hex}"
         self.store_id, self.model_id = asyncio.run(fga.provision(url, credential_file=None, store_name=self.name))
 
     def write(self, *grants: tuple[str, str, str]) -> None:

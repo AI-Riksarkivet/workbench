@@ -6,7 +6,7 @@ into memory with no ceiling and no `Accept-Ranges`, while their sibling on the s
 The audit ADJUSTS its own finding twice, and both adjustments are honoured here.
 
 **The Accept-Ranges half is dropped entirely.** These two routes serve small cached derivatives with
-`public, max-age=86400`; no client range-requests a thumbnail, and the contrast with `/api/media`
+`private, max-age=86400`; no client range-requests a thumbnail, and the contrast with `/api/media`
 (a full-length audio or video payload a player seeks through) is not apples-to-apples.
 
 **What is left is hardening, not a defect at HEAD.** No descriptor in this repo binds `thumbnail` or
@@ -97,7 +97,7 @@ def test_a_small_derivative_is_still_served_buffered(tmp_path: Path) -> None:
 
     assert response.body == JPEG
     assert response.media_type == "image/jpeg"
-    assert response.headers["cache-control"] == "public, max-age=86400"
+    assert (response.headers["cache-control"], response.headers["vary"]) == ("private, max-age=86400", "Authorization")
 
 
 @pytest.mark.asyncio

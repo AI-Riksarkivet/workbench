@@ -9,7 +9,8 @@ inherit from a project. The annotator never asks the lakehouse what a person may
 Data: a corpus is a lakehouse's, or one of a source git marks annotatable (`client_kit.sources.annotatable`). Read as the
 person (``identity: person``), the lakehouse decides, on a token the annotator exchanges or passes on for them
 (`CallerDep`); read as the workbench (``identity: service``), and for every other source, the workbench's own store
-decides first, `reader` on its source (`READS_DATASET`). The work people do on it is kept in the annotator's own
+decides, `reader` on its source: the caller carries the sources it admits them to (`client_kit.media.source_gate.admit`),
+and a read of any other is refused as it resolves its source (`client_kit.sources.require_admitted`). The work people do on it is kept in the annotator's own
 database (`annotator.annotations`); a publish writes a project's accepted work to the lakehouse as the workbench's own
 identity once the annotator's own role check has passed, naming the person in the commit.
 """
@@ -23,7 +24,7 @@ from fastapi import Depends, Query, Request
 
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from client_kit.media.deps import StateDep
-from client_kit.media.source_gate import named_in, require_read
+from client_kit.media.source_gate import admit
 from service_kit.exceptions import ServiceUnavailableError
 from service_kit.governed.deps import ANONYMOUS_SUBJECT, FgaChecker, make_auth_deps
 from service_kit.governed.fga import Authorizer, Grant
@@ -68,8 +69,14 @@ Checker = FgaChecker
 CheckerDep = Annotated[Checker, Depends(get_checker)]
 #: The store itself, for the doors that write grants (a project's creation, its members); ``None`` with it off.
 AuthorizerDep = Annotated[Authorizer | None, Depends(get_authorizer)]
-#: The person every corpus read is made as.
-CallerDep = Annotated[LakehouseCaller, Depends(_deps.lakehouse_caller)]
+
+
+async def _admitted_caller(caller: Annotated[LakehouseCaller, Depends(_deps.lakehouse_caller)], checker: CheckerDep, state: StateDep) -> LakehouseCaller:
+    return await admit(caller, state.settings.sources, checker)
+
+
+#: The person every corpus read is made as, carrying the sources the workbench's store admits them to.
+CallerDep = Annotated[LakehouseCaller, Depends(_admitted_caller)]
 
 
 def service_token(request: Request, settings: SettingsDep) -> LakehouseTokens | None:
@@ -141,9 +148,6 @@ MAY_ANNOTATE = project_gate("can_annotate")
 MAY_VIEW = project_gate("can_view")
 
 
-async def _reads_dataset(request: Request, subject: CurrentSubject, checker: CheckerDep, state: StateDep) -> None:
-    await require_read(state.settings.sources, checker, subject, named_in(request, state.settings.default_dataset))
-
-
-#: The decorator dependency a route reading a corpus carries: the person may read its source, where the workbench decides.
-READS_DATASET = Depends(_reads_dataset)
+#: The decorator dependency a route reading a corpus carries: a verified person, admitted to the sources the workbench
+#: decides for that they may read; the read refuses the rest (403).
+READS_DATASET = Depends(_admitted_caller)

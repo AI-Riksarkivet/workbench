@@ -74,7 +74,7 @@ def test_a_signed_url_streams_its_blob_with_range(tmp_path: Path) -> None:
     assert ranged.headers["content-range"] == f"bytes 100-399/{len(_PAYLOADS['d1'])}"
     assert (whole.status_code, whole.content, whole.headers["content-type"]) == (200, _PAYLOADS["d1"], "video/mp4")
     assert whole.headers["etag"] == ranged.headers["etag"]
-    assert whole.headers["cache-control"].startswith("public, max-age=")
+    assert whole.headers["cache-control"].startswith("private, max-age=")
     assert whole.headers["cache-control"].endswith(", immutable")
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -47,10 +48,13 @@ def shape(request: pytest.FixtureRequest) -> Iterator[Provider]:
 
 
 @pytest.fixture
-def client(shape: Provider, state_database: StateDatabase, openfga_store: OpenFgaStore, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def client(
+    shape: Provider, state_database: StateDatabase, openfga_store: OpenFgaStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
     naming, principal = SHAPES[shape.shape]
     env = state_database.env() | naming
     env |= {
+        "WORKBENCH_SOURCES": json.dumps([{"kind": "namespace", "name": "archive", "impl": "dir", "properties": {"root": str(tmp_path)}}]),
         "WORKBENCH_OIDC_ENABLED": "true",
         "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": "false",
         "WORKBENCH_OIDC_ISSUER": shape.issuer,

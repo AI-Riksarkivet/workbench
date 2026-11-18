@@ -18,9 +18,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
-from client_kit.media.config import Settings
+from client_kit.media.config import GovernedMediaSettings
 from client_kit.sources import annotatable
-from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
 
 
 class AssistBackend(BaseModel):
@@ -43,7 +42,7 @@ class AssistBackend(BaseModel):
         return {"url": value} if isinstance(value, str) else value
 
 
-class AnnotatorSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
+class AnnotatorSettings(GovernedMediaSettings):
     service_name: str = "annotator"
     service_port: int = Field(default=8103, alias="ANNOTATOR_PORT")
 

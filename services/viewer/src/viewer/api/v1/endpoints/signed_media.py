@@ -10,10 +10,10 @@ it, and the workbench's client must hold a read grant on what its people may sig
 
 Every answer is sandboxed (``Content-Security-Policy: sandbox; default-src 'none'``, ``X-Content-Type-Options:
 nosniff``), and a stored type a browser would run is served as an attachment (`media.served_media_type`). The response
-is ``Cache-Control: public, max-age=<the URL's remaining life>, immutable`` with a strong ETag of (table,
-version, row, column), and a ``Range`` is a 206. ``public`` because the URL is the whole capability and carries nothing
-about the person, so a shared cache holding the bytes for the URL's remaining life serves them only to someone holding
-that same URL, which the viewer itself would serve.
+is ``Cache-Control: private, max-age=<the URL's remaining life>, immutable`` with a strong ETag of (table,
+version, row, column), and a ``Range`` is a 206. ``private`` because each serve asks again whether the person the URL was
+signed for may still read its source: a shared cache would go on serving the bytes to anyone holding the URL after that
+person stopped being a reader, and only the browser that asked keeps them.
 
 Every cell is served here, External blobs too: presigning an External blob's URI would hand the browser a store URL,
 which needs the store reachable from browsers and a raw S3 client this repository bans.
@@ -336,7 +336,7 @@ async def serve_signed_media(
     headers = {
         **_SANDBOXED,
         "ETag": signed.etag,
-        "Cache-Control": f"public, max-age={max(0, signed.exp - math.ceil(signed_media.now()))}, immutable",
+        "Cache-Control": f"private, max-age={max(0, signed.exp - math.ceil(signed_media.now()))}, immutable",
         "Accept-Ranges": "bytes",
     }
     try:

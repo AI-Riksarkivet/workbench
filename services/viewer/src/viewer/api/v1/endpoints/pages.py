@@ -50,7 +50,7 @@ from client_kit.lancekit.catalog import bounded, translate_catalog_errors
 from client_kit.lancekit.predicate import eq
 from client_kit.media.deps import StateDep
 from client_kit.media.state import AppState
-from client_kit.sources import connect_source
+from client_kit.sources import connect_as
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep
@@ -178,7 +178,7 @@ def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lan
         located = state.settings.sources.table_named(table)
     except ValueError as exc:
         raise NotFoundError(f"no table {table!r}: {exc}") from exc
-    client = connect_source(located.source, person=caller.token, service=caller.service)
+    client = connect_as(located.source, caller)
     identifier = located.identifier
     try:
         with translate_catalog_errors():
@@ -354,7 +354,8 @@ async def get_page(
     ds = await run_in_threadpool(open_page_table, state, table, caller)
     blob, size, sniffed = await run_in_threadpool(_take_page, ds, table, page_id)
     media_type, safety = served_media_type(sniffed)
-    headers = {"Cache-Control": "public, max-age=300", **safety}
+    # Read as the person, so cached for them alone (`media._DERIVATIVE_CACHE` says why).
+    headers = {"Cache-Control": "private, max-age=300", "Vary": "Authorization", **safety}
     if size > MAX_BUFFERED_BLOB_BYTES:
         return StreamingResponse(
             _stream_handle(blob, size),

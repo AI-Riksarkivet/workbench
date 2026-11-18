@@ -19,11 +19,9 @@ from starlette.concurrency import run_in_threadpool
 from client_kit.lancekit.introspect import ColumnInfo
 from client_kit.lancekit.registry import table_dataset
 from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.source_gate import may_read
+from client_kit.media.source_gate import admit
 from client_kit.media.state import AppState, dataset_handle
 from client_kit.pagination import Page, PaginationDep, build_page
-from client_kit.sources import workbench_decides
-from service_kit.exceptions import ForbiddenError
 from service_kit.governed.deps import ANONYMOUS_SUBJECT
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep, CheckerDep, OptionalCallerDep
@@ -47,20 +45,13 @@ async def health(caller: OptionalCallerDep, check: CheckerDep, state: StateDep, 
     The facts of a dataset whose source the workbench decides for are read only for one of its readers: an anonymous
     caller, or a person not declared, gets the probe's answer without them.
     """
-    named = dataset or state.settings.default_dataset
-    readable = True
-    if named is not None:
-        try:
-            source = state.settings.sources.locate(named).source
-        except ValueError:
-            source = None
-        if source is not None and workbench_decides(source):
-            anonymous = caller.subject == ANONYMOUS_SUBJECT and getattr(state.settings, "oidc_enabled", False)
-            readable = not anonymous and await may_read(state.settings.sources, check, caller.subject, source.name)
-    return await run_in_threadpool(_health, caller, state, dataset, readable)
+    anonymous = caller.subject == ANONYMOUS_SUBJECT and getattr(state.settings, "oidc_enabled", False)
+    # An anonymous caller under sign-in is admitted to nothing the workbench decides; the read refuses it like any other.
+    reader = caller if anonymous else await admit(caller, state.settings.sources, check)
+    return await run_in_threadpool(_health, reader, state, dataset)
 
 
-def _health(caller: LakehouseCaller, state: AppState, dataset: str | None, readable: bool) -> HealthResponse:
+def _health(caller: LakehouseCaller, state: AppState, dataset: str | None) -> HealthResponse:
     """Frontend status badge: pings vLLM embed/rerank, reports DB facts.
 
     ALWAYS 200 — this is the media plane's liveness/capability probe, not a dataset read. That
@@ -104,8 +95,6 @@ def _health(caller: LakehouseCaller, state: AppState, dataset: str | None, reada
     rerank = _ping(state.settings.rerank_url)
 
     try:
-        if not readable:
-            raise ForbiddenError("the caller may not read this dataset's source")
         handle = dataset_handle(state, dataset, caller)
     except Exception as e:
         # NotFoundError (unknown id / missing-or-invalid descriptor) is the expected case on an

@@ -149,8 +149,16 @@ option (`base_<id>.<key>`) is held to its key's rule. */ -}}
 {{- /* Whether the lakehouse authenticates the services' reads: a rask source, with `auth.lakehouse.audience` named. */ -}}
 {{- define "workbench.lakehouseAuth" -}}{{ $lake := include "workbench.lakehouse" . | fromJson }}{{ if and .Values.auth.enabled $lake.uri .Values.auth.lakehouse.audience }}true{{ end }}{{- end -}}
 
-{{- /* The workbench's sign-in and store settings, shared by the annotator and its model writer. */ -}}
-{{- define "annotator.fgaEnv" -}}
+{{- /* Whether a declared source is the workbench's own to authorize: any but a lakehouse read as the person, read only
+by its declared `readers` (`client_kit.sources.workbench_decides`). The viewer and search then need the workbench's
+store as the annotator does, and with sign-in on a service declaring one refuses to start without it. */ -}}
+{{- define "workbench.decidesASource" -}}
+{{- range (include "workbench.sources" . | fromJson).sources }}{{ if or (ne .kind "rask") (eq .identity "service") }}true{{ end }}{{ end -}}
+{{- end -}}
+
+{{- /* The workbench's own OpenFGA store, as the annotator, its model writer, and the viewer and search beside a source the
+workbench authorizes (`workbench.decidesASource`) reach it. */ -}}
+{{- define "workbench.fgaEnv" -}}
 - { name: WORKBENCH_FGA_ENABLED, value: "true" }
 - { name: WORKBENCH_FGA_API_URL, value: {{ required "auth.fga.apiUrl: the platform's OpenFGA" .Values.auth.fga.apiUrl | quote }} }
 - { name: WORKBENCH_FGA_STORE, value: {{ .Values.auth.fga.store | quote }} }
@@ -239,5 +247,5 @@ the app refuse a provider that offers no DPoP, and never lets it sign in without
 {{- if include "workbench.lakehouseAuth" . }}
 {{ include "workbench.lakehouseEnv" . }}
 {{- end }}
-{{ include "annotator.fgaEnv" . }}
+{{ include "workbench.fgaEnv" . }}
 {{- end -}}

@@ -1,8 +1,10 @@
 {{- /*
-The viewer and search, from the one `media` image: each reads datasets through the catalog's doors as the person, on the
-token `auth.lakehouse.delegation` says (exchanged, or the person's own passed on), and the viewer also reads a signed
-media link's one cell as itself. Each is published at its own prefix on the Gateway the annotator's route attaches to,
-rewritten to the service's root, so the prefix is what the browser's DPoP proofs name.
+The viewer and search, from the one `media` image: each reads a lakehouse through the catalog's doors as the person, on
+the token `auth.lakehouse.delegation` says (exchanged, or the person's own passed on), and the viewer also reads a signed
+media link's one cell as itself. Every other source is read only by its declared `readers`, which the workbench's own
+OpenFGA decides, so beside such a source each carries the store's settings and its credential, as the annotator does.
+Each is published at its own prefix on the Gateway the annotator's route attaches to, rewritten to the service's root, so
+the prefix is what the browser's DPoP proofs name.
 */ -}}
 {{- $r := .Release.Name -}}
 {{- $l := .Values.lifecycle -}}
@@ -16,6 +18,7 @@ rewritten to the service's root, so the prefix is what the browser's DPoP proofs
 {{- /* The viewer reads a signed link's cell as itself, so it holds the confidential client; search reads only as the
 person, so it holds it only where it exchanges the person's token. */ -}}
 {{- $client := and (include "workbench.lakehouseAuth" $) (or (eq $service "viewer") (eq $.Values.auth.lakehouse.delegation "exchange")) }}
+{{- $store := and $.Values.auth.enabled (include "workbench.decidesASource" $) }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -121,6 +124,9 @@ spec:
             - { name: WORKBENCH_LAKEHOUSE_AUDIENCE, value: {{ required "auth.lakehouse.audience: the lakehouse's audience" $.Values.auth.lakehouse.audience | quote }} }
             - { name: WORKBENCH_LAKEHOUSE_DELEGATION, value: {{ $.Values.auth.lakehouse.delegation | quote }} }
             {{- end }}
+            {{- if $store }}
+            {{- include "workbench.fgaEnv" $ | nindent 12 }}
+            {{- end }}
             {{- else }}
             # Authentication off, said the one loud way the services accept: a local stack only.
             - { name: WORKBENCH_OIDC_ENABLED, value: "false" }
@@ -152,6 +158,9 @@ spec:
             {{- if $client }}
             - { name: oidc-client, mountPath: /var/run/secrets/workbench/oidc-client, readOnly: true }
             {{- end }}
+            {{- if and $store $.Values.auth.fga.credential.name }}
+            - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
+            {{- end }}
             {{- if $.Values.storeIdentity.audience }}
             - { name: store-identity, mountPath: /var/run/secrets/workbench/store, readOnly: true }
             {{- end }}
@@ -170,6 +179,13 @@ spec:
           secret:
             secretName: {{ required "auth.oidc.client.secret.name: the Secret holding the workbench client's secret" $.Values.auth.oidc.client.secret.name }}
             items: [{ key: {{ $.Values.auth.oidc.client.secret.key }}, path: client-secret }]
+        {{- end }}
+        {{- if and $store $.Values.auth.fga.credential.name }}
+        # The workbench store's preshared key alone, mounted by the kubelet.
+        - name: fga-credential
+          secret:
+            secretName: {{ $.Values.auth.fga.credential.name }}
+            items: [{ key: {{ $.Values.auth.fga.credential.key }}, path: preshared-key }]
         {{- end }}
         {{- with $.Values.storeIdentity.audience }}
         # The pod's own identity at a store that trusts the cluster's tokens, for that audience alone.

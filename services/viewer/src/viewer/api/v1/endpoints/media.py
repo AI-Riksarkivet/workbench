@@ -57,8 +57,10 @@ _STREAM_CHUNK = 1 << 20  # 1 MiB: amortizes seek cost, bounds per-stream memory
 #: derivative is still a legitimate one and 413 is defined against the request body, not the response.
 MAX_BUFFERED_BLOB_BYTES = 1 << 20
 
-#: Both derivative routes are cacheable for a day; the media route deliberately is not.
-_DERIVATIVE_CACHE = {"Cache-Control": "public, max-age=86400"}
+#: Both derivative routes are cacheable for a day, in the reader's own cache alone; the media route deliberately is not.
+#: Each answer came from a read the person's own grants admitted, so no shared cache may hand it to anyone else, and a
+#: browser's cache keys it on the token it was read with.
+_DERIVATIVE_CACHE = {"Cache-Control": "private, max-age=86400", "Vary": "Authorization"}
 
 #: A media type's essence as RFC 9110 § 8.3.1 spells it (``type/subtype``, tokens only), so nothing else reaches a header.
 _MEDIA_TYPE = re.compile(r"^(image|audio|video|application)/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$")

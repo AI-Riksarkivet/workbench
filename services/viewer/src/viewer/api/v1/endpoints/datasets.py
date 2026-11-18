@@ -20,10 +20,9 @@ from client_kit.lancekit.descriptor import DatasetDescriptor
 from client_kit.lancekit.introspect import TableInfo
 from client_kit.lancekit.registry import DatasetHandle, Survey, Unlisted
 from client_kit.media.deps import StateDep
-from client_kit.media.source_gate import readable
 from client_kit.media.state import dataset_handle, ensure_registry
 from service_kit.exceptions import NotFoundError
-from viewer.api.security import AUTHENTICATED, READS_DATASET, CallerDep, CheckerDep, CurrentSubject
+from viewer.api.security import AUTHENTICATED, READS_DATASET, CallerDep
 from viewer.services.derived_views import VECTOR_MAX_DIM
 from viewer.services.plain_rows import (
     MAX_OFFSET,
@@ -138,7 +137,7 @@ def _listing(survey: Survey) -> SourceListing:
 
 
 @router.get("/datasets", dependencies=[AUTHENTICATED])
-async def list_datasets(caller: CallerDep, subject: CurrentSubject, check: CheckerDep, state: StateDep) -> DatasetsResponse:
+async def list_datasets(caller: CallerDep, state: StateDep) -> DatasetsResponse:
     """Every source the deployment declares that the caller may read, with the datasets the caller can see in each.
 
     A lakehouse read as the person lists what it lets the caller read, on their own token; any other source is listed
@@ -146,9 +145,8 @@ async def list_datasets(caller: CallerDep, subject: CurrentSubject, check: Check
     its own, within a deadline; a dataset that cannot be opened, and a source or namespace that cannot be listed or did
     not answer in time, is reported with a short reason.
     """
-    allowed = await readable(state.settings.sources, check, subject)
     # Off the loop: listing and opening are catalog calls and manifest reads, and this is the first call every page makes.
-    surveys = await run_in_threadpool(ensure_registry(state).survey, caller, allowed)
+    surveys = await run_in_threadpool(ensure_registry(state).survey, caller)
     return DatasetsResponse(sources=[_listing(survey) for survey in surveys])
 
 

@@ -129,7 +129,7 @@ def test_a_lakehouse_token_reaches_the_lakehouse_and_another_source_is_read_on_w
             {"kind": "namespace", "name": "other", "impl": "rest", "properties": {"uri": other.url}, "storage": declared, "locations": [f"s3://{BUCKET}/"]},
         ]
         registry = DatasetRegistry(MediaSettings.model_validate({"WORKBENCH_SOURCES": sources}))
-        caller = LakehouseCaller(subject="keycloak~person", token=lambda: "person-token", service=lambda: "service-token")
+        caller = LakehouseCaller(subject="keycloak~person", token=lambda: "person-token", service=lambda: "service-token", admitted=frozenset({"other"}))
         try:
             rows = registry.get("lake~wh$ns", caller).dataset("chunks").count_rows()
             store.keys.clear()
@@ -151,6 +151,6 @@ def test_a_table_another_source_places_outside_its_declared_locations_is_refused
     registry = DatasetRegistry(MediaSettings.model_validate({"WORKBENCH_SOURCES": sources}))
     try:
         with pytest.raises(ForbiddenError, match="outside the ones it is declared to read"):
-            registry.get("other~wh$ns", LakehouseCaller(subject="keycloak~person")).dataset("chunks")
+            registry.get("other~wh$ns", LakehouseCaller(subject="keycloak~person", admitted=frozenset({"other"}))).dataset("chunks")
     finally:
         catalog.close()

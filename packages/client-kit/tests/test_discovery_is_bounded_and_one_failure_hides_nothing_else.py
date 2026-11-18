@@ -121,7 +121,7 @@ def test_a_table_that_raises_opening_is_its_datasets_reason_and_every_other_sour
 
     monkeypatch.setattr(registry, "_open", _raises)
 
-    surveys = registry.DatasetRegistry(settings).survey(ANONYMOUS_CALLER, {"first", "second"})
+    surveys = registry.DatasetRegistry(settings).survey(ANONYMOUS_CALLER.model_copy(update={"admitted": frozenset({"first", "second"})}))
 
     assert [
         (s.discovery.source, s.discovery.datasets, [sorted(d.tables) for d in s.opened], [sorted(d.unreadable.items()) for d in s.opened]) for s in surveys

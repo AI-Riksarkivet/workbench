@@ -10,15 +10,14 @@ from pathlib import Path
 
 from pydantic import Field
 
-from client_kit.media.config import Settings
-from service_kit.governed.settings import GovernedAuthSettings, LakehouseTokenSettings
+from client_kit.media.config import GovernedMediaSettings
 
 
-class ViewerSettings(GovernedAuthSettings, LakehouseTokenSettings, Settings):
-    """The viewer's config: the media plane's, the workbench's sign-in, and its client for tokens to the lakehouse.
+class ViewerSettings(GovernedMediaSettings):
+    """The viewer's config: the media plane's, the workbench's sign-in and store, and its client for tokens to the lakehouse.
 
-    The viewer reads every corpus as the person asking, on a token it exchanges for them, so the lakehouse decides
-    what they may see; it checks nothing of its own on a corpus.
+    A lakehouse read as the person decides what they may see, on a token the viewer exchanges or passes on for them; every
+    other source is read only by its declared readers, which the workbench's own OpenFGA decides (`GovernedMediaSettings`).
     """
 
     service_name: str = "viewer"
