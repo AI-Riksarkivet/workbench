@@ -60,28 +60,103 @@ CREATE INDEX IF NOT EXISTS tasks_of_project ON tasks (project_id, task_id);
 -- so the document stays the one truth and no write path can leave a column behind it. A listing reads these narrow
 -- columns and never the (toasted) document of a row it does not answer.
 --
+-- A STORED VALUE IS NEVER STALE, by construction rather than by care. Postgres computes a stored generated column when a
+-- row is written and never again, so two edits would leave rows written before them holding what an older definition
+-- computed, with nothing to say so: changing a column's expression here (`ADD COLUMN IF NOT EXISTS` keeps the one the
+-- database holds), and changing the body of a function a column calls (Postgres uses a replaced body only for rows written
+-- after it). So:
+--   * every generated column is declared through `annotator_declare_generated`, which compares the expression and type
+--     the database holds (`pg_attrdef`, deparsed by `pg_get_expr`) with the declared ones, deparsed the same way, and drops
+--     and adds the column again when they differ, which computes it for every row; when they match it changes nothing;
+--   * a function a column calls is NAMED BY ITS BODY: `annotator_declare_function` names it `<base>_<the first 12 hex of
+--     the SHA-256 of its body>`, the body read with carriage returns removed, every run of whitespace made one space and
+--     the ends trimmed, creates it when absent, and leaves it alone when present (the name is the body). A column's
+--     expression names a function by its base in double braces (`{{annotator_instant}}`), which the declaration fills in
+--     with that name. So edit a body freely: a cosmetic edit (indentation, line endings, spacing) keeps its name and
+--     changes nothing, and a real one gives a new name, so the columns that call it converge, computing every row once.
+--     A run of whitespace inside a string literal of a body is read as one space too: a change there alone is not seen.
+--     Every function named by a base this file declares and no longer current is dropped once the columns have moved on.
+-- Each convergence drops a column and adds it again, which takes one of a table's 1,600 column numbers for good (a
+-- dropped column keeps its number), so it must happen only on a real change; the comparisons above make it so.
+-- All of it runs inside the schema's transaction under its advisory lock (`apply_schema`), so a start converges alone.
+CREATE OR REPLACE FUNCTION annotator_declare_function(base text, args text, returns text, body text) RETURNS text
+    LANGUAGE plpgsql AS $$fn$$
+DECLARE
+    name text := base || '_' || left(encode(sha256(convert_to(btrim(regexp_replace(replace(body, chr(13), ''), '\s+', ' ', 'g')), 'UTF8')), 'hex'), 12);
+BEGIN
+    IF to_regprocedure(format('%I(%s)', name, args)) IS NULL THEN
+        EXECUTE format('CREATE FUNCTION %I(%s) RETURNS %s LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS %L', name, args, returns, body);
+    END IF;
+    PERFORM set_config('annotator.fn.' || base, name, true);
+    RETURN name;
+END
+$$fn$$;
+-- Drop every function named by ``base`` (itself, or `<base>_<suffix>`) but the current one: run once no column calls them.
+CREATE OR REPLACE FUNCTION annotator_drop_superseded(base text) RETURNS void
+    LANGUAGE plpgsql AS $$fn$$
+DECLARE
+    superseded regprocedure;
+BEGIN
+    FOR superseded IN
+        SELECT p.oid::regprocedure FROM pg_proc p
+        WHERE p.pronamespace = current_schema()::regnamespace
+          AND (p.proname = base OR p.proname ~ ('^' || base || '_[0-9a-z]+$$'))
+          AND p.proname <> current_setting('annotator.fn.' || base)
+    LOOP
+        EXECUTE format('DROP FUNCTION %s', superseded);
+    END LOOP;
+END
+$$fn$$;
+CREATE OR REPLACE FUNCTION annotator_declare_generated(tbl text, col text, typ text, expr text) RETURNS void
+    LANGUAGE plpgsql AS $$fn$$
+DECLARE
+    present boolean := false;
+    held text;
+    wanted text;
+    called text;
+BEGIN
+    -- The functions it calls, by the names their bodies give them in this apply.
+    FOR called IN SELECT DISTINCT m[1] FROM regexp_matches(expr, '\{\{([a-z_0-9]+)\}\}', 'g') AS m LOOP
+        expr := replace(expr, '{{' || called || '}}', current_setting('annotator.fn.' || called));
+    END LOOP;
+    SELECT true, format_type(a.atttypid, a.atttypmod) || ' ' || coalesce(a.attgenerated::text, '') || ' ' || coalesce(pg_get_expr(d.adbin, d.adrelid), '')
+        INTO present, held
+        FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = to_regclass(tbl) AND a.attname = col AND NOT a.attisdropped;
+    -- The declared column deparsed the way the held one is: on a scratch table with the same `document`.
+    EXECUTE format('CREATE TEMP TABLE annotator_declared (document jsonb, declared %s GENERATED ALWAYS AS (%s) STORED)', typ, expr);
+    SELECT format_type(a.atttypid, a.atttypmod) || ' ' || a.attgenerated::text || ' ' || pg_get_expr(d.adbin, d.adrelid) INTO wanted
+        FROM pg_attribute a JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = 'pg_temp.annotator_declared'::regclass AND a.attname = 'declared';
+    DROP TABLE pg_temp.annotator_declared;
+    IF held IS DISTINCT FROM wanted THEN
+        IF present THEN
+            EXECUTE format('ALTER TABLE %I DROP COLUMN %I', tbl, col);
+        END IF;
+        EXECUTE format('ALTER TABLE %I ADD COLUMN %I %s GENERATED ALWAYS AS (%s) STORED', tbl, col, typ, expr);
+    END IF;
+END
+$$fn$$;
+
 -- An instant in the document is read only when it is written as ISO 8601 with an explicit offset
 -- (`2026-11-10T09:30:00.123456Z`, `...+01:00`), as the store writes every instant it stamps (the database's clock, aware).
 -- Such a text names one instant whatever the session's TimeZone or DateStyle, so the cast below is truly immutable, which
 -- a generated column needs: a text of any other shape (no offset, `now`, a day-first date) would depend on the session,
 -- so it reads as no instant (NULL: it sorts last and falls outside every range) rather than as a guess.
-CREATE OR REPLACE FUNCTION annotator_instant(value text) RETURNS timestamptz
-    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
-    'SELECT CASE WHEN $$1 ~ ''^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$$'' THEN $$1::timestamptz END';
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dataset text GENERATED ALWAYS AS (document #>> '{source,where}') STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS submitted_by text GENERATED ALWAYS AS (document ->> 'submitted_by') STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reviewed_by text GENERATED ALWAYS AS (document ->> 'reviewed_by') STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_action text GENERATED ALWAYS AS (document ->> 'review_action') STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS holders jsonb GENERATED ALWAYS AS (coalesce(document -> 'holders', '[]'::jsonb)) STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS predicted jsonb
-    GENERATED ALWAYS AS (jsonb_path_query_array(document, '$$.prediction[*].label')) STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sent_at timestamptz GENERATED ALWAYS AS (annotator_instant(document ->> 'sent_at')) STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS submitted_at timestamptz GENERATED ALWAYS AS (annotator_instant(document ->> 'submitted_at')) STORED;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reviewed_at timestamptz GENERATED ALWAYS AS (annotator_instant(document ->> 'reviewed_at')) STORED;
+SELECT annotator_declare_function('annotator_instant', 'text', 'timestamptz', $$body$$SELECT CASE WHEN $$1 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$$' THEN $$1::timestamptz END$$body$$);
+SELECT annotator_declare_generated('tasks', 'dataset', 'text', $$x$$document #>> '{source,where}'$$x$$);
+SELECT annotator_declare_generated('tasks', 'submitted_by', 'text', $$x$$document ->> 'submitted_by'$$x$$);
+SELECT annotator_declare_generated('tasks', 'reviewed_by', 'text', $$x$$document ->> 'reviewed_by'$$x$$);
+SELECT annotator_declare_generated('tasks', 'review_action', 'text', $$x$$document ->> 'review_action'$$x$$);
+SELECT annotator_declare_generated('tasks', 'holders', 'jsonb', $$x$$coalesce(document -> 'holders', '[]'::jsonb)$$x$$);
+SELECT annotator_declare_generated('tasks', 'predicted', 'jsonb', $$x$$jsonb_path_query_array(document, '$$.prediction[*].label')$$x$$);
+SELECT annotator_declare_generated('tasks', 'sent_at', 'timestamptz', $$x$${{annotator_instant}}(document ->> 'sent_at')$$x$$);
+SELECT annotator_declare_generated('tasks', 'submitted_at', 'timestamptz', $$x$${{annotator_instant}}(document ->> 'submitted_at')$$x$$);
+SELECT annotator_declare_generated('tasks', 'reviewed_at', 'timestamptz', $$x$${{annotator_instant}}(document ->> 'reviewed_at')$$x$$);
 -- The last transition's instant, or the send's for an item nobody has touched.
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz GENERATED ALWAYS AS (
-    coalesce(annotator_instant(jsonb_path_query_first(document, '$$.transitions[last].at') #>> '{}'), annotator_instant(document ->> 'sent_at'))
-) STORED;
+SELECT annotator_declare_generated('tasks', 'updated_at', 'timestamptz', $$x$$coalesce(
+    {{annotator_instant}}(jsonb_path_query_first(document, '$$.transitions[last].at') #>> '{}'), {{annotator_instant}}(document ->> 'sent_at')
+)$$x$$);
 -- The filter by dataset offers the project's datasets (`SELECT DISTINCT dataset … WHERE project_id`): read off this
 -- index rather than the project's rows. The listing's other filters and sorts read the project's rows through
 -- `tasks_of_project` (measured on 100,000 items in one project: tens of milliseconds a statement, `task_query`).
@@ -95,10 +170,35 @@ CREATE TABLE IF NOT EXISTS drafts (
     document jsonb   NOT NULL
 );
 -- The classes the draft's shapes carry, for the data manager's filter by class (generated as the task's columns are).
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS labels jsonb GENERATED ALWAYS AS (jsonb_path_query_array(document, '$$.shapes[*].label')) STORED;
+SELECT annotator_declare_generated('drafts', 'labels', 'jsonb', $$x$$jsonb_path_query_array(document, '$$.shapes[*].label')$$x$$);
 -- Whether the draft holds any work (a shape or a link): what a browse of the labeled items filters on.
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS has_work boolean
-    GENERATED ALWAYS AS (jsonb_path_exists(document, '$$.shapes[0]') OR jsonb_path_exists(document, '$$.links[0]')) STORED;
+SELECT annotator_declare_generated('drafts', 'has_work', 'boolean', $$x$$jsonb_path_exists(document, '$$.shapes[0]') OR jsonb_path_exists(document, '$$.links[0]')$$x$$);
+-- The draft's whole-item tags (its `tag` shapes) as a listing answers them for a bulk label (`task_query.work_of`), in the
+-- draft's order: each one's id and class, whether it carries more than its class (text, attributes, or a link to or from
+-- it), which a new label would discard, and whether it is a proposal no person has kept yet (a `prediction`). Only these,
+-- so a tag-heavy draft's row grows by a few dozen bytes a tag, never by a second copy of its shapes. The links' ends are
+-- read once, as a set, so a draft at its caps costs one pass over its links, not one per tag.
+SELECT annotator_declare_function('annotator_work_tags', 'jsonb', 'jsonb', $$body$$WITH ends AS (
+         SELECT end_id FROM jsonb_array_elements(coalesce($$1 -> 'links', '[]'::jsonb)) AS l(link),
+             LATERAL (VALUES (link ->> 'from_shape'), (link ->> 'to_shape')) AS v(end_id)
+     )
+     SELECT coalesce(jsonb_agg(jsonb_build_object(
+         'id', t ->> 'shape_id',
+         'label', t -> 'label',
+         'detailed', coalesce(t ->> 'text', '') <> ''
+             OR coalesce(t -> 'attributes', '{}'::jsonb) NOT IN ('{}'::jsonb, 'null'::jsonb)
+             OR (t ->> 'shape_id') IN (SELECT end_id FROM ends),
+         'prediction', coalesce(t ->> 'status', '') = 'prediction'
+     ) ORDER BY n), '[]'::jsonb)
+     FROM jsonb_array_elements(coalesce($$1 -> 'shapes', '[]'::jsonb)) WITH ORDINALITY AS e(t, n)
+     WHERE t ->> 'shape_type' = 'tag'$$body$$);
+SELECT annotator_declare_generated('drafts', 'work_tags', 'jsonb', $$x$${{annotator_work_tags}}(document)$$x$$);
+
+-- The functions no column calls any more: the earlier bodies of each.
+SELECT annotator_drop_superseded('annotator_instant');
+SELECT annotator_drop_superseded('annotator_work_tags');
+-- A column a development build once carried (each tag shape whole) and nothing reads.
+ALTER TABLE drafts DROP COLUMN IF EXISTS tags;
 
 -- Each task's last saves: who saved each revision and when, how many shapes it left, and what undoes it (the shapes as
 -- they were before it for every shape it changed or removed, the ids it added, and the links before it when it changed

@@ -109,3 +109,41 @@ export async function fetchVersionSignatures(
 	if (!table.ok) throw new Error(table.detail);
 	return signaturesOf(table.data);
 }
+
+const SaveResultSchema = v.object({ saved: v.number(), version: v.number() });
+
+/** Save one change to a task's work and answer the revision it wrote (the revision a later change, an undo, is built
+ *  on), or the door's own refusal: a 409 when the work moved since `base_version` or the item takes no edit now, a 403
+ *  when it is not the caller's to edit. One item, one transaction, under its own row lock. */
+export function saveWork(
+	url: string,
+	payload: SavePayload,
+): Promise<ApiResult<{ saved: number; version: number }>> {
+	return writeJSON(url, payload, SaveResultSchema, UPSTREAM);
+}
+
+/** Undo, on the server, the save that wrote ``revision`` of a task's work (`POST /annotations/<unit>/revert`): what it
+ *  changed or removed comes back whole, with its links, from the undo the history kept, while the work is still at that
+ *  revision (a 409 when it moved). Answers the revision the undo wrote; undoing that one redoes the save. */
+export function revertSave(
+	url: string,
+	revision: number,
+): Promise<ApiResult<{ saved: number; version: number }>> {
+	return writeJSON(extend(url, '/revert', {}), { revision }, SaveResultSchema, UPSTREAM);
+}
+
+/** The revision the unit's work is at now when its rows are those it held at ``before`` (0: before its first save, no
+ *  rows), compared by id and each row's own fields (`signaturesOf`), else null; null too when either read fails. */
+export async function heldAsAt(url: string, before: number): Promise<number | null> {
+	const now = await loadAnnotations(url);
+	if (!now.ok) return null;
+	let then: Map<string, string>;
+	try {
+		then = before === 0 ? new Map() : await fetchVersionSignatures(url, before);
+	} catch {
+		return null;
+	}
+	const held = signaturesOf(now.data.table);
+	const same = held.size === then.size && [...held].every(([id, sig]) => then.get(id) === sig);
+	return same ? now.data.version : null;
+}

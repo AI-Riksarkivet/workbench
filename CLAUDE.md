@@ -135,7 +135,7 @@ docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.source
 every view (graph and tree beside the atlas, one navigation, the view in the address); R6 the set-ups of any table;
 D3b-2a the labeling canvas's classes, names and review panel, and audio and video labeling on the shared viewers;
 D3b-2b text spans, compare and assist; then work in progress moved into the annotator's Postgres (Lance written only
-at publish); D3c-a the project's screens (data manager, browse, review, settings, people by name); then D3c-b (the bulk-labeling grid), D3c-c (live updates, and deleting `frontend/annotator`) and D4. Flows' runs no longer need a sidecar: each run and each step's outcome are rows in flows'
+at publish); D3c-a the project's screens (data manager, browse, review, settings, people by name); D3c-b the bulk-labeling grid (the Label tab); then D3c-c (live updates, and deleting `frontend/annotator`) and D4. Flows' runs no longer need a sidecar: each run and each step's outcome are rows in flows'
 own PostgreSQL, driven under a lease by any replica and resumed after a crash by any replica's re-drive
 (`flows.store`, `flows.runner`), so the workbench runs without Dapr. Flows has no chart workload yet; the one that
 deploys it comes with a CloudNativePG cluster of its own beside the annotator's. Of `frontend/annotator`, the app now holds its text viewer and
@@ -145,7 +145,9 @@ span surface (`TextViewer`, `TextSpanSurface`, `DocumentTextLane`, `span-render`
 `compare.ts`/`CompareView` (`#lib/canvas/compare`); `AdjudicationPanel` was already in. Not ported, by decision: the
 multi-key pairwise preference view (`CompareView` over `?keys=`; a task opens its first unit), the few-shot propagate
 panel and its jobs door (`PropagatePanel`, `propagate`: batch derivers belong to flows, D4), and the zone-wide `/assist`
-registry page (the canvas's panel lists the producers). Nothing
+registry page (the canvas's panel lists the producers). Its bulk grid is the Label tab; not ported from it, by decision: its
+model-filled recipe columns (a batch deriver, flows' D4), its similarity anchor (the dataset's own similar search finds
+neighbours to send) and its inline transcription edit (the canvas's). Nothing
 has run on a cluster yet. Two live copies of one session must never drive the same worktree: before resuming an agent
 after a restart, check `~/.claude/sessions/*.json` for a second process with the same session id.
 Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
@@ -237,7 +239,13 @@ Two language-pure planes, as in rask; never blur them.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
   - The annotator keeps its projects, tasks, drafts and claims in its own PostgreSQL (`annotator.state.store`, psycopg 3
     with its pool, plain SQL over `state/schema.sql`, applied at start under an advisory lock): each row holds its Pydantic
-    document as JSONB beside the columns a query locks or filters on. A transition is one transaction that locks the
+    document as JSONB beside the columns a query locks or filters on. Those columns are stored generated columns, and a
+    stored value is never stale by construction: each is declared through `annotator_declare_generated`, which drops and
+    adds it again (computing it for every row) when the expression the database holds is not the declared one, and every
+    function a column calls is named by its body (`annotator_declare_function`: `<base>_<12 hex of the SHA-256 of the body
+    with its whitespace normalised>`, which a column's expression names as `{{<base>}}`). So a function's body is edited
+    freely: a cosmetic edit keeps its name and changes nothing, a real one gives a new name whose columns converge (every
+    row computed once), and the functions no column calls any more are dropped in the same apply. A transition is one transaction that locks the
     project row, then the task row, and applies the pure machine (`annotator.projects.machines`); counts, the task index and
     `may_publish` are queries; a lease is a holder and an expiry, read as released once past it against the database
     clock, with no timer. A publish runs in-process under a lease on its project's row
@@ -287,11 +295,21 @@ Two language-pure planes, as in rask; never blur them.
     panel in front. The atlas and the graph draw with WebGPU only (`#lib/gpu`), releasing their device when the panel
     unmounts; a browser without it gets their plain refusal and fetches no points. The annotator's project plane
     is `/projects` and `/projects/[project]` (`#lib/projects`, its calls `#lib/api/projects.api.ts`). A project's page is
-    five tabs, the tab and each tab's filters in the address (`?tab=`, `#lib/projects/item-query.ts`): Items (the data
+    six tabs, the tab and each tab's filters in the address (`?tab=`, `#lib/projects/item-query.ts`): Items (the data
     manager, `DataManager.svelte`: the annotator filters by state, holder, submitter, reviewer, class, dataset and date,
     sorts and pages a project's items in Postgres, `GET /projects/{id}/tasks` with `annotator.state.task_query` over
     columns `schema.sql` generates from each task's document, answering the page, how many match, each state's count and
-    each person's part; the bulk actions fire one gated event per item), Browse and Review (lists that open the canvas on
+    each person's part; the bulk actions fire one gated event per item), Label (the bulk-labeling grid, `LabelGrid.svelte`,
+    `label-grid.ts`, `label-run.ts`: the items open to the reader's labeling, `open_to`, or for a reviewer the work
+    waiting for them, each with its work, `include=work`, its draft's revision and whole-item tags, each saying whether it
+    carries more than its class or is a model's proposal, from a generated `drafts.work_tags` column; the classes drawn
+    as a tag are its labels, digits 1-9, every other class labelled on the canvas; a `role="grid"` keyboard grid, a label
+    written to each item through the canvas's own save door on the revision read, claimed first where its `legal_events`
+    offer it (and released again when the label is then refused), a few in flight, told as "n of N" with a Stop, each
+    refusal named on its item and grouped by reason; a label that would discard another label's text, attributes, links
+    or a model's proposal asks once, skipping those by default, and choosing a proposed class keeps the proposal; undo
+    and redo are the annotator's own undo of each item's save, `POST /api/annotations/<unit>/revert`, from its
+    `draft_history`, while the work is still at that revision; submit, accept and send back many, per item), Browse and Review (lists that open the canvas on
     a pass, `?pass=browse` read-only or `?pass=review` with Accept, Accept with my fixes and Send back on the side panel
     and Shift+A, Shift+F, Shift+R, Page Up/Down stepping the walk the annotator reads around the open item), Settings
     (`PATCH /projects/{id}`, the rules of what may still change said beside each) and Publish. People are shown by the

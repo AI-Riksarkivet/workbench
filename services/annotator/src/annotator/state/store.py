@@ -33,7 +33,7 @@ written the next time the row is locked.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from http import HTTPStatus
@@ -78,7 +78,7 @@ from annotator.projects.models import (
     new_id,
 )
 from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, membership_violation, validate_against_ontology
-from annotator.state.task_query import Contributor, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, page_of
+from annotator.state.task_query import Contributor, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, page_of, work_of
 from annotator.text import storable_json, storable_text
 from service_kit.exceptions import ConflictError, DomainError
 
@@ -730,10 +730,12 @@ class AnnotatorStore:
         offset: int,
         around: str | None = None,
         contributors: bool = False,
+        work: bool = False,
     ) -> tuple[TaskIndex, TaskPage, list[Task], list[Contributor] | None]:
-        """The project's index, one filtered page of its items with their documents in the page's order, and with
-        ``contributors`` each person's part, all from ONE snapshot (a repeatable-read transaction), so the page, its
-        counts and the publish precondition beside it never disagree."""
+        """The project's index, one filtered page of its items with their documents in the page's order, with ``work``
+        each listed item's draft revision and tags (on the page, `TaskPage.work`), and with ``contributors`` each
+        person's part, all from ONE snapshot (a repeatable-read transaction), so the page, its counts, its work and the
+        publish precondition beside it never disagree."""
         async with self._pool.connection() as raw, raw.transaction():
             conn = cast("Connection", raw)
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -744,6 +746,8 @@ class AnnotatorStore:
             rows = await (
                 await conn.execute("SELECT document, now() FROM tasks WHERE project_id = %s AND task_id = ANY(%s)", (project_id, page.task_ids))
             ).fetchall()
+            if work:
+                page.work = await work_of(conn, page.task_ids)
             people = await contributors_of(conn, project_id) if contributors else None
         by_id: dict[str, Task] = {}
         for document, now in rows:
@@ -969,53 +973,107 @@ class AnnotatorStore:
         overwrite each other. ``change`` runs on the draft this transaction read and may refuse (it raises, and nothing
         is written). A save into a claim renews its lease.
         """
-        async with self._transaction() as conn:
-            task, project, _siblings, now = await self._lock_task(conn, task_id)
-            if task.state not in EDIT_PERMISSION or (task.state is TaskState.IN_REVIEW and not reviewing):
-                raise IllegalTransition("draft", task.state.value, "save_draft")
-            violation = edit_violation(state=task.state, subject=author, assignee=task.assignee, submitted_by=task.submitted_by)
-            if violation is not None:
-                raise IllegalTransition("draft", violation, "save_draft")
-            _refuse_if_frozen(project, task, "save_draft")
 
-            current = await _draft(conn, task_id)
-            at = current.revision if current is not None else 0
-            if base_revision is None:
-                if require_base:
-                    raise ConflictError(
-                        f"this save did not state the version it was built from; the work is at v{at}. Re-read it and send that version as base_version."
-                    )
-            elif base_revision != at:
-                raise ConflictError(f"annotations changed on the server (loaded v{base_revision}, now v{at})")
-            shapes, links = change(current, now)
-            if shapes == (current.shapes if current else []) and links == (current.links if current else []):
-                # A change that changes nothing writes nothing: no revision, no history slot, no renewed lease.
-                return current or Draft(task_id=task_id, project_id=task.project_id, author=author, revision=0)
-            draft = Draft(
-                task_id=task_id,
-                project_id=task.project_id,
+        async def changed(_conn: Connection, current: Draft | None, now: datetime) -> tuple[list[Shape], list[Link]]:
+            return change(current, now)
+
+        async with self._transaction() as conn:
+            return await self._write_draft(
+                conn,
+                task_id,
                 author=author,
-                shapes=shapes,
-                links=links,
-                revision=at + 1,
-                updated_at=now,
+                change=changed,
+                base_revision=base_revision,
+                require_base=require_base,
                 origin=origin,
+                reviewing=reviewing,
+                lease_seconds=lease_seconds,
             )
-            await conn.execute(
-                "INSERT INTO drafts (task_id, revision, document) VALUES (%s, %s, %s) "
-                "ON CONFLICT (task_id) DO UPDATE SET revision = EXCLUDED.revision, document = EXCLUDED.document",
-                (task_id, draft.revision, _stored_draft(draft)),
-            )
-            undo = storable_json("the save's history", ReverseChange.of(current, shapes, links).model_dump(mode="json"))
-            await conn.execute(
-                "INSERT INTO draft_history (task_id, revision, saved_at, author, shapes, bytes, undo) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
-                (task_id, draft.revision, now, storable_text("the save's author", author), len(shapes), len(undo.encode()), undo),
-            )
-            await _trim_history(conn, task_id)
-            if task.state is TaskState.CLAIMED:
-                task.lease_expires_at = now + _seconds(lease_seconds or task.lease_seconds)
-            await _write_task(conn, task)
-            return draft
+
+    async def revert_save(self, task_id: str, *, author: str, revision: int, reviewing: bool = False) -> tuple[Draft, int]:
+        """Undo the save that wrote ``revision`` of the task's draft, while the draft is still at that revision: the
+        shapes it changed or removed come back whole (their provenance, status, scores, text, attributes and times) and
+        its links as they were, from the undo its history kept (`ReverseChange`). Written as a save is, under the same
+        rules and the task's row lock, as a new revision with its own undo, so undoing the revert redoes the save. A 409
+        when the draft moved past ``revision`` or its history no longer keeps that save. Answers the draft written and how
+        many shapes the undo put back or took away."""
+        touched = 0
+
+        async def reverted(conn: Connection, current: Draft | None, _now: datetime) -> tuple[list[Shape], list[Link]]:
+            nonlocal touched
+            row = await (await conn.execute("SELECT undo FROM draft_history WHERE task_id = %s AND revision = %s", (task_id, revision))).fetchone()
+            if current is None or row is None:
+                raise ConflictError(f"the history of this item's work no longer keeps the save that wrote v{revision}")
+            undo = ReverseChange.model_validate(row[0])
+            touched = len(undo.restore) + len(undo.remove)
+            return undo.undo(current.shapes, current.links)
+
+        async with self._transaction() as conn:
+            draft = await self._write_draft(conn, task_id, author=author, change=reverted, base_revision=revision, reviewing=reviewing)
+        return draft, touched
+
+    async def _write_draft(
+        self,
+        conn: Connection,
+        task_id: str,
+        *,
+        author: str,
+        change: Callable[[Connection, Draft | None, datetime], Awaitable[tuple[list[Shape], list[Link]]]],
+        base_revision: int | None,
+        require_base: bool = True,
+        origin: DraftOrigin = "human",
+        reviewing: bool = False,
+        lease_seconds: int | None = None,
+    ) -> Draft:
+        """`change_draft`'s write, inside the caller's transaction: the task's row locked, every rule of who may edit it
+        now checked on it, the revision checked, ``change`` applied to the draft read, and the draft, its history and the
+        claim's renewed lease written."""
+        task, project, _siblings, now = await self._lock_task(conn, task_id)
+        if task.state not in EDIT_PERMISSION or (task.state is TaskState.IN_REVIEW and not reviewing):
+            raise IllegalTransition("draft", task.state.value, "save_draft")
+        violation = edit_violation(state=task.state, subject=author, assignee=task.assignee, submitted_by=task.submitted_by)
+        if violation is not None:
+            raise IllegalTransition("draft", violation, "save_draft")
+        _refuse_if_frozen(project, task, "save_draft")
+
+        current = await _draft(conn, task_id)
+        at = current.revision if current is not None else 0
+        if base_revision is None:
+            if require_base:
+                raise ConflictError(
+                    f"this save did not state the version it was built from; the work is at v{at}. Re-read it and send that version as base_version."
+                )
+        elif base_revision != at:
+            raise ConflictError(f"annotations changed on the server (loaded v{base_revision}, now v{at})")
+        shapes, links = await change(conn, current, now)
+        if shapes == (current.shapes if current else []) and links == (current.links if current else []):
+            # A change that changes nothing writes nothing: no revision, no history slot, no renewed lease.
+            return current or Draft(task_id=task_id, project_id=task.project_id, author=author, revision=0)
+        draft = Draft(
+            task_id=task_id,
+            project_id=task.project_id,
+            author=author,
+            shapes=shapes,
+            links=links,
+            revision=at + 1,
+            updated_at=now,
+            origin=origin,
+        )
+        await conn.execute(
+            "INSERT INTO drafts (task_id, revision, document) VALUES (%s, %s, %s) "
+            "ON CONFLICT (task_id) DO UPDATE SET revision = EXCLUDED.revision, document = EXCLUDED.document",
+            (task_id, draft.revision, _stored_draft(draft)),
+        )
+        undo = storable_json("the save's history", ReverseChange.of(current, shapes, links).model_dump(mode="json"))
+        await conn.execute(
+            "INSERT INTO draft_history (task_id, revision, saved_at, author, shapes, bytes, undo) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
+            (task_id, draft.revision, now, storable_text("the save's author", author), len(shapes), len(undo.encode()), undo),
+        )
+        await _trim_history(conn, task_id)
+        if task.state is TaskState.CLAIMED:
+            task.lease_expires_at = now + _seconds(lease_seconds or task.lease_seconds)
+        await _write_task(conn, task)
+        return draft
 
     async def draft_history(self, task_id: str, *, limit: int) -> list[DraftRevision]:
         """The task's kept saves, newest first, at most ``limit``."""

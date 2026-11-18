@@ -19,7 +19,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from annotator.projects.models import AnnotationProject, Draft, Task
-from annotator.state.task_query import Contributor
+from annotator.state.task_query import Contributor, ItemWork
 
 
 class LegalEvent(BaseModel):
@@ -65,6 +65,14 @@ class TaskDetail(Task):
     people: dict[str, str] = Field(default_factory=dict)
 
 
+class ListedTask(TaskDetail):
+    """One item of a listing's page: a `TaskDetail`, with its work when the listing asked for it (`include=work`)."""
+
+    #: The item's work as a bulk label reads it, or null where the reader may not read it; absent unless asked for (the
+    #: listing route excludes what it did not set).
+    work: ItemWork | None = None
+
+
 class TaskListing(BaseModel):
     """`GET /projects/{id}/tasks` — the index and the publish precondition, and the page the filter asked for, from ONE
     snapshot.
@@ -78,7 +86,7 @@ class TaskListing(BaseModel):
     total: int
     terminal: int
     may_publish: bool
-    details: list[TaskDetail] = Field(default_factory=list)
+    details: list[ListedTask] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)
     #: How many items the filter matches, and how many each state holds under every other filter.
     matched: int = 0

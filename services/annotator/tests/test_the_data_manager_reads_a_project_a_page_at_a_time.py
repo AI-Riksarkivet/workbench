@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints.project_events import router
-from annotator.projects.models import AnnotationProject, ProjectState, Shape, Task
+from annotator.projects.models import AnnotationProject, Link, ProjectState, Shape, Task
 from annotator.state.store import AnnotatorStore
 from tests.postgres import StateDatabase
 
@@ -164,6 +164,9 @@ def test_a_page_starts_at_its_offset_and_the_precondition_reads_the_whole_projec
         pytest.param({"label": "seal"}, ["a-new"], id="a-class-proposed"),
         pytest.param({"dataset": "lake~acme$scans"}, ["a-new", "f-lapsed"], id="a-dataset"),
         pytest.param({"has_work": True}, ["b-held", "c-review", "d-done", "e-back"], id="work-drawn-not-a-claim-alone"),
+        pytest.param({"has_work": False}, ["a-new", "f-lapsed"], id="no-work-no-draft-or-one-emptied"),
+        pytest.param({"open_to": "bob"}, ["a-new", "b-held", "e-back", "f-lapsed"], id="open-to-a-person-their-claims-and-the-unheld"),
+        pytest.param({"open_to": "gina"}, ["a-new", "e-back", "f-lapsed"], id="open-to-a-person-not-anothers-claim"),
     ],
 )
 def test_a_filter_answers_the_items_it_names(worked: _Project, params: dict[str, Any], expected: list[str]) -> None:
@@ -207,6 +210,67 @@ def test_a_page_around_an_item_holds_its_neighbours_and_says_where_it_sits(proje
     body = project.page(around="t0030", limit=4)
 
     assert ([d["task_id"] for d in body["details"]], body["position"], body["offset"]) == (["t0028", "t0029", "t0030", "t0031"], 30, 28)
+
+
+def _tag(shape_id: str, label: str, **over: Any) -> Shape:
+    return Shape.model_validate({"shape_id": shape_id, "shape_type": "tag", "label": label, "source": "human", **over})
+
+
+def _work(shapes: list[Shape], links: list[Link] | None = None) -> Callable[[Any, Any], tuple[list[Shape], list[Link]]]:
+    return lambda _current, _now: (shapes, links or [])
+
+
+def _plain(tag_id: str, label: str = "letter") -> dict[str, Any]:
+    return {"id": tag_id, "label": label, "detailed": False, "prediction": False}
+
+
+def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_may_read_it(project: _Project) -> None:
+    """`include=work`: the revision a change is built on and the item's whole-item tags, by id and class, each saying
+    whether it carries more than its class (text, attributes, a link: what a new label would discard) and whether it is a
+    proposal no person kept, at most 64 an item; a replica's work is left out for a reader who may not read it."""
+
+    async def no_review(*, relation: str, **_kw: object) -> bool:
+        return relation != "can_review"
+
+    cast(FastAPI, project.client.app).dependency_overrides[get_checker] = lambda: no_review
+    replica = _task("g-r1").model_copy(update={"replica_of": "g"})
+    project.call(project.store.send_tasks, "p1", [_task("w-tags"), _task("w-none"), _task("w-many"), replica])
+    box = Shape(shape_id="a-box", shape_type="bbox", x=1, y=1, width=2, height=2, label="stamp", source="human")
+    tagged = [
+        _tag("linked", "letter"),
+        _tag("said", "map", text="a map of the harbour"),
+        _tag("dated", "map", attributes={"year": "1701"}),
+        _tag("proposed", "letter", status="prediction", source="model:vlm"),
+        _tag("plain", "map"),
+        box,
+    ]
+    for task_id, change in (
+        ("w-tags", _work(tagged, [Link(name="shows", from_shape="a-box", to_shape="linked")])),
+        ("w-many", _work([_tag(f"t{i:02d}", "letter") for i in range(65)])),
+    ):
+        project.fire(task_id, ("claim", "gina"))
+        project.call(project.store.change_draft, task_id, author="gina", change=change, base_revision=0)
+    project.fire("g-r1", ("claim", "bob"))
+    project.call(project.store.change_draft, "g-r1", author="bob", change=_work([_tag("own", "letter")]), base_revision=0)
+
+    body = project.page(include=["details", "work"])
+
+    assert {d["task_id"]: d["work"] for d in body["details"]} == {
+        "g-r1": None,
+        "w-many": {"revision": 1, "tags": [_plain(f"t{i:02d}") for i in range(64)], "tags_cut": True},
+        "w-none": {"revision": 0, "tags": [], "tags_cut": False},
+        "w-tags": {
+            "revision": 1,
+            "tags": [
+                {**_plain("linked"), "detailed": True},
+                {**_plain("said", "map"), "detailed": True},
+                {**_plain("dated", "map"), "detailed": True},
+                {**_plain("proposed"), "prediction": True},
+                _plain("plain", "map"),
+            ],
+            "tags_cut": False,
+        },
+    }
 
 
 def test_each_persons_part_is_counted_over_the_whole_project(worked: _Project) -> None:

@@ -103,6 +103,7 @@ export const pageTasks = query(
 		around,
 		details = true,
 		contributors = false,
+		work = false,
 	}: {
 		projectId: string;
 		filter?: string;
@@ -111,16 +112,33 @@ export const pageTasks = query(
 		around?: string;
 		details?: boolean;
 		contributors?: boolean;
+		/** With the details, each item's work as a bulk label reads it: its revision and whole-item tags. */
+		work?: boolean;
 	}): Promise<ApiResult<TaskListing>> => {
 		const params = new URLSearchParams(filter);
 		if (details) params.append('include', 'details');
 		if (contributors) params.append('include', 'contributors');
+		if (work) params.append('include', 'work');
 		params.set('limit', String(limit));
 		params.set('offset', String(offset));
 		if (around !== undefined) params.set('around', around);
 		return readJSON(at(`/projects/${enc(projectId)}/tasks?${params}`), TaskListingSchema, UPSTREAM);
 	},
 );
+
+/** One item of a project as the listing answers it now, with its work (its revision and whole-item tags), read fresh:
+ *  the page of one item around it. Null when the annotator answers no such item. */
+export async function readItem(projectId: string, taskId: string): Promise<TaskDetail | null> {
+	const params = new URLSearchParams({ around: taskId, limit: '1' });
+	params.append('include', 'details');
+	params.append('include', 'work');
+	const result = await readJSON(
+		at(`/projects/${enc(projectId)}/tasks?${params}`),
+		TaskListingSchema,
+		UPSTREAM,
+	);
+	return result.ok ? (result.data.details?.find((t) => t.task_id === taskId) ?? null) : null;
+}
 
 /** The most items a bulk action over "every item matching the filter" takes: past it, a person narrows the filter. */
 export const BULK_CAP = 1000;
@@ -130,12 +148,14 @@ export const BULK_CAP = 1000;
 export async function allMatching(
 	projectId: string,
 	filter: string,
+	{ work = false }: { work?: boolean } = {},
 ): Promise<ApiResult<{ tasks: TaskDetail[]; capped: boolean }>> {
 	const tasks: TaskDetail[] = [];
 	let matched = 0;
 	do {
 		const params = new URLSearchParams(filter);
 		params.set('include', 'details');
+		if (work) params.append('include', 'work');
 		params.set('limit', '200');
 		params.set('offset', String(tasks.length));
 		const result = await readJSON(

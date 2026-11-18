@@ -107,7 +107,13 @@ export interface Draft {
 	rows: Row[];
 	links: { name: string; from_shape: string; to_shape: string }[];
 	revision: number;
-	history: { version: number; timestamp: string; author: string; rows: Row[] }[];
+	history: {
+		version: number;
+		timestamp: string;
+		author: string;
+		rows: Row[];
+		links?: { name: string; from_shape: string; to_shape: string }[];
+	}[];
 }
 
 /** A draft's rows as the service's `Shape`s, as `GET /tasks/{id}/draft` answers them. */
@@ -587,6 +593,54 @@ function seed(sub: string): World {
 			ontology: pagesOntology,
 		}),
 	);
+	// A classification project for the bulk-labeling grid: two classes a grid labels (tags) and one drawn as a box, which
+	// is labelled on the canvas; 24 items nobody holds, on the four pages the mock dataset has, one the reader holds, one
+	// another annotator holds, and two in review that another annotator submitted, one of them labelled `map`.
+	const sortingOntology = {
+		kind: 'image-classification',
+		modality: 'image',
+		classes: [
+			{ name: 'letter', tools: ['tag'], required: false, transcribe: false, attributes: [] },
+			{ name: 'map', tools: ['tag'], required: false, transcribe: false, attributes: [] },
+			{ name: 'stamp', tools: ['bbox'], required: false, transcribe: false, attributes: [] },
+		],
+		relations: [],
+		allow_empty: false,
+	};
+	projects.set('sorting', project('sorting', { title: 'Sorting', ontology: sortingOntology }));
+	const sortingKeys = ['letter-001/0', 'letter-001/1', 'letter-002/0', 'map-003/0'];
+	for (let i = 0; i < 24; i++) {
+		const id = `sorting-${String(i).padStart(2, '0')}`;
+		tasks.set(
+			id,
+			task('sorting', id, 'unassigned', sortingKeys[i % 4] ?? '', { ontology: sortingOntology }),
+		);
+	}
+	tasks.set(
+		'sorting-mine',
+		task('sorting', 'sorting-mine', 'claimed', 'map-003/0', {
+			assignee: sub,
+			lease_expires_at: later(),
+			ontology: sortingOntology,
+		}),
+	);
+	tasks.set(
+		'sorting-theirs',
+		task('sorting', 'sorting-theirs', 'claimed', 'letter-001/0', {
+			assignee: 'user:alpha',
+			lease_expires_at: later(),
+			ontology: sortingOntology,
+		}),
+	);
+	for (const id of ['sorting-review-a', 'sorting-review-b'])
+		tasks.set(
+			id,
+			task('sorting', id, 'in_review', 'letter-002/0', {
+				submitted_by: 'user:alpha',
+				holders: ['user:alpha'],
+				ontology: sortingOntology,
+			}),
+		);
 	// A project past what one bulk selection holds (`BULK_CAP`, 1,000): 1,050 items nobody has claimed, the first 50 sent
 	// on the first of the month and the rest on the tenth, for the date range.
 	projects.set('heap', project('heap', { title: 'Heap' }));
@@ -611,8 +665,36 @@ function seed(sub: string): World {
 			(t.project_id === 'pages' && t.source.keys[0] === 'letter-001/0') ||
 			(t.project_id === 'judging' && t.state !== 'claimed');
 		const rows = REPLICA_ROWS[t.task_id] ?? (pages ? PAGE_ROWS : []);
-		if (rows.length === 0) continue;
-		const seeded = structuredClone(rows);
+		// Whole-item tags of the sorting project: a reviewer's item labelled `map`, an item whose `letter` carries a
+		// person's words (what a new label would discard), and one a model proposed `map` for.
+		const tagged: Row[] =
+			{
+				'sorting-review-b': [
+					{ id: 'seed-map', shape_type: 'tag', label: 'map', status: 'accepted', source: 'human' },
+				],
+				'sorting-20': [
+					{
+						id: 'seed-said',
+						shape_type: 'tag',
+						label: 'letter',
+						text: 'signed by the harbour master',
+						status: 'accepted',
+						source: 'human',
+					},
+				],
+				'sorting-21': [
+					{
+						id: 'seed-proposed',
+						shape_type: 'tag',
+						label: 'map',
+						status: 'prediction',
+						source: 'model:vlm',
+						confidence: 0.91,
+					},
+				],
+			}[t.task_id] ?? [];
+		if (rows.length === 0 && tagged.length === 0) continue;
+		const seeded = structuredClone([...rows, ...tagged]);
 		drafts.set(t.task_id, {
 			rows: seeded,
 			links: [],
@@ -881,11 +963,37 @@ export async function projectsDoor(
 				(q.get('dataset') === null || t.source.where === q.get('dataset')) &&
 				(q.get('group') === null || t.replica_of === q.get('group')) &&
 				(q.get('replicas') !== 'true' || t.replica_of !== null) &&
-				(q.get('has_work') !== 'true' ||
-					(world.drafts.get(t.task_id)?.rows.length ?? 0) +
-						(world.drafts.get(t.task_id)?.links.length ?? 0) >
-						0) &&
+				(q.get('open_to') === null ||
+					['unassigned', 'changes_requested'].includes(t.state) ||
+					(t.state === 'claimed' && t.assignee === q.get('open_to'))) &&
+				(q.get('has_work') === null ||
+					(q.get('has_work') === 'true') ===
+						(world.drafts.get(t.task_id)?.rows.length ?? 0) +
+							(world.drafts.get(t.task_id)?.links.length ?? 0) >
+							0) &&
 				inRange(t);
+			// An item's work as a bulk label reads it (`task_query.ItemWork`): its revision and whole-item tags, at most 64, or
+			// null where the reader may not read it (`tasks.reads_work`).
+			const workOf = (t: Task) => {
+				if (!mayReadWork(t, sub, perms)) return null;
+				const draft = world.drafts.get(t.task_id);
+				const tags = (draft?.rows ?? [])
+					.filter((r) => r.shape_type === 'tag')
+					.map((r) => ({
+						id: r.id,
+						label: typeof r.label === 'string' ? r.label : null,
+						detailed:
+							(typeof r.text === 'string' && r.text !== '') ||
+							(typeof r.metadata === 'string' && !['', '{}'].includes(r.metadata)) ||
+							(draft?.links ?? []).some((l) => l.from_shape === r.id || l.to_shape === r.id),
+						prediction: r.status === 'prediction',
+					}));
+				return {
+					revision: draft?.revision ?? 0,
+					tags: tags.slice(0, 64),
+					tags_cut: tags.length > 64,
+				};
+			};
 			const ORDER = [
 				'unassigned',
 				'claimed',
@@ -984,6 +1092,7 @@ export async function projectsDoor(
 							details: pageOf.map((t) => ({
 								...t,
 								legal_events: callerEvents(t, sub, perms, frozen),
+								...(include.includes('work') ? { work: workOf(t) } : {}),
 							})),
 							missing: [],
 							matched: matched.length,

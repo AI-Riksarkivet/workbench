@@ -203,3 +203,76 @@ def test_a_task_with_no_work_yet_reads_as_no_rows_at_version_zero_and_no_history
 
     assert (rows, version) == ([], "0")
     assert work_client.get(f"{UNIT}/versions", params=QUERY).json() == []
+
+
+def _work(client: TestClient) -> tuple[Any, Any, int]:
+    draft = client.get("/tasks/t1/draft").json()
+    return draft["shapes"], draft["links"], draft["revision"]
+
+
+def test_a_save_reverted_on_the_server_brings_back_what_it_replaced_whole_and_reverting_the_revert_redoes_it(work_client: TestClient) -> None:
+    """A bulk label "set dog" replaces a model's prediction tag that carries text, an attribute, its source, status and
+    score, and a box's link to it. Reverting that save puts the work back exactly as it was before it, shapes and links,
+    but its revision; reverting the revert puts back the label."""
+    _save(
+        work_client,
+        0,
+        inserts=[
+            {"id": "b", "shape_type": "bbox", "x": 1, "y": 1, "width": 2, "height": 2, "label": "stamp"},
+            {
+                "id": "t1",
+                "shape_type": "tag",
+                "label": "cat",
+                "text": "a cat on the stamp",
+                "metadata": '{"pose":"sitting"}',
+                "source": "model:vlm",
+                "status": "prediction",
+                "confidence": 0.91,
+            },
+        ],
+        links=[{"name": "shows", "from_shape": "b", "to_shape": "t1"}],
+    )
+    before = _work(work_client)
+    _save(work_client, 1, deletes=["t1"], inserts=[{"id": "t2", "shape_type": "tag", "label": "dog"}])
+    labelled = _work(work_client)
+
+    undone = work_client.post(f"{UNIT}/revert", params=QUERY, json={"revision": 2})
+    after_undo = _work(work_client)
+    redone = work_client.post(f"{UNIT}/revert", params=QUERY, json={"revision": 3})
+
+    assert (undone.status_code, undone.json()) == (200, {"saved": 2, "version": 3})
+    assert after_undo == (before[0], before[1], 3)
+    assert (redone.status_code, _work(work_client)) == (200, (labelled[0], labelled[1], 4))
+
+
+@pytest.mark.parametrize(
+    ("revision", "detail"),
+    [
+        pytest.param(1, "annotations changed on the server (loaded v1, now v2)", id="work-changed-since"),
+        pytest.param(5, "annotations changed on the server (loaded v5, now v2)", id="a-revision-it-never-reached"),
+    ],
+)
+def test_a_revert_of_a_save_the_work_has_moved_past_is_refused_and_writes_nothing(work_client: TestClient, revision: int, detail: str) -> None:
+    _save(work_client, 0, inserts=[{"id": "a", "shape_type": "tag", "label": "cat"}])
+    _save(work_client, 1, edits=[{"id": "a", "label": "dog"}])
+
+    refused = work_client.post(f"{UNIT}/revert", params=QUERY, json={"revision": revision})
+
+    assert (refused.status_code, refused.json()["detail"]) == (409, detail)
+    assert _work(work_client)[2] == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param({"revision": "1"}, id="a-revision-written-as-text"),
+        pytest.param({"revision": 1, "base_version": 1}, id="a-key-the-door-does-not-read"),
+    ],
+)
+def test_a_revert_request_the_door_would_have_to_guess_at_is_refused_and_writes_nothing(work_client: TestClient, body: dict[str, Any]) -> None:
+    _save(work_client, 0, inserts=[{"id": "a", "shape_type": "tag", "label": "cat"}])
+
+    refused = work_client.post(f"{UNIT}/revert", params=QUERY, json=body)
+
+    assert refused.status_code == 422, refused.text
+    assert _work(work_client)[2] == 1

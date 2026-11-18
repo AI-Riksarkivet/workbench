@@ -27,7 +27,7 @@ from starlette.concurrency import run_in_threadpool
 
 from annotator.api.dependencies import PublishRunnerDep, StoreDep
 from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, lacking, require_view, unseen_project
-from annotator.api.v1.endpoints.tasks import events_for
+from annotator.api.v1.endpoints.tasks import caller_facts, reads_work
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import get_annotator_settings
@@ -37,13 +37,14 @@ from annotator.projects.machines import (
     PROJECT_EDGES,
     PROJECT_SEND_STATES,
     IllegalTransition,
+    caller_events,
     project_transition,
 )
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, SentSource, Shape, ShapeType, Task, TaskState, new_id
 from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.projects.publish import publish_namespace, require_in_warehouse
 from annotator.state.store import AnnotatorStore
-from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, SortOrder, TaskFilter, TaskSort, principals_in
+from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, ItemWork, SortOrder, TaskFilter, TaskSort, principals_in
 from annotator.text import MAX_MASK, MAX_TEXT, Id, Name, Text
 from client_kit.media.deps import StateDep
 from client_kit.media.source_gate import require_read
@@ -446,6 +447,9 @@ class TaskInclude(StrEnum):
     DETAILS = "details"
     #: Each person's part in the project over all its items.
     CONTRIBUTORS = "contributors"
+    #: With `details`, each item's work as a bulk label reads it (`task_query.ItemWork`), or null where the caller may not
+    #: read that item's work (`tasks.reads_work`).
+    WORK = "work"
 
 
 #: The most principals one answer names (`people`): a page of 200 items names a few people in practice.
@@ -468,11 +472,12 @@ async def list_project_tasks(
     submitter: TextFilter = None,
     not_submitter: TextFilter = None,
     holder: TextFilter = None,
+    open_to: TextFilter = None,
     label: TextFilter = None,
     dataset: TextFilter = None,
     group: TextFilter = None,
     replicas: bool = False,
-    has_work: bool = False,
+    has_work: bool | None = None,
     date: DateField = DateField.UPDATED,
     since: AwareDatetime | None = None,
     until: AwareDatetime | None = None,
@@ -489,8 +494,10 @@ async def list_project_tasks(
     (`annotator.state.task_query`): ``matched`` items match, ``state_counts`` is what each state would leave under the
     other filters, ``offset`` is where the page starts, and with ``around`` the page is the one holding that item near its
     middle, at ``position``. Each item comes with its ``legal_events``, what the caller may fire on it now
-    (`tasks.events_for`), the single source every screen renders its actions from; ``include=contributors`` adds each person's part over all items. Every principal
-    the answer names is in ``people`` with the name they last wrote under, where one is kept (`annotator.people`).
+    (`machines.caller_events`), the single source every screen renders its actions from, and with ``include=work`` its
+    ``work`` (its draft's revision and whole-item tags, from the same snapshot). ``include=contributors`` adds each
+    person's part over all items. Every principal the answer names is in ``people`` with the name they last wrote under,
+    where one is kept (`annotator.people`).
     """
     await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
     includes = set(include or [])
@@ -501,6 +508,7 @@ async def list_project_tasks(
         submitter=submitter,
         not_submitter=not_submitter,
         holder=holder,
+        open_to=open_to,
         label=label,
         dataset=dataset,
         group=group,
@@ -510,19 +518,35 @@ async def list_project_tasks(
         since=since,
         until=until,
     )
+    details_asked = TaskInclude.DETAILS in includes
     index, page, tasks, contributors = await store.task_page(
-        project_id, filters, sort=sort, order=order, limit=limit, offset=offset, around=around, contributors=TaskInclude.CONTRIBUTORS in includes
+        project_id,
+        filters,
+        sort=sort,
+        order=order,
+        limit=limit,
+        offset=offset,
+        around=around,
+        contributors=TaskInclude.CONTRIBUTORS in includes,
+        work=details_asked and TaskInclude.WORK in includes,
     )
     listing: dict[str, Any] = index.model_dump(mode="json")
     named: set[str] = set()
-    if TaskInclude.DETAILS in includes:
-        # What THIS caller may fire on each item (`tasks.events_for`): exactly what the task door would accept from them now,
-        # by the one rule it refuses by (`machines.event_refusal`), from facts read once for the page. A race (the rows
-        # moving before the click) and an `assign` whose recipient worked another replica are still the door's to refuse.
-        events = await events_for(store, checker, subject, await store.get_project(project_id), tasks)
-        details = [
-            {**task.model_dump(mode="json"), "legal_events": [e.model_dump(mode="json") for e in mine]} for task, mine in zip(tasks, events, strict=True)
-        ]
+    if details_asked:
+        # What THIS caller may fire on each item (`machines.caller_events`): exactly what the task door would accept from
+        # them now, by the one rule it refuses by (`machines.event_refusal`), from facts read once for the page. A race
+        # (the rows moving before the click) and an `assign` whose recipient worked another replica are still the door's.
+        facts = await caller_facts(store, checker, subject, await store.get_project(project_id), tasks)
+        details: list[dict[str, Any]] = []
+        for task, mine in zip(tasks, facts, strict=True):
+            detail = {**task.model_dump(mode="json"), "legal_events": caller_events(task, mine)}
+            if TaskInclude.WORK in includes:
+                # The work doors' own rule (`tasks.reads_work`), `can_review` read off the facts: a task's relations are
+                # its project's. An item with no draft yet is at revision 0 with no tags.
+                readable = reads_work(task, subject, may_review="can_review" in mine.held)
+                work = page.work.get(task.task_id, ItemWork(revision=0, tags=[], tags_cut=False))
+                detail["work"] = work.model_dump(mode="json") if readable else None
+            details.append(detail)
         found = {d["task_id"] for d in details}
         listing |= {
             "details": details,

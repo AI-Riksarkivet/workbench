@@ -124,6 +124,9 @@ class TaskFilter(BaseModel):
     not_submitter: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
     #: Items this person ever held (claimed or was assigned) or submitted: their own work.
     holder: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
+    #: Items open to this person's labeling now: their live claims, and the items nobody holds (unassigned, or sent back
+    #: and so claimable again). It narrows the listing only: what they may fire on each item is its `legal_events`.
+    open_to: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
     #: A class on the item: on a shape of its work, or proposed for it at send.
     label: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
     dataset: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
@@ -131,9 +134,10 @@ class TaskFilter(BaseModel):
     group: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
     #: Only the items that are replicas of a consensus group.
     replicas: bool = False
-    #: Only the items whose work holds something: at least one shape or link in their draft (a browse looks through
-    #: labeled work, and an item claimed and never drawn on has none).
-    has_work: bool = False
+    #: With true, only the items whose work holds something: at least one shape or link in their draft (a browse looks
+    #: through labeled work, and an item claimed and never drawn on has none); with false, only the items whose work holds
+    #: nothing (no draft, or one emptied again); unset, both.
+    has_work: bool | None = None
     date_field: DateField = DateField.UPDATED
     since: AwareDatetime | None = None
     until: AwareDatetime | None = None
@@ -155,6 +159,8 @@ class TaskFilter(BaseModel):
             parts.append(sql.SQL("submitted_by IS DISTINCT FROM {}").format(sql.Literal(self.not_submitter)))
         if self.holder is not None:
             parts.append(sql.SQL("(holders @> jsonb_build_array({0}::text) OR submitted_by = {0})").format(sql.Literal(self.holder)))
+        if self.open_to is not None:
+            parts.append(sql.SQL("(state IN ('unassigned', 'changes_requested') OR (state = 'claimed' AND assignee = {}))").format(sql.Literal(self.open_to)))
         if self.label is not None:
             parts.append(
                 sql.SQL(
@@ -162,8 +168,9 @@ class TaskFilter(BaseModel):
                     "OR EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = items.task_id AND d.labels @> jsonb_build_array({0}::text)))"
                 ).format(sql.Literal(self.label))
             )
-        if self.has_work:
-            parts.append(sql.SQL("EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = items.task_id AND d.has_work)"))
+        if self.has_work is not None:
+            worked = sql.SQL("EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = items.task_id AND d.has_work)")
+            parts.append(worked if self.has_work else sql.SQL("NOT {}").format(worked))
         column = _DATE_COLUMN[self.date_field]
         if self.since is not None:
             parts.append(sql.SQL("{} >= {}").format(column, sql.Literal(self.since)))
@@ -186,6 +193,52 @@ class TaskPage(BaseModel):
     position: int | None = None
     #: The datasets the project's items come from, what the filter by dataset offers (at most `MAX_DATASETS`).
     datasets: list[str] = Field(default_factory=list)
+    #: Each listed item's work, by task id, when the read asked for it (`AnnotatorStore.task_page`'s ``work``); an item
+    #: with no draft yet is absent.
+    work: dict[str, ItemWork] = Field(default_factory=dict)
+
+
+#: The most whole-item tags one item's work answers in a listing (`ItemWork.tags`): a bulk label reads an item's tags to
+#: replace them, and an item past this many is one to open on the canvas.
+MAX_WORK_TAGS: Final = 64
+
+
+class WorkTag(BaseModel):
+    """One whole-item tag of an item's work: its shape id, its class, whether it carries more than its class (text,
+    attributes, or a link to or from it: what a new label would discard), and whether it is a proposal no person has kept
+    (`prediction`)."""
+
+    id: str
+    label: str | None
+    detailed: bool
+    prediction: bool
+
+
+class ItemWork(BaseModel):
+    """What a bulk label reads of one item's work: the draft's revision (0 before its first save), which a change states as
+    the revision it was built on, and its whole-item tags, at most `MAX_WORK_TAGS` (`tags_cut` when it holds more)."""
+
+    revision: int
+    tags: list[WorkTag]
+    tags_cut: bool
+
+
+#: Each listed item's draft revision and its first tags, read from the drafts' generated `work_tags` column (`schema.sql`,
+#: `annotator_work_tags`) so a listing never reads a draft's whole document; an item with no draft has no row here.
+_WORK: Final = (
+    "SELECT d.task_id, d.revision, jsonb_path_query_array(d.work_tags, '$[0 to $last]', jsonb_build_object('last', %(cap)s - 1)), "
+    "jsonb_array_length(d.work_tags) "
+    "FROM drafts d WHERE d.task_id = ANY(%(ids)s)"
+)
+
+
+async def work_of(conn: Connection, task_ids: list[str]) -> dict[str, ItemWork]:
+    """The work of each of ``task_ids`` that has a draft, keyed by task id."""
+    rows = await (await conn.execute(_WORK, {"ids": task_ids, "cap": MAX_WORK_TAGS})).fetchall()
+    return {
+        str(task_id): ItemWork(revision=int(revision), tags=[WorkTag.model_validate(t) for t in tags], tags_cut=int(count) > MAX_WORK_TAGS)
+        for task_id, revision, tags, count in rows
+    }
 
 
 class Contributor(BaseModel):
@@ -319,13 +372,17 @@ def principals_in(documents: Iterable[dict[str, Any]]) -> set[str]:
 __all__ = [
     "MAX_FILTER",
     "MAX_OFFSET",
+    "MAX_WORK_TAGS",
     "Contributor",
     "DateField",
+    "ItemWork",
     "SortOrder",
     "TaskFilter",
     "TaskPage",
     "TaskSort",
+    "WorkTag",
     "contributors_of",
     "page_of",
     "principals_in",
+    "work_of",
 ]

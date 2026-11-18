@@ -116,15 +116,20 @@ async def viewed_task(store: AnnotatorStore, task_id: str, checker: Checker, sub
     return task
 
 
-async def require_work_readable(task: Task, checker: Checker, subject: str) -> None:
-    """The caller may read this viewed task's work (its draft, its rows of its unit), or 403.
+def reads_work(task: Task, subject: str, *, may_review: bool) -> bool:
+    """Whether ``subject``, who may view the task, may read its work (its draft, its rows of its unit).
 
     A consensus replica's work is its own annotator's until a reviewer compares it: the replicas of an item are made to
     be independent, so a fellow annotator of the group, who may view the task as everyone on the project may, is refused
     it. Its holder and its submitter read it, and so does whoever may review the task (`can_review`: a reviewer, a
     manager or the owner, the roles the model chains above it), who adjudicates between replicas. Any other task's work
-    is read by whoever may view it."""
-    if task.replica_of is None or subject in (task.assignee, task.submitted_by):
+    is read by whoever may view it. The one rule the work doors (`require_work_readable`) and a listing's work read by."""
+    return task.replica_of is None or subject in (task.assignee, task.submitted_by) or may_review
+
+
+async def require_work_readable(task: Task, checker: Checker, subject: str) -> None:
+    """The caller may read this viewed task's work, or 403 (`reads_work`); `can_review` is asked only when it decides."""
+    if reads_work(task, subject, may_review=False):
         return
     edge = Grant(user=f"project:{task.project_id}", relation="project", object=f"task:{task.task_id}")
     if not await checker(user=subject, relation="can_review", obj=f"task:{task.task_id}", contextual=[edge]):

@@ -32,13 +32,14 @@ from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import projects, tasks
 from annotator.api.v1.endpoints.project_events import router
 from annotator.core.config import AnnotatorSettings
-from annotator.projects.models import ProjectState, TaskState
-from annotator.state.store import AnnotatorStore
+from annotator.projects.models import AnnotationProject, ProjectState, Shape, Task, TaskState
+from annotator.state.store import SCHEMA_LOCK, AnnotatorStore
 from annotator.text import MAX_ID
 from tests.postgres import StateDatabase
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+SCHEMA = Path(__file__).parents[1] / "src" / "annotator" / "state" / "schema.sql"
 SUBMITTED = "2026-11-10T09:30:00Z"
 LONG_ID = "y" * (MAX_ID + 904)
 
@@ -98,7 +99,13 @@ def _fill_as_the_previous_release(database: StateDatabase, previous: Path) -> No
         "revision": 1,
         "links": [{"name": "n" * 600, "from_shape": "s1", "to_shape": LONG_ID}],
         "origin": "human",
-        "shapes": [{"shape_id": "s1", "shape_type": "bbox", "label": "seal"}, {"shape_id": LONG_ID, "shape_type": "bbox", "label": "seal"}],
+        "shapes": [
+            {"shape_id": "s1", "shape_type": "bbox", "label": "seal"},
+            {"shape_id": LONG_ID, "shape_type": "bbox", "label": "seal"},
+            # Whole-item tags as an earlier release wrote them, one carrying text, one a model's proposal.
+            {"shape_id": "t-said", "shape_type": "tag", "label": "seal", "text": "a seal in red wax"},
+            {"shape_id": "t-proposed", "shape_type": "tag", "label": "seal", "status": "prediction"},
+        ],
     }
     with psycopg.connect(host=database.host, port=database.port, user=database.user, dbname=database.database, autocommit=True) as conn:
         conn.execute(schema.encode())
@@ -141,7 +148,7 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
             body = client.get("/projects/p1/tasks", params={"include": "details", **params}).json()
             return [d["task_id"] for d in body["details"]]
 
-        whole = client.get("/projects/p1/tasks", params={"include": "details"}).json()
+        whole = client.get("/projects/p1/tasks", params={"include": ["details", "work"]}).json()
         by_submitted = ids(sort="submitted", order="desc")
         by_sent = ids(sort="sent")
         seals = ids(label="seal")
@@ -162,6 +169,18 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
         [],
         ["b-submitted"],
     )
+    assert {d["task_id"]: d["work"] for d in whole["details"]} == {
+        "a-untouched": {"revision": 0, "tags": [], "tags_cut": False},
+        "b-submitted": {
+            "revision": 1,
+            "tags": [
+                {"id": "t-said", "label": "seal", "detailed": True, "prediction": False},
+                {"id": "t-proposed", "label": "seal", "detailed": False, "prediction": True},
+            ],
+            "tags_cut": False,
+        },
+        "c-no-offset": {"revision": 2, "tags": [], "tags_cut": False},
+    }, "each draft the earlier release wrote answers its work from the column the upgrade added"
     untouched = next(d for d in whole["details"] if d["task_id"] == "a-untouched")
     assert (len(untouched["source"]["keys"]), len(untouched["source"]["where"])) == (70, 600)
     assert (listed.status_code, read.status_code, draft.status_code) == (200, 200, 200), (listed.text[:200], read.text[:200], draft.text[:200])
@@ -173,3 +192,123 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
 async def _open_and_close(settings: AnnotatorSettings) -> None:
     store = await AnnotatorStore.open(settings)
     await store.close()
+
+
+def _connect(database: StateDatabase) -> psycopg.Connection[tuple[Any, ...]]:
+    return psycopg.connect(host=database.host, port=database.port, user=database.user, dbname=database.database, autocommit=True)
+
+
+def _work_tags(database: StateDatabase) -> tuple[Any, int]:
+    """The stored `work_tags` of the one draft, and the column's number (a new one each time the column is made again)."""
+    with _connect(database) as conn:
+        value = conn.execute("SELECT work_tags FROM drafts").fetchone()
+        column = conn.execute("SELECT attnum FROM pg_attribute WHERE attrelid = 'drafts'::regclass AND attname = 'work_tags'").fetchone()
+    assert value is not None and column is not None
+    return value[0], int(column[0])
+
+
+def _layout(database: StateDatabase) -> tuple[list[Any], list[Any], list[str]]:
+    """What a convergence would change: each generated column's number, each table's storage file (a rewrite gives a new
+    one) and the functions the columns may call."""
+    with _connect(database) as conn:
+        columns = conn.execute(
+            "SELECT attrelid::regclass::text, attname, attnum FROM pg_attribute "
+            "WHERE attrelid IN ('tasks'::regclass, 'drafts'::regclass) AND attgenerated = 's' AND NOT attisdropped ORDER BY 1, 2"
+        ).fetchall()
+        files = conn.execute("SELECT relname, relfilenode FROM pg_class WHERE relname IN ('tasks', 'drafts') ORDER BY 1").fetchall()
+        functions = conn.execute("SELECT proname FROM pg_proc WHERE proname ~ '^annotator_(instant|work_tags)' ORDER BY 1").fetchall()
+    return columns, files, [str(f[0]) for f in functions]
+
+
+def _apply(database: StateDatabase, text: str) -> None:
+    """Apply a schema's text as a start does (`store.apply_schema`): one transaction under the schema's lock."""
+    schema = Template(text).substitute(project_states=", ".join(f"'{s}'" for s in ProjectState), task_states=", ".join(f"'{s}'" for s in TaskState))
+    with _connect(database) as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK,))
+        conn.execute(schema.encode())
+
+
+async def _with_a_tagged_draft(settings: AnnotatorSettings) -> None:
+    """A database the current schema made, holding one draft whose tag carries words."""
+    store = await AnnotatorStore.open(settings)
+    await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="vasa", state=ProjectState.LABELING))
+    await store.send_tasks(
+        "p1", [Task.model_validate({"task_id": "t1", "project_id": "p1", "source": {"kind": "chunks", "keys": ["t1"]}, "media": {"kind": "image"}})]
+    )
+    await store.fire_task("t1", event="claim", actor="ann")
+    said = Shape(shape_id="said", shape_type="tag", label="seal", text="in red wax", source="human")
+    await store.change_draft("t1", author="ann", change=lambda _current, _now: ([said], []), base_revision=0)
+    await store.close()
+
+
+SAID = {"id": "said", "label": "seal", "detailed": True, "prediction": False}
+
+
+@pytest.mark.asyncio
+async def test_a_column_an_earlier_function_computed_is_computed_again_for_every_row_and_once_only(
+    state_settings: AnnotatorSettings, state_database: StateDatabase
+) -> None:
+    """A row written while a generated column called an earlier function holds what that function computed; the next
+    start makes the column again from the current one, so the OLD row answers the current function, drops the earlier
+    function, and a start after that finds everything current and changes nothing."""
+    await _with_a_tagged_draft(state_settings)
+    with _connect(state_database) as conn:
+        conn.execute("ALTER TABLE drafts DROP COLUMN work_tags")
+        conn.execute("CREATE FUNCTION annotator_work_tags_v0(document jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE STRICT AS 'SELECT ''[]''::jsonb'")
+        conn.execute("ALTER TABLE drafts ADD COLUMN work_tags jsonb GENERATED ALWAYS AS (annotator_work_tags_v0(document)) STORED")
+    stale = _work_tags(state_database)
+
+    await _open_and_close(state_settings)
+    converged, layout = _work_tags(state_database), _layout(state_database)
+    await _open_and_close(state_settings)
+
+    assert (stale[0], converged[0]) == ([], [SAID])
+    assert not any(name == "annotator_work_tags_v0" for name in layout[2]), "the earlier function goes with the column that called it"
+    assert (_work_tags(state_database), _layout(state_database)) == (converged, layout), "a start that finds everything current changes nothing"
+
+
+def _reindented(text: str) -> str:
+    return text.replace("\n     SELECT coalesce(jsonb_agg", "\n    SELECT coalesce(jsonb_agg")
+
+
+def _crlf(text: str) -> str:
+    return text.replace("\n", "\r\n")
+
+
+def _spaced(text: str) -> str:
+    return text.replace("THEN $$1::timestamptz END$$body$$", "THEN $$1::timestamptz END $$body$$")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "edit", [pytest.param(_reindented, id="reindented"), pytest.param(_crlf, id="crlf"), pytest.param(_spaced, id="a-space-before-the-end")]
+)
+async def test_a_cosmetic_edit_of_a_function_body_starts_and_changes_no_column(
+    state_settings: AnnotatorSettings, state_database: StateDatabase, edit: Callable[[str], str]
+) -> None:
+    """A function is named by its body read with its whitespace normalised, so an edit of indentation, line endings or
+    spacing keeps every name, and a start over an existing database changes no column and rewrites no table."""
+    await _with_a_tagged_draft(state_settings)
+    before = _layout(state_database)
+    text = SCHEMA.read_text()
+    assert edit(text) != text, "the edit names a line of the schema"
+
+    _apply(state_database, edit(text))
+
+    assert _layout(state_database) == before
+
+
+@pytest.mark.asyncio
+async def test_a_real_change_of_a_function_body_computes_the_old_rows_again_and_drops_the_earlier_function(
+    state_settings: AnnotatorSettings, state_database: StateDatabase
+) -> None:
+    await _with_a_tagged_draft(state_settings)
+    before = _layout(state_database)
+    changed = SCHEMA.read_text().replace("'id', t ->> 'shape_id',", "'id', t ->> 'shape_id', 'seen', true,")
+
+    _apply(state_database, changed)
+
+    after = _layout(state_database)
+    assert _work_tags(state_database)[0] == [{**SAID, "seen": True}], "the row written before the change answers the new body"
+    assert [f for f in after[2] if f.startswith("annotator_work_tags")] != [f for f in before[2] if f.startswith("annotator_work_tags")]
+    assert len([f for f in after[2] if f.startswith("annotator_work_tags")]) == 1, "only the function a column calls is left"

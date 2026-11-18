@@ -257,6 +257,24 @@ export const TaskDetailSchema = v.object({
 	// valibot's `v.object` strips unknown keys, so declaring it here is what lets the canvas see the
 	// contract it will be judged against, instead of learning the rule from a 409 after the work.
 	ontology: v.optional(LabelOntologySchema),
+	/** A listing's `include=work`: the revision a change to the item's work is built on and its whole-item tags (at most
+	 *  64, `tags_cut` past them), or null where the reader may not read its work. Absent unless asked for. */
+	work: v.optional(
+		v.nullable(
+			v.object({
+				revision: v.number(),
+				tags: v.array(
+					v.object({
+						id: v.string(),
+						label: v.nullable(v.string()),
+						detailed: v.boolean(),
+						prediction: v.boolean(),
+					}),
+				),
+				tags_cut: v.boolean(),
+			}),
+		),
+	),
 });
 export type TaskDetail = v.InferOutput<typeof TaskDetailSchema>;
 

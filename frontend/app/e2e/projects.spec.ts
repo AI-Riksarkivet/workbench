@@ -853,3 +853,289 @@ test('the review tab lists the work waiting for the reviewer by its annotators�
 		/\/projects\/judging\/tasks\/judging-a\?of=3&pass=review&project=judging$/,
 	);
 });
+
+// THE BULK-LABELING GRID (`?tab=label`): the `sorting` project's items open to the reader, labelled from the keyboard.
+const grid = (page: Page) => page.getByTestId('label-grid');
+const cellOf = (page: Page, task: string) =>
+	page.locator(`[data-testid="grid-cell"][data-task="${task}"]`);
+const labelsOf = (page: Page, task: string) => cellOf(page, task).getByTestId('grid-cell-labels');
+
+test('the grid labels items by keyboard alone, each claimed and saved on its own, and a reload comes back to the item in focus', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+
+	// The reader's own claim and the 24 nobody holds; neither another's claim nor work in review.
+	await expect(grid(page).getByRole('gridcell')).toHaveCount(25);
+	await expect(cellOf(page, 'sorting-theirs')).toHaveCount(0);
+	await expect(
+		page.getByTestId('grid-palette').getByRole('button', { name: /letter/ }),
+	).toHaveAttribute('aria-keyshortcuts', '1');
+	await expect(page.getByTestId('grid-canvas-classes')).toHaveText(
+		'Labelled on the canvas, one item at a time: stamp (bbox).',
+	);
+
+	await cellOf(page, 'sorting-00').focus();
+	// A digit labels the item in focus and moves on: letter, then map.
+	await page.keyboard.press('1');
+	await page.keyboard.press('2');
+	await expect(cellOf(page, 'sorting-02')).toBeFocused();
+	// Shift with an arrow selects from the item in focus; a digit labels the selection.
+	for (let i = 0; i < 3; i++) await page.keyboard.press('Shift+ArrowRight');
+	await expect(grid(page).locator('[aria-selected="true"]')).toHaveCount(4);
+	await page.keyboard.press('1');
+
+	await expect(labelsOf(page, 'sorting-00')).toHaveText('letter');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('map');
+	for (const id of ['sorting-02', 'sorting-03', 'sorting-04', 'sorting-05'])
+		await expect(labelsOf(page, id)).toHaveText('letter');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Labelled letter: 4 changed.');
+	await expect(cellOf(page, 'sorting-05')).toHaveAttribute('aria-label', /labelled letter/);
+	// One claim and one save per item, each through its own door.
+	const calls = await annotatorCalls(page, who);
+	const claims = calls.filter(
+		(c) => c.method === 'POST' && /^\/tasks\/sorting-\d+\/events$/.test(c.path),
+	);
+	const saves = calls.filter((c) => c.method === 'POST' && c.path.startsWith('/api/annotations/'));
+	expect([
+		claims.length,
+		saves.length,
+		[...claims, ...saves].every((c) => c.status === 200),
+	]).toEqual([6, 6, true]);
+
+	await expect(page).toHaveURL(/[?&]at=sorting-05/);
+	await page.reload();
+	await expect(cellOf(page, 'sorting-05')).toHaveAttribute('tabindex', '0');
+	await expect(labelsOf(page, 'sorting-05')).toHaveText('letter');
+});
+
+test('the grid undoes and redoes its last label, and clears one, each on the revision the item was left at', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.keyboard.press('1');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('letter');
+	// Alt with a digit adds a label beside the one held.
+	await page.keyboard.press('Alt+2');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText(/letter\s*map/);
+
+	await page.keyboard.press('Control+z');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('letter');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Undone: Toggled map: 2 changed.');
+	await page.keyboard.press('Control+Shift+z');
+	await expect(labelsOf(page, 'sorting-00')).toHaveText(/letter\s*map/);
+
+	await page.keyboard.press('Escape');
+	await expect(grid(page).locator('[aria-selected="true"]')).toHaveCount(0);
+	await page.keyboard.press('Delete');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('no label');
+	await expect(labelsOf(page, 'sorting-00')).toHaveText(/letter\s*map/);
+});
+
+test('a label over a selection one item of which was released meanwhile labels the rest and names the one refused', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await expect(cellOf(page, 'sorting-mine')).toBeVisible();
+	await cellOf(page, 'sorting-22').click();
+	await cellOf(page, 'sorting-mine').click({ modifiers: ['Shift'] });
+	await expect(grid(page).locator('[aria-selected="true"]')).toHaveCount(3);
+	// The same person releases their claim in another tab (the mock keeps one world per person).
+	const other = await context.newPage();
+	await other.goto('/projects/sorting?state=claimed');
+	await other.getByRole('button', { name: 'Release', exact: true }).click();
+	await expect(other.getByTestId('state-claimed')).toHaveText(/claimed\s*1$/);
+
+	await page.getByTestId('grid-label-map').click();
+
+	await expect(page.getByTestId('grid-notice')).toContainText(
+		'Labelled map: 2 changed, 1 refused.',
+	);
+	await expect(page.getByTestId('grid-refusals')).toHaveText(
+		'this item is unassigned — its shapes take edits only while it is claimed or in review (1): A map of the harbour · page 1',
+	);
+	await expect(labelsOf(page, 'sorting-22')).toHaveText('map');
+	await expect(labelsOf(page, 'sorting-23')).toHaveText('map');
+	await expect(labelsOf(page, 'sorting-mine')).toHaveText('no label');
+	await expect(cellOf(page, 'sorting-mine').getByTestId('grid-cell-refused')).toBeVisible();
+});
+
+test('the labelled items are submitted together, each answered, and the items tab counts them', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.keyboard.press('2');
+	await expect(labelsOf(page, 'sorting-02')).toHaveText('map');
+	await page.keyboard.press('Control+a');
+
+	// Submit is offered for the items the reader holds: the three just labelled (and claimed) and their own claim.
+	await page.getByTestId('grid-bulk-submit').click();
+
+	await expect(page.getByTestId('grid-notice')).toHaveText('Submit for review: 4 done.');
+	await expect(grid(page).getByRole('gridcell')).toHaveCount(21);
+	await page.getByTestId('tab-items').click();
+	await expect(page.getByTestId('state-in_review')).toHaveText(/in review\s*6$/);
+});
+
+test('a reviewer accepts many and sends some back with one note, from the grid', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/sorting?tab=label&pass=review');
+	await expect(grid(page).getByRole('gridcell')).toHaveCount(2);
+	await expect(labelsOf(page, 'sorting-review-b')).toHaveText('map');
+
+	await cellOf(page, 'sorting-review-a').click();
+	await page.getByTestId('grid-bulk-request_changes').click();
+	await page.getByRole('textbox', { name: 'What should change' }).fill('Which page is this?');
+	await page.getByTestId('grid-send-back').getByRole('button', { name: 'Send back' }).click();
+	await expect(grid(page).getByRole('gridcell')).toHaveCount(1);
+
+	await cellOf(page, 'sorting-review-b').click();
+	await page.getByTestId('grid-bulk-accept').click();
+	await expect(page.getByTestId('grid-empty')).toHaveText('Nothing waits for your review.');
+	await page.getByTestId('tab-items').click();
+	await expect(page.getByTestId('state-accepted')).toHaveText(/accepted\s*1$/);
+	await expect(page.getByTestId('state-changes_requested')).toHaveText(/changes requested\s*1$/);
+});
+
+test('a label that would replace what another label carries is asked about once, skipped by default, and an undo brings it back whole', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await expect(cellOf(page, 'sorting-20').getByTestId('grid-cell-details')).toBeVisible();
+	await expect(cellOf(page, 'sorting-21').getByTestId('grid-cell-suggested')).toHaveText('map?');
+	await cellOf(page, 'sorting-19').focus();
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.keyboard.press('Shift+ArrowRight');
+
+	await page.keyboard.press('2');
+	// Only the item whose `letter` carries words is asked about: setting `map` where a model proposed it confirms it.
+	await expect(page.getByTestId('grid-ask-count')).toContainText('1 of 3 items carry');
+	// Skipping is the default: the question opens on it, and Enter takes it.
+	await expect(page.getByTestId('grid-ask-skip')).toBeFocused();
+	await page.keyboard.press('Enter');
+
+	await expect(page.getByTestId('grid-notice')).toContainText(
+		'Labelled map: 2 changed, 1 not attempted.',
+	);
+	await expect(labelsOf(page, 'sorting-20')).toHaveText('letter');
+	await expect(labelsOf(page, 'sorting-21')).toHaveText('map');
+	await expect(cellOf(page, 'sorting-21').getByTestId('grid-cell-suggested')).toHaveCount(0);
+
+	await cellOf(page, 'sorting-20').click();
+	await page.keyboard.press('2');
+	await page.getByTestId('grid-ask-replace').click();
+	await expect(labelsOf(page, 'sorting-20')).toHaveText('map');
+	await expect(cellOf(page, 'sorting-20').getByTestId('grid-cell-details')).toHaveCount(0);
+	// A key belongs to the question while it is on the page (`walk-keys.ts`), so the undo waits for it to go.
+	await expect(page.getByTestId('grid-ask')).toHaveCount(0);
+	await page.keyboard.press('Control+z');
+	await expect(labelsOf(page, 'sorting-20')).toHaveText('letter');
+	await expect(cellOf(page, 'sorting-20').getByTestId('grid-cell-details')).toBeVisible();
+});
+
+test('a long run says how far it is and stops when asked, the items in flight finished and the rest untouched', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	for (const id of ['sorting-00', 'sorting-01', 'sorting-02', 'sorting-03'])
+		await page.request.post(
+			`${EDGE}/api/viewer/__fault?sub=${encodeURIComponent(who.sub)}&path=/tasks/${id}/events&kind=slow`,
+		);
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('Control+a');
+
+	await page.keyboard.press('1');
+	// The model's `map` proposal on one item is asked about first; it is kept.
+	await expect(page.getByTestId('grid-ask-count')).toContainText('1 of 25 items carry');
+	await expect(page.getByTestId('grid-ask-skip')).toBeFocused();
+	await page.keyboard.press('Enter');
+	await expect(page.getByTestId('grid-progress')).toContainText('Labelled letter: 0 of 25');
+	await page.getByTestId('grid-stop').click();
+
+	await expect(page.getByTestId('grid-notice')).toContainText(
+		'Labelled letter: 4 changed, 21 not attempted.',
+		{ timeout: 10_000 },
+	);
+	await expect(page.getByTestId('grid-skipped')).toContainText(
+		'Not attempted, stopped before it was started (21)',
+	);
+	await expect(labelsOf(page, 'sorting-03')).toHaveText('letter');
+	await expect(labelsOf(page, 'sorting-04')).toHaveText('no label');
+	await expect(cellOf(page, 'sorting-04').getByText('unassigned', { exact: true })).toBeVisible();
+});
+
+test('an item the grid claimed only to label is released again when its label is refused', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await page.request.post(
+		`${EDGE}/api/viewer/__fault?sub=${encodeURIComponent(who.sub)}&path=/api/annotations/letter-002/0&kind=fail`,
+	);
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-01').focus();
+	await page.keyboard.press('Shift+ArrowRight');
+
+	await page.keyboard.press('1');
+
+	await expect(page.getByTestId('grid-refusals')).toHaveText(
+		'not labelled, and released again: the annotator could not read the task’s work (1): A letter about the harvest · page 1',
+	);
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('letter');
+	await expect(cellOf(page, 'sorting-02').getByText('unassigned', { exact: true })).toBeVisible();
+	await expect(cellOf(page, 'sorting-01').getByText('claimed', { exact: true })).toBeVisible();
+});
+
+test('a label or an undo whose answer was lost is judged by what the item now holds, not refused', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	// The write reaches the annotator and lands; its answer never reaches the page.
+	const lose = (path: RegExp) =>
+		page.route(path, async (route) => {
+			if (route.request().method() !== 'POST') return route.fallback();
+			await route.fetch();
+			return route.abort('connectionreset');
+		});
+	await lose(/\/api\/annotations\/[^?]+\/0\?/);
+	await cellOf(page, 'sorting-00').focus();
+
+	await page.keyboard.press('1');
+
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Labelled letter: 0 changed, 1 already so.',
+	);
+	await expect(labelsOf(page, 'sorting-00')).toHaveText('letter');
+	await page.unrouteAll({ behavior: 'wait' });
+	await cellOf(page, 'sorting-01').focus();
+	await page.keyboard.press('1');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('letter');
+	await lose(/\/revert\?/);
+
+	await page.keyboard.press('Control+z');
+
+	await expect(page.getByTestId('grid-notice')).toHaveText('Undone: Labelled letter: 1 changed.');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('no label');
+});

@@ -1,7 +1,8 @@
 <script lang="ts">
 	/**
-	 * One project, in five tabs whose state is the address (`?tab=`, each tab's filters beside it): its items (the data
-	 * manager, `DataManager.svelte`), browsing its labeled work, reviewing what waits for the reader, its settings
+	 * One project, in six tabs whose state is the address (`?tab=`, each tab's filters beside it): its items (the data
+	 * manager, `DataManager.svelte`), labelling many of the items open to the reader at once (the grid, `LabelGrid.svelte`:
+	 * a tab of its own, because it lists the reader's own work rather than the project's, and its keys are its own), browsing its labeled work, reviewing what waits for the reader, its settings
 	 * (what is labeled, the review and claim rules, who holds which role) and its publish. The annotator filters, counts
 	 * and pages every list; the page reads the project and each person's part over all its items, and reads them again
 	 * after every action.
@@ -25,6 +26,7 @@
 	import PublishPanel from '#lib/projects/PublishPanel.svelte';
 	import SendItemsDialog from '#lib/projects/SendItemsDialog.svelte';
 	import DataManager from '#lib/projects/DataManager.svelte';
+	import LabelGrid from '#lib/projects/LabelGrid.svelte';
 	import BrowsePanel from '#lib/projects/BrowsePanel.svelte';
 	import ReviewPanel from '#lib/projects/ReviewPanel.svelte';
 	import SettingsPanel from '#lib/projects/SettingsPanel.svelte';
@@ -58,6 +60,7 @@
 
 	// The open tab's panel, which holds its own reads (a page of items, a list), read again with the page's.
 	let manager = $state<DataManager | undefined>();
+	let labeler = $state<LabelGrid | undefined>();
 	let browser = $state<BrowsePanel | undefined>();
 	let reviewer = $state<ReviewPanel | undefined>();
 
@@ -66,6 +69,7 @@
 		void detailRead.refresh();
 		void contributorsRead.refresh();
 		manager?.reload();
+		labeler?.reload();
 		browser?.reload();
 		reviewer?.reload();
 	}
@@ -81,7 +85,7 @@
 
 	// THE ADDRESS IS THE VIEW: the tab is `?tab=`, and each tab's filters ride beside it (`item-query.ts`). Changing tab
 	// keeps the project and leaves the other tab's filters behind.
-	const TABS = ['items', 'browse', 'review', 'settings', 'publish'] as const;
+	const TABS = ['items', 'label', 'browse', 'review', 'settings', 'publish'] as const;
 	type Tab = (typeof TABS)[number];
 	const tab = $derived<Tab>(
 		(TABS as readonly string[]).includes(page.url.searchParams.get('tab') ?? '')
@@ -261,6 +265,7 @@
 			<Tabs.Root value={tab} onValueChange={(v) => openTab(v as Tab)}>
 				<Tabs.List class="max-w-full overflow-x-auto">
 					<Tabs.Trigger value="items" data-testid="tab-items">Items</Tabs.Trigger>
+					<Tabs.Trigger value="label" data-testid="tab-label">Label</Tabs.Trigger>
 					<Tabs.Trigger value="browse" data-testid="tab-browse">Browse</Tabs.Trigger>
 					<Tabs.Trigger value="review" data-testid="tab-review">Review</Tabs.Trigger>
 					<Tabs.Trigger value="settings" data-testid="tab-settings">Settings</Tabs.Trigger>
@@ -284,6 +289,19 @@
 							{me}
 							consensusN={project.consensus_n ?? 1}
 							adjudications={project.adjudications ?? {}}
+							onchanged={refresh}
+						/>
+					{/if}
+				</Tabs.Content>
+
+				<Tabs.Content value="label" class={TAB_CLASS}>
+					{#if tab === 'label'}
+						<LabelGrid
+							bind:this={labeler}
+							{projectId}
+							permissions={detail.permissions}
+							{me}
+							classes={project.ontology.classes}
 							onchanged={refresh}
 						/>
 					{/if}

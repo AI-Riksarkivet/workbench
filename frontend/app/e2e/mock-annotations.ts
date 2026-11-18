@@ -122,7 +122,7 @@ export async function annotationsDoor(
 		write: (taskId: string, draft: Draft) => void;
 	},
 ): Promise<Response | null> {
-	const match = /^\/api\/annotations\/(.+?)(\/versions)?$/.exec(url.pathname);
+	const match = /^\/api\/annotations\/(.+?)(\/versions|\/revert)?$/.exec(url.pathname);
 	if (!match) return null;
 	const answer = (body: unknown, status = 200): Response => {
 		record(status);
@@ -211,6 +211,46 @@ export async function annotationsDoor(
 		);
 	}
 	if (req.method !== 'POST') return null;
+	if (match[2] === '/revert') {
+		// The annotator's undo of one save (`annotations.revert`): the work as the save before it left it, rows and links
+		// whole, while the work is still at the revision that save wrote; written as a new revision of its own.
+		const { revision } = (await req.json()) as { revision: number };
+		if (revision !== version)
+			return answer(
+				{ detail: `annotations changed on the server (loaded v${revision}, now v${version})` },
+				409,
+			);
+		const prior =
+			revision === 1
+				? { rows: [], links: [] }
+				: draft?.history.find((h) => h.version === revision - 1);
+		if (!prior)
+			return answer(
+				{
+					detail: `the history of this item's work no longer keeps the save that wrote v${revision}`,
+				},
+				409,
+			);
+		const rows = structuredClone(prior.rows);
+		const links = structuredClone(prior.links ?? []);
+		const next = version + 1;
+		work.write(taskId, {
+			rows,
+			links,
+			revision: next,
+			history: [
+				...(draft?.history ?? []),
+				{
+					version: next,
+					timestamp: new Date().toISOString(),
+					author: sub.replace(/^user:/, ''),
+					rows,
+					links,
+				},
+			].slice(-50),
+		});
+		return answer({ saved: 1, version: next });
+	}
 	const b = (await req.json()) as SaveBody;
 	if (b.base_version === null || b.base_version === undefined)
 		return answer(
@@ -266,6 +306,7 @@ export async function annotationsDoor(
 				timestamp: new Date().toISOString(),
 				author: sub.replace(/^user:/, ''),
 				rows,
+				links,
 			},
 		].slice(-50),
 	});
