@@ -143,11 +143,12 @@ export async function annotationsDoor(
 	const key = decodeURIComponent(match[1] ?? '');
 	// A task's draft holds its item's first unit (`annotator.annotations.access.work_unit`).
 	if (task.source.where !== dataset || task.source.keys[0] !== key)
-		return answer({ detail: `unit ${key} of dataset ${dataset} is not task ${taskId}'s` }, 404);
+		return answer({ detail: `unit ${key} of dataset ${dataset} is not this item's` }, 404);
 	if (req.method === 'GET' && !mayReadWork(task, sub, held))
 		return answer(
 			{
-				detail: `${sub.replace(/^user:/, '')} may not read replica ${taskId}'s work: only its annotator, or someone who may review it`,
+				detail:
+					"you may not read this replica's work: only its annotator, or someone who may review it",
 			},
 			403,
 		);
@@ -157,15 +158,14 @@ export async function annotationsDoor(
 		if (!relation)
 			return answer(
 				{
-					detail: `task ${taskId} is ${task.state} — its shapes take edits only while it is claimed or in review`,
+					detail: `this item is ${task.state} — its shapes take edits only while it is claimed or in review`,
 				},
 				409,
 			);
-		const who = sub.replace(/^user:/, '');
 		if (!held.includes(relation))
-			return answer({ detail: `${who} lacks ${relation} on task:${taskId}` }, 403);
+			return answer({ detail: `you lack ${relation} on this item` }, 403);
 		if (task.state === 'claimed' && task.assignee !== sub)
-			return answer({ detail: `the task is held by ${task.assignee}` }, 403);
+			return answer({ detail: 'another person holds this item' }, 403);
 		if (task.state === 'in_review' && task.submitted_by === sub)
 			return answer({ detail: 'a reviewer may not edit their own submission' }, 403);
 	}
@@ -368,7 +368,7 @@ export async function assistDoor(
 	};
 	const project = url.searchParams.get('project') ?? '';
 	if (!perms(project).includes('can_annotate'))
-		return answer({ detail: `the caller lacks can_annotate on project:${project}` }, 403);
+		return answer({ detail: 'you lack can_annotate on this project' }, 403);
 	if (url.pathname === '/api/assist/producers' && req.method === 'GET')
 		return answer({ producers: PRODUCERS, default_configured: false, urls_redacted: true });
 	if (req.method !== 'POST') return null;

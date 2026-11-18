@@ -112,7 +112,7 @@ def test_the_history_keeps_only_a_tasks_last_saves(work_client: TestClient) -> N
 
     assert [entry["version"] for entry in kept] == list(range(MAX_DRAFT_HISTORY + 2, 2, -1))
     assert gone.status_code == 404, gone.text
-    assert gone.json()["detail"] == "annotations version 2 not found: the history of task t1 does not keep it"
+    assert gone.json()["detail"] == "annotations version 2 not found: this item's history does not keep it"
 
 
 def test_the_history_keeps_the_last_saves_its_byte_bound_holds(work_client: TestClient) -> None:

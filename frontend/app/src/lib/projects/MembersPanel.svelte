@@ -13,8 +13,14 @@
 	import { Input } from '@workbench/ui/input';
 	import { Select } from '@workbench/ui/select';
 
-	import { fetchMembers, grantMember, revokeMember } from '#lib/api/projects.api.ts';
+	import {
+		fetchCandidates,
+		fetchMembers,
+		grantMember,
+		revokeMember,
+	} from '#lib/api/projects.api.ts';
 	import PersonName from './PersonName.svelte';
+	import { shortPrincipal } from './people.ts';
 	import type { People } from './types.ts';
 
 	let { projectId }: { projectId: string } = $props();
@@ -36,6 +42,13 @@
 	let who = $state('');
 	let rung = $state('annotator');
 	let busy = $state(false);
+	/** The people offered by name: those the annotator knows who hold a role on a project of this organisation the
+	 *  manager manages (`member_candidates`), read once the list is shown. Anyone else is granted by principal. */
+	const candidatesRead = $derived(loaded && !loadError ? fetchCandidates({ projectId }) : null);
+	const offered = $derived(candidatesRead?.current?.ok ? candidatesRead.current.data.people : []);
+	const incomplete = $derived(
+		candidatesRead?.current?.ok ? candidatesRead.current.data.truncated : false,
+	);
 
 	async function load(): Promise<void> {
 		const result = await fetchMembers({ projectId });
@@ -100,13 +113,19 @@
 	{#if loaded && !loadError}
 		<ul class="flex flex-col gap-1">
 			{#each members as m (m.user + m.relation)}
+				{@const principal = m.user.replace(/^user:/, '')}
+				{@const called = people[principal] ?? shortPrincipal(principal)}
 				<li class="flex items-center gap-2 text-sm" data-testid="member-row">
-					<!-- By the name they last wrote under where one is kept; an OIDC `sub` with none is shortened in the
-					     middle by `Subject`, the full value always its tooltip, which a revoke sends back. -->
-					{#if people[m.user.replace(/^user:/, '')]}
-						<PersonName principal={m.user.replace(/^user:/, '')} {people} />
+					<!-- By the name the annotator keeps from their own token (they signed in or wrote here); someone
+					     granted who has not signed in yet is their principal, shortened by `Subject`, the full value its
+					     tooltip, which a revoke sends back. -->
+					{#if people[principal]}
+						<PersonName {principal} {people} />
 					{:else}
 						<Subject value={m.user} class="text-xs" />
+						<span class="text-muted-foreground text-xs" data-testid="member-not-signed-in"
+							>has not signed in here yet</span
+						>
 					{/if}
 					<Badge variant="outline">{m.relation}</Badge>
 					<Button
@@ -115,8 +134,8 @@
 						class="ml-auto"
 						disabled={busy}
 						data-testid="revoke-member"
-						aria-label="Revoke {m.relation} from {people[m.user.replace(/^user:/, '')] ?? m.user}"
-						title="Revoke {m.relation} from {m.user}"
+						aria-label="Revoke {m.relation} from {called}"
+						title="Revoke {m.relation} from {called}"
 						onclick={() => void revoke(m.user, m.relation)}
 					>
 						<Trash2 class="size-3.5" />
@@ -134,10 +153,22 @@
 				void grant();
 			}}
 		>
+			{#if offered.length > 0}
+				<Select
+					bind:value={who}
+					ariaLabel="Person to grant"
+					options={[
+						{ value: '', label: 'Choose a person…' },
+						...offered.map((c) => ({ value: c.principal, label: c.name })),
+					]}
+				/>
+			{/if}
 			<Input
 				bind:value={who}
-				placeholder="annotator (principal: idp~user id)"
-				aria-label="Person to grant"
+				placeholder={offered.length > 0
+					? 'or their principal (idp~user id)'
+					: 'their principal (idp~user id)'}
+				aria-label="Principal to grant"
 				class="h-8 w-56"
 			/>
 			<Select
@@ -152,6 +183,11 @@
 		<!-- Said out loud: a tenant admin reaches this project through `admin from tenant`, is not a
 		     direct grant, and cannot be revoked here. Listing them with a remove button that cannot
 		     work would be worse than not listing them. -->
+		{#if incomplete}
+			<p class="text-muted-foreground text-xs" data-testid="candidates-incomplete">
+				Not everyone you could grant is listed: type a principal if the person is not listed.
+			</p>
+		{/if}
 		<p class="text-muted-foreground text-xs">
 			Direct grants only. An organisation's admins own every project of it, and are managed with the
 			organisation.

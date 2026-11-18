@@ -375,8 +375,19 @@ def test_a_source_no_catalog_decides_for_is_read_by_its_declared_readers_alone(
     assert ({sub: answer.status_code for sub, answer in signing.items()}, served, served_after) == ({"reader": 200, "stranger": 403}, 200, 403)
 
 
-#: Reads of the default dataset, each naming something else beside it that is no dataset id the door reads.
-DEFAULT_READS = ["/api/doc-chunks/a", "/api/doc-chunks/a?table=junk", "/api/doc-chunks/a?corpus=junk", "/api/columns?table=x"]
+#: Reads of the default dataset, each naming something else beside it that is no dataset id the door reads, and the
+#: rows of a dataset whose items are its rows, by the default and by name.
+DEFAULT_READS = [
+    "/api/doc-chunks/a",
+    "/api/doc-chunks/a?table=junk",
+    "/api/doc-chunks/a?corpus=junk",
+    "/api/columns?table=x",
+    "/api/rows",
+    "/api/rows?table=junk",
+    "/api/rows?dataset=src~wh%24ns",
+]
+#: The default dataset's text: longer than a listing answers of one cell (`browse.LISTED_TEXT_CHARS`).
+LONG_TEXT = "a ship sails " * 700
 
 
 def test_the_default_dataset_is_read_only_by_its_sources_readers_whatever_else_the_request_names(
@@ -384,10 +395,14 @@ def test_the_default_dataset_is_read_only_by_its_sources_readers_whatever_else_t
 ) -> None:
     """A request naming no dataset reads the deployment's default, and the source checked is the one each read resolves:
     a query parameter that names no dataset the door reads (an unknown ``table``, a ``corpus`` it takes no notice of)
-    neither stands in for the default nor hides it, so the declared reader is answered and a signed-in stranger refused."""
+    neither stands in for the default nor hides it, so the declared reader is answered and a signed-in stranger refused.
+    The reader's rows are kept by their browser alone, a text cell cut and a cell of bytes that are no UTF-8 answered as
+    null, each named on its row."""
     dex = Provider("dex")
     root = tmp_path / "catalog"
-    write_table(root, ["wh", "ns", "chunks"], pa.table({"doc_id": ["a"], "text": ["a ship sails"]}), descriptor=_DESCRIPTOR)
+    rows = pa.table({"doc_id": ["a"], "text": [LONG_TEXT], "blob": pa.array([b"\xff\xfe\x00"], pa.binary())})
+    declared = {**_DESCRIPTOR, "display": {"title": ["doc_id"], "body": "text", "metadata": [{"field": "blob", "label": "Blob"}]}}
+    write_table(root, ["wh", "ns", "chunks"], rows, descriptor=declared)
     settings = ViewerSettings.model_validate(
         {
             "WORKBENCH_SOURCES": [
@@ -414,7 +429,16 @@ def test_the_default_dataset_is_read_only_by_its_sources_readers_whatever_else_t
                 sub: [client.get(path, headers={"Authorization": f"Bearer {dex.mint(sub)}"}).status_code for path in DEFAULT_READS]
                 for sub in ("reader", "stranger")
             }
+            listed = client.get("/api/rows", headers={"Authorization": f"Bearer {dex.mint('reader')}"})
     finally:
         dex.close()
 
     assert answered == {"reader": [200] * len(DEFAULT_READS), "stranger": [403] * len(DEFAULT_READS)}
+    [row] = listed.json()["items"]
+    assert (listed.headers["cache-control"], row["text"], row["blob"], row["_cut"], row["_binary"]) == (
+        "private, no-cache",
+        LONG_TEXT[:8192],
+        None,
+        ["text"],
+        ["blob"],
+    )

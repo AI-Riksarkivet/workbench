@@ -21,6 +21,7 @@ with none, which the first check makes reachable only by two administrators revo
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated
 from urllib.parse import unquote
@@ -28,13 +29,14 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
-from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, SettingsDep
+from annotator.api.dependencies import StoreDep
+from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, SettingsDep, lacking
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AnnotatorSettings
 from annotator.people import RECORDS_PERSON, names_for
 from annotator.projects.roles import ADMINISTRATIVE, GRANTABLE, MemberGrant, Role
 from annotator.text import Text
-from service_kit.exceptions import ConflictError, ForbiddenError, ServiceUnavailableError, ValidationError
+from service_kit.exceptions import ConflictError, NotFoundError, ServiceUnavailableError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.deps import FgaChecker
 from service_kit.governed.fga import Authorizer, Grant, subject_of, user_object
@@ -86,7 +88,7 @@ async def _require(checker: FgaChecker, subject: str, project_id: str, action: A
     obj = f"project:{project_id}"
     if not await checker(user=subject, relation=relation, obj=obj):
         audit(action, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation=relation)
-        raise ForbiddenError(f"{subject} lacks {relation} on {obj}")
+        raise lacking(subject, relation, obj)
 
 
 def _guarding(role: str) -> str:
@@ -122,6 +124,66 @@ async def list_members(request: Request, project_id: ProjectId, checker: Checker
     return await _listed(request, await _members(_store(authz), project_id))
 
 
+#: The most projects whose members a candidates read gathers (the one granted on first), and the most people it answers.
+MAX_CANDIDATE_PROJECTS = 100
+MAX_CANDIDATES = 500
+#: How many objects OpenFGA's ListObjects answers at most (its server's default `listObjects-max-results`): an answer
+#: this long may have been cut, and the candidates then say they may be incomplete.
+LIST_OBJECTS_MAX = 1000
+#: How long the read of the other projects' members may take, all of them at once; past it the candidates are the ones
+#: read so far, said to be incomplete.
+CANDIDATES_DEADLINE_S = 5.0
+
+
+class Candidate(BaseModel):
+    principal: str
+    name: str
+
+
+class Candidates(BaseModel):
+    """People a granter may pick by name: see `member_candidates`."""
+
+    people: list[Candidate]
+    #: The set may be incomplete (more projects or people than it reads, OpenFGA's list cut short, or a read that ran
+    #: out of time): someone not listed is granted by their typed principal.
+    truncated: bool = False
+
+
+@router.get("/{project_id}/members/candidates")
+async def member_candidates(
+    request: Request, project_id: ProjectId, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject, store: StoreDep
+) -> Candidates:
+    """The people a manager of this project may grant a role to by name: everyone holding a direct role on a project of
+    this project's organisation that the CALLER manages, who has a name kept here (`annotator.people`: they signed in or
+    wrote here). Each of those projects' members the caller may already list (`list_members` is `can_manage`-gated),
+    with the same names beside them, so the set discloses nobody they could not already see. Someone outside it is
+    granted by their typed principal.
+
+    Bounded before any member is read: the project granted on always comes first, then the newest others the caller
+    manages, at most `MAX_CANDIDATE_PROJECTS` in all (one indexed read of their ids), their members read at once within
+    `CANDIDATES_DEADLINE_S`. ``truncated`` says when the set may be incomplete."""
+    await _require(checker, subject, project_id, AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_LIST)
+    grants = _store(authz)
+    project = await store.get_project(project_id)
+    if project is None:
+        raise NotFoundError(f"annotation project {project_id} does not exist")
+    managed = await grants.list_objects(user=subject, relation="can_manage", object_type="project")
+    others = {obj.removeprefix("project:") for obj in managed} - {project_id}
+    # One more than read, to know whether more were left out.
+    newest = await store.newest_of_tenant(project.tenant, others, limit=MAX_CANDIDATE_PROJECTS)
+    read = [project_id, *newest[: MAX_CANDIDATE_PROJECTS - 1]]
+    truncated = len(managed) >= LIST_OBJECTS_MAX or len(newest) > MAX_CANDIDATE_PROJECTS - 1
+    pending = [asyncio.ensure_future(_members(grants, pid)) for pid in read]
+    done, late = await asyncio.wait(pending, timeout=CANDIDATES_DEADLINE_S)
+    for task in late:
+        task.cancel()
+    principals = {member.user for task in done if task.exception() is None for member in task.result()}
+    truncated = truncated or bool(late) or any(task.exception() is not None for task in done)
+    names = await names_for(request, principals)
+    people = sorted((Candidate(principal=p, name=n) for p, n in names.items()), key=lambda c: (c.name.casefold(), c.principal))
+    return Candidates(people=people[:MAX_CANDIDATES], truncated=truncated or len(people) > MAX_CANDIDATES)
+
+
 @router.put("/{project_id}/members", status_code=status.HTTP_200_OK)
 async def grant_member(
     request: Request, project_id: ProjectId, payload: GrantRequest, checker: CheckerDep, authz: AuthorizerDep, subject: CurrentSubject, settings: SettingsDep
@@ -154,15 +216,23 @@ async def revoke_member(
     await _require(checker, subject, project_id, AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_REVOKE, _guarding(relation))
     store = _store(authz)
     person = _person(user, settings)
-    refusal = f"{user} holds the only remaining {relation} on this project — grant another owner or manager first"
+
+    async def refusal() -> ConflictError:
+        # By the name the person is known here by, else as "this person": their principal is a machine field.
+        who = (await names_for(request, [person])).get(person, "this person")
+        return ConflictError(
+            f"{who} holds the only remaining {relation} on this project — grant another owner or manager first",
+            extensions={"principal": person, "relation": relation},
+        )
+
     if relation in ADMINISTRATIVE and not _keeps_an_administrator(await _members(store, project_id), person, relation):
-        raise ConflictError(refusal)
+        raise await refusal()
     grant = Grant(user=user_object(person), relation=relation, object=f"project:{project_id}")
     await store.delete([grant])
     left = await _members(store, project_id)
     if relation in ADMINISTRATIVE and not any(m.relation in ADMINISTRATIVE for m in left):
         # Another revoke raced past the first check: restore this grant, so the project keeps an administrator.
         await store.write([grant])
-        raise ConflictError(refusal)
+        raise await refusal()
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_MEMBERS_REVOKE, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=relation)
     return await _listed(request, left)

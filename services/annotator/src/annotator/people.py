@@ -3,12 +3,15 @@
 A principal (`dex~08a8…`) is what every grant, claim and review records, and it is unreadable to a person. A name is
 known honestly in one place only: the claims of the token the shared door verified (`service_kit.governed.deps`). So:
 
-- **The signed-in person** reads their own name off their own token at `/me` (`display_name`).
-- **Everyone else** is named by what the annotator kept the last time THEY wrote through one of its doors: every door
-  that records a person (a create, a send, a transition, a save, an import, a grant, a pick) carries `RECORDS_PERSON`, which
-  keeps the name the caller's verified token carried beside their principal (`people` in `state/schema.sql`), replacing an
-  older one. No request body ever names a person's name, so no caller can name another. A person who has never written
-  (granted a role, not yet acted) is shown by their principal until they do.
+- **The signed-in person** reads their own name off their own token at `/me` (`display_name`), and that read REGISTERS
+  it (`register_person`): the app calls `/me` once each time a person signs in, so a person granted a role is known by
+  name from their first visit, and a renamed person from their next sign-in. It is the one read that writes; every
+  other read records nothing, so a page's reads never wait on, or fail with, a write.
+- **Everyone else** is named by what the annotator kept the last time THEY signed in or wrote through one of its
+  doors: every door that records a person (a create, a send, a transition, a save, an import, a grant, a pick) carries
+  `RECORDS_PERSON`, which keeps the name the caller's verified token carried beside their principal (`people` in
+  `state/schema.sql`), replacing an older one. No request body ever names a person's name, so no caller can name
+  another. A person who has never signed in here (granted a role, not yet arrived) is shown by their principal.
 - **A read that shows principals answers their kept names beside them** (`people`), under the door's own check, so a
   name is disclosed only where the principal it belongs to already is.
 
@@ -55,9 +58,16 @@ def display_name(claims: Mapping[str, object]) -> str | None:
 
 
 async def record_person(request: Request, caller: CurrentToken) -> None:
-    """Keep the name the writing caller's verified token carries. Reads, an anonymous caller and a service with no state
-    store record nothing; a store that cannot keep it costs the name, never the write."""
-    if request.method in _READS or caller is None:
+    """Keep the name the writing caller's verified token carries. Reads record nothing (`/me` registers explicitly)."""
+    if request.method in _READS:
+        return
+    await register_person(request, caller)
+
+
+async def register_person(request: Request, caller: CurrentToken) -> None:
+    """Keep the name ``caller``'s verified token carries beside their principal. An anonymous caller and a service with
+    no state store record nothing; a store that cannot keep it costs the name, never the request."""
+    if caller is None:
         return
     store: AnnotatorStore | None = getattr(request.app.state, "store", None)
     name = display_name(caller.claims.model_extra or {})

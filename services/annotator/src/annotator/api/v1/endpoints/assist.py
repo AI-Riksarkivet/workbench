@@ -21,7 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 from annotator.annotations.access import UnitKey, require_task_units
 from annotator.annotations.unit import parse_unit
-from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam, unseen_task
+from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam, lacking, unseen_task
 from annotator.api.v1.endpoints.serve_discovery import discovered_backends
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import AssistBackend
@@ -73,11 +73,11 @@ async def require_assist(caller: CallerDep, request: Request, state: StateDep, s
         # FAIL CLOSED. With no document binding there is no table to authorize against, and answering
         # anyway would make a malformed descriptor an authorization bypass.
         audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=ANNOTATE)
-        raise ForbiddenError(f"{subject} cannot be authorized for assist on {handle.id}: no documents table")
+        raise ForbiddenError(f"assist cannot be authorized on dataset {handle.id}: it has no documents table", extensions={"principal": subject})
     obj = f"project:{project}"
     if not await checker(user=subject, relation=ANNOTATE, obj=obj):
         audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.FAILURE, subject=subject, resource=handle.id, relation=ANNOTATE)
-        raise ForbiddenError(f"{subject} lacks {ANNOTATE} on {obj}")
+        raise lacking(subject, ANNOTATE, obj)
 
 
 router = APIRouter(prefix="/api", tags=["assist"], dependencies=[Depends(require_assist)])

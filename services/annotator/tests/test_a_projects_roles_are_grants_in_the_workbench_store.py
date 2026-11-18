@@ -60,11 +60,12 @@ class _Door:
 
 DOC = "a" * 16
 #: The name claims each person's token carries beyond the subject: alice's name with a control character and runs of
-#: spaces in it, bob a username and an address, rex only an address.
+#: spaces in it, bob a username and an address, rex only an address, dave a name.
 CLAIMS: dict[str, dict[str, str]] = {
     "keycloak~alice": {"name": " Alice\u0007  Ek ", "email": "alice@acme.example"},
     "keycloak~bob": {"preferred_username": "bob", "email": "bob@acme.example"},
     "keycloak~rex": {"email": "rex@acme.example"},
+    "keycloak~dave": {"name": "Dave Ström"},
 }
 DATASET = "lake~acme$media"
 #: The unit a task of the test's project names, and one it does not.
@@ -126,7 +127,13 @@ def test_an_org_member_creates_a_project_and_owns_it_and_a_stranger_may_not(door
     project = created.json()["project_id"]
     assert openfga_store.tuples(f"project:{project}") == {("org:acme", "org", f"project:{project}"), ("user:keycloak~alice", "owner", f"project:{project}")}
     assert refused.status_code == 403
-    assert refused.json()["detail"] == "keycloak~mallory lacks can_create_project on org:acme"
+    # The words a person reads name no principal; who, what and where are the problem's machine fields.
+    assert {k: refused.json()[k] for k in ("detail", "principal", "relation", "object")} == {
+        "detail": "you lack can_create_project on this organisation",
+        "principal": "keycloak~mallory",
+        "relation": "can_create_project",
+        "object": "org:acme",
+    }
 
 
 def test_the_owner_alone_administers_the_owner_and_manager_roles_and_the_last_one_is_never_revoked(door: _Door) -> None:
@@ -208,14 +215,14 @@ def test_a_project_member_cannot_write_or_delete_another_projects_annotations_of
 
     assert (through_p2.status_code, through_p2.json()["detail"]) == (404, "No task t1 that you can see")
     # An org member sees the org's projects and their tasks, and annotates none she holds no role on.
-    assert (through_p1.status_code, through_p1.json()["detail"]) == (403, "keycloak~mallory lacks can_annotate on task:t1")
+    assert (through_p1.status_code, through_p1.json()["detail"]) == (403, "you lack can_annotate on this item")
     assert _rows(door, p1) == ["p1-a", "p1-b"]
 
 
 @pytest.mark.parametrize(
     ("task", "person", "unit", "status", "detail"),
     [
-        pytest.param({}, "fay", OTHER_UNIT, 404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's", id="a-unit-the-task-does-not-hold"),
+        pytest.param({}, "fay", OTHER_UNIT, 404, f"unit {OTHER_UNIT} of dataset {DATASET} is not this item's", id="a-unit-the-task-does-not-hold"),
         pytest.param(
             {"source": {"kind": "chunks", "keys": [f"{DOC}/0"], "where": DATASET}},
             "fay",
@@ -225,10 +232,10 @@ def test_a_project_member_cannot_write_or_delete_another_projects_annotations_of
             id="a-key-the-dataset-cannot-name",
         ),
         pytest.param(
-            {"state": "accepted"}, "fay", UNIT, 409, "task t1 is accepted — its shapes take edits only while it is claimed or in review", id="a-finished-task"
+            {"state": "accepted"}, "fay", UNIT, 409, "this item is accepted — its shapes take edits only while it is claimed or in review", id="a-finished-task"
         ),
-        pytest.param({"assignee": "keycloak~rita"}, "fay", UNIT, 403, "the task is held by keycloak~rita", id="another-annotators-claim"),
-        pytest.param({"assignee": "keycloak~vic"}, "vic", UNIT, 403, "keycloak~vic lacks can_annotate on task:t1", id="a-viewer-holding-a-claim"),
+        pytest.param({"assignee": "keycloak~rita"}, "fay", UNIT, 403, "another person holds this item", id="another-annotators-claim"),
+        pytest.param({"assignee": "keycloak~vic"}, "vic", UNIT, 403, "you lack can_annotate on this item", id="a-viewer-holding-a-claim"),
         pytest.param(
             {"state": "in_review", "submitted_by": "keycloak~rita"},
             "rita",
@@ -334,7 +341,7 @@ def test_a_tag_batch_tags_only_the_units_of_the_task_it_names(door: _Door, openf
 
     outside, inside, again = tag(0, 20), tag(0, 19), tag(0, 19)
 
-    assert (outside.status_code, outside.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's")
+    assert (outside.status_code, outside.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not this item's")
     assert (inside.status_code, again.status_code) == (200, 200), inside.text
     # A re-tag changes nothing, so it writes nothing: the work stays at the revision the first tag made.
     assert again.json()["version"] == inside.json()["version"]
@@ -373,7 +380,7 @@ def test_two_replicas_of_one_item_each_keep_their_own_work_and_only_a_reviewer_r
     assert _rows(door, project, task="g1-r1", person="rex") == ["fay-box"]
     assert _rows(door, project, task="g1-r2", person="rex") == ["rita-box"]
     assert [s["shape_id"] for s in door.as_("rex").get("/tasks/g1-r2/draft").json()["shapes"]] == ["rita-box"]
-    refusal = "keycloak~fay may not read replica g1-r2's work: only its annotator, or someone who may review it"
+    refusal = "you may not read this replica's work: only its annotator, or someone who may review it"
     assert (peeked_rows.status_code, peeked_rows.json()["detail"]) == (403, refusal)
     assert (peeked_draft.status_code, peeked_draft.json()["detail"]) == (403, refusal)
     assert across.status_code == 404, across.text
@@ -388,7 +395,7 @@ def test_a_viewer_reads_the_unit_of_a_task_and_no_other(door: _Door, openfga_sto
     own, other = _read(door, "vic", project), _read(door, "vic", project, unit=OTHER_UNIT)
 
     assert own.status_code == 200, own.text
-    assert (other.status_code, other.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not task t1's")
+    assert (other.status_code, other.json()["detail"]) == (404, f"unit {OTHER_UNIT} of dataset {DATASET} is not this item's")
 
 
 def test_me_is_the_persons_standing_in_each_organisation_the_store_holds(door: _Door) -> None:
@@ -432,24 +439,62 @@ def test_a_listing_narrowed_to_sending_names_only_the_projects_the_caller_may_se
     assert (listed("vic"), listed("vic", can="can_send_items"), listed("fay", can="can_send_items")) == ([project], [], [project])
 
 
-def test_a_person_is_named_by_what_their_own_token_carried_when_they_last_wrote(door: _Door, openfga_store: OpenFgaStore) -> None:
-    """alice's create keeps her token's name (cleaned); bob, granted a role, is shown by his principal until his own
-    write (a claim; reading the task is not one) keeps the username his token carries; rex's token names only an
-    address, which is never shown in place of his principal. The names ride beside the principals of the reads that show
-    them: the members list, the task and its history of saves."""
+def test_a_granter_is_offered_by_name_the_people_of_the_projects_they_manage_in_its_organisation(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """alice manages two projects of acme and not olga's third. She is offered who holds a role on her two and is known
+    here by name (herself, and bob once he signed in): never dave, named but only on the project she may not manage, nor
+    rex, who holds a role but whose token names nobody. bob, who manages nothing, is refused the list."""
+    first, second = (_create(door, "alice").json()["project_id"] for _ in range(2))
+    third = _create(door, "olga").json()["project_id"]
+    door.as_("alice").put(f"/projects/{second}/members", json={"user": "keycloak~bob", "relation": "annotator"})
+    door.as_("alice").put(f"/projects/{first}/members", json={"user": "keycloak~rex", "relation": "annotator"})
+    door.as_("olga").put(f"/projects/{third}/members", json={"user": "keycloak~dave", "relation": "annotator"})
+    for person in ("bob", "rex", "dave"):
+        door.as_(person).get("/me")
+
+    offered = door.as_("alice").get(f"/projects/{first}/members/candidates")
+    refused = door.as_("bob").get(f"/projects/{second}/members/candidates")
+
+    assert offered.json() == {
+        "people": [{"principal": "keycloak~alice", "name": "Alice Ek"}, {"principal": "keycloak~bob", "name": "bob"}],
+        "truncated": False,
+    }
+    assert (refused.status_code, refused.json()["detail"]) == (403, "you lack can_manage on this project")
+
+
+def test_a_manager_of_more_projects_than_are_read_is_offered_the_people_of_the_one_granted_on(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """alice manages 101 projects, one more than a candidates read gathers. Granting on the newest, she is offered its
+    own people (bob, who signed in) and told the set may be incomplete."""
+    projects = [_create(door, "alice").json()["project_id"] for _ in range(101)]
+    door.as_("alice").put(f"/projects/{projects[-1]}/members", json={"user": "keycloak~bob", "relation": "annotator"})
+    door.as_("bob").get("/me")
+
+    offered = door.as_("alice").get(f"/projects/{projects[-1]}/members/candidates").json()
+
+    assert ([p["principal"] for p in offered["people"]], offered["truncated"]) == (["keycloak~alice", "keycloak~bob"], True)
+
+
+def test_a_person_is_named_by_what_their_own_token_carried_when_they_last_signed_in_or_wrote(door: _Door, openfga_store: OpenFgaStore) -> None:
+    """alice's create keeps her token's name (cleaned); bob, granted a role, is shown by his principal until he signs in
+    (the app's one `/me` read registers him; reading a task keeps nothing) with the username his token carries; rex's
+    token names only an address, which is never shown in place of his principal, whether he signs in or writes. The names
+    ride beside the principals of the reads that show them: the members list, the task and its history of saves."""
     project = _create(door, "alice").json()["project_id"]
     granted = door.as_("alice").put(f"/projects/{project}/members", json={"user": "keycloak~bob", "relation": "annotator"})
     door.as_("alice").put(f"/projects/{project}/members", json={"user": "keycloak~rex", "relation": "annotator"})
     _task(door, project, "t1", state="unassigned", assignee=None)
     _task(door, project, "t2", state="unassigned", assignee=None)
     door.as_("bob").get("/tasks/t1")
-    before_writing = door.as_("alice").get(f"/projects/{project}/members").json()["people"]
+    before_signing_in = door.as_("alice").get(f"/projects/{project}/members").json()["people"]
 
+    door.as_("bob").get("/me")
+    door.as_("rex").get("/me")
+    signed_in = door.as_("alice").get(f"/projects/{project}/members").json()["people"]
     claimed = door.as_("bob").post("/tasks/t1/events", json={"event": "claim"})
     saved = _save(door, "bob", project, inserts=[{"id": "b1", "shape_type": "bbox", "label": "a"}])
     door.as_("rex").post("/tasks/t2/events", json={"event": "claim"})
 
-    assert granted.json()["people"] == before_writing == {"keycloak~alice": "Alice Ek"}, "a read is not a write: it keeps no name"
+    assert granted.json()["people"] == before_signing_in == {"keycloak~alice": "Alice Ek"}, "a read other than /me keeps no name"
+    assert signed_in == {"keycloak~alice": "Alice Ek", "keycloak~bob": "bob"}, "signing in registers the name the token carries"
     assert (claimed.status_code, saved.status_code) == (200, 200), saved.text
     history = door.as_("alice").get(f"/annotations/{UNIT}/versions", params={"project": project, "task": "t1", "dataset": DATASET}).json()
     assert [(v["author"], v["author_name"]) for v in history] == [("keycloak~bob", "bob")]

@@ -386,7 +386,7 @@ async def test_a_lease_that_moved_refuses_the_previous_holders_submit(store: Ann
     await store.fire_task("t1", event="release", actor="gina")
     await store.fire_task("t1", event="claim", actor="dave")
 
-    with pytest.raises(IllegalTransition, match="held by dave"):
+    with pytest.raises(IllegalTransition, match="another person holds this item"):
         await store.fire_task("t1", event="submit", actor="gina")
 
     task = await _read(store)
@@ -422,7 +422,7 @@ async def test_the_managers_answer_does_not_unlock_the_lease_holder_rules(store:
     """§5.2 rule 2 is "only the lease holder writes … even a manager"."""
     await _claimed(store)
 
-    with pytest.raises(IllegalTransition, match="held by gina"):
+    with pytest.raises(IllegalTransition, match="another person holds this item"):
         await store.fire_task("t1", event="submit", actor="dave", subject_can_manage=True)
 
 
@@ -435,7 +435,7 @@ async def test_a_draft_from_the_previous_holder_cannot_land_on_the_new_holders_t
     await store.fire_task("t1", event="claim", actor="dave")
     await _save(store, [{"shape_type": "polygon"}] * 3, author="dave", base_revision=1)
 
-    with pytest.raises(IllegalTransition, match="held by dave"):
+    with pytest.raises(IllegalTransition, match="another person holds this item"):
         await _save(store, [], base_revision=2)
 
     surviving = await store.get_draft("t1")

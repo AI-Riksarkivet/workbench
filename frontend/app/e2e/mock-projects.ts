@@ -553,7 +553,8 @@ function seed(sub: string): World {
 		}),
 	);
 	// A project a reviewer judges one item at a time: three items in review, each another annotator's, and one already
-	// accepted, for browsing. Every item holds the two boxes of `PAGE_ROWS`, a figure and a caption.
+	// accepted, for browsing. Every item holds the two boxes of `PAGE_ROWS`, a figure and a caption, but one claimed and
+	// never drawn on (`judging-e`), which a browse of the labeled work leaves out.
 	projects.set('judging', project('judging', { title: 'Judging', ontology: pagesOntology }));
 	for (const [id, state, key, by] of [
 		['judging-a', 'in_review', 'letter-001/0', 'user:alpha'],
@@ -577,15 +578,38 @@ function seed(sub: string): World {
 				ontology: pagesOntology,
 			}),
 		);
+	tasks.set(
+		'judging-e',
+		task('judging', 'judging-e', 'claimed', 'letter-002/0', {
+			assignee: 'user:alpha',
+			lease_expires_at: later(),
+			holders: ['user:alpha'],
+			ontology: pagesOntology,
+		}),
+	);
+	// A project past what one bulk selection holds (`BULK_CAP`, 1,000): 1,050 items nobody has claimed, the first 50 sent
+	// on the first of the month and the rest on the tenth, for the date range.
+	projects.set('heap', project('heap', { title: 'Heap' }));
+	for (let i = 0; i < 1050; i++) {
+		const id = `heap-${String(i).padStart(4, '0')}`;
+		tasks.set(
+			id,
+			task('heap', id, 'unassigned', 'letter-001/0', {
+				sent_at: i < 50 ? '2026-11-01T09:00:00Z' : '2026-11-10T09:00:00Z',
+			}),
+		);
+	}
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
+	// Alma Alpha annotates the judging project, so a manager of it is offered her by name elsewhere.
+	grants.get('judging')?.push({ user: 'alpha', relation: 'annotator' });
 	const drafts = new Map<string, Draft>();
 	const seededAt = new Date().toISOString();
 	for (const t of tasks.values()) {
 		const pages =
 			(t.project_id === 'pages' && t.source.keys[0] === 'letter-001/0') ||
-			t.project_id === 'judging';
+			(t.project_id === 'judging' && t.state !== 'claimed');
 		const rows = REPLICA_ROWS[t.task_id] ?? (pages ? PAGE_ROWS : []);
 		if (rows.length === 0) continue;
 		const seeded = structuredClone(rows);
@@ -675,8 +699,38 @@ const legalTask = (state: string, frozen: boolean) =>
 				permission,
 			}));
 
-const refuse = (sub: string, relation: string, obj: string): Response =>
-	json({ detail: `${sub.replace(/^user:/, '')} lacks ${relation} on ${obj}` }, 403);
+/** What `sub`, holding `perms`, may fire on `t` now, as the service answers it (`machines.caller_events`): the edges out
+ *  of its state their role allows and no identity rule refuses (no verdict on their own submission, no holder's event
+ *  on another's claim, a release of another's claim only by a manager). */
+const callerEvents = (t: Task, sub: string, perms: readonly string[], frozen: boolean) =>
+	legalTask(t.state, frozen).filter(({ event, permission }) => {
+		if (!perms.includes(permission)) return false;
+		if (['accept', 'fix_and_accept', 'request_changes'].includes(event) && t.submitted_by === sub)
+			return false;
+		const other = t.assignee !== null && t.assignee !== sub;
+		if (['save_draft', 'submit', 'skip'].includes(event) && other) return false;
+		return !(event === 'release' && other && !perms.includes('can_manage'));
+	});
+
+/** A failed check, as the service words it (`annotator.api.security.lacking`): who and what are machine fields. */
+const OBJECT_WORDS: Record<string, string> = {
+	project: 'project',
+	task: 'item',
+	org: 'organisation',
+	corpus: 'dataset',
+};
+const refuse = (sub: string, relation: string, obj: string): Response => {
+	const kind = obj.split(':')[0] ?? '';
+	return json(
+		{
+			detail: `you lack ${relation} on this ${OBJECT_WORDS[kind] ?? kind}`,
+			principal: sub.replace(/^user:/, ''),
+			relation,
+			object: obj,
+		},
+		403,
+	);
+};
 
 /** Answer one call to the project plane, or null when the path is not one of its doors. `record(status)` writes the
  *  call into the ledger; `fault` is the spec's switch for this person and path. */
@@ -793,6 +847,26 @@ export async function projectsDoor(
 				...t.prediction.map((s) => s.label),
 			];
 			const holder = q.get('holder');
+			// A date range on one of an item's instants (`date`), as the service reads it: an item with no such instant
+			// falls outside every range.
+			const instantOf = (t: Task): string | null | undefined =>
+				({
+					sent: t.sent_at,
+					submitted: t.submitted_at,
+					reviewed: t.reviewed_at,
+					updated: t.reviewed_at ?? t.submitted_at ?? t.sent_at,
+				})[q.get('date') ?? 'updated'];
+			const inRange = (t: Task): boolean => {
+				const since = q.get('since');
+				const until = q.get('until');
+				if (since === null && until === null) return true;
+				const at = instantOf(t);
+				if (!at) return false;
+				const ms = Date.parse(at);
+				return (
+					(since === null || ms >= Date.parse(since)) && (until === null || ms < Date.parse(until))
+				);
+			};
 			const matches = (t: Task, withStates: boolean): boolean =>
 				(!withStates || q.getAll('state').length === 0 || q.getAll('state').includes(t.state)) &&
 				(q.get('assignee') === null || t.assignee === q.get('assignee')) &&
@@ -806,7 +880,12 @@ export async function projectsDoor(
 				(q.get('label') === null || labelsOf(t).includes(q.get('label') ?? '')) &&
 				(q.get('dataset') === null || t.source.where === q.get('dataset')) &&
 				(q.get('group') === null || t.replica_of === q.get('group')) &&
-				(q.get('replicas') !== 'true' || t.replica_of !== null);
+				(q.get('replicas') !== 'true' || t.replica_of !== null) &&
+				(q.get('has_work') !== 'true' ||
+					(world.drafts.get(t.task_id)?.rows.length ?? 0) +
+						(world.drafts.get(t.task_id)?.links.length ?? 0) >
+						0) &&
+				inRange(t);
 			const ORDER = [
 				'unassigned',
 				'claimed',
@@ -902,7 +981,10 @@ export async function projectsDoor(
 				may_publish: all.length > 0 && terminal === all.length,
 				...(include.includes('details')
 					? {
-							details: pageOf.map((t) => ({ ...t, legal_events: legalTask(t.state, frozen) })),
+							details: pageOf.map((t) => ({
+								...t,
+								legal_events: callerEvents(t, sub, perms, frozen),
+							})),
 							missing: [],
 							matched: matched.length,
 							state_counts: stateCounts,
@@ -943,7 +1025,7 @@ export async function projectsDoor(
 				[...world.tasks.values()].some((t) => t.project_id === id)
 			)
 				return answer(
-					{ detail: `project ${id} holds items: the consensus is fixed once items are sent` },
+					{ detail: 'this project holds items: the consensus is fixed once items are sent' },
 					409,
 				);
 			for (const key of [
@@ -1048,13 +1130,36 @@ export async function projectsDoor(
 			}
 			return answer({ sent: items.length, created: created.length, task_ids: created }, 201);
 		}
+		// The members' names keyed by the principal each grant names, as the service answers them.
+		const named = (users: Iterable<string>): Record<string, string> =>
+			Object.fromEntries(
+				[...users].flatMap((user) => {
+					const name = world.people.get(`user:${user}`);
+					return name ? [[user, name]] : [];
+				}),
+			);
+		if (rest === '/members/candidates' && req.method === 'GET') {
+			// Who holds a role on a project the reader manages, known by name (`members.member_candidates`).
+			const refused = gate('can_manage');
+			if (refused) return refused;
+			const managed = [...world.projects.keys()].filter((pid) =>
+				held(world, sub, pid).includes('can_manage'),
+			);
+			const users = new Set(
+				managed.flatMap((pid) => (world.grants.get(pid) ?? []).map((g) => g.user)),
+			);
+			const people = Object.entries(named(users))
+				.map(([principal, name]) => ({ principal, name }))
+				.sort((a, b) => a.name.localeCompare(b.name));
+			return answer({ people });
+		}
 		const members = rest === '/members';
 		if (members) {
 			const grants = world.grants.get(id) ?? [];
 			const list = () => ({
 				members: [...grants].sort((a, b) => a.user.localeCompare(b.user)),
 				grantable: [...ROLES],
-				people: namesOf(grants.map((g) => `user:${g.user.replace(/^user:/, '')}`)),
+				people: named(grants.map((g) => g.user)),
 			});
 			if (req.method === 'GET') return gate('can_manage') ?? answer(list());
 			const { user, relation } =
@@ -1079,7 +1184,7 @@ export async function projectsDoor(
 			if (admin({ relation }) && !left.some(admin))
 				return answer(
 					{
-						detail: `${user} holds the only remaining ${relation} on this project — grant another owner or manager first`,
+						detail: `${world.people.get(`user:${user}`) ?? 'this person'} holds the only remaining ${relation} on this project — grant another owner or manager first`,
 					},
 					409,
 				);
@@ -1122,14 +1227,15 @@ export async function projectsDoor(
 		if (!draft)
 			return answer({
 				...t,
-				legal_events: legalTask(t.state, frozen),
+				legal_events: callerEvents(t, sub, perms, frozen),
 				people: namesOf(principalsOf(t)),
 			});
 		// A consensus replica's work is its annotator's and its reviewers' (`tasks.require_work_readable`).
 		if (!mayReadWork(t, sub, perms))
 			return answer(
 				{
-					detail: `${sub.replace(/^user:/, '')} may not read replica ${id}'s work: only its annotator, or someone who may review it`,
+					detail:
+						"you may not read this replica's work: only its annotator, or someone who may review it",
 				},
 				403,
 			);
@@ -1194,7 +1300,7 @@ export async function projectsDoor(
 		if (['accept', 'fix_and_accept', 'request_changes'].includes(event) && t.submitted_by === sub)
 			return answer({ detail: 'a reviewer may not review their own submission' }, 403);
 		if (['submit', 'skip'].includes(event) && t.assignee !== sub)
-			return answer({ detail: `the task is held by ${t.assignee}` }, 403);
+			return answer({ detail: 'another person holds this item', holder: t.assignee }, 403);
 		t.state = edge[0];
 		if (event === 'claim') {
 			t.assignee = sub;
@@ -1220,12 +1326,17 @@ export async function projectsDoor(
 		}
 		return answer({
 			...t,
-			legal_events: legalTask(t.state, false),
+			legal_events: callerEvents(t, sub, perms, false),
 			people: namesOf(principalsOf(t)),
 		});
 	}
 	return null;
 }
+
+/** Register the name a person's own token carries, as `GET /me` does (`annotator.people.register_person`). */
+export const registerName = (sub: string, name: string | undefined): void => {
+	if (name) worldOf(sub).people.set(sub, name);
+};
 
 /** The person's organisations, as `GET /me` answers them. */
 export const orgsOf = (sub: string): { org: string; role: 'admin' | 'member' }[] =>

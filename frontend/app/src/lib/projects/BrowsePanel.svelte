@@ -1,5 +1,6 @@
 <script lang="ts">
-	// BROWSE: a person looks through a project's labeled items without claiming any: filter by class and state (and,
+	// BROWSE: a person looks through a project's labeled items (those whose work holds a shape or a link, the
+	// annotator's `has_work`) without claiming any: filter by class and state (and,
 	// for someone who may review, everyone's work rather than only their own), then walk the matches on the canvas,
 	// read-only, with next and previous (`?pass=browse`, its filter in the address). The canvas reads each item's work
 	// at the annotator's door, which decides on its own who may read it (a replica's work is its annotator's and its
@@ -63,12 +64,17 @@
 		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the same path, its query changed
 		void goto(`?${address}`, { reset: false });
 	}
+
+	/** Read the list again: the project page's Refresh, and the reader's return to the window. */
+	export function reload(): void {
+		void read.refresh();
+	}
 </script>
 
 <section class="flex flex-col gap-3" data-testid="browse-panel">
 	<p class="text-muted-foreground max-w-3xl text-sm">
-		Look through the labeled items one at a time, without claiming them: the canvas shows each
-		item's shapes and takes no edits.
+		Look through the labeled items one at a time, without claiming them: the items whose work holds
+		a shape or a link. The canvas shows each item's shapes and takes no edits.
 	</p>
 	<div class="flex flex-wrap items-center gap-2">
 		{#if classes.length > 0}

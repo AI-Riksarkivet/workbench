@@ -187,13 +187,16 @@ async def test_a_re_send_creates_nothing_and_leaves_a_held_claim_alone(store: An
 
 @pytest.mark.asyncio
 async def test_a_send_naming_another_projects_task_writes_none_of_the_batch(store: AnnotatorStore) -> None:
-    """A task owned by another project could never become terminal here, so the whole send is refused, naming it."""
+    """A task owned by another project could never become terminal here, so the whole send is refused, naming it and
+    not the project that holds it, which the sender may not see."""
     other = await _project(store)
     await store.send_tasks(other, [_task("theirs", other)])
     project_id = await _project(store)
 
-    with pytest.raises(ConflictError, match=f"task theirs already belongs to project {other}"):
+    with pytest.raises(ConflictError, match="^the item theirs this send names already belongs to another project") as refused:
         await store.send_tasks(project_id, [_task("mine", project_id), _task("theirs", project_id)])
+
+    assert other not in str(refused.value)
 
     assert (await store.task_index(project_id)).total == 0
 
@@ -247,8 +250,10 @@ async def test_a_consensus_group_stays_in_the_project_that_sent_it(store: Annota
     await store.send_tasks(other, [_task("g1-r1", other, replica_of="g1")])
     project_id = await _project(store)
 
-    with pytest.raises(ConflictError, match=f"consensus group g1 already belongs to project {other}"):
+    with pytest.raises(ConflictError, match="^the consensus group g1 this send names already belongs to another project") as refused:
         await store.send_tasks(project_id, [_task("g1-r2", project_id, replica_of="g1")])
+
+    assert other not in str(refused.value)
 
     assert (await store.task_index(project_id)).total == 0
 

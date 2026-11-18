@@ -36,7 +36,15 @@ import { athOf, readToken, verifyProof, type TokenClaims } from './dpop';
 import { lakehouseCallsOf, readAsPerson } from './mock-lakehouse';
 import { SHAPES, shapeOf } from './providers';
 import { annotationsDoor, assistDoor } from './mock-annotations';
-import { draftOf, orgsOf, permissionsOn, projectsDoor, taskOf, writeDraft } from './mock-projects';
+import {
+	draftOf,
+	orgsOf,
+	permissionsOn,
+	projectsDoor,
+	registerName,
+	taskOf,
+	writeDraft,
+} from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
 /** One call as a service saw it. */
@@ -157,7 +165,16 @@ const table = (name: string, rows: number, version: number, columns: string[]) =
 
 const CHUNK_ROWS = DOCS.reduce((n, d) => n + d.chunks.length, 0);
 
-/** Two datasets: one with documents, chunks, thumbnails and an atlas; one with none of them. */
+/** The memos' rows: thirty lines of three memos, more than one browse page holds. */
+const MEMOS = Array.from({ length: 30 }, (_, i) => ({
+	memo_id: `memo${Math.floor(i / 10)}`,
+	line: i % 10,
+	title: `Memo ${Math.floor(i / 10) + 1}`,
+	text: `Line ${(i % 10) + 1}: the harbour master writes of salt and grain.`,
+}));
+
+/** The lakehouse's datasets: the letters (documents, chunks, thumbnails and an atlas), the maps, the notes (none of
+ *  them), and the memos (a corpus of texts). */
 const DATASETS = {
 	'lake~acme$letters': {
 		tables: {
@@ -204,6 +221,17 @@ const DATASETS = {
 		tables: { notes: table('notes', 0, 1, ['note_id', 'text']) },
 		capabilities: [],
 		declared: { identity: { doc_key: 'note_id', key_fields: ['note_id'] }, atlas: [] },
+	},
+	// A corpus of texts: a row table and no document, so its items are its rows (`GET /api/rows`).
+	'lake~acme$memos': {
+		tables: { memos: table('memos', MEMOS.length, 2, ['memo_id', 'line', 'title', 'text']) },
+		capabilities: ['search'],
+		declared: {
+			identity: { doc_key: 'memo_id', key_fields: ['memo_id', 'line'] },
+			display: { title: ['title'], body: 'text', metadata: [] },
+			atlas: [],
+			search: { row_table: 'memos', fts: { table: 'memos', column: 'text' } },
+		},
 	},
 } as const;
 
@@ -1118,6 +1146,27 @@ Bun.serve({
 				docs: docs.slice((page - 1) * perPage, page * perPage),
 			});
 		}
+		if (url.pathname === '/api/rows' && req.method === 'GET') {
+			if (dataset !== 'lake~acme$memos') {
+				ok(404);
+				return json(
+					{ detail: `dataset ${JSON.stringify(dataset)} declares no row table to list` },
+					404,
+				);
+			}
+			const page = Number(url.searchParams.get('page') ?? 1);
+			const perPage = Number(url.searchParams.get('per_page') ?? 20);
+			ok(200);
+			return json({
+				total: MEMOS.length,
+				page,
+				page_size: perPage,
+				items: MEMOS.slice((page - 1) * perPage, page * perPage).map((row) => ({
+					...row,
+					alignments: [],
+				})),
+			});
+		}
 		if (url.pathname === '/api/columns' && req.method === 'GET') {
 			ok(200);
 			return json([{ name: 'collection', type: 'string' }]);
@@ -1196,6 +1245,13 @@ Bun.serve({
 		if (url.pathname === '/api/atlas/chunks/by-key' && req.method === 'POST') {
 			const { keys } = (await req.json()) as { keys: { doc_id: string; keys: number[] }[] };
 			ok(200);
+			if (dataset === 'lake~acme$memos')
+				return json({
+					rows: MEMOS.filter((m) =>
+						keys.some((k) => k.doc_id === m.memo_id && k.keys[0] === m.line),
+					).map((m) => ({ ...m, alignments: [] })),
+					key_fields: ['memo_id', 'line'],
+				});
 			// A recorded dataset's row, as the viewer answered it for that unit (`seeded-answers.json`).
 			const recorded = keys.map((k) =>
 				SEEDED.get(
@@ -1422,6 +1478,7 @@ Bun.serve({
 			});
 		}
 		if (url.pathname === '/me' && req.method === 'GET') {
+			registerName(who.sub, who.name);
 			ok(200);
 			return json({
 				sub: who.sub,

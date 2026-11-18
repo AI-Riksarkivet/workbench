@@ -20,7 +20,7 @@ from fastapi import APIRouter, Path, Query, status
 from pydantic import BaseModel, Field
 
 from annotator.api.dependencies import StoreDep
-from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, require_view, unseen_project
+from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, lacking, require_view, unseen_project
 from annotator.api.v1.responses import LegalEvent, ProjectDetail, ProjectListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.people import RECORDS_PERSON
@@ -36,7 +36,7 @@ from annotator.projects.models import (
 )
 from annotator.projects.ontology import RequestOntology
 from annotator.text import Text
-from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError
+from service_kit.exceptions import ConflictError, NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Authorizer, Grant, user_object
 from service_kit.naming import CONTROL_ID_PATTERN
@@ -99,7 +99,7 @@ async def create_annotation_project(
     allowed = await checker(user=subject, relation=CREATE_RELATION, obj=parent)
     if not allowed:
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_CREATE, AuditOutcome.FAILURE, subject=subject, resource=parent, relation=CREATE_RELATION)
-        raise ForbiddenError(f"{subject} lacks {CREATE_RELATION} on {parent}")
+        raise lacking(subject, CREATE_RELATION, parent)
 
     # Its creation is stamped by the store, on the database's clock.
     project = AnnotationProject(
@@ -176,7 +176,7 @@ async def list_projects(
     parent = f"org:{tenant}"
     if not await checker(user=subject, relation=LIST_RELATION, obj=parent):
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_LIST, AuditOutcome.FAILURE, subject=subject, resource=parent, relation=LIST_RELATION)
-        raise ForbiddenError(f"{subject} lacks {LIST_RELATION} on {parent}")
+        raise lacking(subject, LIST_RELATION, parent)
 
     projects = await store.list_projects(tenant)
     if can is not None and authz is not None:
@@ -238,7 +238,7 @@ async def update_project_ontology(
     obj = f"project:{project_id}"
     if not await checker(user=subject, relation=MANAGE_RELATION, obj=obj):
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_ONTOLOGY, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation=MANAGE_RELATION)
-        raise ForbiddenError(f"{subject} lacks {MANAGE_RELATION} on {obj}")
+        raise lacking(subject, MANAGE_RELATION, obj)
     if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
     try:
@@ -265,7 +265,7 @@ async def update_project_settings(
     obj = f"project:{project_id}"
     if not await checker(user=subject, relation=MANAGE_RELATION, obj=obj):
         audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_SETTINGS, AuditOutcome.FAILURE, subject=subject, resource=project_id, relation=MANAGE_RELATION)
-        raise ForbiddenError(f"{subject} lacks {MANAGE_RELATION} on {obj}")
+        raise lacking(subject, MANAGE_RELATION, obj)
     if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
     try:

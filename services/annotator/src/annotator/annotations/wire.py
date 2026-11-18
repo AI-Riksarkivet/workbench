@@ -50,7 +50,7 @@ async def annotations(
     if version is not None:
         past = await store.draft_at(task.task_id, version)
         if past is None:
-            raise NotFoundError(f"annotations version {version} not found: the history of task {task.task_id} does not keep it")
+            raise NotFoundError(f"annotations version {version} not found: this item's history does not keep it", extensions={"task": task.task_id})
         return _response(wire_table(unit, task.task_id, past), version)
     draft = await store.get_draft(task.task_id)
     return _response(wire_table(unit, task.task_id, draft), draft.revision if draft else 0)

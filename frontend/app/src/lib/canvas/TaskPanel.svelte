@@ -20,17 +20,20 @@
 		task,
 		permissions,
 		me,
+		browsing = false,
 		onchanged,
 	}: {
 		controller: AnnotatorController;
 		task: TaskDetail;
 		permissions: readonly string[];
 		me: string | null;
+		/** A browse pass: the panel says where the item stands, read-only, whatever its state, and offers nothing. */
+		browsing?: boolean;
 		/** The task after a transition, for the page to show. */
 		onchanged: (task: TaskDetail) => void;
 	} = $props();
 
-	const panel = $derived(panelState(task, permissions, me));
+	const panel = $derived(panelState(task, permissions, me, { browsing }));
 	const blockers = $derived(controller.blockers);
 	const ready = $derived(submittable(blockers));
 	const rowNumber = (index: number): string =>

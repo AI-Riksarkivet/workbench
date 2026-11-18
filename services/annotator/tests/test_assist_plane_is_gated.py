@@ -176,4 +176,4 @@ def test_an_allowed_caller_gets_proposals_for_its_tasks_unit_named_by_the_datase
     assert (
         refused["a-key-the-identity-cannot-name"].json()["detail"] == "unit key 'doc-1/0/0' has 3 part(s), and this dataset names a unit by 2: doc_id/chunk_id"
     )
-    assert refused["a-unit-the-task-does-not-hold"].json()["detail"] == "unit doc-1/1 of dataset None is not task t1's"
+    assert refused["a-unit-the-task-does-not-hold"].json()["detail"] == "unit doc-1/1 of dataset None is not this item's"

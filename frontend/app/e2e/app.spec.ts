@@ -96,7 +96,7 @@ test('the dataset list shows what the viewer lists, each a link to its page', as
 	await page.goto('/datasets?project=acme');
 
 	const list = page.getByRole('list', { name: 'Datasets in The lakehouse' });
-	await expect(list.getByRole('link')).toHaveCount(3);
+	await expect(list.getByRole('link')).toHaveCount(4);
 	const letters = list.getByRole('link', { name: /acme\$letters/ });
 	await expect(letters).toContainText('2 tables · 7 rows');
 	await expect(letters).toHaveAttribute('href', '/datasets/lake~acme%24letters?project=acme');

@@ -30,7 +30,7 @@ import {
 	type VoiceSimilarResponse,
 } from '@workbench/explorer-api';
 import { atlasRows } from '#lib/api/atlas.api.ts';
-import { documentsPage, searchHits, voiceHits } from '#lib/api/explore.api.ts';
+import { documentsPage, rowsPage, searchHits, voiceHits } from '#lib/api/explore.api.ts';
 import { hitKey } from './utils.ts';
 import { voiceSearch, type VoiceRequest } from './voice-search.svelte.ts';
 
@@ -190,6 +190,14 @@ class Explore {
 			: documentsPage({ dataset: this.dataset, page: this.docsPage, perPage: PER_PAGE });
 	}
 
+	/** The browse page's rows, read for the current dataset: what a dataset whose items are its rows (it declares no
+	 *  document, a corpus of texts) is browsed by, in place of its documents. */
+	rows() {
+		return this.dataset === null
+			? null
+			: rowsPage({ dataset: this.dataset, page: this.docsPage, perPage: PER_PAGE });
+	}
+
 	/** Open a browsed document in the player, from its start. */
 	openDocument(doc: Document): void {
 		const view = activeView();
@@ -323,7 +331,7 @@ class Explore {
 			return;
 		}
 		if (this.browsing) {
-			await this.documents()?.refresh();
+			await (activeView().itemsAreRows ? this.rows() : this.documents())?.refresh();
 			return;
 		}
 		await this.runSearch(this.spec);

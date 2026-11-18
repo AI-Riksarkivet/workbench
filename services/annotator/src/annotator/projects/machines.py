@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Final, NoReturn
+from typing import Final, Literal, NoReturn
 
+from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
 from annotator.projects.models import ProjectState, Task, TaskState, Transition
@@ -159,6 +160,11 @@ FROZEN_PROJECT_STATES: Final[frozenset[ProjectState]] = frozenset({ProjectState.
 EDIT_PERMISSION: Final[dict[TaskState, str]] = {TaskState.CLAIMED: "can_annotate", TaskState.IN_REVIEW: "can_review"}
 
 
+#: Why a person other than a claim's holder is refused an edit or a holder's event: the holder is a principal, kept out
+#: of the words a person reads (the HTTP layer names them in the problem's machine fields).
+HELD_BY_ANOTHER: Final = "another person holds this item"
+
+
 def edit_violation(*, state: TaskState, subject: str, assignee: str | None, submitted_by: str | None) -> str | None:
     """Why `subject` may not edit a task's shapes in `state`, or `None`.
 
@@ -167,7 +173,7 @@ def edit_violation(*, state: TaskState, subject: str, assignee: str | None, subm
     rule). Pure, like `identity_violation`, so the HTTP layer and the store apply the one rule.
     """
     if state is TaskState.CLAIMED and assignee != subject:
-        return f"the task is held by {assignee}"
+        return HELD_BY_ANOTHER
     if state is TaskState.IN_REVIEW and submitted_by == subject:
         return "a reviewer may not edit their own submission"
     return None
@@ -199,10 +205,75 @@ def identity_violation(
         return "a reviewer may not review their own submission"
     if event in LEASE_HOLDER_ONLY and assignee not in (None, subject):
         # §5.2 rule 2 — "even a manager". A manager who wants the task must `release` and re-`assign`.
-        return f"the task is held by {assignee}"
+        return HELD_BY_ANOTHER
     if event in HOLDER_OR_MANAGER and assignee not in (None, subject) and not subject_can_manage:
-        return f"the task is held by {assignee} — releasing it needs can_manage"
+        return f"{HELD_BY_ANOTHER} — releasing it needs can_manage"
     return None
+
+
+class Refusal(BaseModel):
+    """Why one person may not fire one event on one task now: which rule refused it, and the sentence a person reads."""
+
+    #: `system`: no principal fires it; `illegal`: no such edge from the state; `permission`: the caller lacks it;
+    #: `frozen`: the project is past labeling; `identity`: a rule of who may (§5.2); `replica`: they hold, held or worked
+    #: another replica of the item.
+    kind: Literal["system", "illegal", "permission", "frozen", "identity", "replica"]
+    reason: str
+    #: The relation the caller lacks, for `permission`.
+    permission: str | None = None
+
+
+#: Why the caller may not take a replica of an item another replica of which they hold, held or worked.
+ANOTHER_REPLICA: Final = "one replica per annotator per group: you hold, held or worked another replica of this item"
+
+
+class CallerFacts(BaseModel):
+    """What the rule of who may fire what reads of the caller, beside the task's own rows: the project permissions they
+    hold, whether the project is past labeling, and another replica of the task's group they hold, held or worked
+    (`AnnotatorStore.worked_replicas`)."""
+
+    subject: str
+    held: frozenset[str]
+    #: The project's state when it is past labeling (`FROZEN_PROJECT_STATES`), else `None`.
+    frozen: ProjectState | None = None
+    #: A replica of the task's group, other than the task, the caller holds, held or worked, or `None`.
+    other_replica: str | None = None
+
+
+def event_refusal(event: str, task: Task, caller: CallerFacts) -> Refusal | None:
+    """Why ``caller`` may not fire ``event`` on ``task`` as it reads now (a lapsed claim released), or `None`.
+
+    THE ONE RULE of who may fire what: the task door refuses by it (`tasks.fire_task_event`) and every listing offers by
+    it (`caller_events`), so what a page offers is what the door accepts. The store applies its identity and replica
+    halves again inside the transaction holding the task's row lock, which is what decides a race.
+
+    ``assign`` is judged for the CALLER (a manager may distribute work): whether its RECIPIENT holds, held or worked
+    another replica of the item is not known until they are named, and the store refuses that at the door, 409, per item.
+    """
+    try:
+        _target, permission = task_transition(task.state, event)
+    except IllegalTransition as exc:
+        return Refusal(kind="illegal", reason=str(exc))
+    if permission is None:
+        return Refusal(kind="system", reason=f"{event} is caused by the system, not by a principal, and cannot be fired over HTTP")
+    if permission not in caller.held:
+        return Refusal(kind="permission", reason=f"you lack {permission} on this item", permission=permission)
+    if caller.frozen is not None:
+        return Refusal(kind="frozen", reason=f"this project is {caller.frozen} — {event} is rejected; provenance is frozen with the published artifact")
+    violation = identity_violation(
+        event=event, subject=caller.subject, assignee=task.assignee, submitted_by=task.submitted_by, subject_can_manage="can_manage" in caller.held
+    )
+    if violation is not None:
+        return Refusal(kind="identity", reason=violation)
+    if event == "claim" and caller.other_replica is not None:
+        return Refusal(kind="replica", reason=ANOTHER_REPLICA)
+    return None
+
+
+def caller_events(task: Task, caller: CallerFacts) -> list[dict[str, str]]:
+    """The edges out of the task's state ``caller`` may fire on it now: those `event_refusal` refuses nothing. What every
+    surface offers a person, so none offers what the door would refuse."""
+    return [event for event in legal_task_events(task.state) if event_refusal(event["event"], task, caller) is None]
 
 
 def project_transition(state: ProjectState, event: str) -> tuple[ProjectState, str | None]:

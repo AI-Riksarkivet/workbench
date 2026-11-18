@@ -26,6 +26,7 @@ export interface CorpusRows {
 import {
 	DraftImportSchema,
 	DraftSchema,
+	CandidatesSchema,
 	MemberListSchema,
 	ProjectDetailSchema,
 	ProjectListSchema,
@@ -33,6 +34,7 @@ import {
 	SendReceiptSchema,
 	TaskDetailSchema,
 	TaskListingSchema,
+	type Candidates,
 	type Draft,
 	type DraftImport,
 	type MemberList,
@@ -77,6 +79,13 @@ export const fetchMembers = query(
 	'unchecked',
 	({ projectId }: { projectId: string }): Promise<ApiResult<MemberList>> =>
 		readJSON(at(`/projects/${enc(projectId)}/members`), MemberListSchema, UPSTREAM),
+);
+
+/** The people a manager may grant a role on this project to by name; anyone else is granted by their principal. */
+export const fetchCandidates = query(
+	'unchecked',
+	({ projectId }: { projectId: string }): Promise<ApiResult<Candidates>> =>
+		readJSON(at(`/projects/${enc(projectId)}/members/candidates`), CandidatesSchema, UPSTREAM),
 );
 
 /** One page of a project's items as the annotator filters, sorts and pages them (`GET /projects/{id}/tasks`), with

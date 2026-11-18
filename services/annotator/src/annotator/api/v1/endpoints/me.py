@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import Final, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from annotator.api.security import AuthorizerDep, CurrentToken, SettingsDep
-from annotator.people import display_name
+from annotator.people import display_name, register_person
 
 
 router = APIRouter(tags=["identity"])
@@ -38,8 +38,9 @@ LOCAL_ORGANISATION: Final = "local"
 
 
 @router.get("/me")
-async def me(caller: CurrentToken, authz: AuthorizerDep, settings: SettingsDep) -> Me:
-    """The caller and their organisations.
+async def me(request: Request, caller: CurrentToken, authz: AuthorizerDep, settings: SettingsDep) -> Me:
+    """The caller and their organisations, and the caller's name registered (`people.register_person`): the app reads
+    this once each time a person signs in, which is what lets everyone else see them by name before they write.
 
     With authentication off — only ever with `WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED`, which the settings refuse beside
     OIDC — the person is anonymous, holds every role (authorization is off too) and administers `LOCAL_ORGANISATION`.
@@ -49,6 +50,7 @@ async def me(caller: CurrentToken, authz: AuthorizerDep, settings: SettingsDep) 
         local = [OrgStanding(org=LOCAL_ORGANISATION, role="admin")] if settings.insecure_allow_unauthenticated else []
         return Me(sub="anon", estate_admin=authz is None, orgs=local)
     claims = caller.claims.model_extra or {}
+    await register_person(request, caller)
     admin: list[str] = []
     member: list[str] = []
     if authz is not None:

@@ -20,7 +20,15 @@
 	 */
 	import { untrack } from 'svelte';
 	import { corpusRows, fetchProject, fetchTask, pageTasks } from '#lib/api/projects.api.ts';
-	import { passParams, readItemQuery, readPass, writeItemQuery } from '#lib/projects/item-query.ts';
+	import {
+		passParams,
+		passWindow,
+		readItemQuery,
+		readPass,
+		readPassCount,
+		withPassCount,
+		writeItemQuery,
+	} from '#lib/projects/item-query.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
 	import { documentParts, documentTurns } from '#lib/api/timeline.api.ts';
 	import { itemName } from '#lib/projects/item-name.ts';
@@ -43,6 +51,7 @@
 	import { readOnlyReason } from '#lib/canvas/editability.ts';
 	import {
 		claimedStream,
+		neighbour,
 		passHref,
 		streamPosition,
 		taskCanvasHref,
@@ -67,12 +76,18 @@
 	const task = $derived(changed?.task_id === taskId ? changed : answer?.ok ? answer.data : null);
 	function ontaskchange(next: TaskDetail): void {
 		// A review pass moves on once the item leaves review: to the next item of the walk as it was before the verdict
-		// (the item has left the filter, so the walk read again would not hold its neighbours), or, past the last, back
-		// to the project's Review tab.
-		const moveTo =
+		// (the item has left the filter, so the walk read again would not hold its neighbours), one more verdict counted
+		// in the address, or, past the last, back to the project's Review tab.
+		const after =
 			pass === 'review' && next.state !== 'in_review'
-				? (stream.nextHref ?? stream.prevHref ?? reviewDoneHref)
-				: null;
+				? (neighbour(walkItems, taskId, 1) ?? neighbour(walkItems, taskId, -1))
+				: undefined;
+		const moveTo =
+			after === undefined
+				? null
+				: after === null
+					? reviewDoneHref
+					: link(hrefWith(passCount.done + 1)(after, projectId));
 		changed = next;
 		void taskRead.refresh().then(() => (changed = null));
 		void walkRead.refresh();
@@ -115,18 +130,33 @@
 			: (walkListing?.details ?? []),
 	);
 	const passFilter = $derived(writeItemQuery({ ...passQuery, page: 1 }, new URLSearchParams()));
-	const hrefOf = (t: StreamTask, project: string): string =>
-		pass === 'label' ? taskCanvasHref(t, project) : passHref(t, project, pass, passFilter);
+	// A review pass counts where the reviewer is in it (`readPassCount`): how many waited when it started, and how many
+	// they have judged since, carried from item to item in the address.
+	const passCount = $derived(readPassCount(page.url.searchParams));
+	const hrefWith =
+		(done: number) =>
+		(t: StreamTask, project: string): string =>
+			pass === 'label'
+				? taskCanvasHref(t, project)
+				: passHref(
+						t,
+						project,
+						pass,
+						pass === 'review' ? withPassCount(passFilter, { ...passCount, done }) : passFilter,
+					);
+	const hrefOf = (t: StreamTask, project: string): string => hrefWith(passCount.done)(t, project);
 	const stream = $derived(
 		streamPosition(
 			walkItems,
 			taskId,
 			projectId,
 			link,
-			{
-				offset: walkListing?.offset ?? 0,
-				total: pass === 'label' ? walkItems.length : (walkListing?.matched ?? 0),
-			},
+			pass === 'review'
+				? passWindow(passCount, walkListing?.offset ?? 0, walkListing?.matched ?? 0)
+				: {
+						offset: walkListing?.offset ?? 0,
+						total: pass === 'label' ? walkItems.length : (walkListing?.matched ?? 0),
+					},
 			hrefOf,
 		),
 	);

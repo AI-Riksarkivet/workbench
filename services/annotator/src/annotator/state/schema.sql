@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 -- The classes the draft's shapes carry, for the data manager's filter by class (generated as the task's columns are).
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS labels jsonb GENERATED ALWAYS AS (jsonb_path_query_array(document, '$$.shapes[*].label')) STORED;
+-- Whether the draft holds any work (a shape or a link): what a browse of the labeled items filters on.
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS has_work boolean
+    GENERATED ALWAYS AS (jsonb_path_exists(document, '$$.shapes[0]') OR jsonb_path_exists(document, '$$.links[0]')) STORED;
 
 -- Each task's last saves: who saved each revision and when, how many shapes it left, and what undoes it (the shapes as
 -- they were before it for every shape it changed or removed, the ids it added, and the links before it when it changed

@@ -345,21 +345,32 @@ def test_send_captures_review_required_and_the_lease_from_the_project(wired: Any
 # --------------------------------------------------------------------------------------------------
 
 
-def test_details_listing_carries_each_tasks_document_and_legal_events(wired: Any) -> None:
-    """The plain listing is task id → state; the queue needs assignee, lease and media and the ACTIONS, and each task's
-    `legal_events` comes from the machine tables."""
-    door = wired({"can_view"})
-    _seed(door, ProjectState.LABELING, tasks={"t1": TaskState.CLAIMED, "t2": TaskState.IN_REVIEW})
+def test_details_listing_carries_each_tasks_document_and_what_the_caller_may_fire_on_it(wired: Any) -> None:
+    """The plain listing is task id → state; the queue needs assignee, lease and media and the ACTIONS: each task's
+    `legal_events` is what THIS caller may fire on it now, the edges out of its state that their role allows and no
+    identity rule refuses them. A reviewer who is no manager is offered the verdicts on someone else's submission and
+    none on their own, nothing on a claim another annotator holds, the holder's own events on their claim, and the claim
+    of an item nobody holds."""
+    door = wired({"can_view", "can_claim", "can_annotate", "can_review"})
+    _seed(door, ProjectState.LABELING, tasks={"t1": TaskState.CLAIMED, "t2": TaskState.IN_REVIEW, "t3": TaskState.UNASSIGNED})
+    door.store(lambda s: s.send_tasks("p1", [_task("t4"), _task("t5")]))
+    door.store(lambda s: _drive(s, "t4", TaskState.IN_REVIEW, annotator=SUBJECT))
+    door.store(lambda s: _drive(s, "t5", TaskState.CLAIMED, annotator=SUBJECT))
 
     r = door.client.get("/projects/p1/tasks", params={"include": "details"})
 
     assert r.status_code == 200, r.text
     body = r.json()
     by_id = {d["task_id"]: d for d in body["details"]}
-    assert (list(by_id), body["missing"]) == (["t1", "t2"], [])
-    assert (by_id["t1"]["assignee"], by_id["t2"]["submitted_by"]) == ("gina", "gina")
-    assert {e["event"] for e in by_id["t1"]["legal_events"]} == {"save_draft", "submit", "release", "skip"}
-    assert {e["event"] for e in by_id["t2"]["legal_events"]} == {"accept", "fix_and_accept", "request_changes"}
+    assert (list(by_id), body["missing"]) == (["t1", "t2", "t3", "t4", "t5"], [])
+    assert (by_id["t1"]["assignee"], by_id["t2"]["submitted_by"], by_id["t4"]["submitted_by"]) == ("gina", "gina", SUBJECT)
+    assert {task_id: sorted(e["event"] for e in d["legal_events"]) for task_id, d in by_id.items()} == {
+        "t1": [],
+        "t2": ["accept", "fix_and_accept", "request_changes"],
+        "t3": ["claim"],
+        "t4": [],
+        "t5": ["release", "save_draft", "skip", "submit"],
+    }
 
 
 def test_details_on_a_published_project_carry_no_task_events(wired: Any) -> None:

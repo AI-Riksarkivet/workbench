@@ -56,9 +56,27 @@
 	const held = $derived(new Set(detail?.permissions ?? []));
 	const classNames = $derived((detail?.project.ontology.classes ?? []).map((c) => c.name));
 
+	// The open tab's panel, which holds its own reads (a page of items, a list), read again with the page's.
+	let manager = $state<DataManager | undefined>();
+	let browser = $state<BrowsePanel | undefined>();
+	let reviewer = $state<ReviewPanel | undefined>();
+
+	/** Read again everything the page shows: the project, each person's part, and the open tab's own reads. */
 	function refresh(): void {
 		void detailRead.refresh();
 		void contributorsRead.refresh();
+		manager?.reload();
+		browser?.reload();
+		reviewer?.reload();
+	}
+
+	// Coming back to the window (its focus, or the browser tab shown again) reads the page again, so what another
+	// person did meanwhile is not shown stale; a burst of both events reads once. Live updates are a later step.
+	let returnedAt = 0;
+	function returned(): void {
+		if (document.visibilityState !== 'visible' || Date.now() - returnedAt < 1000) return;
+		returnedAt = Date.now();
+		refresh();
 	}
 
 	// THE ADDRESS IS THE VIEW: the tab is `?tab=`, and each tab's filters ride beside it (`item-query.ts`). Changing tab
@@ -142,6 +160,9 @@
 		else if (answer.status === 401) signInFailed = !signInAgainOnce(returnTo);
 	});
 </script>
+
+<svelte:window onfocus={returned} />
+<svelte:document onvisibilitychange={returned} />
 
 <!-- The tab names the project once it is read, never by its id: a screen reader announces the title on arrival. -->
 <svelte:head><title>{detail ? titleOf(name, 'Projects') : titleOf('Projects')}</title></svelte:head>
@@ -253,6 +274,7 @@
 							people={contributors?.people ?? {}}
 						/>
 						<DataManager
+							bind:this={manager}
 							{projectId}
 							permissions={detail.permissions}
 							droppable={stillMutable && held.has('can_manage')}
@@ -270,6 +292,7 @@
 				<Tabs.Content value="browse" class={TAB_CLASS}>
 					{#if tab === 'browse'}
 						<BrowsePanel
+							bind:this={browser}
 							{projectId}
 							permissions={detail.permissions}
 							{me}
@@ -282,6 +305,7 @@
 				<Tabs.Content value="review" class={TAB_CLASS}>
 					{#if tab === 'review'}
 						<ReviewPanel
+							bind:this={reviewer}
 							{projectId}
 							permissions={detail.permissions}
 							{me}

@@ -20,6 +20,8 @@ subject and the checker's own answer, and stated to it like the subject itself, 
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated, Final
 
@@ -28,7 +30,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from annotator.api.dependencies import StoreDep, get_store
-from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep, require_view, unseen_task
+from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep, lacking, require_view, unseen_task
 from annotator.api.v1.responses import DraftImport, LegalEvent, TaskDetail
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.people import RECORDS_PERSON
@@ -36,19 +38,20 @@ from annotator.projects.imports import shapes_from_ipc
 from annotator.projects.machines import (
     EDIT_PERMISSION,
     FROZEN_PROJECT_STATES,
-    HOLDER_OR_MANAGER,
     TASK_EDGES,
+    CallerFacts,
     IllegalTransition,
+    Refusal,
+    caller_events,
     edit_violation,
+    event_refusal,
     identity_violation,
-    legal_task_events,
-    task_transition,
 )
-from annotator.projects.models import Draft, Link, Shape, Task, TaskState
+from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Task, TaskState
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import principals_in
 from annotator.text import Id, Text
-from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from service_kit.exceptions import ConflictError, DomainError, ForbiddenError, NotFoundError, ValidationError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Grant
 from service_kit.governed.principal import is_principal
@@ -99,7 +102,7 @@ async def _authorize(checker: Checker, subject: str, permission: str, task: Task
     edge = Grant(user=f"project:{task.project_id}", relation="project", object=obj)
     if not await checker(user=subject, relation=permission, obj=obj, contextual=[edge]):
         audit(what, AuditOutcome.FAILURE, subject=subject, resource=obj, relation=permission, **context)
-        raise ForbiddenError(f"{subject} lacks {permission} on {obj}")
+        raise lacking(subject, permission, obj)
 
 
 async def viewed_task(store: AnnotatorStore, task_id: str, checker: Checker, subject: str) -> Task:
@@ -126,7 +129,10 @@ async def require_work_readable(task: Task, checker: Checker, subject: str) -> N
     edge = Grant(user=f"project:{task.project_id}", relation="project", object=f"task:{task.task_id}")
     if not await checker(user=subject, relation="can_review", obj=f"task:{task.task_id}", contextual=[edge]):
         audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=f"task:{task.task_id}", relation="can_review")
-        raise ForbiddenError(f"{subject} may not read replica {task.task_id}'s work: only its annotator, or someone who may review it")
+        raise ForbiddenError(
+            "you may not read this replica's work: only its annotator, or someone who may review it",
+            extensions={"principal": subject, "task": task.task_id},
+        )
 
 
 async def _refuse_if_frozen(store: AnnotatorStore, task: Task, event: str) -> None:
@@ -134,7 +140,10 @@ async def _refuse_if_frozen(store: AnnotatorStore, task: Task, event: str) -> No
     store answers it again on the project row its transaction holds."""
     project = await store.get_project(task.project_id)
     if project is not None and project.state in FROZEN_PROJECT_STATES:
-        raise ConflictError(f"project {task.project_id} is {project.state} — {event} is rejected; provenance is frozen with the published artifact")
+        raise ConflictError(
+            f"this project is {project.state} — {event} is rejected; provenance is frozen with the published artifact",
+            extensions={"project": task.project_id},
+        )
 
 
 async def require_editable(store: AnnotatorStore, task: Task, checker: Checker, subject: str, what: AnnotatorAuditAction) -> None:
@@ -147,13 +156,13 @@ async def require_editable(store: AnnotatorStore, task: Task, checker: Checker, 
     """
     permission = EDIT_PERMISSION.get(task.state)
     if permission is None:
-        raise ConflictError(f"task {task.task_id} is {task.state} — its shapes take edits only while it is claimed or in review")
+        raise ConflictError(f"this item is {task.state} — its shapes take edits only while it is claimed or in review", extensions={"task": task.task_id})
     await _refuse_if_frozen(store, task, "save_draft")
     await _authorize(checker, subject, permission, task, what)
     violation = edit_violation(state=task.state, subject=subject, assignee=task.assignee, submitted_by=task.submitted_by)
     if violation is not None:
         audit(what, AuditOutcome.FAILURE, subject=subject, resource=f"task:{task.task_id}", reason="identity_bound")
-        raise ForbiddenError(violation)
+        raise ForbiddenError(violation, extensions=_identity_fields(task))
 
 
 @router.post("/{task_id}/events", status_code=status.HTTP_200_OK)
@@ -171,37 +180,20 @@ async def fire_task_event(
     if payload.event in SYSTEM_ONLY_EVENTS:
         raise ForbiddenError(f"{payload.event} is caused by the system, not by a principal, and cannot be fired over HTTP")
 
-    try:
-        _target, permission = task_transition(current.state, payload.event)
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
-    if permission is None:  # unreachable via SYSTEM_ONLY_EVENTS, kept so a new None edge fails closed
-        raise ForbiddenError(f"{payload.event} requires no principal permission and is not exposed")
-
-    await _authorize(checker, subject, permission, current, AnnotatorAuditAction.TASK_TRANSITION, event=payload.event)
+    # THE ONE RULE (`machines.event_refusal`), read from the same facts every listing offers by (`caller_facts`), so the
+    # door refuses exactly what no page offered. The store judges its identity and replica halves again under the lock,
+    # and judges an `assign`'s RECIPIENT, whom no offer can know.
+    [facts] = await caller_facts(store, checker, subject, await store.get_project(current.project_id), [current])
+    refusal = event_refusal(payload.event, current, facts)
+    if refusal is not None:
+        raise _refused(refusal, current, facts, payload.event)
     # An assignee is the subject the assigned person's own token will prove ([[LH-063]]): with authentication on that
     # is a principal, so a bare name, which no token proves, is refused rather than stored for nobody to claim.
     if settings.oidc_enabled and payload.assignee is not None and not is_principal(payload.assignee):
         raise ValidationError(f"assignee {payload.assignee!r} is not a principal: '<idp-id>~<subject>'")
-    await _refuse_if_frozen(store, current, payload.event)
-
-    # §5.2 — `release` is the documented escape hatch for a task pinned to someone unavailable, so a manager may take
-    # it. Resolved for EVERY release, not only when this read shows a foreign holder: the store re-checks the rule
-    # against the holder of the moment, and needs the answer then.
-    subject_can_manage = False
-    if payload.event in HOLDER_OR_MANAGER:
-        subject_can_manage = await checker(user=subject, relation="can_manage", obj=f"project:{current.project_id}")
-
-    violation = identity_violation(
-        event=payload.event,
-        subject=subject,
-        assignee=current.assignee,
-        submitted_by=current.submitted_by,
-        subject_can_manage=subject_can_manage,
-    )
-    if violation is not None:
-        audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.FAILURE, event=payload.event, subject=subject, resource=task_id, reason="identity_bound")
-        raise ForbiddenError(violation)
+    # §5.2 — `release` is the documented escape hatch for a task pinned to someone unavailable, so a manager may take it:
+    # the store re-checks the rule against the holder of the moment, and needs the answer then.
+    subject_can_manage = "can_manage" in facts.held
 
     try:
         # `actor` is always the VERIFIED caller; `assignee` is the recipient a manager names on `assign`.
@@ -219,15 +211,72 @@ async def fire_task_event(
         raise ConflictError(str(exc)) from exc
 
     audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.SUCCESS, event=payload.event, subject=subject, resource=task_id)
-    return await with_legal_events(store, updated)
+    return await with_legal_events(store, updated, checker, subject)
 
 
-async def with_legal_events(store: AnnotatorStore, task: Task) -> TaskDetail:
-    """The task with the edges out of its state, as the queue's details carry them: none while its project is past
-    labeling, when every transition is refused (§5.2 rule 5). The canvas offers exactly these, and the door decides."""
-    project = await store.get_project(task.project_id)
-    frozen = project is not None and project.state in FROZEN_PROJECT_STATES
-    events = [] if frozen else [LegalEvent.model_validate(e) for e in legal_task_events(task.state)]
+def _identity_fields(task: Task) -> dict[str, str]:
+    """The machine fields of an identity refusal: the item, and the principal holding it, kept out of the prose."""
+    return {"task": task.task_id} | ({"holder": task.assignee} if task.assignee else {})
+
+
+#: The project permissions a task's edges are gated on (`TASK_EDGES`): what `events_for` asks the checker for.
+_EDGE_PERMISSIONS: Final[tuple[str, ...]] = tuple(sorted({permission for _target, permission in TASK_EDGES.values() if permission is not None}))
+
+
+async def caller_facts(store: AnnotatorStore, checker: Checker, subject: str, project: AnnotationProject | None, tasks: Sequence[Task]) -> list[CallerFacts]:
+    """What the one rule reads of ``subject`` for each of ``tasks`` (one project's): the project permissions they hold
+    (asked once: a task's relations are its project's, `model.fga`), the project's state when it is past labeling, and
+    whether they hold, held or worked another replica of each task's group (one statement for the whole page)."""
+    if project is None:
+        return [CallerFacts(subject=subject, held=frozenset()) for _ in tasks]
+    obj = f"project:{project.project_id}"
+    answers = await asyncio.gather(*(checker(user=subject, relation=permission, obj=obj) for permission in _EDGE_PERMISSIONS))
+    held = frozenset(permission for permission, allowed in zip(_EDGE_PERMISSIONS, answers, strict=True) if allowed)
+    frozen = project.state if project.state in FROZEN_PROJECT_STATES else None
+    worked = await store.worked_replicas(project.project_id, subject) if any(t.replica_of for t in tasks) else {}
+    return [
+        CallerFacts(
+            subject=subject, held=held, frozen=frozen, other_replica=min(worked.get(t.replica_of, set()) - {t.task_id}, default=None) if t.replica_of else None
+        )
+        for t in tasks
+    ]
+
+
+def _refused(refusal: Refusal, task: Task, facts: CallerFacts, event: str) -> DomainError:
+    """A refusal of the one rule as the door answers it: 403 for who the caller is (their role, an identity rule), 409
+    for where the item is (no such edge, a frozen project, another replica already theirs); audited when it is about who
+    they are."""
+    obj, subject = f"task:{task.task_id}", facts.subject
+    match refusal.kind:
+        case "replica":
+            return ConflictError(refusal.reason, extensions={"principal": subject, "replica": facts.other_replica or "", "group": task.replica_of or ""})
+        case "permission":
+            permission = refusal.permission or ""
+            audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.FAILURE, subject=subject, resource=obj, relation=permission, event=event)
+            return lacking(subject, permission, obj)
+        case "identity":
+            audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.FAILURE, event=event, subject=subject, resource=task.task_id, reason="identity_bound")
+            return ForbiddenError(refusal.reason, extensions=_identity_fields(task))
+        case "system":
+            return ForbiddenError(refusal.reason)
+        case "frozen":
+            return ConflictError(refusal.reason, extensions={"project": task.project_id})
+        case "illegal":
+            return ConflictError(refusal.reason)
+
+
+async def events_for(store: AnnotatorStore, checker: Checker, subject: str, project: AnnotationProject | None, tasks: Sequence[Task]) -> list[list[LegalEvent]]:
+    """What ``subject`` may fire on each of ``tasks`` (one project's) now, in order: the edges out of each task's state
+    the one rule refuses them nothing (`machines.caller_events`, the rule the door refuses by), read from the facts of
+    `caller_facts`. Every surface offers exactly these. An `assign` is offered to who may distribute work; its RECIPIENT
+    is judged when named, and refused 409, per item, when they hold, held or worked another replica of it."""
+    facts = await caller_facts(store, checker, subject, project, tasks)
+    return [[LegalEvent.model_validate(e) for e in caller_events(task, mine)] for task, mine in zip(tasks, facts, strict=True)]
+
+
+async def with_legal_events(store: AnnotatorStore, task: Task, checker: Checker, subject: str) -> TaskDetail:
+    """The task with what the caller may fire on it now (`events_for`), as the queue's details carry them."""
+    [events] = await events_for(store, checker, subject, await store.get_project(task.project_id), [task])
     return TaskDetail.model_validate(
         {**task.model_dump(), "legal_events": events, "people": await store.names_of(principals_in([task.model_dump(mode="json")]))}
     )
@@ -235,9 +284,9 @@ async def with_legal_events(store: AnnotatorStore, task: Task) -> TaskDetail:
 
 @router.get("/{task_id}")
 async def get_task(task_id: TaskId, checker: CheckerDep, subject: CurrentSubject, store: StoreDep) -> TaskDetail:
-    """Read one task, with the edges out of its state. The task is fetched FIRST to learn which project to authorize
-    against, then the check runs before anything is returned — the fetch is not the disclosure, the return is."""
-    return await with_legal_events(store, await viewed_task(store, task_id, checker, subject))
+    """Read one task, with what the caller may fire on it now. The task is fetched FIRST to learn which project to
+    authorize against, then the check runs before anything is returned — the fetch is not the disclosure, the return is."""
+    return await with_legal_events(store, await viewed_task(store, task_id, checker, subject), checker, subject)
 
 
 @router.post("/{task_id}/import", status_code=status.HTTP_200_OK)
@@ -261,11 +310,11 @@ async def import_annotations(
     await _authorize(checker, subject, "can_annotate", current, AnnotatorAuditAction.TASK_IMPORT)
     await _refuse_if_frozen(store, current, "import")
     if current.state is not TaskState.CLAIMED:
-        raise ConflictError(f"task {task_id} is {current.state} — annotations can only be imported into a claimed task")
+        raise ConflictError(f"this item is {current.state} — annotations can only be imported into a claimed one", extensions={"task": task_id})
     # An import IS a draft write, so it is refused by the same rule under the same event name.
     violation = identity_violation(event="save_draft", subject=subject, assignee=current.assignee, submitted_by=current.submitted_by)
     if violation is not None:
-        raise ForbiddenError(violation)
+        raise ForbiddenError(violation, extensions=_identity_fields(current))
 
     existing = await store.get_draft(task_id)
     taken = {s.shape_id for s in existing.shapes} if existing else set()

@@ -2,8 +2,9 @@
 
 The schema is applied at every start (`annotator.state.store.apply_schema`), so an upgrade is that apply over rows an
 earlier release wrote: the listing's columns are generated from each document by Postgres, so the rows already there get
-them as the columns are added, with no step that rewrites a document. Driven on the real PostgreSQL fixture: the previous
-release's schema (`fixtures/schema_before_the_data_manager.sql`, as the release before this one shipped it) and documents
+them as the columns are added, with no step that rewrites a document. Driven on the real PostgreSQL fixture: each earlier
+release's schema (`fixtures/schema_before_the_data_manager.sql`, the release before the data manager, and
+`fixtures/schema_at_the_data_manager.sql`, the data manager's own, before a draft said whether it holds work) and documents
 shaped as its code wrote them (no `sent_at`; one item never touched, so with no transition at all; one whose instant
 carries no offset), then this release's schema applied twice, under a session TimeZone far from UTC, then the listing
 over HTTP.
@@ -22,6 +23,7 @@ from string import Template
 from typing import Any
 
 import psycopg
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg import sql
@@ -36,7 +38,7 @@ from annotator.text import MAX_ID
 from tests.postgres import StateDatabase
 
 
-PREVIOUS = Path(__file__).parent / "fixtures" / "schema_before_the_data_manager.sql"
+FIXTURES = Path(__file__).parent / "fixtures"
 SUBMITTED = "2026-11-10T09:30:00Z"
 LONG_ID = "y" * (MAX_ID + 904)
 
@@ -72,8 +74,8 @@ def _task(task_id: str, state: str, **over: Any) -> dict[str, Any]:
     }
 
 
-def _fill_as_the_previous_release(database: StateDatabase) -> None:
-    schema = Template(PREVIOUS.read_text()).substitute(
+def _fill_as_the_previous_release(database: StateDatabase, previous: Path) -> None:
+    schema = Template(previous.read_text()).substitute(
         project_states=", ".join(f"'{s}'" for s in ProjectState), task_states=", ".join(f"'{s}'" for s in TaskState)
     )
     # Past every bound a request is now held to (a class's colour, a source's keys, a shape id, a link's name), as an
@@ -111,12 +113,16 @@ def _fill_as_the_previous_release(database: StateDatabase) -> None:
                 (task["task_id"], task["state"], json.dumps(task)),
             )
         conn.execute("INSERT INTO drafts (task_id, revision, document) VALUES ('b-submitted', 1, %s)", (json.dumps(draft),))
+        # A draft whose every shape was taken away again: it holds no work.
+        emptied = {**draft, "task_id": "c-no-offset", "author": "dex~bo", "links": [], "shapes": []}
+        conn.execute("INSERT INTO drafts (task_id, revision, document) VALUES ('c-no-offset', 2, %s)", (json.dumps(emptied),))
 
 
+@pytest.mark.parametrize("previous", ["schema_before_the_data_manager.sql", "schema_at_the_data_manager.sql"])
 def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_counted_and_sorted(
-    state_database: StateDatabase, state_settings: AnnotatorSettings, state_app: Callable[..., FastAPI]
+    previous: str, state_database: StateDatabase, state_settings: AnnotatorSettings, state_app: Callable[..., FastAPI]
 ) -> None:
-    _fill_as_the_previous_release(state_database)
+    _fill_as_the_previous_release(state_database, FIXTURES / previous)
 
     async def allow(**_kw: object) -> bool:
         return True
@@ -139,6 +145,7 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
         by_submitted = ids(sort="submitted", order="desc")
         by_sent = ids(sort="sent")
         seals = ids(label="seal")
+        worked = ids(has_work=True)
         sent_this_year = ids(date="sent", since="2026-01-01T00:00:00Z")
         submitted_that_day = ids(date="submitted", since="2026-11-10T00:00:00Z", until="2026-11-11T00:00:00Z")
         listed = client.get("/projects", params={"tenant": "acme"})
@@ -147,9 +154,10 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
 
     assert (whole["total"], whole["matched"], {k: v for k, v in whole["counts"].items() if v}) == (3, 3, {"unassigned": 1, "in_review": 2})
     assert [d.get("sent_at") for d in whole["details"]] == [None, None, None], "an item the previous release sent records no send instant"
-    assert (by_submitted, by_sent, seals, sent_this_year, submitted_that_day) == (
+    assert (by_submitted, by_sent, seals, worked, sent_this_year, submitted_that_day) == (
         ["b-submitted", "a-untouched", "c-no-offset"],
         ["a-untouched", "b-submitted", "c-no-offset"],
+        ["b-submitted"],
         ["b-submitted"],
         [],
         ["b-submitted"],

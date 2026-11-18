@@ -232,8 +232,37 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
  *  session it keeps. */
 export const REAUTHENTICATE = { param: 'prompt', value: 'login' } as const;
 
-/** Send the browser to the issuer; it comes back to `/auth/callback` and then to `returnTo`. */
-export async function login(returnTo: string, { reauthenticate = false } = {}): Promise<void> {
+/** The sign-in this page has sent the browser on, while it is in flight. */
+let leaving: Promise<void> | null = null;
+
+/** Send the browser to the issuer; it comes back to `/auth/callback` and then to `returnTo`.
+ *
+ *  ONE sign-in in flight per page: a second call while the first is leaving (a read refused 401 while the session's
+ *  own renewal gives up, the canvas's save and its page at once) joins the first. Each call would otherwise store a
+ *  PKCE state of its own and redirect again, and the second, finding the first's sign-in pending, would ask the token
+ *  endpoint about the client with a code no provider issued (`clientUnknown`), which a provider answers 400.
+ *
+ *  The sign-in is in flight until its redirect settles: oidc-client-ts's redirect resolves on `pageshow`, when the
+ *  person comes back by Back to this page restored from the back/forward cache, and rejects when it fails. Either way
+ *  the next call starts a new one; so does a page restored from the cache (`pageshow` with `persisted`), whatever the
+ *  library does. */
+export function login(returnTo: string, { reauthenticate = false } = {}): Promise<void> {
+	if (leaving) return leaving;
+	const started = redirect(returnTo, reauthenticate).finally(() => {
+		if (leaving === started) leaving = null;
+	});
+	leaving = started;
+	return started;
+}
+
+/** A page restored from the back/forward cache has no sign-in in flight: the one it sent was abandoned by Back. */
+function restored(event: PageTransitionEvent): void {
+	if (event.persisted) leaving = null;
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function')
+	window.addEventListener('pageshow', restored);
+
+async function redirect(returnTo: string, reauthenticate: boolean): Promise<void> {
 	await initAuth();
 	if (!manager) return;
 	// A sign-in this tab started that never came back is the one case worth asking the provider about its client: it
@@ -246,6 +275,7 @@ export async function login(returnTo: string, { reauthenticate = false } = {}): 
 		}
 	}
 	markSignIn(true);
+	// Settles only when the browser did not leave, or came back to this page by Back (see `login`).
 	await manager.signinRedirect({
 		state: { returnTo },
 		...(reauthenticate ? { prompt: REAUTHENTICATE.value } : {}),

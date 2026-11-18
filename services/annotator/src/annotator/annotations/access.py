@@ -57,7 +57,7 @@ def require_task_units(current: Task, keys: list[str], dataset: str | None) -> N
     unit = work_unit(current)
     for key in keys:
         if current.source.where != dataset or key != unit:
-            raise NotFoundError(f"unit {key} of dataset {dataset} is not task {current.task_id}'s")
+            raise NotFoundError(f"unit {key} of dataset {dataset} is not this item's", extensions={"task": current.task_id})
 
 
 async def _task_unit(store: AnnotatorStore, task: str, project: str, key: str, dataset: str | None, subject: str, checker: Checker) -> Task:

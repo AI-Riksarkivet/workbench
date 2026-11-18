@@ -144,16 +144,18 @@ def _task(**kw: Any) -> Task:
     [(TaskState.UNASSIGNED, "claim", None), (TaskState.UNASSIGNED, "assign", None), (TaskState.CLAIMED, "release", SUBJECT)],
 )
 def test_every_edge_checks_the_permission_the_table_declares(state: TaskState, event: str, assignee: str | None, door: Callable[..., _Door]) -> None:
+    """The edge's own permission, asked of the VERIFIED subject on the task's own project, is what admits it: every other
+    permission without it is refused, and it alone (with the view) admits."""
     expected = TASK_EDGES[(state, event)][1]
-    d = door(allow=True)
-    d.seed(_task(state=state, assignee=assignee))
+    others = {permission for _target, permission in TASK_EDGES.values() if permission not in (None, expected)}
+    without, alone = door(allow={"can_view", *others}), door(allow={"can_view", str(expected)})
+    without.seed(_task(state=state, assignee=assignee))
 
-    r = d.client.post("/tasks/t1/events", json={"event": event})
+    refused = without.client.post("/tasks/t1/events", json={"event": event})
+    admitted = alone.client.post("/tasks/t1/events", json={"event": event})
 
-    assert r.status_code == 200, r.text
-    assert [c["relation"] for c in d.seen[:2]] == ["can_view", expected], f"{event} from {state} was not authorized as the table says"
-    assert d.seen[1]["user"] == SUBJECT, "the check must use the VERIFIED subject"
-    assert d.seen[1]["obj"] == "task:t1"
+    assert (refused.status_code, refused.json()["relation"], admitted.status_code) == (403, expected, 200), admitted.text
+    assert {(c["user"], c["obj"]) for c in alone.seen if c["relation"] == expected} == {(SUBJECT, f"project:{PROJECT_ID}")}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -298,7 +300,7 @@ def test_skip_and_submit_are_lease_holder_only(event: str, door: Callable[..., _
     r = d.client.post("/tasks/t1/events", json={"event": event})
 
     assert r.status_code == 403
-    assert "held by dave" in r.text
+    assert (r.json()["detail"], r.json()["holder"]) == ("another person holds this item", "dave")
     assert (d.task().state, d.task().assignee) == (TaskState.CLAIMED, "dave")
 
 
@@ -361,8 +363,7 @@ def test_claiming_a_second_replica_of_the_same_group_is_409(door: Callable[..., 
     r = d.client.post("/tasks/g1-r2/events", json={"event": "claim"})
 
     assert r.status_code == 409, r.text
-    assert "one replica per annotator" in r.json()["detail"]
-    assert "g1-r1" in r.json()["detail"], "the refusal must name the replica already held"
+    assert (r.json()["detail"], r.json()["replica"]) == ("one replica per annotator per group: you hold, held or worked another replica of this item", "g1-r1")
     assert d.task("g1-r2").state is TaskState.UNASSIGNED
 
 
@@ -379,8 +380,11 @@ def test_assigning_a_second_replica_to_the_same_recipient_is_409(door: Callable[
     r = d.client.post("/tasks/g1-r2/events", json={"event": "assign", "assignee": "dave"})
 
     assert r.status_code == 409, r.text
-    assert "one replica per annotator" in r.json()["detail"]
-    assert "g1-r1" in r.json()["detail"], "the refusal must name the replica already worked"
+    assert {k: r.json()[k] for k in ("detail", "principal", "replica")} == {
+        "detail": "one replica per annotator per group: they hold, held or worked another replica of this item",
+        "principal": "dave",
+        "replica": "g1-r1",
+    }
     assert d.task("g1-r2").assignee is None
 
 
@@ -395,7 +399,7 @@ def test_a_replica_once_held_and_released_still_bars_its_siblings(door: Callable
     r = d.client.post("/tasks/g1-r2/events", json={"event": "claim"})
 
     assert r.status_code == 409, r.text
-    assert "g1-r1" in r.json()["detail"], "the refusal must name the replica once held"
+    assert r.json()["replica"] == "g1-r1", "the refusal must name the replica once held"
     assert d.task("g1-r2").state is TaskState.UNASSIGNED
 
 

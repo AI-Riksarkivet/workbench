@@ -72,6 +72,14 @@ export const EVENT_LABELS: Record<string, string> = {
 	reopen: 'Reopen',
 };
 
+/** A review's verdict as every surface words it (`review_action`): the table's "reviewed" column and the canvas's
+ *  panel say the same thing of one item. */
+export const VERDICTS: Record<string, string> = {
+	accepted: 'accepted',
+	fix_and_accept: 'fixed & accepted',
+	request_changes: 'sent back',
+};
+
 /** What to do about a project read that failed, in the reader's terms. */
 export const ANNOTATOR_HINT =
 	'Try again. If it keeps failing, the annotator may be unavailable right now.';

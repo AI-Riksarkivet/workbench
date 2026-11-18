@@ -470,6 +470,12 @@ export class DatasetView {
 		return this.declared.document !== null;
 	}
 
+	/** A corpus whose items are its rows: it declares a row table and no document (a corpus of texts), so it is
+	 *  browsed by its rows (`GET /api/rows`), not by documents it has none of. */
+	get itemsAreRows(): boolean {
+		return this.declared.document === null && this.declared.search !== null;
+	}
+
 	/** What KIND of media the corpus holds, from its own declaration.
 	 *
 	 *  `hasMedia` only answers "is there a document binding", which is true for a page-image corpus

@@ -19,6 +19,7 @@ import {
 	getVoiceStatus,
 	listColumns,
 	listDocuments,
+	listRows,
 	search,
 	voiceSimilar,
 	type SearchSpec,
@@ -40,6 +41,12 @@ export const searchHits = query(
 export const documentsPage = query(
 	v.object({ dataset: v.string(), page: v.number(), perPage: v.number() }),
 	({ page, perPage }) => listDocuments(page, perPage),
+);
+
+/** One page of the dataset's rows, the browse list of a dataset whose items are its rows (it declares no document). */
+export const rowsPage = query(
+	v.object({ dataset: v.string(), page: v.number(), perPage: v.number() }),
+	({ page, perPage }) => listRows(page, perPage),
 );
 
 /** The voices most like an anchor's (a speaker turn, a speaker, or a moment of a document). */

@@ -100,11 +100,38 @@ describe('the canvas’s side panel', () => {
 		expect([again.mode, again.note?.message]).toEqual(['annotating', 'Box the seal too.']);
 	});
 
-	it('is done once accepted, naming who accepted it', () => {
-		const panel = panelState(task('accepted', { reviewed_by: 'dex~bo' }), REVIEWER, 'dex~ada');
-		expect([panel.mode, panel.detail, panel.actions]).toEqual([
+	it('is done once accepted, naming who accepted it and how, as the data manager words it', () => {
+		const accepted = panelState(
+			task('accepted', { reviewed_by: 'dex~bo', review_action: 'accepted' }),
+			REVIEWER,
+			'dex~ada',
+		);
+		const fixed = panelState(
+			task('accepted', { reviewed_by: 'dex~bo', review_action: 'fix_and_accept' }),
+			REVIEWER,
+			'dex~ada',
+		);
+		expect([accepted.mode, accepted.detail, fixed.detail, fixed.actions]).toEqual([
 			'accepted',
 			'Accepted by bo: the item is done.',
+			'Fixed & accepted by bo: the item is done.',
+			[],
+		]);
+	});
+
+	it('is a browse of the item in every state, read-only, offering nothing, even to its holder', () => {
+		const own = panelState(task('claimed', { assignee: 'dex~ada' }), REVIEWER, 'dex~ada', {
+			browsing: true,
+		});
+		const review = panelState(task('in_review', { submitted_by: 'dex~bo' }), REVIEWER, 'dex~ada', {
+			browsing: true,
+		});
+		expect([own.mode, own.title, own.detail, own.actions, review.detail, review.actions]).toEqual([
+			'browsing',
+			'Browsing',
+			'Being labeled by ada. You see the item as it was last saved; browsing changes nothing.',
+			[],
+			'Submitted by bo, waiting for a reviewer. You see the item as it was last saved; browsing changes nothing.',
 			[],
 		]);
 	});

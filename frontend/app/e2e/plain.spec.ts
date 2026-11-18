@@ -23,7 +23,7 @@ test('the dataset list groups the datasets by source and says what could not be 
 	);
 	await expect(
 		page.getByRole('list', { name: 'Datasets in The lakehouse' }).getByRole('link'),
-	).toHaveCount(3);
+	).toHaveCount(4);
 });
 
 test('a plain table pages, sorts, searches and ranks its rows, and opens one in full', async ({

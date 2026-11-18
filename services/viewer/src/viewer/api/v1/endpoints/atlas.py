@@ -188,7 +188,7 @@ async def _build_points(state: AppState, declared: Declared, space: AtlasSpace, 
         state.points_flights.pop(key, None)
 
 
-def _hit_columns(declared: Declared, present: set[str]) -> list[str]:
+def hit_columns(declared: Declared, present: set[str]) -> list[str]:
     """Full-hit projection for the detail pane — every declared display-worthy
     field that exists on the row table (matches the search hit shape)."""
     time_cols = [declared.time.start, declared.time.end] if declared.time else []
@@ -210,12 +210,32 @@ def _hit_columns(declared: Declared, present: set[str]) -> list[str]:
     return [c for c in dict.fromkeys(wanted) if c is not None and c in present]
 
 
-def _finalize_hits(handle: DatasetHandle, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+#: The marker naming a hit's cells whose value is binary: they are answered as null, never as text a decode would guess
+#: (a JSON answer cannot carry bytes, and one that is not UTF-8 failed the whole answer).
+BINARY_CELLS = "_binary"
+#: The marker naming a hit's text cells cut to `text_max` characters: the item's own door reads them whole.
+CUT_CELLS = "_cut"
+
+
+def finalize_hits(handle: DatasetHandle, rows: list[dict[str, Any]], *, text_max: int | None = None) -> list[dict[str, Any]]:
+    """The hit doors' one serialisation of corpus rows: the alignments parsed, a binary cell answered as null and named
+    under `BINARY_CELLS`, with ``text_max`` a text cell cut to that many characters and named under `CUT_CELLS`, and the
+    frame captions attached."""
     declared = handle.declared
     align = alignments_binding(declared)
     align_col = align[1] if align is not None else None
     for hit in rows:
         hit["alignments"] = parse_alignments_json(hit.pop(align_col, None) if align_col else None)
+        binary = [key for key, value in hit.items() if isinstance(value, bytes | bytearray | memoryview)]
+        cut = [key for key, value in hit.items() if text_max is not None and isinstance(value, str) and len(value) > text_max]
+        for key in binary:
+            hit[key] = None
+        for key in cut:
+            hit[key] = hit[key][:text_max]
+        if binary:
+            hit[BINARY_CELLS] = binary
+        if cut:
+            hit[CUT_CELLS] = cut
     _attach_frame_captions(handle, rows)
     return rows
 
@@ -279,12 +299,12 @@ def atlas_chunk(
     if declared.search is None:
         raise NotFoundError("no row table declared for dataset")
     ds = table_dataset(handle, declared.search.row_table)
-    columns = _hit_columns(declared, set(ds.schema.names))
+    columns = hit_columns(declared, set(ds.schema.names))
     where = chunk_key_filter(declared, doc_id, (group_id, chunk_id))
     rows = ds.to_table(columns=columns, filter=where).to_pylist()
     if not rows:
         raise NotFoundError("chunk not found")
-    return _finalize_hits(handle, rows)[0]
+    return finalize_hits(handle, rows)[0]
 
 
 @router.post("/chunks/by-key", dependencies=[READS_DATASET])
@@ -322,12 +342,12 @@ def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dat
     if not wanted:
         return ChunkHits(key_fields=key_fields)
     ds = table_dataset(handle, declared.search.row_table)
-    columns = _hit_columns(declared, set(ds.schema.names))
+    columns = hit_columns(declared, set(ds.schema.names))
     # `validate_doc_key` per key, not once: the doc key is the only free-text part of the address,
     # and it is what `chunk_key_filter` escapes into the predicate.
     where = or_(*(chunk_key_filter(declared, validate_doc_key(declared, k.doc_id), k.keys) for k in wanted))
     rows = ds.to_table(columns=columns, filter=where).to_pylist()
-    return ChunkHits(rows=_finalize_hits(handle, rows), key_fields=key_fields)
+    return ChunkHits(rows=finalize_hits(handle, rows), key_fields=key_fields)
 
 
 @router.post("/chunks", dependencies=[READS_DATASET])
@@ -349,7 +369,7 @@ def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset:
     if not rowids:
         return arrow_rows_response([])
     ds = table_dataset(handle, declared.search.row_table)
-    columns = _hit_columns(declared, set(ds.schema.names))
+    columns = hit_columns(declared, set(ds.schema.names))
     csv = ",".join(str(int(r)) for r in rowids)
     rows = ds.to_table(columns=columns, filter=f"_rowid IN ({csv})").to_pylist()
-    return arrow_rows_response(_finalize_hits(handle, rows))
+    return arrow_rows_response(finalize_hits(handle, rows))

@@ -60,7 +60,7 @@ class ChunkKeys(BaseModel):
 class ChunkHits(BaseModel):
     """Rows addressed by key, plus the identity fields that address them.
 
-    ``rows`` are corpus rows: their columns are DERIVED FROM THE DESCRIPTOR (`_hit_columns`), so
+    ``rows`` are corpus rows: their columns are DERIVED FROM THE DESCRIPTOR (`hit_columns`), so
     the envelope is the part that can be declared and the row shape stays an explicit
     ``dict[str, Any]`` — the finding's own recommendation for a dataset-dependent body.
 

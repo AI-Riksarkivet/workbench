@@ -228,7 +228,7 @@ def test_the_consensus_changes_until_the_project_holds_an_item(door: Any) -> Non
 
     assert before.status_code == 200, before.text
     assert after.status_code == 409, after.text
-    assert after.json()["detail"] == "project p1 holds 1 item, each sent as 3 replicas: the consensus is fixed once items are sent"
+    assert after.json()["detail"] == "this project holds 1 item, each sent as 3 replicas: the consensus is fixed once items are sent"
     assert d.store(lambda s: s.get_project("p1")).consensus_n == 3
 
 

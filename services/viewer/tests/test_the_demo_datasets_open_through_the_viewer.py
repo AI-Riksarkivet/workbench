@@ -66,6 +66,8 @@ def test_the_seeded_pages_recordings_and_films_open_as_the_player_reads_them(tmp
         graph = client.get("/api/graph/status", params={"dataset": pages}).json()
         [archive] = client.get("/api/graph/search", params={"dataset": pages, "q": "riksarkiv"}).json()["matches"]
         entity = client.get(f"/api/graph/entity/{archive['entity_id']}", params={"dataset": pages}).json()
+        paragraphs = [client.get("/api/rows", params={"dataset": letters, "page": page, "per_page": 2}).json() for page in (1, 2)]
+        no_documents = client.get("/api/documents", params={"dataset": letters}).json()
 
     assert listed == ["lake~demo$corpus", "lake~demo$films", "lake~demo$letters", "lake~demo$recordings"]
     kinds = {d: (r.status_code, (r.json().get("declared", {}).get("document") or {}).get("kind")) for d, r in described.items()}
@@ -92,6 +94,12 @@ def test_the_seeded_pages_recordings_and_films_open_as_the_player_reads_them(tmp
         ("fe00cd746463ad2c", "Landskapshandlingar 1663"),
     ]
     assert sorted((n["name"], n["direction"]) for n in entity["neighbors"]) == [("Domboken", "out"), ("Landshövdingen", "in"), ("Protokoll", "out")]
+    # The letters hold no document to list: an item of theirs is a paragraph, and their rows are browsed as hits.
+    assert no_documents["total"] == 0
+    assert [(p["total"], [(r["doc_id"], r["chunk_id"], r["text"][:24]) for r in p["items"]]) for p in paragraphs] == [
+        (3, [("a7e3c19d04b25f86", 0, "Landshövdingen Erik Spar"), ("a7e3c19d04b25f86", 1, "Han ber att tullen i Kal")]),
+        (3, [("5d0b8f2e6c1a9437", 0, "Brukspatron Anna Lind me")]),
+    ]
 
 
 def test_the_plain_tables_answer_the_set_ups_the_browser_suite_draws_as_its_recording_says(tmp_path: Path) -> None:

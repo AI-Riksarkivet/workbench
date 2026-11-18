@@ -25,7 +25,7 @@ from fastapi import Depends, Query, Request
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from client_kit.media.deps import StateDep
 from client_kit.media.source_gate import admit
-from service_kit.exceptions import ServiceUnavailableError
+from service_kit.exceptions import ForbiddenError, ServiceUnavailableError
 from service_kit.governed.deps import ANONYMOUS_SUBJECT, FgaChecker, make_auth_deps
 from service_kit.governed.fga import Authorizer, Grant
 from service_kit.governed.identity import Caller
@@ -111,6 +111,21 @@ def unseen_task(task_id: str) -> str:
     return f"No task {task_id} that you can see"
 
 
+#: What each kind of authorization object is called in a refusal a person reads.
+_OBJECT_WORDS = {"project": "project", "task": "item", "org": "organisation", "corpus": "dataset"}
+
+
+def lacking(subject: str, relation: str, obj: str) -> ForbiddenError:
+    """The refusal of a check the caller failed, in words a person reads: what is missing, on this project or item. The
+    principal, the relation and the object are the problem's machine fields (RFC 9457 §3.2) and the audit's, never its
+    prose, which the app shows as it is."""
+    kind = obj.partition(":")[0]
+    return ForbiddenError(
+        f"you lack {relation} on this {_OBJECT_WORDS.get(kind, kind)}",
+        extensions={"principal": subject, "relation": relation, "object": obj},
+    )
+
+
 async def require_view(checker: FgaChecker, subject: str, obj: str, refusal: str, contextual: Iterable[Grant] = ()) -> None:
     """``can_view`` on ``obj``, asked before anything about the object is read: refused, the caller learns ``refusal`` and
     nothing else (404, as for an object that does not exist)."""
@@ -132,13 +147,12 @@ def project_gate(relation: str) -> Any:
 
     async def _gate(project: ProjectParam, subject: CurrentSubject, checker: CheckerDep) -> None:
         from annotator.audit_actions import AnnotatorAuditAction
-        from service_kit.exceptions import ForbiddenError
         from service_kit.governed.audit import AuditOutcome, audit
 
         obj = f"project:{project}"
         if not await checker(user=subject, relation=relation, obj=obj):
             audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=obj, relation=relation)
-            raise ForbiddenError(f"{subject} lacks {relation} on {obj}")
+            raise lacking(subject, relation, obj)
 
     return Depends(_gate)
 

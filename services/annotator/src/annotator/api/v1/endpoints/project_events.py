@@ -26,18 +26,17 @@ from pydantic import AwareDatetime, BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from annotator.api.dependencies import PublishRunnerDep, StoreDep
-from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, require_view, unseen_project
+from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, lacking, require_view, unseen_project
+from annotator.api.v1.endpoints.tasks import events_for
 from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import get_annotator_settings
 from annotator.corpus import input_tables, not_annotatable, unheld_versions
 from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import (
-    FROZEN_PROJECT_STATES,
     PROJECT_EDGES,
     PROJECT_SEND_STATES,
     IllegalTransition,
-    legal_task_events,
     project_transition,
 )
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, SentSource, Shape, ShapeType, Task, TaskState, new_id
@@ -150,7 +149,7 @@ async def _check(checker: Checker, subject: str, relation: str, obj: str, what: 
     """One relation on one object, fail-closed, audited either way."""
     if not await checker(user=subject, relation=relation, obj=obj):
         audit(what, AuditOutcome.FAILURE, subject=subject, resource=obj, relation=relation, **context)
-        raise ForbiddenError(f"{subject} lacks {relation} on {obj}")
+        raise lacking(subject, relation, obj)
 
 
 async def _project(store: AnnotatorStore, project_id: str) -> AnnotationProject:
@@ -393,7 +392,7 @@ async def send_items(
     project = await _project(store, project_id)
     if project.state not in PROJECT_SEND_STATES:
         # Checked here as well as in the store so the catalog is not asked about a send that cannot land.
-        raise ConflictError(f"project {project_id} is {project.state} — items may only be sent while it is draft or labeling")
+        raise ConflictError(f"this project is {project.state} — items may only be sent while it is draft or labeling", extensions={"project": project_id})
 
     # REFUSE an item whose media dataset does not resolve. Deliberately after the role check: the refusal names
     # datasets, which an unauthorised caller must not be able to enumerate. Off the loop: the catalog is asked
@@ -473,6 +472,7 @@ async def list_project_tasks(
     dataset: TextFilter = None,
     group: TextFilter = None,
     replicas: bool = False,
+    has_work: bool = False,
     date: DateField = DateField.UPDATED,
     since: AwareDatetime | None = None,
     until: AwareDatetime | None = None,
@@ -488,8 +488,8 @@ async def list_project_tasks(
     would be a far worse bug than an unpaged listing). ``include=details`` filters, orders and pages in Postgres
     (`annotator.state.task_query`): ``matched`` items match, ``state_counts`` is what each state would leave under the
     other filters, ``offset`` is where the page starts, and with ``around`` the page is the one holding that item near its
-    middle, at ``position``. Each item comes with its ``legal_events`` (`machines.legal_task_events`), the single source
-    the queue renders its actions from; ``include=contributors`` adds each person's part over all items. Every principal
+    middle, at ``position``. Each item comes with its ``legal_events``, what the caller may fire on it now
+    (`tasks.events_for`), the single source every screen renders its actions from; ``include=contributors`` adds each person's part over all items. Every principal
     the answer names is in ``people`` with the name they last wrote under, where one is kept (`annotator.people`).
     """
     await require_view(checker, subject, f"project:{project_id}", unseen_project(project_id))
@@ -505,6 +505,7 @@ async def list_project_tasks(
         dataset=dataset,
         group=group,
         replicas=replicas,
+        has_work=has_work,
         date_field=date,
         since=since,
         until=until,
@@ -515,11 +516,13 @@ async def list_project_tasks(
     listing: dict[str, Any] = index.model_dump(mode="json")
     named: set[str] = set()
     if TaskInclude.DETAILS in includes:
-        # Rule 5 (§5.2): once the project is publishing/published/archived, EVERY task transition is refused, so the
-        # details must not hand the UI actions that can only 409.
-        project = await store.get_project(project_id)
-        project_frozen = project is not None and project.state in FROZEN_PROJECT_STATES
-        details = [{**task.model_dump(mode="json"), "legal_events": [] if project_frozen else legal_task_events(task.state)} for task in tasks]
+        # What THIS caller may fire on each item (`tasks.events_for`): exactly what the task door would accept from them now,
+        # by the one rule it refuses by (`machines.event_refusal`), from facts read once for the page. A race (the rows
+        # moving before the click) and an `assign` whose recipient worked another replica are still the door's to refuse.
+        events = await events_for(store, checker, subject, await store.get_project(project_id), tasks)
+        details = [
+            {**task.model_dump(mode="json"), "legal_events": [e.model_dump(mode="json") for e in mine]} for task, mine in zip(tasks, events, strict=True)
+        ]
         found = {d["task_id"] for d in details}
         listing |= {
             "details": details,

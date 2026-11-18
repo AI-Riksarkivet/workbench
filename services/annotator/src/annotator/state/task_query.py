@@ -131,6 +131,9 @@ class TaskFilter(BaseModel):
     group: str | None = Field(default=None, min_length=1, max_length=MAX_FILTER)
     #: Only the items that are replicas of a consensus group.
     replicas: bool = False
+    #: Only the items whose work holds something: at least one shape or link in their draft (a browse looks through
+    #: labeled work, and an item claimed and never drawn on has none).
+    has_work: bool = False
     date_field: DateField = DateField.UPDATED
     since: AwareDatetime | None = None
     until: AwareDatetime | None = None
@@ -159,6 +162,8 @@ class TaskFilter(BaseModel):
                     "OR EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = items.task_id AND d.labels @> jsonb_build_array({0}::text)))"
                 ).format(sql.Literal(self.label))
             )
+        if self.has_work:
+            parts.append(sql.SQL("EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = items.task_id AND d.has_work)"))
         column = _DATE_COLUMN[self.date_field]
         if self.since is not None:
             parts.append(sql.SQL("{} >= {}").format(column, sql.Literal(self.since)))

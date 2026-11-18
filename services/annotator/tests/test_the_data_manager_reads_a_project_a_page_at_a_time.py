@@ -88,7 +88,8 @@ def worked(project: _Project, state_database: StateDatabase) -> _Project:
 
     - a-new: unassigned, proposed `seal` at send;   b-held: claimed by bob, a `stamp` drawn;
     - c-review: in review, ann submitted a `letter`; d-done: accepted, ann submitted a `letter`, rev reviewed it;
-    - e-back: sent back to ann by rev;              f-lapsed: bob's claim, past its lease (so unassigned to a reader);
+    - e-back: sent back to ann by rev;              f-lapsed: bob's claim, past its lease (so unassigned to a reader),
+                                                    a box drawn and taken away again, so its draft holds nothing;
     and a-new and f-lapsed come from the `scans` dataset.
     """
     project.call(
@@ -112,6 +113,8 @@ def worked(project: _Project, state_database: StateDatabase) -> _Project:
     project.fire("d-done", ("accept", "rev"))
     project.call(project.store.fire_task, "e-back", event="request_changes", actor="rev", message="redo")
     project.fire("f-lapsed", ("claim", "bob"))
+    project.call(project.store.change_draft, "f-lapsed", author="bob", change=_box("stamp"), base_revision=0)
+    project.call(project.store.change_draft, "f-lapsed", author="bob", change=lambda _current, _now: ([], []), base_revision=1)
     with psycopg.connect(host=state_database.host, port=state_database.port, user=state_database.user, dbname=state_database.database) as conn:
         conn.execute("UPDATE tasks SET lease_expires_at = now() - interval '1 minute' WHERE task_id = 'f-lapsed'")
     return project
@@ -160,6 +163,7 @@ def test_a_page_starts_at_its_offset_and_the_precondition_reads_the_whole_projec
         pytest.param({"label": "letter"}, ["c-review", "d-done", "e-back"], id="a-class-drawn"),
         pytest.param({"label": "seal"}, ["a-new"], id="a-class-proposed"),
         pytest.param({"dataset": "lake~acme$scans"}, ["a-new", "f-lapsed"], id="a-dataset"),
+        pytest.param({"has_work": True}, ["b-held", "c-review", "d-done", "e-back"], id="work-drawn-not-a-claim-alone"),
     ],
 )
 def test_a_filter_answers_the_items_it_names(worked: _Project, params: dict[str, Any], expected: list[str]) -> None:

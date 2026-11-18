@@ -264,7 +264,7 @@ def _refuse_if_frozen(project: AnnotationProject, task: Task, event: str) -> Non
             "task",
             task.state,
             event,
-            message=f"project {project.project_id} is {project.state} — {event} is rejected; provenance is frozen with the published artifact",
+            message=f"this project is {project.state} — {event} is rejected; provenance is frozen with the published artifact",
         )
 
 
@@ -479,7 +479,7 @@ class AnnotatorStore:
                     "project",
                     project.state,
                     "set_ontology",
-                    message=f"project {project_id} is {project.state.value} — the ontology is editable only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
+                    message=f"this project is {project.state.value} — the ontology is editable only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
                 )
             project.ontology = ontology
             await _update_unstarted(conn, project_id, {"ontology": ontology.model_dump(mode="json")})
@@ -504,7 +504,7 @@ class AnnotatorStore:
                     "project",
                     project.state,
                     "update_settings",
-                    message=f"project {project_id} is {project.state.value}: its settings are fixed once a publish starts",
+                    message=f"this project is {project.state.value}: its settings are fixed once a publish starts",
                 )
             captured = {key: named[key] for key in ("review_required", "lease_seconds") if key in named}
             if captured and project.state not in PROJECT_SEND_STATES:
@@ -512,7 +512,7 @@ class AnnotatorStore:
                     "project",
                     project.state,
                     "update_settings",
-                    message=f"project {project_id} is {project.state.value}: review and claim settings change only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
+                    message=f"this project is {project.state.value}: review and claim settings change only in {sorted(s.value for s in PROJECT_SEND_STATES)}",
                 )
             if named.get("consensus_n", project.consensus_n) != project.consensus_n:
                 # Items, not tasks: on a consensus project each sent item is its replicas, one group.
@@ -526,7 +526,7 @@ class AnnotatorStore:
                         "project",
                         project.state,
                         "update_settings",
-                        message=f"project {project_id} holds {items} item{'' if items == 1 else 's'}, each sent as {replicas}: the consensus is fixed once items are sent",
+                        message=f"this project holds {items} item{'' if items == 1 else 's'}, each sent as {replicas}: the consensus is fixed once items are sent",
                     )
             for key, value in named.items():
                 setattr(project, key, value)
@@ -625,7 +625,10 @@ class AnnotatorStore:
                 )
                 holder = await (await conn.execute("SELECT project_id FROM replica_groups WHERE replica_of = %s", (group,))).fetchone()
                 if holder is not None and holder[0] != project_id:
-                    raise ConflictError(f"consensus group {group} already belongs to project {holder[0]} — refusing to send its replicas into {project_id}")
+                    raise ConflictError(
+                        f"the consensus group {group} this send names already belongs to another project — its replicas are not sent here",
+                        extensions={"group": group},
+                    )
             created: list[str] = []
             for task, values in zip(ordered, rows, strict=True):
                 row = await (
@@ -640,7 +643,10 @@ class AnnotatorStore:
                     continue
                 owner = await (await conn.execute("SELECT project_id FROM tasks WHERE task_id = %s", (task.task_id,))).fetchone()
                 if owner is not None and owner[0] != project_id:
-                    raise ConflictError(f"task {task.task_id} already belongs to project {owner[0]} — refusing to send it into {project_id}")
+                    raise ConflictError(
+                        f"the item {task.task_id} this send names already belongs to another project — it is not sent here",
+                        extensions={"task": task.task_id},
+                    )
             return created
 
     async def drop_task(self, project_id: str, task_id: str) -> DropReceipt:
@@ -652,7 +658,7 @@ class AnnotatorStore:
                     "project",
                     project.state,
                     "drop_task",
-                    message=f"project {project_id} is {project.state.value} — items can be dropped only in {sorted(s.value for s in DROPPABLE_STATES)}",
+                    message=f"this project is {project.state.value} — items can be dropped only in {sorted(s.value for s in DROPPABLE_STATES)}",
                 )
             gone = await (await conn.execute("DELETE FROM tasks WHERE project_id = %s AND task_id = %s RETURNING task_id", (project_id, task_id))).fetchone()
             if gone is not None:
@@ -733,8 +739,10 @@ class AnnotatorStore:
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             index = await _task_index(conn, project_id)
             page = await page_of(conn, project_id, filters, sort=sort, order=order, limit=limit, offset=offset, around=around)
+            # The documents' lapsed claims are released on the snapshot's own clock (`now()`), the one the page's filters
+            # and counts read a lapse by, so an item counted unassigned is answered unassigned.
             rows = await (
-                await conn.execute("SELECT document, clock_timestamp() FROM tasks WHERE project_id = %s AND task_id = ANY(%s)", (project_id, page.task_ids))
+                await conn.execute("SELECT document, now() FROM tasks WHERE project_id = %s AND task_id = ANY(%s)", (project_id, page.task_ids))
             ).fetchall()
             people = await contributors_of(conn, project_id) if contributors else None
         by_id: dict[str, Task] = {}
@@ -761,6 +769,38 @@ class AnnotatorStore:
         async with self._transaction() as conn:
             rows = await (await conn.execute("SELECT principal, name FROM people WHERE principal = ANY(%s)", (wanted,))).fetchall()
         return {str(p): str(n) for p, n in rows}
+
+    async def newest_of_tenant(self, tenant: str, project_ids: Iterable[str], *, limit: int) -> list[str]:
+        """Of ``project_ids``, those of ``tenant``, newest first, at most ``limit``: a bounded read of one indexed column
+        (`projects_of_tenant`), no document and no count."""
+        wanted = sorted(set(project_ids))
+        if not wanted or limit <= 0:
+            return []
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT project_id FROM projects WHERE tenant = %s AND project_id = ANY(%s) ORDER BY created_at DESC, project_id LIMIT %s",
+                    (tenant, wanted, limit),
+                )
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    async def worked_replicas(self, project_id: str, subject: str) -> dict[str, set[str]]:
+        """Each consensus group of the project ``subject`` holds, held or worked a replica of, with those replicas: what
+        the one-replica-per-annotator rule reads (`fire_task`), in one statement for a whole page. The same facts the
+        rule reads off the locked siblings: their holder, their holders and their submitter."""
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT replica_of, task_id FROM tasks WHERE project_id = %s AND replica_of IS NOT NULL "
+                    "AND (assignee = %s OR submitted_by = %s OR holders @> jsonb_build_array(%s::text))",
+                    (project_id, subject, subject, subject),
+                )
+            ).fetchall()
+        groups: dict[str, set[str]] = {}
+        for group, task_id in rows:
+            groups.setdefault(str(group), set()).add(str(task_id))
+        return groups
 
     async def publish_material(self, project_id: str) -> list[tuple[Task, Draft | None]]:
         """Every task of the project with its draft, in task-id order: what a publish builds its plan from."""
@@ -855,8 +895,10 @@ class AnnotatorStore:
             if event in {"claim", "assign"} and task.replica_of:
                 for sibling in siblings:
                     if recipient in (sibling.assignee, sibling.submitted_by, *sibling.holders):
+                        who = "you hold, held or worked" if recipient == actor else "they hold, held or worked"
                         raise ConflictError(
-                            f"one replica per annotator per group: {recipient} holds, held or worked replica {sibling.task_id} of group {task.replica_of}"
+                            f"one replica per annotator per group: {who} another replica of this item",
+                            extensions={"principal": recipient, "replica": sibling.task_id, "group": task.replica_of},
                         )
             if event in {"claim", "assign"} and recipient not in task.holders:
                 task.holders.append(recipient)

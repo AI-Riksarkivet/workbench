@@ -209,8 +209,9 @@ export function readPass(params: Params): Pass {
 	return pick(PASSES, params.get('pass'), 'label');
 }
 
-/** What a pass walks, as a query: your live claims; the labeled work a browse filter names; the work in review that
- *  someone other than you submitted. The canvas reads it one page around the open item. */
+/** What a pass walks, as a query: your live claims; the labeled work a browse filter names (items whose work holds a
+ *  shape or a link, `has_work`: a claim nobody has drawn on is not labeled work); the work in review that someone other
+ *  than you submitted. The canvas reads it one page around the open item. */
 export function passParams(pass: Pass, query: ItemQuery, me: string | null): URLSearchParams {
 	if (pass === 'label') {
 		const out = new URLSearchParams({ state: 'claimed', sort: 'item' });
@@ -226,7 +227,52 @@ export function passParams(pass: Pass, query: ItemQuery, me: string | null): URL
 		{ ...query, states: query.states.length > 0 ? query.states : [...LABELED_STATES] },
 		me,
 	);
+	out.set('has_work', 'true');
 	return out;
+}
+
+/** Where a reviewer is in the review pass they started, carried in the address beside its filter: `of`, how many items
+ *  waited for them when the pass started (decided then, never read again), and `done`, how many they have judged since.
+ *  Each item judged leaves the walk, so the walk alone would read "1 of N" on every item while N shrinks. */
+export interface PassCount {
+	of: number | null;
+	done: number;
+}
+
+/** The most items a pass counts: a project's deepest offset, so no address names more. */
+const MAX_PASS = MAX_OFFSET + 200;
+
+/** The pass count an address names; a value it cannot honour is none (`of`) or nothing judged (`done`). */
+export function readPassCount(params: Params): PassCount {
+	const count = (name: string): number | null => {
+		const value = Number(params.get(name) ?? Number.NaN);
+		return Number.isInteger(value) && value >= 0 && value <= MAX_PASS ? value : null;
+	};
+	const of = count('of');
+	const done = count('done') ?? 0;
+	return { of: of !== null && of > 0 ? of : null, done: of !== null ? Math.min(done, of) : done };
+}
+
+/** ``filter`` with the pass count written beside it. */
+export function withPassCount(filter: URLSearchParams, count: PassCount): URLSearchParams {
+	const out = new URLSearchParams(filter);
+	if (count.of !== null) out.set('of', String(count.of));
+	if (count.done > 0) out.set('done', String(count.done));
+	else out.delete('done');
+	return out;
+}
+
+/** The window a review pass's page of still-waiting items (at `offset` in the walk, `waiting` in all) sits in: an
+ *  item's place is the verdicts given in the pass plus its place among those still waiting, out of what waited when the
+ *  pass started. Robust to another reviewer judging an item meanwhile: that item leaves the walk, so it is neither
+ *  counted as done here nor met again, and the pass ends (back at the Review tab) short of its last number; new work
+ *  sent into review meanwhile grows the total rather than pushing a place past it. */
+export function passWindow(
+	count: PassCount,
+	offset: number,
+	waiting: number,
+): { offset: number; total: number } {
+	return { offset: count.done + offset, total: Math.max(count.of ?? 0, count.done + waiting) };
 }
 
 /** The states a browse looks through by default: everything someone has labeled, finished or not. */

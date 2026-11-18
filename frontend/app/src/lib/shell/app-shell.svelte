@@ -90,7 +90,8 @@
 	);
 	const crumbs = $derived(
 		[...rootCrumb, ...pathCrumbs(pathname, routeId)].map((crumb): ShellCrumb => {
-			// A segment a page named (a project's title, an item's name) reads as that name, its id the tooltip.
+			// A segment a page named (a project's title, an item's name) reads as that name, its id the tooltip, and is a
+			// page of its own: a page names only its own route's paths (`nameCrumb`), so a named crumb links back to it.
 			const named = crumbNames.get(crumb.href);
 			const base = named ? { ...crumb, label: named.label, title: named.title } : crumb;
 			return pages === null
@@ -98,7 +99,7 @@
 				: {
 						...base,
 						label: named?.label ?? pages.get(crumb.href) ?? groups?.get(crumb.href) ?? crumb.label,
-						page: pages.has(crumb.href),
+						page: pages.has(crumb.href) || named !== undefined,
 					};
 		}),
 	);

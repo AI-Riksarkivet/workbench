@@ -13,7 +13,13 @@
 	import { linkWith } from '#lib/project.ts';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import ItemList from './ItemList.svelte';
-	import { passParams, readItemQuery, writeItemQuery, type ItemQuery } from './item-query.ts';
+	import {
+		passParams,
+		readItemQuery,
+		withPassCount,
+		writeItemQuery,
+		type ItemQuery,
+	} from './item-query.ts';
 	import { ANNOTATOR_HINT } from './presentation.ts';
 	import type { TaskDetail } from './types.ts';
 
@@ -44,19 +50,29 @@
 	const listing = $derived(read?.current?.ok ? read.current.data : null);
 	const tasks = $derived(listing?.details ?? []);
 	const link = $derived(linkWith(projectId));
+	// A pass started here counts what waits now (`of`, `item-query.readPassCount`), so the canvas reads "item 2 of 3"
+	// as the reviewer moves through it, not the shrinking remainder.
 	const href = (task: TaskDetail): string =>
 		link(
 			passHref(
 				task,
 				projectId,
 				'review',
-				writeItemQuery({ ...query, page: 1 }, new URLSearchParams()),
+				withPassCount(writeItemQuery({ ...query, page: 1 }, new URLSearchParams()), {
+					of: listing?.matched ?? null,
+					done: 0,
+				}),
 			),
 		);
 
 	function show(next: ItemQuery): void {
 		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the same path, its query changed
 		void goto(`?${writeItemQuery(next, page.url.searchParams)}`, { reset: false });
+	}
+
+	/** Read the list again: the project page's Refresh, and the reader's return to the window. */
+	export function reload(): void {
+		void read?.refresh();
 	}
 </script>
 

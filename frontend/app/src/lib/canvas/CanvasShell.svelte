@@ -591,8 +591,9 @@
 	<TaskPanel
 		{controller}
 		{task}
-		permissions={walk.browsing ? [] : permissions}
+		{permissions}
 		{me}
+		browsing={walk.browsing}
 		onchanged={ontaskchange}
 	/>
 	<!-- Another replica's work is offered only to someone who may review the item: the replicas are independent until

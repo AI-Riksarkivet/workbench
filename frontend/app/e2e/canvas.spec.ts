@@ -887,7 +887,10 @@ test('a drawn box opens the class picker at the shape: its keys class it, Escape
 }) => {
 	await as(context, 'Annotator');
 	await openItem(page);
-	await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Pages');
+	// The project's crumb is its title and a link back to it.
+	await expect(
+		page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Pages' }),
+	).toHaveAttribute('href', /^\/projects\/pages(\?|$)/);
 	await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText(NAME);
 	// The tab says the same names, not the ids the URL carries.
 	await expect(page).toHaveTitle(`${NAME} · Pages · workbench`);
@@ -1297,9 +1300,11 @@ test('a reviewer judges three items in one pass by key: accepts one, sends one b
 	const accepted = page.waitForRequest((req) => req.url().includes('/tasks/judging-a/events'));
 	await page.keyboard.press('Shift+A');
 	expect((await accepted).postDataJSON()).toEqual({ event: 'accept' });
-	await expect(page).toHaveURL(/\/tasks\/judging-b\?pass=review/);
+	// Where the reviewer is in the pass they started, out of what waited then: not the shrinking remainder.
+	await expect(page).toHaveURL(/\/tasks\/judging-b\?of=3&done=1&pass=review/);
 	await ready(page);
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Bert Beta’s work');
+	await expect(walk).toContainText('item 2 / 3');
 
 	await page.keyboard.press('Shift+R');
 	const dialog = page.getByTestId('send-back-dialog');
@@ -1310,9 +1315,10 @@ test('a reviewer judges three items in one pass by key: accepts one, sends one b
 		event: 'request_changes',
 		message: 'Box the seal too.',
 	});
-	await expect(page).toHaveURL(/\/tasks\/judging-c\?pass=review/);
+	await expect(page).toHaveURL(/\/tasks\/judging-c\?of=3&done=2&pass=review/);
 	await ready(page);
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Sam Else’s work');
+	await expect(walk).toContainText('item 3 / 3');
 
 	// The fix is made on the canvas itself and saved before the verdict that carries it.
 	const calls = annotationCalls(page);
@@ -1339,6 +1345,9 @@ test('a person browses a project’s labeled work read-only, one item after anot
 	context,
 }) => {
 	await as(context, 'Reviewer');
+	// The labeled work: an item claimed and never drawn on is not among it.
+	await page.goto('/projects/judging?tab=browse');
+	await expect(page.getByTestId('browse-list').getByRole('link')).toHaveCount(4);
 	await page.goto('/projects/judging?tab=browse&label=figure');
 	await expect(page.getByTestId('browse-list').getByRole('link')).toHaveCount(4);
 	await page.getByTestId('browse-start').click();
@@ -1352,6 +1361,11 @@ test('a person browses a project’s labeled work read-only, one item after anot
 	);
 	await expect(page.getByRole('button', { name: 'Rectangle', exact: true })).toHaveCount(0);
 	await expect(page.getByTestId('task-panel').getByRole('button')).toHaveCount(0);
+	// The panel says where the item stands, in browse words, never a labeler's or a reviewer's.
+	await expect(page.getByTestId('task-panel-title')).toHaveText('Browsing');
+	await expect(page.getByTestId('task-panel')).toContainText(
+		'Submitted by Alma Alpha, waiting for a reviewer. You see the item as it was last saved',
+	);
 
 	await page.keyboard.press('PageDown');
 	await expect(page).toHaveURL(/\/tasks\/judging-b\?label=figure&pass=browse/);

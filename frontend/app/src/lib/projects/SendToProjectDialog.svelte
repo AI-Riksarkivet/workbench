@@ -31,7 +31,7 @@
 		total: number;
 		from: SendSource;
 		/** Which surface the selection is from, said in the title. */
-		origin: 'search' | 'atlas';
+		origin: 'search' | 'atlas' | 'rows';
 		/** The organisations the reader belongs to: whose projects are offered, and where a new one is made. */
 		orgs: string[];
 		/** The project the page works in (`?project=`), offered first. */
@@ -158,7 +158,11 @@
 	<Dialog.Content class="sm:max-w-md" data-testid="send-to-project">
 		<Dialog.Title>Send {count} to a project</Dialog.Title>
 		<Dialog.Description>
-			From {origin === 'atlas' ? 'the atlas selection' : 'the search results'} on
+			From {origin === 'atlas'
+				? 'the atlas selection'
+				: origin === 'rows'
+					? 'the rows listed'
+					: 'the search results'} on
 			<span class="font-mono break-all">{from.dataset}</span>. Each becomes an item of the project;
 			where it came from travels with it.
 		</Dialog.Description>

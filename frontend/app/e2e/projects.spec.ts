@@ -259,25 +259,35 @@ test('a manager edits the labels while labeling, and the edit is gone once the p
 	await expect(page.getByTestId('edit-ontology-trigger')).toHaveCount(0);
 });
 
-test('a manager grants a role, and revoking the last owner is refused in the door’s words', async ({
+test('a manager grants a role by name or by principal, and revoking the last owner is refused in the door’s words', async ({
 	page,
 	context,
 }) => {
-	const who = await as(context, 'Owner');
+	await as(context, 'Owner');
 	await letters(page);
 	await page.getByTestId('tab-settings').click();
 	const members = page.getByTestId('members-panel');
 	await members.getByRole('button', { name: 'Show who has access' }).click();
-	const me = who.sub.replace(/^user:/, '');
 	await expect(members.getByTestId('member-row')).toHaveCount(1);
 
-	await members.getByLabel('Person to grant').fill('kc~fay');
+	// Offered by name: the people of the projects the owner manages whom the annotator knows (they signed in).
+	await expect(members.getByLabel('Person to grant')).toBeVisible();
+	await members.getByLabel('Person to grant').click();
+	await page.getByRole('option', { name: 'Alma Alpha' }).click();
 	await members.getByTestId('grant-member').click();
-	await expect(members.getByTestId('member-row')).toHaveCount(2);
-	await members.getByRole('button', { name: `Revoke owner from ${me}` }).click();
+	await expect(members.getByTestId('member-row').filter({ hasText: 'Alma Alpha' })).toBeVisible();
+	// Anyone else by their principal: someone who has not signed in here yet is that principal, said so.
+	await members.getByLabel('Principal to grant').fill('kc~fay');
+	await members.getByTestId('grant-member').click();
+	const fay = members.getByTestId('member-row').filter({ hasText: 'kc~fay' });
+	await expect(fay).toContainText('has not signed in here yet');
+	await expect(fay.getByRole('button', { name: 'Revoke annotator from fay' })).toBeVisible();
+	await members.getByRole('button', { name: 'Revoke owner from Owner' }).click();
 
-	await expect(members).toContainText('holds the only remaining owner on this project');
-	await expect(members.getByTestId('member-row')).toHaveCount(2);
+	await expect(members).toContainText(
+		'Owner holds the only remaining owner on this project — grant another owner or manager first',
+	);
+	await expect(members.getByTestId('member-row')).toHaveCount(3);
 });
 
 test('a project the reader cannot see reads the same whether it exists or not', async ({
@@ -326,6 +336,46 @@ test('the rows a search answered are sent to a project, labelled, and appear in 
 	// The seeded item and the sent one share the key: two rows, the sent one with its suggested label.
 	await expect(row(page, items[0]!.source.keys[0]!)).toHaveCount(2);
 	expect((await callsOf(page, who)).filter((call) => call.refused !== undefined)).toEqual([]);
+});
+
+test('a corpus of texts is browsed by its rows a page at a time, in the table too, and a page of them is sent as text', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await page.goto('/datasets/lake~acme%24memos?project=letters');
+
+	await expect(page.getByText('Browsing 30 rows')).toBeVisible();
+	const results = page.getByRole('list', { name: 'Search results' });
+	await expect(results.getByRole('listitem')).toHaveCount(24);
+	await page.getByRole('navigation', { name: 'Row pages' }).getByLabel('Next page').click();
+	await expect(results.getByRole('listitem')).toHaveCount(6);
+	await page.getByRole('button', { name: 'Table', exact: true }).click();
+	await expect(
+		page.getByRole('cell', { name: /Line 10: the harbour master/ }).first(),
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Send to a project' }).click();
+	const dialog = page.getByTestId('send-to-project');
+	await expect(dialog).toContainText('From the rows listed on lake~acme$memos');
+	const posted = page.waitForRequest((req) =>
+		req.url().endsWith('/api/annotator/projects/letters/items'),
+	);
+
+	await dialog.getByRole('button', { name: 'Send 6 items', exact: true }).click();
+
+	const items = (
+		(await posted).postDataJSON() as {
+			items: { source: { where: string; keys: string[] }; media: { kind: string } }[];
+		}
+	).items;
+	expect(items.map((item) => [item.source.where, item.source.keys[0], item.media.kind])).toEqual(
+		[4, 5, 6, 7, 8, 9].map((line) => ['lake~acme$memos', `memo2/${line}`, 'text']),
+	);
+	expect((await callsOf(page, who)).filter((call) => call.refused !== undefined)).toEqual([]);
+	// Six items, each its own row's key, each called by its memo and its place in it, never alike.
+	await dialog.getByRole('link', { name: 'Open the project' }).click();
+	for (const line of [4, 9])
+		await expect(row(page, `memo2/${line}`)).toContainText(`Memo 3 · part ${line + 1}`);
 });
 
 const panel = (page: Page) => page.goto('/projects/panel');
@@ -395,19 +445,52 @@ test('a bulk accept fires one gated event per item, and a partial failure names 
 	page,
 	context,
 }) => {
+	const who = await as(context, 'Manager');
+	await page.request.post(
+		`${EDGE}/api/viewer/__fault?sub=${encodeURIComponent(who.sub)}&path=/tasks/judging-b/events&kind=fail`,
+	);
+	await page.goto('/projects/judging?state=in_review');
+	await page.getByRole('checkbox', { name: 'Select all rows' }).check();
+
+	await page.getByTestId('bulk-accept').click();
+
+	await expect(
+		page.getByText(
+			/^2 of 3 — A letter about the harvest · page 1: the annotator could not reach its state store$/,
+		),
+	).toBeVisible();
+	await expect(page.getByTestId('state-accepted')).toHaveText(/accepted\s*3$/);
+	await expect(page.getByTestId('state-in_review')).toHaveText(/in review\s*1$/);
+});
+
+test('an item the reader submitted is offered no verdict in the table, the quick view or a bulk accept', async ({
+	page,
+	context,
+}) => {
 	await as(context, 'Manager');
+	await page.setViewportSize({ width: 1440, height: 900 });
 	await panel(page);
 	const replicas = row(page, 'letter-002/0');
+	const own = replicas.filter({ hasNotText: 'Alma Alpha' });
+	const verdict = { name: /^(Accept|Fix & accept|Request changes…)$/ };
+	await expect(replicas.filter({ hasText: 'Alma Alpha' }).getByRole('button', verdict)).toHaveCount(
+		3,
+	);
+	await expect(own.getByRole('button', verdict)).toHaveCount(0);
+	await own.getByRole('button', { name: /beside the table/ }).click();
+	const quick = page.getByTestId('quick-view');
+	// The pane names the item as the table does, and its actions stay in view at a laptop's height.
+	await expect(quick.getByTestId('quick-name')).toHaveText('A letter about the harvest · page 1');
+	await expect(quick.getByTestId('quick-accept')).toHaveCount(0);
+	await expect(quick.getByTestId('quick-next')).toBeInViewport();
 	await replicas.nth(0).getByRole('checkbox').check();
 	await replicas.nth(1).getByRole('checkbox').check();
 
 	await page.getByTestId('bulk-accept').click();
 
-	await expect(
-		page.getByText(/^1 of 2 — .*a reviewer may not review their own submission$/),
-	).toBeVisible();
+	await expect(page.getByTestId('queue-notice')).toHaveText('Accept: 1 item.');
 	await expect(replicas.filter({ hasText: 'Alma Alpha' })).toContainText('accepted');
-	await expect(replicas.filter({ hasNotText: 'Alma Alpha' })).toContainText('in review');
+	await expect(own).toContainText('in review');
 });
 
 test('annotations made elsewhere are imported into the item the reader holds', async ({
@@ -612,7 +695,7 @@ test('the data manager filters, counts and sorts in the annotator, and its addre
 	await page.reload();
 
 	await expect(page.getByTestId('state-in_review')).toHaveAttribute('aria-pressed', 'true');
-	await expect(page.getByTestId('filter-count')).toContainText('3 of 4 items match.');
+	await expect(page.getByTestId('filter-count')).toContainText('3 of 5 items match.');
 	const rows = page
 		.locator('[data-slot="data-table-card"]')
 		.getByRole('row')
@@ -623,6 +706,50 @@ test('the data manager filters, counts and sorts in the annotator, and its addre
 	await expect(rows.first().getByTitle('user:someone-else')).toHaveText('Sam Else');
 	await expect(rows.nth(1)).toContainText('Bert Beta');
 	await expect(rows.nth(2)).toContainText('Alma Alpha');
+});
+
+test('select all matching reads the filter a page at a time up to its cap and says so, and a date range reads the days it names', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Manager');
+	const offsets: string[] = [];
+	page.on('request', (req) => {
+		const url = new URL(req.url());
+		if (url.pathname.endsWith('/projects/heap/tasks') && url.searchParams.get('limit') === '200')
+			offsets.push(url.searchParams.get('offset') ?? '');
+	});
+	await page.goto('/projects/heap');
+	await page.getByRole('checkbox', { name: 'Select all rows' }).check();
+
+	await page.getByTestId('select-all-matching').click();
+
+	await expect(page.getByTestId('select-all-held')).toContainText(
+		'1,000 matching items are selected.',
+	);
+	await expect(page.getByTestId('queue-notice')).toHaveText(
+		'The filter matches 1,050 items: the first 1,000 are selected. Narrow the filter to act on the rest.',
+	);
+	expect(offsets).toEqual(['0', '200', '400', '600', '800']);
+	await page.getByTestId('select-all-clear').click();
+	await page.getByLabel('Which date the range reads').click();
+	await expect(page.getByRole('option', { name: 'Sent' })).toBeVisible();
+	// The field and both days chosen in one go, each before the address holds the one before: none is lost.
+	await page.evaluate(() => {
+		const sent = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+			(o) => o.textContent?.trim() === 'Sent',
+		);
+		// The listbox selects on pointerup (bits-ui's select item).
+		sent?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse' }));
+		for (const id of ['filter-since', 'filter-until']) {
+			const day = document.querySelector<HTMLInputElement>(`[data-testid="${id}"]`);
+			if (!day) throw new Error(`no ${id}`);
+			day.value = '2026-11-01';
+			day.dispatchEvent(new Event('change', { bubbles: true }));
+		}
+	});
+	await expect(page).toHaveURL(/date=sent&since=2026-11-01&until=2026-11-01/);
+	await expect(page.getByTestId('filter-count')).toHaveText(/^50 of 1,050\s+items match\./);
 });
 
 test('a bulk assign over the items a filter matches assigns each one to the person named', async ({
@@ -647,6 +774,39 @@ test('a bulk assign over the items a filter matches assigns each one to the pers
 	await expect(page.getByTestId('state-unassigned')).toContainText('0');
 	await page.getByTestId('clear-filter').click();
 	await expect(page.getByText('fay · pinned')).toHaveCount(count);
+});
+
+test('the items tab is read again when the reader comes back to the window, and by Refresh', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Manager');
+	await page.goto('/projects/letters');
+	const claimed = page.getByTestId('state-claimed');
+	const reads = (n: number) => new RegExp(`claimed\\s*${n}$`);
+	await expect(claimed).toHaveText(reads(1));
+	// The same person acts in another tab (the mock keeps one world per person): someone acted meanwhile.
+	const other = await context.newPage();
+	await other.goto('/projects/letters');
+	const act = async (event: 'Claim' | 'Release', left: number): Promise<void> => {
+		await other.getByRole('button', { name: event, exact: true }).first().click();
+		await expect(other.getByTestId('state-claimed')).toHaveText(reads(left));
+	};
+	await act('Claim', 2);
+	await expect(claimed).toHaveText(reads(1));
+
+	await page.bringToFront();
+	await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+	await expect(claimed).toHaveText(reads(2));
+	await act('Release', 1);
+	const listed = page.waitForRequest(
+		(req) =>
+			req.url().includes('/projects/letters/tasks?') && req.url().includes('include=details'),
+	);
+	await page.getByRole('button', { name: 'Refresh' }).click();
+	await listed;
+	await expect(claimed).toHaveText(reads(1));
 });
 
 test('a manager changes the settings, and what may no longer change says why', async ({
@@ -690,6 +850,6 @@ test('the review tab lists the work waiting for the reviewer by its annotators�
 	await expect(list.getByTestId('person')).toHaveText(['Alma Alpha', 'Bert Beta', 'Sam Else']);
 	await expect(page.getByTestId('review-start')).toHaveAttribute(
 		'href',
-		/\/projects\/judging\/tasks\/judging-a\?pass=review&project=judging$/,
+		/\/projects\/judging\/tasks\/judging-a\?of=3&pass=review&project=judging$/,
 	);
 });

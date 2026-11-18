@@ -53,8 +53,15 @@
 	const ds = activeView();
 	/** A dataset that declares no search is browsed only: no search bar is offered for it. */
 	const searchable = ds.searchModes.length > 0;
+	/** A dataset whose items are its rows (a corpus of texts, no document) is browsed by its rows, as hits, a page at a
+	 *  time, and they are sent to a project from there. */
+	const itemsAreRows = ds.itemsAreRows;
 
-	const hits = $derived(explore.hits);
+	// What the results list shows: the search's hits, or while browsing a dataset of rows, a page of its rows.
+	const browseRows = $derived(explore.browsing && itemsAreRows ? explore.rows() : null);
+	const hits = $derived(browseRows ? (browseRows.current?.items ?? []) : explore.hits);
+	/** Browsing documents (a dataset whose items are documents' parts), not rows. */
+	const browsingDocuments = $derived(explore.browsing && !itemsAreRows);
 	const active = $derived(explore.active);
 	const activeKey = $derived(active ? hitKey(active) : null);
 	const gridHighlight = $derived(makeHighlighter(queryTerms(explore.resultsQuery)));
@@ -68,9 +75,11 @@
 	const sendTotal = $derived(explore.mapSelection?.points ?? hits.length);
 	const orgs = $derived((page.data.me?.orgs ?? []).map((o: { org: string }) => o.org));
 
-	const documents = $derived(explore.browsing ? explore.documents() : null);
+	const documents = $derived(browsingDocuments ? explore.documents() : null);
 	const docs = $derived(documents?.current?.docs ?? []);
-	const docsTotal = $derived(documents?.current?.total ?? 0);
+	const docsTotal = $derived(
+		(browseRows ? browseRows.current?.total : documents?.current?.total) ?? 0,
+	);
 	const docsTotalPages = $derived(Math.max(1, Math.ceil(docsTotal / PER_PAGE)));
 	const activeDocId = $derived(active ? ds.docId(active) : null);
 
@@ -189,6 +198,35 @@
 				: String(err);
 </script>
 
+{#snippet pager(label: string)}
+	{#if docsTotalPages > 1}
+		<nav
+			class="border-border bg-card/80 sticky bottom-0 flex items-center justify-end gap-1 border-t px-4 py-2 text-xs backdrop-blur"
+			aria-label={label}
+		>
+			<span class="text-muted-foreground mr-2">Page {explore.docsPage} of {docsTotalPages}</span>
+			<Button
+				variant="outline"
+				size="icon-sm"
+				aria-label="Previous page"
+				disabled={explore.docsPage <= 1}
+				onclick={() => (explore.docsPage = Math.max(1, explore.docsPage - 1))}
+			>
+				<ChevronLeft />
+			</Button>
+			<Button
+				variant="outline"
+				size="icon-sm"
+				aria-label="Next page"
+				disabled={explore.docsPage >= docsTotalPages}
+				onclick={() => (explore.docsPage = Math.min(docsTotalPages, explore.docsPage + 1))}
+			>
+				<ChevronRight />
+			</Button>
+		</nav>
+	{/if}
+{/snippet}
+
 {#snippet panelActions()}
 	<Button
 		variant="outline"
@@ -294,7 +332,11 @@
 		class="border-border bg-card/30 flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-xs"
 	>
 		<span class="text-muted-foreground min-w-0" role="status">
-			{#if explore.browsing}
+			{#if browseRows}
+				{#if !(browseRows.error && !browseRows.current)}
+					Browsing {docsTotal} row{docsTotal === 1 ? '' : 's'}
+				{/if}
+			{:else if explore.browsing}
 				{#if !(documents?.error && !documents.current)}
 					Browsing {docsTotal} document{docsTotal === 1 ? '' : 's'}
 				{/if}
@@ -320,7 +362,7 @@
 		</span>
 
 		<div class="ml-auto flex items-center gap-2">
-			{#if !explore.browsing && hits.length > 0}
+			{#if (!explore.browsing || browseRows) && hits.length > 0}
 				<GatedAction
 					allowed={sendBlocked === null}
 					action="Send to a project"
@@ -337,7 +379,7 @@
 					</Button>
 				</GatedAction>
 			{/if}
-			{#if explore.layout === 'table' && explore.browsing}
+			{#if explore.layout === 'table' && browsingDocuments}
 				<ColumnsMenu columns={DOC_COLUMNS} shown={docTableCols} ontoggle={toggleDocCol} />
 			{:else if explore.layout === 'table'}
 				<ColumnsMenu columns={hitColumns} shown={tableCols} ontoggle={toggleCol}>
@@ -416,7 +458,7 @@
 	</div>
 
 	<div class="relative min-h-0 flex-1 overflow-y-auto">
-		{#if explore.browsing}
+		{#if browsingDocuments}
 			{#if documents?.error && !documents.current}
 				<div class="flex flex-col items-center gap-2 px-6 py-8 text-center text-sm">
 					<p class="text-destructive" role="alert">
@@ -527,33 +569,24 @@
 				</ul>
 			{/if}
 
-			{#if docsTotalPages > 1}
-				<nav
-					class="border-border bg-card/80 sticky bottom-0 flex items-center justify-end gap-1 border-t px-4 py-2 text-xs backdrop-blur"
-					aria-label="Document pages"
-				>
-					<span class="text-muted-foreground mr-2">Page {explore.docsPage} of {docsTotalPages}</span
-					>
-					<Button
-						variant="outline"
-						size="icon-sm"
-						aria-label="Previous page"
-						disabled={explore.docsPage <= 1}
-						onclick={() => (explore.docsPage = Math.max(1, explore.docsPage - 1))}
-					>
-						<ChevronLeft />
-					</Button>
-					<Button
-						variant="outline"
-						size="icon-sm"
-						aria-label="Next page"
-						disabled={explore.docsPage >= docsTotalPages}
-						onclick={() => (explore.docsPage = Math.min(docsTotalPages, explore.docsPage + 1))}
-					>
-						<ChevronRight />
-					</Button>
-				</nav>
-			{/if}
+			{@render pager('Document pages')}
+		{:else if browseRows && browseRows.error && !browseRows.current}
+			<div class="flex flex-col items-center gap-2 px-6 py-8 text-center text-sm">
+				<p class="text-destructive" role="alert">
+					The rows could not be read: {message(browseRows.error)}
+				</p>
+				<Button variant="outline" size="sm" onclick={() => void browseRows?.refresh()}>
+					Try again
+				</Button>
+			</div>
+		{:else if browseRows && !browseRows.current}
+			<div class="text-muted-foreground flex items-center justify-center py-8 text-sm">
+				<Loader2 class="mr-2 size-4 animate-spin" /> Reading the rows…
+			</div>
+		{:else if browseRows && hits.length === 0}
+			<p class="text-muted-foreground px-6 py-8 text-center text-sm">
+				This dataset has no rows to browse.
+			</p>
 		{:else if explore.loadingHits}
 			<div class="text-muted-foreground flex items-center justify-center py-8 text-sm">
 				<Loader2 class="mr-2 size-4 animate-spin" /> Searching…
@@ -618,6 +651,9 @@
 			/>
 		{/if}
 
+		{#if browseRows}
+			{@render pager('Row pages')}
+		{/if}
 		{#if !explore.browsing && hits.length > 0 && !explore.allLoaded}
 			<div class="border-border bg-card/40 flex justify-center border-t px-4 py-3">
 				<Button
@@ -642,7 +678,7 @@
 	keys={sendKeys}
 	total={sendTotal}
 	from={{ dataset: ds.id, version: ds.rowTableVersion, mediaKind: ds.mediaKind }}
-	origin={explore.mapSelection ? 'atlas' : 'search'}
+	origin={explore.mapSelection ? 'atlas' : browseRows ? 'rows' : 'search'}
 	{orgs}
 	project={projectOf(page.url)}
 />

@@ -384,6 +384,26 @@ export async function listDocuments(
 	return asJson(r, DocumentsResponseSchema);
 }
 
+// ── Rows (a dataset whose items are its rows: it declares no document) ─────────
+const RowsPageSchema = v.object({
+	total: v.pipe(v.number(), v.integer()),
+	page: v.pipe(v.number(), v.integer()),
+	items: v.array(RowSchema),
+});
+export type RowsPage = v.InferOutput<typeof RowsPageSchema>;
+
+/** One page of the active dataset's declared row table, each row in a search hit's shape (`GET /api/rows`). */
+export async function listRows(
+	page = 1,
+	perPage = 24,
+	fetcher: Fetcher = apiFetch,
+): Promise<RowsPage> {
+	const suffix = activeView().datasetParam();
+	const ds = suffix ? `&dataset=${encodeURIComponent(suffix)}` : '';
+	const r = await fetcher(apiUrl(`/api/rows?page=${page}&per_page=${perPage}${ds}`));
+	return asJson(r, RowsPageSchema);
+}
+
 // ── Filterable columns ───────────────────────────────────────────────────
 const ColumnSchema = v.object({ name: v.string(), type: v.string() });
 export type ColumnInfo = v.InferOutput<typeof ColumnSchema>;

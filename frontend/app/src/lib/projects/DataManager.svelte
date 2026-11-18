@@ -5,8 +5,10 @@
 	// snapshot. The address is the view: the filters, the sort, the page and its size are the page's URL
 	// (`item-query.ts`), so a link, a reload and Back restore the screen.
 	//
-	// Every action button renders from the task's OWN `legal_events` (the backend's machine tables), narrowed to what
-	// the reader's role permits. A denial is the door's 403 or 409, shown as it is; a disabled button is never the gate.
+	// Every action button renders from the task's OWN `legal_events`: what the annotator says THIS reader may fire on it
+	// now (their role, and the identity rules: no verdict on their own submission, no holder's event on another's
+	// claim), the one rule the quick view and the canvas's panel read too. A denial is still the door's 403 or 409,
+	// shown as it is; a disabled button is never the gate.
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -57,7 +59,7 @@
 	import PersonName from './PersonName.svelte';
 	import { personName } from './people.ts';
 	import { itemName } from './item-name.ts';
-	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant } from './presentation.ts';
+	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant, VERDICTS } from './presentation.ts';
 	import {
 		DATE_FIELDS,
 		DEFAULT_QUERY,
@@ -84,8 +86,8 @@
 		onchanged,
 	}: {
 		projectId: string;
-		/** The project permissions the reader holds: a task's legal event is offered only when they hold the permission
-		 *  it needs. The door still decides. */
+		/** The project permissions the reader holds: whether they manage (assign, the members), and whether an item opens
+		 *  to annotate or to view. */
 		permissions: readonly string[];
 		me: string | null;
 		/** The project's classes, for the filter by class. */
@@ -100,11 +102,15 @@
 		adjudications?: Record<string, Adjudication>;
 		/** Whether this project can still have items removed (draft/labeling). The door re-checks. */
 		droppable?: boolean;
-		/** Fired after any action that changed items, so the page reads the project again. */
+		/** Fired after any action that changed items, so the page reads the project again, and this tab (`reload`). */
 		onchanged: () => void;
 	} = $props();
 
-	const query = $derived(readItemQuery(page.url.searchParams));
+	// The address a change asked for while its navigation is under way: the view is read from it until the URL holds it,
+	// so a second change made before the first lands (a date field picked, then a day typed) builds on the first rather
+	// than on the address the first is replacing.
+	let asked = $state.raw<URLSearchParams | null>(null);
+	const query = $derived(readItemQuery(asked ?? page.url.searchParams));
 	const filter = $derived(doorParams(query, me).toString());
 	const read = $derived(
 		pageTasks({ projectId, filter, limit: query.size, offset: (query.page - 1) * query.size }),
@@ -125,13 +131,23 @@
 			rowSelection = {};
 			known = new Map();
 		}
-		const address = writeItemQuery(next, page.url.searchParams);
+		const address = writeItemQuery(next, asked ?? page.url.searchParams);
+		asked = address;
 		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the same path, its query changed
-		void goto(`?${address}`, { reset: false });
+		void goto(`?${address}`, { reset: false }).finally(() => {
+			if (asked === address) asked = null;
+		});
 	}
+	/** After an action changed items: the page reads the project again, this tab's reads with it (`reload`). */
 	function refresh(): void {
-		void read.refresh();
 		onchanged();
+	}
+
+	/** Read again everything this tab shows: the page of items with its counts, and the members a manager assigns from.
+	 *  The project page calls it on its Refresh and when the reader comes back to the window. */
+	export function reload(): void {
+		void read.refresh();
+		void membersRead?.refresh();
 	}
 
 	/** The item's labeling page, carrying the reader's project. */
@@ -143,12 +159,7 @@
 		return readOnlyReason(task, permissions, me) === null ? 'Annotate' : 'View';
 	}
 
-	// Every task as the READER may act on it: its legal events narrowed to the ones their role permits.
-	const narrow = (t: TaskDetail): TaskDetail => ({
-		...t,
-		legal_events: t.legal_events.filter((e) => permissions.includes(e.permission)),
-	});
-	const tasks = $derived((listing?.details ?? []).map(narrow));
+	const tasks = $derived(listing?.details ?? []);
 
 	// The dataset row behind each item on this page, and its dataset's declaration, to call it by its document's title.
 	// Decoration on a table that works without them: an unreachable viewer costs the names, never the table.
@@ -254,7 +265,7 @@
 			notice = { ok: false, text: result.detail };
 			return;
 		}
-		const all = result.data.tasks.map(narrow);
+		const all = result.data.tasks;
 		known = new Map(all.map((t) => [t.task_id, t]));
 		rowSelection = Object.fromEntries(all.map((t) => [t.task_id, true]));
 		if (result.data.capped)
@@ -365,11 +376,6 @@
 	const rows = $derived(consensusN > 1 ? 'replicas' : 'items');
 	const day = (iso: string | null | undefined): string =>
 		iso ? new Date(iso).toLocaleDateString() : '';
-	const VERDICTS: Record<string, string> = {
-		accepted: 'accepted',
-		fix_and_accept: 'fixed & accepted',
-		request_changes: 'sent back',
-	};
 
 	// The table, sorted and paged by the annotator: TanStack renders one page and reports what the person asked for.
 	const SORTABLE: readonly Sort[] = ['item', 'state', 'assignee', 'submitted', 'reviewed', 'sent'];
@@ -946,6 +952,7 @@
 		onfire={(task, event) => void fireFromQuick(task, event)}
 		{canvasHref}
 		{canvasVerb}
+		nameOf={called}
 	/>
 {/snippet}
 

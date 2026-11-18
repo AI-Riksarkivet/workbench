@@ -377,3 +377,12 @@ export const MemberListSchema = v.object({
 	people: PeopleSchema,
 });
 export type MemberList = v.InferOutput<typeof MemberListSchema>;
+
+/** The people a manager may grant a role to by name (`GET /projects/{id}/members/candidates`): who holds a role on a
+ *  project of this organisation the manager manages, and is known to the annotator by name. */
+export const CandidatesSchema = v.object({
+	people: v.array(v.object({ principal: v.string(), name: v.string() })),
+	/** The set may be incomplete: someone not listed is granted by their typed principal. */
+	truncated: v.optional(v.boolean(), false),
+});
+export type Candidates = v.InferOutput<typeof CandidatesSchema>;
