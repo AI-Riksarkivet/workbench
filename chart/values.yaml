@@ -285,6 +285,12 @@ app:
     # DPoP), `offered` (where offered, else a bearer) or `off`. Empty takes the services' rule: `required` under
     # `auth.oidc.dpopRequired`, which refuses any other, and `offered` otherwise.
     dpop: ""
+    # Whether a reload signs the person in again from the provider's own login session, with no form: the app's first
+    # sign-in asks with `prompt=none` (docs/DEPLOY.md, "Staying signed in across a reload"). Keep it on for a provider
+    # that keeps a session and honours `prompt=none` (Keycloak; Dex with `DEX_SESSIONS_ENABLED`); turn it off for one
+    # that keeps none (Dex without it), which shows its form for `prompt=none` and, with its approval screen on, then
+    # refuses the request, so the person would meet its form twice on every reload.
+    silentSignIn: true
   resources:
     requests: { cpu: 10m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }

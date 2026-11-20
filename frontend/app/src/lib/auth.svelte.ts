@@ -5,7 +5,18 @@
  * The app has no backend, so no secret exists to hold: the browser proves possession of the code with
  * the PKCE verifier and keeps the tokens IN MEMORY (`InMemoryWebStorage`). Only the transient sign-in
  * state (the PKCE verifier and the return path, for one redirect) rides `sessionStorage`. A reload
- * starts signed out and goes back to the issuer.
+ * starts with no tokens and goes back to the issuer (ADR 0020).
+ *
+ * A RELOAD KEEPS THE SESSION THROUGH THE ISSUER'S OWN, where the deployment allows it (`/config.json`'s
+ * `silentSignIn`, on by default; off, no sign-in sends `prompt=none`). The first sign-in a tab sends asks with `prompt=none`
+ * (OIDC Core § 3.1.2.1), by a top-level redirect: an issuer that holds the person's login session answers with a code
+ * and no form, and one that holds none answers `login_required` (or another error) at the callback, which sends the
+ * same request again ONCE, interactively (`completeLogin`). A top-level redirect, not a hidden iframe: the issuer's
+ * session cookie rides a top-level navigation under any third-party-cookie policy (`SameSite=Lax` included), and the
+ * issuer need allow no framing. Not a stored refresh token: nothing that can be presented as the person is written to
+ * browser storage. What is stored holds no credential: `SILENT_TRIED` (this tab asked silently and has not signed in
+ * since, so the next sign-in shows the form: an issuer that answers `prompt=none` with an error page of its own, or
+ * shows its form anyway, never loops), and the sign-out record, `SIGNED_OUT` and `ANSWERED` (below `REAUTHENTICATE`).
  *
  * WHAT THE PROVIDER OFFERS DECIDES THE REST, read from its discovery document before anything is asked:
  *
@@ -26,7 +37,13 @@
  *
  * The issuer, client, scopes and the services' public bases come from `/config.json` (`config.ts`).
  */
-import { InMemoryWebStorage, User, UserManager, WebStorageStateStore } from 'oidc-client-ts';
+import {
+	ErrorResponse,
+	InMemoryWebStorage,
+	User,
+	UserManager,
+	WebStorageStateStore,
+} from 'oidc-client-ts';
 import type { DPoPState, OidcMetadata, UserManagerSettings } from 'oidc-client-ts';
 import * as v from 'valibot';
 import { readConfig } from './config.ts';
@@ -73,6 +90,9 @@ class AuthState {
 	/** Why `/config.json` could not be used, when it could not: the app then runs nothing. */
 	configError = $state<string | null>(null);
 	session = $state.raw<Session | null>(null);
+	/** Whether this tab holds tokens for `session`: false once they are dropped (a sign-out here or in another tab),
+	 *  while the session shown stays until the person signs in again, as an ended one does. */
+	tokensHeld = $state(false);
 }
 
 export const auth = new AuthState();
@@ -83,6 +103,26 @@ let user: User | null = null;
 let ready: Promise<void> | null = null;
 /** The renewal in flight, which every caller that finds the session expired waits on. */
 let renewing: Promise<User | null> | null = null;
+/** The session's generation: bumped whenever this tab drops its tokens (`dropTokens`). A renewal or a signature reads it
+ *  when it starts and again when its await settles, and keeps nothing from an older generation: one that straddled a
+ *  sign-out ends with no token, never the one from before it. (A sign-in is judged by the sign-out record instead,
+ *  `completeLogin`, which sees every drop: each one follows a new sign-out id.) */
+let generation = 0;
+
+/** Drop this tab's tokens: nothing that started before signs or installs one after (`generation`), and the expiry
+ *  timer stops (`auth.tokensHeld`). The library's own store is the caller's to clear, after it read what it needs. */
+function dropTokens(): void {
+	generation++;
+	user = null;
+	auth.tokensHeld = false;
+}
+
+/** Hold `fresh` as this tab's session. */
+function hold(fresh: User): void {
+	user = fresh;
+	auth.session = toSession(fresh);
+	auth.tokensHeld = true;
+}
 
 function toSession(held: User): Session {
 	const claims = held.profile;
@@ -100,6 +140,9 @@ export const RENEW_MARGIN_SECONDS = 2;
 
 /** Whether `held` is close enough to its expiry to be renewed before it is used. */
 const due = (held: User): boolean => (held.expires_in ?? Infinity) <= RENEW_MARGIN_SECONDS;
+
+/** The User Timing mark a request's signer sets when it waits on a renewal of the session. */
+const SIGNER_WAITS = 'workbench.signer-waits-for-renewal';
 
 /** The algorithm oidc-client-ts signs its DPoP proofs with. */
 const DPOP_ALGORITHM = 'ES256';
@@ -150,15 +193,27 @@ export function sessionSigner(
 	oidc: UserManager,
 	held: () => User | null,
 	renew: () => Promise<User | null>,
+	generationOf: () => number = () => 0,
 ): Signer {
 	return async (htu, method) => {
-		let current = held();
-		if (current && due(current) && current.refresh_token) current = (await renew()) ?? current;
+		const at = generationOf();
+		const before = held();
+		if (before && due(before) && before.refresh_token) {
+			// A User Timing mark, so a reader of the page's timeline (and the suite) can see a request wait on a renewal.
+			performance.clearMarks(SIGNER_WAITS);
+			performance.mark(SIGNER_WAITS);
+			await renew();
+		}
+		// What is held after the wait, never what was held before it: a sign-out meanwhile has left nobody held
+		// (`dropTokens`), and nothing can hold another before this resumes (a renewal starts only with someone held, and
+		// a sign-in completes only on the callback's own page load), so the generation needs no check here.
+		const current = held();
 		if (!current) return null;
 		if (current.expired) return ENDED;
 		if (current.token_type.toLowerCase() !== 'dpop')
 			return { token: current.access_token, proof: null };
 		const proof = await oidc.dpopProof(htu, current, method);
+		if (generationOf() !== at) return null;
 		return proof ? { token: current.access_token, proof } : null;
 	};
 }
@@ -167,12 +222,17 @@ export function sessionSigner(
  *  to renew with, or the provider refused. */
 function renew(): Promise<User | null> {
 	renewing ??= (async () => {
+		const at = generation;
 		try {
 			if (!manager || !user?.refresh_token) return null;
 			const fresh = await manager.signinSilent();
+			if (at !== generation) {
+				// Dropped while the issuer answered: the tokens it gave (which the library has just stored) are not kept.
+				await manager.removeUser();
+				return null;
+			}
 			if (!fresh) return null;
-			user = fresh;
-			auth.session = toSession(fresh);
+			hold(fresh);
 			return fresh;
 		} catch {
 			return null;
@@ -198,6 +258,7 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
 			return;
 		}
 		const config = read.config;
+		silentAllowed = config.silentSignIn;
 		setServices(config.services);
 		setCanvasSettings(config.canvas);
 		const authority = new URL(config.issuer, location.origin).href.replace(/\/$/, '');
@@ -225,7 +286,14 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
 			automaticSilentRenew: false,
 			monitorSession: false,
 		});
-		setSigner(sessionSigner(manager, () => user, renew));
+		setSigner(
+			sessionSigner(
+				manager,
+				() => user,
+				renew,
+				() => generation,
+			),
+		);
 		auth.enabled = true;
 	})();
 	return ready;
@@ -235,10 +303,105 @@ export function initAuth(fetch: typeof globalThis.fetch = globalThis.fetch): Pro
  *  session it keeps. */
 export const REAUTHENTICATE = { param: 'prompt', value: 'login' } as const;
 
+/** This tab asked the issuer for a sign-in without prompting and has not signed in since (`sessionStorage`). */
+const SILENT_TRIED = 'workbench.silent-sign-in-tried';
+/**
+ * THE SIGN-OUT RECORD, in `localStorage` so every tab of the origin reads the same, and never a credential: two random
+ * ids that name nobody and prove nothing.
+ *
+ * - `SIGNED_OUT` holds the id of the LAST sign-out in this browser, written by `logout` and only ever overwritten by the
+ *   next one, never removed.
+ * - `ANSWERED` holds the id of the sign-out the last completed sign-in answered (empty for none), written by
+ *   `completeLogin`.
+ *
+ * The rules, and the only places that read them:
+ * - SIGNED OUT is: the last sign-out's id differs from the answered one (a missing value reads as empty). Then no
+ *   sign-in is silent and each sends `prompt=login` (`redirect`). A first visit (neither value) is not signed out.
+ * - A sign-in records in its OIDC state the last sign-out's id when it was sent (`after`). At its callback it is held
+ *   only when the last sign-out's id is still that one, and then writes `ANSWERED` = that id; otherwise its tokens are
+ *   dropped unused and the person is asked again with `prompt=login`, whatever happened in between (another tab's
+ *   sign-in included: nothing is ever removed, so a sign-out cannot pass unseen).
+ * - A change of the last sign-out's id (a new value, unlike the old) drops the tokens of every other tab that sees it
+ *   (`signedOutElsewhere`); a change of `ANSWERED` drops nothing.
+ *
+ * Writes from two tabs cannot undo a sign-out: two sign-ins writing `ANSWERED` for the same id write the same value; a
+ * sign-in that recorded an older id finds a newer one at its callback and is discarded without writing; and a sign-out
+ * written between a sign-in's check and its write of `ANSWERED` leaves the last id unlike the answered one, so the
+ * browser stays signed out.
+ *
+ * Storage that refuses a read reads as no value, which is "not signed out": that errs toward a silent sign-in only where
+ * the same storage could not have recorded the sign-out either, the one case where a sign-out is not remembered past its
+ * page (and only the issuer's end-session ends it).
+ */
+const SIGNED_OUT = 'workbench.signed-out';
+const ANSWERED = 'workbench.signed-in-after';
+
+/** The last sign-out's id in this browser, empty for none. */
+const lastSignOut = (): string => noted(browser, SIGNED_OUT) ?? '';
+
+/** Whether the person signed out in this browser and has not signed in since. */
+const signedOutHere = (): boolean => lastSignOut() !== (noted(browser, ANSWERED) ?? '');
+/** Where this tab notes a sign-in it sent to the provider, until the provider sends it back. */
+const PENDING_SIGN_IN = 'workbench.sign-in-pending';
+
+/** Note `value` under `key` in `store`, or remove it (null). */
+function note(store: () => Storage, key: string, value: string | null): void {
+	try {
+		if (value === null) store().removeItem(key);
+		else store().setItem(key, value);
+	} catch {
+		// Storage refused: without this tab's sessionStorage no sign-in completes at all (its PKCE state lives there);
+		// without localStorage a sign-out is not remembered past this page, and only its issuer's end-session ends it.
+	}
+}
+
+/** What `store` holds under `key`, or null. */
+function noted(store: () => Storage, key: string): string | null {
+	try {
+		return store().getItem(key);
+	} catch {
+		return null;
+	}
+}
+
+const tab = (): Storage => sessionStorage;
+const browser = (): Storage => localStorage;
+
+/** Whether the deployment lets a sign-in ask the issuer without prompting (`/config.json`'s `silentSignIn`). */
+let silentAllowed = true;
+
+/** The `prompt` a sign-in sends: `login` when asked to authenticate again or after a sign-out; `none` where the
+ *  deployment allows it and this tab has not yet asked silently since it last signed in; none otherwise (the issuer's
+ *  form, or its session where it keeps one). */
+function promptFor(asked: {
+	reauthenticate: boolean;
+	signedOut: boolean;
+	silentTried: boolean;
+}): typeof REAUTHENTICATE.value | 'none' | undefined {
+	if (asked.reauthenticate || asked.signedOut) return REAUTHENTICATE.value;
+	return silentAllowed && !asked.silentTried ? 'none' : undefined;
+}
+
+/** What a sign-in rides through the issuer in the OIDC `state` (kept in this tab's state store, never in the URL): where
+ *  to come back to, whether it was asked without prompting, and the last sign-out's id when it was sent (empty for
+ *  none). */
+interface SignInState {
+	returnTo: string;
+	silent?: boolean;
+	after: string;
+}
+
+function stateOf(state: unknown): Partial<SignInState> {
+	return typeof state === 'object' && state !== null ? (state as Partial<SignInState>) : {};
+}
+
 /** The sign-in this page has sent the browser on, while it is in flight. */
 let leaving: Promise<void> | null = null;
 
-/** Send the browser to the issuer; it comes back to `/auth/callback` and then to `returnTo`.
+/** Send the browser to the issuer; it comes back to `/auth/callback` and then to `returnTo`. `replace` leaves in place
+ *  of the current history entry. `fresh` is the person's own choice (the prompt's "Sign in again") and starts a new
+ *  sign-in even while one is noted in flight: a leave the person cancelled (the browser's "Leave site?" answered Stay)
+ *  settles nothing, so the one it started would otherwise hold every later sign-in of this page.
  *
  *  ONE sign-in in flight per page: a second call while the first is leaving (a read refused 401 while the session's
  *  own renewal gives up, the canvas's save and its page at once) joins the first. Each call would otherwise store a
@@ -249,60 +412,89 @@ let leaving: Promise<void> | null = null;
  *  person comes back by Back to this page restored from the back/forward cache, and rejects when it fails. Either way
  *  the next call starts a new one; so does a page restored from the cache (`pageshow` with `persisted`), whatever the
  *  library does. */
-export function login(returnTo: string, { reauthenticate = false } = {}): Promise<void> {
-	if (leaving) return leaving;
-	const started = redirect(returnTo, reauthenticate).finally(() => {
+export function login(
+	returnTo: string,
+	{ reauthenticate = false, replace = false, fresh = false } = {},
+): Promise<void> {
+	if (leaving && !fresh) return leaving;
+	const started = redirect(returnTo, reauthenticate, replace).finally(() => {
 		if (leaving === started) leaving = null;
 	});
 	leaving = started;
 	return started;
 }
 
-/** A page restored from the back/forward cache has no sign-in in flight: the one it sent was abandoned by Back. */
+/** A page restored from the back/forward cache has no sign-in in flight: the one it sent was abandoned by Back. A page
+ *  with nobody signed in was waiting for that sign-in and shows nothing, so it is loaded again, and its sign-in starts
+ *  over (asked of the person: the silent one was tried). */
 function restored(event: PageTransitionEvent): void {
-	if (event.persisted) leaving = null;
+	if (!event.persisted || !leaving) return;
+	leaving = null;
+	if (!auth.session) location.reload();
 }
-if (typeof window !== 'undefined' && typeof window.addEventListener === 'function')
-	window.addEventListener('pageshow', restored);
 
-async function redirect(returnTo: string, reauthenticate: boolean): Promise<void> {
+/** Told when another tab of this browser signed out (`#lib/reauth.svelte.ts` raises the shell's one prompt). */
+let signedOutWatcher: () => void = () => undefined;
+
+export function setSignedOutWatcher(next: () => void): void {
+	signedOutWatcher = next;
+}
+
+/** Another tab of this browser signed out: this tab drops its tokens, so no request it sends from now on carries them
+ *  (the signer holds nobody), and the person is asked by the shell's one prompt, as for a session that ended. Nothing
+ *  navigates on its own: the page keeps what it shows, and the person's "Sign in again" keeps what the page asks to keep
+ *  and comes back to the same address, with `prompt=login` (`SIGNED_OUT`). The session shown stays until then, as an
+ *  ended one does. */
+function signedOutElsewhere(event: StorageEvent): void {
+	if (
+		event.storageArea !== localStorage ||
+		event.key !== SIGNED_OUT ||
+		event.newValue === null ||
+		event.newValue === event.oldValue
+	)
+		return;
+	const held = user !== null;
+	dropTokens();
+	void manager?.removeUser();
+	if (held) signedOutWatcher();
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+	window.addEventListener('pageshow', restored);
+	window.addEventListener('storage', signedOutElsewhere);
+}
+
+async function redirect(
+	returnTo: string,
+	reauthenticate: boolean,
+	replace: boolean,
+): Promise<void> {
 	await initAuth();
 	if (!manager) return;
 	// A sign-in this tab started that never came back is the one case worth asking the provider about its client: it
 	// shows its own error page for a client it does not know, and the person comes back here by the browser's Back.
-	if (signInPending()) {
+	if (noted(tab, PENDING_SIGN_IN) !== null) {
 		const unknown = await clientUnknown(manager);
 		if (unknown) {
 			auth.configError = unknown;
 			return;
 		}
 	}
-	markSignIn(true);
+	const after = lastSignOut();
+	const prompt = promptFor({
+		reauthenticate,
+		signedOut: signedOutHere(),
+		silentTried: noted(tab, SILENT_TRIED) !== null,
+	});
+	if (prompt === 'none') note(tab, SILENT_TRIED, '1');
+	note(tab, PENDING_SIGN_IN, '1');
+	const state: SignInState = { returnTo, after, ...(prompt === 'none' ? { silent: true } : {}) };
 	// Settles only when the browser did not leave, or came back to this page by Back (see `login`).
 	await manager.signinRedirect({
-		state: { returnTo },
-		...(reauthenticate ? { prompt: REAUTHENTICATE.value } : {}),
+		state,
+		...(prompt ? { prompt } : {}),
+		...(replace ? { redirectMethod: 'replace' as const } : {}),
 	});
-}
-
-/** Where this tab notes a sign-in it sent to the provider, until the provider sends it back. */
-const PENDING_SIGN_IN = 'workbench.sign-in-pending';
-
-function markSignIn(pending: boolean): void {
-	try {
-		if (pending) sessionStorage.setItem(PENDING_SIGN_IN, '1');
-		else sessionStorage.removeItem(PENDING_SIGN_IN);
-	} catch {
-		// No storage: the provider's own page is what the person sees for a client it does not know.
-	}
-}
-
-function signInPending(): boolean {
-	try {
-		return sessionStorage.getItem(PENDING_SIGN_IN) !== null;
-	} catch {
-		return false;
-	}
 }
 
 /** Why the provider will not sign anyone in to this app's client, or null when it may.
@@ -345,29 +537,67 @@ export async function renewSession(): Promise<boolean> {
 	return (await renew()) !== null;
 }
 
-/** Finish the redirect: exchange the code (with the PKCE verifier, and a DPoP proof where the session is bound) and
- *  hold the tokens in memory. Answers the same-origin path the person was on when sent to sign in. */
-export async function completeLogin(): Promise<string> {
-	await initAuth();
-	if (!manager) return '/';
-	user = await manager.signinRedirectCallback();
-	markSignIn(false);
-	auth.session = toSession(user);
-	const state = user.state as { returnTo?: unknown } | undefined;
-	return sameOriginPath(typeof state?.returnTo === 'string' ? state.returnTo : '/');
+/** The same-origin return path a sign-in's state names, or `/`. */
+function returnPathOf(state: unknown): string {
+	const { returnTo } = stateOf(state);
+	return sameOriginPath(typeof returnTo === 'string' ? returnTo : '/');
 }
 
-/** End the session here, and at the issuer when it advertises an end-session endpoint.
+/** Finish the redirect: exchange the code (with the PKCE verifier, and a DPoP proof where the session is bound) and
+ *  hold the tokens in memory. Answers the same-origin path the person was on when sent to sign in, or null when the
+ *  browser is leaving for the issuer again, to the same address, interactively:
+ *
+ *  - a sign-in asked without prompting that the issuer answered with an error (no session there, or one it will not use
+ *    without the person). oidc-client-ts reads that error only after it matched the response's `state` to one this tab
+ *    stored, so a callback another site forged is refused and sends nobody anywhere.
+ *  - a sign-in that left before the person signed out in this browser (the last sign-out's id is not the one it
+ *    recorded, the sign-out record above): its tokens are dropped unused, and the person is asked again with
+ *    `prompt=login`. */
+export async function completeLogin(): Promise<string | null> {
+	await initAuth();
+	if (!manager) return '/';
+	let fresh: User;
+	try {
+		fresh = await manager.signinRedirectCallback();
+	} catch (err) {
+		if (!(err instanceof ErrorResponse) || stateOf(err.state).silent !== true) throw err;
+		// The issuer came back: it knows this client, so the next sign-in is not one that never returned.
+		note(tab, PENDING_SIGN_IN, null);
+		// In place of the callback's own entry, which Back must not return to: its state is spent.
+		await login(returnPathOf(err.state), { replace: true });
+		return null;
+	}
+	note(tab, PENDING_SIGN_IN, null);
+	// Every way this tab's tokens are dropped writes a new sign-out id first (`logout`), or follows one another tab
+	// wrote (`signedOutElsewhere`), and none is ever removed, so comparing ids sees every drop since this sign-in left.
+	const answers = lastSignOut();
+	if (answers !== (stateOf(fresh.state).after ?? '')) {
+		await manager.removeUser();
+		await login(returnPathOf(fresh.state), { replace: true, reauthenticate: true });
+		return null;
+	}
+	hold(fresh);
+	note(tab, SILENT_TRIED, null);
+	note(browser, ANSWERED, answers);
+	return returnPathOf(fresh.state);
+}
+
+/** End the session here, and at the issuer when it advertises an end-session endpoint (OpenID Connect RP-Initiated
+ *  Logout 1.0), which sends the browser back to the app's root.
  *
  *  `signoutRedirect` reads the held user's id token to send as `id_token_hint` (which session to end)
  *  and removes the user, and with it any DPoP key, before it navigates; removing the user first would
- *  send the request without the hint. An issuer with no end-session endpoint (Dex) offers no way to end
- *  its session from here, so the browser goes to sign-in with `prompt=login` and whoever comes next must
- *  authenticate. */
+ *  send the request without the hint. The id token lives in oidc-client-ts's in-memory user store until then, and
+ *  leaves the page only in that one request's URL, to its own issuer. An issuer with no end-session endpoint (Dex
+ *  without its sessions) offers no way to end its session from here, so the browser goes to sign-in with
+ *  `prompt=login`. Either way a new sign-out id is written to `SIGNED_OUT` first (the sign-out record above): until the
+ *  person signs in again no sign-in in this browser is silent and each asks the issuer to authenticate them, so a reload
+ *  never signs them back in from a session the issuer kept. */
 export async function logout(): Promise<void> {
 	await initAuth();
+	dropTokens();
 	auth.session = null;
-	user = null;
+	note(browser, SIGNED_OUT, crypto.randomUUID());
 	if (!manager) {
 		location.assign('/');
 		return;

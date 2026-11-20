@@ -99,6 +99,9 @@ app:
     repository: localhost:5000/workbench-app
   oidc:
     scopes: [openid, profile, email, offline_access, federated:id, "audience:server:client_id:rask-lakehouse"]
+    # rask's dev Dex (v2.46.1) runs without `DEX_SESSIONS_ENABLED`, so it keeps no login session to sign anyone in from
+    # without its form (docs/DEPLOY.md). On once the fixture turns its sessions on.
+    silentSignIn: false
 networkPolicy:
   enabled: true
   # The API server as a policy sees it, after the Service's translation: the node's address, port 6443 (the dev

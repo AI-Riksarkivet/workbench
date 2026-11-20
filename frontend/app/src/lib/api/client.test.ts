@@ -35,8 +35,11 @@ afterEach(() => {
 	setSigner(async () => null);
 });
 
-/** A signed-in tab: the library's key in an in-memory store, and a user holding a bound token. */
-async function signedIn(): Promise<{ store: MemoryDPoPStore }> {
+/** A signed-in tab: the library's key in an in-memory store, and a user holding a bound token. `generationOf` is the
+ *  tab's session generation (`auth.svelte.ts`), which a drop of its tokens bumps. */
+async function signedIn(
+	generationOf: () => number = () => 0,
+): Promise<{ store: MemoryDPoPStore; oidc: UserManager }> {
 	const store = new MemoryDPoPStore();
 	const oidc = new UserManager({
 		authority: `${ORIGIN}/oidc`,
@@ -58,9 +61,10 @@ async function signedIn(): Promise<{ store: MemoryDPoPStore }> {
 			oidc,
 			() => user,
 			async () => null,
+			generationOf,
 		),
 	);
-	return { store };
+	return { store, oidc };
 }
 
 describe('the DPoP fetch seam', () => {
@@ -103,6 +107,25 @@ describe('the DPoP fetch seam', () => {
 		const held = await store.get(key ?? '');
 		expect(held.keys.privateKey.extractable).toBe(false);
 		await expect(crypto.subtle.exportKey('jwk', held.keys.privateKey)).rejects.toThrow();
+	});
+
+	it('signs nothing when the tab drops its tokens while the proof is being made', async () => {
+		let generation = 0;
+		const { oidc } = await signedIn(() => generation);
+		const prove = oidc.dpopProof.bind(oidc);
+		oidc.dpopProof = async (...args) => {
+			const proof = await prove(...args);
+			// A sign-out (here or in another tab) lands while the proof was awaited.
+			generation++;
+			return proof;
+		};
+
+		await authorizedFetch('/api/viewer/api/datasets');
+
+		expect([sent[0]?.headers.has('authorization'), sent[0]?.headers.has('dpop')]).toEqual([
+			false,
+			false,
+		]);
 	});
 
 	it('hands no credential to another origin', async () => {

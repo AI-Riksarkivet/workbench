@@ -7,8 +7,27 @@
 //
 // WHO SIGNS IN is the spec's choice: `signIn()` (session.ts) sets the `mock_oidc_identity` cookie, and
 // the authorize step carries that identity inside the code it hands back, so the exchange is stateless
-// and parallel specs never share an identity. With no cookie the issuer shows a login page and stops.
-// `mock_oidc_lifetime` (seconds) shortens the tokens it issues, for a spec about renewal.
+// and parallel specs never share an identity. `mock_oidc_lifetime` (seconds) shortens the tokens it issues, for a spec
+// about renewal.
+//
+// A LOGIN SESSION, AS EACH REAL ISSUER KEEPS ONE OR NOT. Where the issuer keeps one (Keycloak-shaped; Dex-shaped with
+// `mock_oidc_dex_sessions=on`, as Dex v2.46 with `DEX_SESSIONS_ENABLED`), the identity cookie IS that session: an
+// authorization request is answered from it without a form, `prompt=none` without one is answered
+// `error=login_required` at the client's callback (OIDC Core § 3.1.2.1, § 3.1.2.6), `prompt=login` shows the login page
+// whatever it holds, and discovery advertises the end-session endpoint (Keycloak-shaped unless
+// `mock_oidc_no_end_session`). Where it keeps none (Dex-shaped by default, as Dex v2.46.1 without its sessions flag),
+// EVERY request shows the login form and its `prompt` is not acted on there (v2.46.1 `server/authflow/login.go:102`),
+// the identity cookie is what the person types, and discovery names no end-session endpoint (`/logout` is 404). After
+// the form that Dex decides consent (`server/authflow/dispatch.go`): with `mock_oidc_dex_approval=screen`
+// (`skipApprovalScreen: false`, Dex's default, whose consent is never stored without sessions) a request that carried
+// `prompt=none` is answered `error=interaction_required` and any other shows the approval page; without it
+// (`skipApprovalScreen: true`) the code is issued. The login page's `Sign in` (and the approval page's `Grant access`)
+// send the same request on, as a person at the form does. `mock_oidc_prompt_none=error-page` makes the Keycloak shape
+// a provider that answers `prompt=none` with an error page of its own and never returns to the client.
+//
+// The end-session endpoint ends the session (the cookie is cleared) only on a request it accepts: an `id_token_hint`
+// this issuer signed, and no `post_logout_redirect_uri` or the one the client registered (the app's root), which it
+// then redirects back to. Any other is refused with an error page and the session is left as it was.
 //
 // THE EXCHANGE IS HELD TO WHAT A PROVIDER ENFORCES for the workbench's public client: `/auth` refuses
 // another client, a `redirect_uri` other than the app's one callback, and a request without an S256
@@ -52,6 +71,16 @@ const COOKIE = 'mock_oidc_identity';
 const NO_END_SESSION_COOKIE = 'mock_oidc_no_end_session';
 /** Set by a spec: how many seconds each token lives. */
 const LIFETIME_COOKIE = 'mock_oidc_lifetime';
+/** Set by a spec: the Keycloak shape answers `prompt=none` with an error page of its own (`error-page`). */
+const PROMPT_NONE_COOKIE = 'mock_oidc_prompt_none';
+/** Set by a spec: the Dex shape keeps sessions (`on`), as Dex with `DEX_SESSIONS_ENABLED`. */
+const DEX_SESSIONS_COOKIE = 'mock_oidc_dex_sessions';
+/** Set by a spec: the Dex shape shows its approval screen (`screen`), as Dex with `skipApprovalScreen: false`. */
+const DEX_APPROVAL_COOKIE = 'mock_oidc_dex_approval';
+/** The interactive login page's own continuation of the request it was shown for. */
+const SIGNED_IN_AT_FORM = 'mock_signed_in';
+/** The approval page's own continuation. */
+const APPROVED_AT_FORM = 'mock_approved';
 const DEFAULT_LIFETIME = 3600;
 const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange';
 const ACCESS_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
@@ -78,6 +107,51 @@ function cookieOf(req: Request, name: string): string | null {
 	}
 	return null;
 }
+
+const page = (heading: string, body = '', status = 200): Response =>
+	new Response(`<!doctype html><title>Mock IdP</title><h1>${heading}</h1>${body}`, {
+		status,
+		headers: { 'content-type': 'text/html' },
+	});
+
+const escapeHtml = (text: string): string =>
+	text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** A page whose one button sends the authorization request on, marked with `marks`. */
+function formPage(
+	heading: string,
+	button: string,
+	issuer: string,
+	params: URLSearchParams,
+	marks: string[],
+): Response {
+	const fields = [...params]
+		.filter(([key]) => !marks.includes(key))
+		.map(
+			([key, value]) =>
+				`<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`,
+		)
+		.concat(marks.map((mark) => `<input type="hidden" name="${mark}" value="1">`))
+		.join('');
+	return page(
+		heading,
+		`<form method="get" action="${escapeHtml(`${issuer}/auth`)}">${fields}<button>${button}</button></form>`,
+	);
+}
+
+/** The login page for an authorization request: its `Sign in` sends the same request again, from the form. */
+const loginPage = (issuer: string, params: URLSearchParams): Response =>
+	formPage('Mock IdP login', 'Sign in', issuer, params, [SIGNED_IN_AT_FORM]);
+
+/** Dex's approval screen: its `Grant access` sends the request on, signed in and approved. */
+const approvalPage = (issuer: string, params: URLSearchParams): Response =>
+	formPage('Mock IdP grant access', 'Grant access', issuer, params, [
+		SIGNED_IN_AT_FORM,
+		APPROVED_AT_FORM,
+	]);
+
+/** The session cookie, ended. */
+const ENDED_SESSION = `${COOKIE}=; Path=/; Max-Age=0`;
 
 const json = (body: unknown, status = 200): Response =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -205,6 +279,21 @@ function serviceGrant(shape: Shape, issuer: string, form: URLSearchParams, req: 
 	});
 }
 
+/** The claims of an id token this issuer signed (`alg: none`), or null. */
+function readIdToken(token: string): { iss: string; sub: string } | null {
+	try {
+		const claims = JSON.parse(unb64url(token.split('.')[1] ?? '')) as {
+			iss?: unknown;
+			sub?: unknown;
+		};
+		return typeof claims.iss === 'string' && typeof claims.sub === 'string'
+			? { iss: claims.iss, sub: claims.sub }
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 /** The code or refresh token a token request redeems, read back into its grant; null for one this issuer never gave. */
 function redeemed(type: string | null, form: URLSearchParams): Grant | null {
 	try {
@@ -239,6 +328,8 @@ Bun.serve({
 		const shape: Shape =
 			req.headers.get('x-forwarded-prefix') === SHAPES.dex.prefix ? 'dex' : 'keycloak';
 		const issuer = `${origin}${SHAPES[shape].prefix}`;
+		const sessionKept = shape === 'keycloak' || cookieOf(req, DEX_SESSIONS_COOKIE) === 'on';
+		const endSession = sessionKept && !cookieOf(req, NO_END_SESSION_COOKIE);
 
 		if (url.pathname === '/.well-known/openid-configuration') {
 			return json({
@@ -246,9 +337,7 @@ Bun.serve({
 				authorization_endpoint: `${issuer}/auth`,
 				token_endpoint: `${issuer}/token`,
 				jwks_uri: `${issuer}/keys`,
-				...(shape === 'keycloak' && !cookieOf(req, NO_END_SESSION_COOKIE)
-					? { end_session_endpoint: `${issuer}/logout` }
-					: {}),
+				...(endSession ? { end_session_endpoint: `${issuer}/logout` } : {}),
 				response_types_supported: ['code'],
 				subject_types_supported: ['public'],
 				id_token_signing_alg_values_supported: ['none'],
@@ -284,10 +373,30 @@ Bun.serve({
 				return refused('invalid_request', 'PKCE S256 is required');
 			}
 			const identity = cookieOf(req, COOKIE);
-			if (!identity || params.get('prompt') === 'login') {
-				return new Response('<!doctype html><title>Mock IdP</title><h1>Mock IdP login</h1>', {
-					headers: { 'content-type': 'text/html' },
-				});
+			const atForm = params.get(SIGNED_IN_AT_FORM) === '1';
+			const prompts = (params.get('prompt') ?? '').split(' ');
+			const answer = (error: string): Response => {
+				const back = new URL(callback);
+				back.searchParams.set('error', error);
+				back.searchParams.set('state', params.get('state') ?? '');
+				return new Response(null, { status: 302, headers: { location: back.href } });
+			};
+			if (sessionKept) {
+				if (!atForm && prompts.includes('none') && !identity) {
+					if (cookieOf(req, PROMPT_NONE_COOKIE) === 'error-page')
+						return page('Mock IdP error', '<p>prompt=none is not supported</p>', 400);
+					return answer('login_required');
+				}
+				if (!identity || (!atForm && prompts.includes('login'))) return loginPage(issuer, params);
+			} else {
+				if (!atForm || !identity) return loginPage(issuer, params);
+				if (
+					cookieOf(req, DEX_APPROVAL_COOKIE) === 'screen' &&
+					params.get(APPROVED_AT_FORM) !== '1'
+				) {
+					if (prompts.includes('none')) return answer('interaction_required');
+					return approvalPage(issuer, params);
+				}
 			}
 			const grant: Grant = {
 				identity: JSON.parse(identity) as MockIdentity,
@@ -346,10 +455,25 @@ Bun.serve({
 			return tokensFor(shape, issuer, grant);
 		}
 
-		if (url.pathname === '/logout') {
-			return new Response('<!doctype html><title>Mock IdP</title><h1>Mock IdP signed out</h1>', {
-				headers: { 'content-type': 'text/html' },
-			});
+		if (url.pathname === '/logout' && endSession) {
+			const hint = readIdToken(url.searchParams.get('id_token_hint') ?? '');
+			const back = url.searchParams.get('post_logout_redirect_uri');
+			if (!hint || hint.iss !== issuer)
+				return page('Mock IdP refused sign-out', '<p>Invalid id_token_hint.</p>', 400);
+			if (back !== null && back !== `${origin}/`)
+				return page(
+					'Mock IdP refused sign-out',
+					'<p>Unregistered post_logout_redirect_uri.</p>',
+					400,
+				);
+			if (back !== null)
+				return new Response(null, {
+					status: 302,
+					headers: { location: back, 'set-cookie': ENDED_SESSION },
+				});
+			const ended = page('Mock IdP signed out');
+			ended.headers.set('set-cookie', ENDED_SESSION);
+			return ended;
 		}
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);
 	},

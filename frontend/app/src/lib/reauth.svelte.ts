@@ -8,7 +8,8 @@
  * `refused`, which the shell shows as one prompt however many reads were refused at once, and a later success from
  * the same service takes it away. A 403 is a signed-in person who may not do something, and a 401 a service only relays
  * (the lakehouse refusing the person's read) says nothing about the session: neither asks anything. A session whose
- * expiry passed before it could be renewed asks the same (`sessionEnded`, and the signer's ENDED).
+ * expiry passed before it could be renewed asks the same (`sessionEnded`, and the signer's ENDED), and so does a sign-out
+ * in another tab of this browser (`signedOutElsewhere`, which the prompt names).
  *
  * The prompt does not leave on its own: a page with work not yet saved keeps it on screen until the person chooses to
  * sign in, and what a page can carry across the round trip it keeps first (`beforeSigningInAgain`, the canvas's unsaved
@@ -16,7 +17,7 @@
  * signed for, without its query); one of them refusing the fresh session as well is said plainly (`failed`) and never
  * sends the person round again. A door that answers the fresh session drops out of the note.
  */
-import { login } from './auth.svelte.ts';
+import { login, setSignedOutWatcher } from './auth.svelte.ts';
 import { setCredentialWatcher } from './api/client.ts';
 import { serviceOf } from './api/services.ts';
 
@@ -28,6 +29,8 @@ class Reauth {
 	refused = $state.raw<string[]>([]);
 	/** A service that refused the session the person just signed in again for: said, never asked again. */
 	failed = $state<string | null>(null);
+	/** The person signed out in another tab of this browser: this tab's tokens are gone, and it asks them too. */
+	signedOutElsewhere = $state(false);
 }
 
 export const reauth = new Reauth();
@@ -109,6 +112,10 @@ function answered(status: number, htu: string, challenged: boolean): void {
 
 setCredentialWatcher(answered);
 
+setSignedOutWatcher(() => {
+	reauth.signedOutElsewhere = true;
+});
+
 /** The session ended and could not be renewed, before any service said so: the same one prompt. */
 export function sessionEnded(): void {
 	ended = true;
@@ -128,5 +135,5 @@ export function beforeSigningInAgain(keep: () => void): () => void {
 export function signInAgain(returnTo: string): void {
 	for (const keep of hooks) keep();
 	note({ at: Date.now(), doors: [...new Set([...noted().doors, ...refusedDoors.keys()])] });
-	void login(returnTo);
+	void login(returnTo, { fresh: true });
 }

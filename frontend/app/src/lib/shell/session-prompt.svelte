@@ -20,16 +20,21 @@
 		You signed in again, and {which([reauth.failed])} still refuses your sign-in. Reload the page to try
 		again; if it keeps happening, the workbench's sign-in needs its administrator.
 	</div>
-{:else if reauth.refused.length > 0}
+{:else if reauth.signedOutElsewhere || reauth.refused.length > 0}
 	<div
 		role="alert"
 		class="border-warning bg-warning/10 text-foreground flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2 text-sm"
 		data-testid="session-prompt"
 	>
 		<span class="min-w-0 flex-1">
-			Your sign-in has ended or was refused by {which(reauth.refused)}, so what this page shows may
-			be incomplete and nothing more is saved. Sign in again to go on: you come back to this page,
-			with the canvas's unsaved edits.
+			{#if reauth.signedOutElsewhere}
+				You signed out in another tab, so this page reads and saves nothing more. Sign in again to
+				go on: you come back to this page, with the canvas's unsaved edits.
+			{:else}
+				Your sign-in has ended or was refused by {which(reauth.refused)}, so what this page shows
+				may be incomplete and nothing more is saved. Sign in again to go on: you come back to this
+				page, with the canvas's unsaved edits.
+			{/if}
 		</span>
 		<Button
 			size="sm"

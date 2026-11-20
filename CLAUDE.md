@@ -112,6 +112,23 @@ lakehouse only through what rask publishes, the way any outside tool would:
   503 or a 401 a service only relays, and never sends the person away on its own. After a restart of the issuer, the
   first read a service refuses asks it once more (the second read without the key) and is refused; the page's reads
   that wait on that same read are refused when it ends, and every read after it at once.
+- **A reload keeps the session through the issuer's own** (ADR 0020; `#lib/auth.svelte.ts`), where the deployment
+  allows it (`/config.json`'s `silentSignIn`, the chart's `app.oidc.silentSignIn`, on by default; off for an issuer
+  with no session of its own, such as the dev Dex v2.46.1 without `DEX_SESSIONS_ENABLED`, which shows its form for
+  `prompt=none` and with its approval screen then refuses it; off changes only that, and the sign-out record and the
+  back/forward cache reload below hold either way). Tokens stay in memory; the first sign-in a tab sends asks with
+  `prompt=none` by a top-level redirect (no iframe: the issuer's cookie rides a top-level navigation under any
+  third-party-cookie policy), so an issuer holding the person's login session signs them in again with no form, back at
+  the same address (path, query and fragment, through the OIDC state). An issuer that answers an error is asked ONCE
+  more, interactively, and never silently again until a sign-in completes (`workbench.silent-sign-in-tried` in
+  sessionStorage); a page restored from the back/forward cache while its sign-in was in flight loads again. Sign-out
+  ends the issuer's session at its `end_session_endpoint` (with `id_token_hint`, back to `<origin>/`, which the client
+  must register as a post-logout redirect), and writes a new random id to `workbench.signed-out` in localStorage,
+  which is never removed; a completed sign-in writes the id it answered to `workbench.signed-in-after`. While the two
+  differ the person is signed out: no sign-in is silent and each sends `prompt=login`. Another tab still signed in drops
+  its tokens when it sees a new sign-out id and raises the shell's one prompt (nothing navigates until the person
+  chooses "Sign in again", which keeps the canvas's unsaved edits), and a sign-in sent before the last sign-out is
+  discarded at its callback, whatever happened in between. None of these values is a credential.
 - **Authorization** is the workbench's own OpenFGA model and store (`service_kit/governed/auth/model.fga`): an org's
   admins and members, a project's five roles (owner > manager > reviewer > annotator > viewer), and the tasks, corpora
   and flows that inherit from a project. It never asks rask's decision door or rask's OpenFGA store, and rask knows

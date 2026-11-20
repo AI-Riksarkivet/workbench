@@ -14,6 +14,9 @@
 			// only when it is a same-origin path. `goto` rejects a URL that names no route, so a return
 			// path that names none lands on the datasets rather than failing a completed sign-in.
 			const returnTo = await completeLogin();
+			// A sign-in asked without prompting that the issuer could not answer so: the browser is leaving to ask the
+			// person, and comes back here.
+			if (returnTo === null) return;
 			const known = (await match(new URL(returnTo, location.origin))) !== null;
 			// oxlint-disable-next-line svelte/no-navigation-without-resolve -- a return path read from the OIDC state, already a same-origin pathname
 			await goto(known ? returnTo : resolve('/datasets'), { replace: true, refreshAll: true });

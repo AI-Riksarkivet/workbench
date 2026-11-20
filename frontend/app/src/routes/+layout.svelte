@@ -51,7 +51,8 @@
 	}
 	$effect(() => {
 		const session = auth.session;
-		if (!session || session.expiresAt === 0) return;
+		// Tokens dropped (a sign-out here or in another tab): nothing left to renew, and the timer stops.
+		if (!session || session.expiresAt === 0 || !auth.tokensHeld) return;
 		const wait = Math.max((session.expiresAt - RENEW_MARGIN_SECONDS) * 1000 - Date.now(), 0);
 		const timer = setTimeout(() => void renewOrAsk(), wait);
 		return () => clearTimeout(timer);
@@ -60,7 +61,13 @@
 	// clamped): it asks at once, on its return.
 	function returned(): void {
 		const session = auth.session;
-		if (document.visibilityState !== 'visible' || !session || session.expiresAt === 0) return;
+		if (
+			document.visibilityState !== 'visible' ||
+			!session ||
+			session.expiresAt === 0 ||
+			!auth.tokensHeld
+		)
+			return;
 		if (session.expiresAt - RENEW_MARGIN_SECONDS <= Date.now() / 1000) void renewOrAsk();
 	}
 

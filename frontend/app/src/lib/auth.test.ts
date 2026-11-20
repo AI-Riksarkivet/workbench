@@ -1,19 +1,35 @@
 import { afterAll, expect, it, vi } from 'vitest';
 
-// The page the app runs in: an event target (the browser's `pageshow`), its storage and its origin.
+/** A Storage: `onRead` runs after each read of a key, as another tab writing just after this one read does. */
+function storage(): Storage & { onRead: (key: string) => void } {
+	const kept = new Map<string, string>();
+	const store = {
+		onRead: (_key: string): void => undefined,
+		getItem: (key: string) => {
+			const value = kept.get(key) ?? null;
+			store.onRead(key);
+			return value;
+		},
+		setItem: (key: string, value: string) => void kept.set(key, value),
+		removeItem: (key: string) => void kept.delete(key),
+	};
+	return store as unknown as Storage & { onRead: (key: string) => void };
+}
+
+// The page the app runs in: an event target (the browser's `pageshow` and `storage`), its storages and its origin.
 const page = Object.assign(new EventTarget(), {
-	sessionStorage: (() => {
-		const kept = new Map<string, string>();
-		return {
-			getItem: (key: string) => kept.get(key) ?? null,
-			setItem: (key: string, value: string) => void kept.set(key, value),
-			removeItem: (key: string) => void kept.delete(key),
-		};
-	})(),
+	sessionStorage: storage(),
+	localStorage: storage(),
 });
 vi.stubGlobal('window', page);
 vi.stubGlobal('sessionStorage', page.sessionStorage);
-vi.stubGlobal('location', { origin: 'https://wb.example' });
+vi.stubGlobal('localStorage', page.localStorage);
+
+/** The sign-out record (`auth.svelte.ts`): the last sign-out's id, and the one the last sign-in answered. */
+const SIGNED_OUT = 'workbench.signed-out';
+const ANSWERED = 'workbench.signed-in-after';
+// A page restored with nobody signed in loads again (`restored` in auth.svelte.ts), which here does nothing.
+vi.stubGlobal('location', { origin: 'https://wb.example', reload: () => undefined });
 
 /** The browser coming back to this page by Back, restored from the back/forward cache. */
 const restore = (): void => {
@@ -23,7 +39,12 @@ const restore = (): void => {
 // The provider's client library as oidc-client-ts 3.5.0 behaves: a redirect leaves the page, and its promise settles
 // only when the page is shown again (`RedirectNavigator.navigate` resolves on `pageshow`), or rejects when the
 // navigation cannot start. `failNext` makes the next one fail, as an issuer that cannot be reached does.
-const library = vi.hoisted(() => ({ redirects: [] as unknown[], failNext: false }));
+// `signinRedirectCallback` (the code exchange) settles when the spec answers it (`library.answer`).
+const library = vi.hoisted(() => ({
+	redirects: [] as unknown[],
+	failNext: false,
+	answer: (_user: unknown): void => undefined,
+}));
 vi.mock('oidc-client-ts', () => ({
 	UserManager: class {
 		settings = { client_id: 'workbench-app', redirect_uri: 'https://wb.example/auth/callback' };
@@ -38,7 +59,12 @@ vi.mock('oidc-client-ts', () => ({
 				window.addEventListener('pageshow', () => resolve(), { once: true }),
 			);
 		}
+		signinRedirectCallback(): Promise<unknown> {
+			return new Promise((resolve) => (library.answer = resolve));
+		}
+		async removeUser(): Promise<void> {}
 	},
+	ErrorResponse: class extends Error {},
 	WebStorageStateStore: class {},
 	InMemoryWebStorage: class {},
 	User: class {},
@@ -99,4 +125,59 @@ it('sends a page to sign in once however many ask at once, again after Back, and
 	await settle();
 
 	expect([atOnce, afterBack, library.redirects.length]).toEqual([[1, 0], 2, 4]);
+});
+
+/** The tokens the issuer answers a sign-in with, as oidc-client-ts holds them, for a sign-in sent when the last
+ *  sign-out's id was `after`. */
+const answered = (after: string) => ({
+	state: { returnTo: '/projects/p1', after },
+	profile: { sub: 'ada', name: 'Ada' },
+	expires_at: 0,
+});
+
+it('a sign-in sent before a sign-out that another tab has since answered is not held, and the person is asked', async () => {
+	const { auth, completeLogin } = await import('./auth.svelte.ts');
+	restore();
+	await settle();
+	const completing = completeLogin();
+	await settle();
+
+	// While this tab is at the issuer, the person signs out in another tab, and someone signs in in a third: neither
+	// is an event this tab sees.
+	page.localStorage.setItem(SIGNED_OUT, 'signed-out-in-b');
+	page.localStorage.setItem(ANSWERED, 'signed-out-in-b');
+	library.answer(answered(''));
+	await settle();
+	const asked = library.redirects.at(-1);
+	restore();
+
+	expect([await completing, auth.tokensHeld, auth.session, asked]).toEqual([
+		null,
+		false,
+		null,
+		expect.objectContaining({ prompt: 'login' }),
+	]);
+});
+
+it('a sign-in records the sign-out it answered and never removes one, not even a later one another tab wrote', async () => {
+	const { auth, completeLogin } = await import('./auth.svelte.ts');
+	page.localStorage.setItem(SIGNED_OUT, 'the-sign-out-it-answered');
+	page.localStorage.setItem(ANSWERED, '');
+	const completing = completeLogin();
+	await settle();
+	// Another tab signs out again just after this one read the record.
+	page.localStorage.onRead = (key) => {
+		if (key !== SIGNED_OUT) return;
+		page.localStorage.onRead = () => undefined;
+		page.localStorage.setItem(SIGNED_OUT, 'a-later-sign-out');
+	};
+
+	library.answer(answered('the-sign-out-it-answered'));
+
+	expect([
+		await completing,
+		auth.tokensHeld,
+		page.localStorage.getItem(SIGNED_OUT),
+		page.localStorage.getItem(ANSWERED),
+	]).toEqual(['/projects/p1', true, 'a-later-sign-out', 'the-sign-out-it-answered']);
 });

@@ -71,6 +71,29 @@ the pace was spent by another token, or the read it joined began before the key 
 5 s, so the page recovers without a second prompt. A token is refused 401 for its key only when a read of the issuer
 that started after it asked found no such key.
 
+A reload can sign the person in again from the issuer's own login session, with no form (`prompt=none`, ADR 0020,
+`app.oidc.silentSignIn`), but only at an issuer that keeps one. The dev Dex, v2.46.1 as rask's fixture runs it, keeps
+none: its sessions (with `prompt=none` answered from them, `id_token_hint`, and RP-initiated logout at an
+`end_session_endpoint`) arrived in v2.46.0 behind the feature flag `DEX_SESSIONS_ENABLED`, off by default, and the
+fixture sets none. Without it Dex does not act on `prompt=none` at login (v2.46.1 `server/authflow/login.go:102`): it
+shows its form, then decides consent (`server/authflow/dispatch.go`). The fixture's `skipApprovalScreen: true` issues the
+code then; with Dex's default (`false`) consent is never stored without sessions, so a request that carried
+`prompt=none` is refused `interaction_required` after the form and the app asks again: two forms on every reload. So
+`deploy/values-dev.yaml` turns silent sign-in **off**, and on the dev cluster today **every reload shows Dex's form
+once**, and after it the person is back at the address they reloaded. Sign-out finds no end-session endpoint in its
+discovery, so it sends `prompt=login`, which shows the form too. To keep the session across a reload there, rask's Dex
+fixture (`deploy/fixtures/dex`, rask's repository) needs:
+
+- the environment variable `DEX_SESSIONS_ENABLED=true` on the `dex` container;
+- a `sessions:` block in its configuration (Dex's defaults are `cookieName: dex_session`, `absoluteLifetime: 24h`,
+  `validIfNotUsedFor: 1h`), whose session cookie Dex sets `HttpOnly`, `SameSite=Lax` and on the issuer's path;
+- its `clients` seam passing each client's `postLogoutRedirectURIs` through, and this repository's
+  `deploy/dex-client.yaml` then naming `postLogoutRedirectURIs: [http://workbench.localhost:8080/]` for `workbench-app`:
+  with sessions on, Dex advertises `end_session_endpoint`, the app's sign-out uses it, and Dex refuses a
+  `post_logout_redirect_uri` its client did not register (an error page, and the session not ended);
+
+and then `app.oidc.silentSignIn: true` in `deploy/values-dev.yaml`.
+
 ### The demo source
 
 Beside rask's tables, the development release reads demo data of its own, so the cluster shows something whatever the
@@ -111,6 +134,31 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
   client for the app (`app.oidc.clientId`, PKCE, redirect `<publicOrigin>/auth/callback`) and, where the services
   write to or read the lakehouse as themselves, a confidential client (`auth.oidc.client.id`) whose secret is a Secret
   the platform provides (`auth.oidc.client.secret.name`).
+- **Staying signed in across a reload:** `app.oidc.silentSignIn` (on by default) makes the app's first sign-in in a
+  tab ask with `prompt=none`, so an issuer holding the person's login session signs them in again with no form. The
+  provider must keep a login session of its own and answer `prompt=none` from it (OIDC Core § 3.1.2.1), returning
+  `login_required` or `interaction_required` to the callback when it cannot; for sign-out to end that session, it must
+  advertise an `end_session_endpoint` (OpenID Connect RP-Initiated Logout 1.0) and accept the app's root,
+  `<publicOrigin>/`, as a registered post-logout redirect (Keycloak: the client's "Valid post logout redirect URIs").
+  **Turn it off for an issuer that keeps no session of its own** (Dex without `DEX_SESSIONS_ENABLED`): off, no sign-in
+  sends `prompt=none`, and every reload shows the issuer's form once. Off is otherwise the same as on: sign-out is
+  remembered in the browser and sends `prompt=login` from then on, and a page restored from the back/forward cache
+  while its sign-in was in flight loads again and starts that sign-in over. What a person sees on a reload:
+
+  | Issuer | `silentSignIn: true` | `silentSignIn: false` |
+  | --- | --- | --- |
+  | Keycloak (a session, `prompt=none` honoured) | no form while its session lasts; its form once after | the same: it answers an ordinary request from its session too, but may show a page of its own (consent, an account chooser) where `prompt=none` guarantees none |
+  | Dex with `DEX_SESSIONS_ENABLED` | no form while its session lasts; its form once after | the same, as for Keycloak |
+  | Dex without it, `skipApprovalScreen: true` | its form once | its form once |
+  | Dex without it, `skipApprovalScreen: false` (Dex's default) | its form, then its form again and its approval screen | its form once, then its approval screen |
+
+  In every case the person comes back to the address they reloaded. A browser that withholds the issuer's cookie is an
+  issuer with no session. An issuer that answers `prompt=none` with an error page of its own is left by Back, and the
+  app, reloaded or restored from the back/forward cache, then asks the person, once. Sign-out records in this browser the id
+  of the last sign-out (never removed), and a completed sign-in the id it answered; until they match no sign-in is
+  silent and each sends `prompt=login`, another tab still signed in drops its tokens and shows the one prompt to sign in
+  again over the page as it was (nothing leaves until the person chooses, and the canvas keeps its unsaved edits), and a
+  sign-in sent before the last sign-out is discarded at its callback. Neither value is a credential.
 - **The sources:** `sources` lists what the release reads, rendered into the file every service reads
   (`<release>-sources`) and checked at render: a DNS-label `name` each, at most one `kind: rask`, and no property that
   names a credential. A lakehouse is `kind: rask` with its catalog's `uri`; `auth.lakehouse.audience` names its audience

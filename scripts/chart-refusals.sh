@@ -73,6 +73,31 @@ carries "the store's preshared key, as a file" "WORKBENCH_FGA_CREDENTIAL_FILE, v
 carries "the store's preshared key, mounted" "name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true" \
   "${APIS[@]}" "${BASE[@]}"
 
+# configures <what> <text> <helm args beyond the base...>: the app's /config.json renders that text.
+configures() {
+  local what="$1" text="$2"
+  shift 2
+  local out
+  checked=$((checked + 1))
+  # Rendered whole before it is read: `grep -q` stops at the first match, and under pipefail the render it cut off
+  # would fail the check.
+  out="$(helm template workbench chart -n workbench "$@" --show-only templates/app.yaml)"
+  if ! grep -qF -- "$text" <<<"$out"; then
+    echo "NOT CONFIGURED: the app's /config.json renders no '$text' ($what)" >&2
+    echo "  rendered with: $*" >&2
+    failed=$((failed + 1))
+  fi
+}
+
+# A reload signs the person in again from the provider's session where the provider keeps one (on by default), and the
+# development overlay turns it off for rask's dev Dex, which keeps none.
+configures "silent sign-in, on by default" 'silentSignIn\":true' "${APIS[@]}" --set auth.oidc.issuer=https://id.example \
+  --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example --set auth.oidc.client.secret.name=wb-client \
+  --set auth.lakehouse.audience=lakehouse --set 'sources[0].name=lake' --set 'sources[0].kind=rask' \
+  --set 'sources[0].uri=https://lakehouse.example' --set auth.fga.apiUrl=https://fga.example \
+  --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
+configures "silent sign-in, off for the dev Dex" 'silentSignIn\":false' "${APIS[@]}" "${BASE[@]}"
+
 # The platform's prerequisites, named when a cluster does not serve them.
 refuses "CloudNativePG is a prerequisite" --api-versions generators.external-secrets.io/v1alpha1/Password "${BASE[@]}"
 refuses "dev.secrets.enabled generates keys with the External Secrets Operator's Password generator" \

@@ -17,6 +17,10 @@
  *   the services require a proof) signs in only at a provider whose discovery offers DPoP, and refuses to
  *   run otherwise; `offered` (the default) binds where the provider offers it and presents a bearer where
  *   it does not; `off` never asks for a bound token.
+ * - `silentSignIn` (optional, on by default): whether a sign-in first asks the issuer with `prompt=none`, so a reload
+ *   is signed in again from the issuer's own session with no form (`auth.svelte.ts`). Off for an issuer that keeps no
+ *   session of its own (Dex without `DEX_SESSIONS_ENABLED`), which shows its form for `prompt=none` and may then refuse
+ *   it, so the person would meet the form twice.
  * - `canvas` (optional) tunes the labeling canvas: `autosaveIdleSeconds`, how long after the last edit an autosave
  *   writes (4 by default).
  */
@@ -64,6 +68,7 @@ const SignInSchema = v.object({
 	clientId: v.pipe(v.string(), v.minLength(1)),
 	scopes: v.array(v.string()),
 	dpop: v.optional(v.picklist(['required', 'offered', 'off']), 'offered'),
+	silentSignIn: v.optional(v.boolean(), true),
 	services: ServicesSchema,
 	canvas: v.optional(CanvasSchema, DEFAULT_CANVAS),
 });
