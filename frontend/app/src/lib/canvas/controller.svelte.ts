@@ -948,9 +948,8 @@ export class AnnotatorController implements Zoomable {
 
 	// ── relations ────────────────────────────────────────────────────────────────────────────────
 	//
-	// The ontology could declare a relation and the actor could validate one, but nothing could DRAW
-	// one — so KIE and DocVQA were expressible in config and unproducible in practice, and a task
-	// declaring a REQUIRED relation could not be submitted at all.
+	// The ontology declares relations and the annotator validates them; this is where a person DRAWS one, so a
+	// task declaring a REQUIRED relation (KIE, DocVQA) can be submitted.
 	//
 	// Two clicks, not a drag: a drag between two small boxes on a zoomed canvas is a precision task,
 	// and it collides with the marquee/pan gestures the same pointer already owns.

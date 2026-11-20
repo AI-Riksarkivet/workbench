@@ -6,12 +6,12 @@
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { page } from '$app/state';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
 	// NAMESPACE import, the estate's convention for a multi-part component (the same reason
 	// QuickView documents for Sheet): the barrel also exports `Root as Tabs`, so `import { Tabs }`
 	// compiles and then renders a bare Root where `Tabs.Content` was meant.
-	import * as Tabs from '@workbench/ui/tabs';
+	import * as Tabs from '@riksarkivet/ui/tabs';
 	import { ArrowLeft, Inbox, Pencil, RefreshCw } from '@lucide/svelte';
 
 	import { fetchMeViaBff } from '$lib/http';

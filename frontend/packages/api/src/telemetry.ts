@@ -84,7 +84,7 @@ export function startZoneTelemetry(env: TelemetryEnv): boolean {
  *
  * `route.id` is `/table/[id]`, not `/table/abc123`. A span name is a metric dimension in waiting —
  * every span-metrics connector promotes it — so a concrete URL here would mint one series per object
- * id, which is the rule this estate has already been burned by breaking at the sidecar.
+ * id.
  */
 export function makeTelemetryHandle(zone: string): Handle {
 	return async ({ event, resolve }) => {

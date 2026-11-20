@@ -10,6 +10,7 @@ name = "ratch-runner-assist"
 version = "0.0.0"
 description = "Interactive assist model server (GroundingDINO-tiny + SAM-ViT-base, CPU) behind MEDIA_ASSIST_URL."
 requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",

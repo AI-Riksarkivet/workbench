@@ -50,11 +50,14 @@ deployment() {
 carries() {
   local what="$1" line="$2"
   shift 2
-  local out
+  local out rendered
   out="$(helm template workbench chart -n workbench "$@" --show-only templates/media.yaml)"
   for service in viewer search; do
     checked=$((checked + 1))
-    if ! deployment "workbench-$service" <<<"$out" | grep -qF -- "$line"; then
+    # Rendered whole first, then searched: piped into `grep -q`, which exits at its first match, the writer could be
+    # killed by SIGPIPE mid-document, and under `pipefail` that failed the check for a line that was there.
+    rendered="$(deployment "workbench-$service" <<<"$out")"
+    if ! grep -qF -- "$line" <<<"$rendered"; then
       echo "NOT CARRIED: workbench-$service renders no \"$line\" ($what)" >&2
       echo "  rendered with: $*" >&2
       failed=$((failed + 1))

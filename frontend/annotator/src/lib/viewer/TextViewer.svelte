@@ -7,8 +7,8 @@
 	// Rides the controller's TEMPORAL seam (`attachData`) exactly like audio: full data + review +
 	// Save path, no engine. One registry entry, one component — the modality contract holding.
 	import { loadAnnotations } from '@workbench/labeling/annotations-client';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { spanColor } from './span-render';
 	import { textLaneLines } from './text-lane';
 	import TextSpanSurface from './layout/TextSpanSurface.svelte';

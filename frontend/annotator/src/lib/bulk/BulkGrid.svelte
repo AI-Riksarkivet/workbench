@@ -30,10 +30,10 @@
 		postSave,
 		type SavePayload,
 	} from '@workbench/labeling/annotations-client';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import * as Popover from '@workbench/ui/popover';
-	import { Textarea } from '@workbench/ui/textarea';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import * as Popover from '@riksarkivet/ui/popover';
+	import { Textarea } from '@riksarkivet/ui/textarea';
 	import MediaThumb from '$lib/viewer/layout/MediaThumb.svelte';
 	import { statusVariant } from '$lib/viewer/layout/statusStyle';
 	import { taskCanvasHref } from '$lib/viewer/task-stream';

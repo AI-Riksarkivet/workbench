@@ -2,10 +2,10 @@
  * Honest lease presentation — the A2 contract, as pure functions.
  *
  * "A claimed task whose lease died is not the annotator's any more, and showing it as theirs
- * invites lost work" (OPEN-WORK.md § Design — annotation projects, A2). The server is the authority — `lease_expired` fires from
- * an actor reminder — but between reminder ticks the CLIENT must not display a corpse lease as
- * held. These helpers derive the honest presentation from the task document and the current time;
- * they decide nothing (the backend refuses stale writes regardless).
+ * invites lost work". The server is the authority: a lease is a holder and an expiry, read as released once past it
+ * against the database's clock, with no timer. The CLIENT must not display a lease past its expiry as held either.
+ * These helpers derive the honest presentation from the task document and the current time; they decide nothing (the
+ * backend refuses stale writes regardless).
  */
 import type { TaskDetail } from './types.ts';
 

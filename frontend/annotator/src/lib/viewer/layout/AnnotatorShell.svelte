@@ -12,10 +12,10 @@
 	import { reviewSelection } from '$lib/labeling/review-selection.svelte';
 	import { ontologyTools } from '$lib/projects/types';
 	import { fetchDraft, fetchTask } from '$lib/projects/remote/tasks.remote';
-	import { ResizableSplit } from '@workbench/ui/resizable-split';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import AnnotatorToolbar from './AnnotatorToolbar.svelte';
 	import AnnotationSidebar from './AnnotationSidebar.svelte';
 	import ClassificationBar from './ClassificationBar.svelte';

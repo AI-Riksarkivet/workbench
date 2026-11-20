@@ -98,8 +98,9 @@ spec:
           env:
             - { name: MEDIA_HOST, value: "0.0.0.0" }
             - { name: MEDIA_DOCS, value: {{ .Values.docs | quote }} }
-            # The corpus and the annotations live in the lakehouse and are reached through the catalog's doors only: each
-            # table opens through lance-namespace on the credential the catalog vends the person, so the pod holds no store key.
+            # The sources this release declares: the items' datasets are read through lance-namespace, a lakehouse's on the
+            # credential its catalog vends the person, so the pod holds no store key. The work in progress is the annotator's
+            # own state below; only a publish writes to a lakehouse.
             {{- include "workbench.sourcesEnv" . | nindent 12 }}
             # The annotator's own state: the Cluster this release renders, reached by its read-write Service, the server
             # verified against the Cluster's own CA, the password read from its mounted file on every new connection.

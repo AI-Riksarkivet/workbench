@@ -6,6 +6,7 @@ import {
 	type Page,
 	type Request,
 } from '@playwright/test';
+import { AFTER_THE_WAIT_MS, adapterAnswersLate } from './adapter';
 import { callsOf, person, signIn, watchCsp } from './session';
 import { EDGE } from './ports';
 import type { MockIdentity } from './mock-oidc';
@@ -186,18 +187,17 @@ test('an item opens on the canvas from its queue, drawn by WebGPU under the CSP,
 	expect(errors).toEqual([]);
 });
 
-test('without WebGPU the canvas says so in the atlas’s words, and offers the way back', async ({
+test('a GPU adapter that answers with none after the app started: the canvas says so in the atlas’s words, and offers the way back', async ({
 	page,
 	context,
 }) => {
 	await as(context, 'Annotator');
-	await page.addInitScript(() =>
-		Object.defineProperty(Navigator.prototype, 'gpu', { get: () => undefined }),
-	);
+	test.slow();
+	await adapterAnswersLate(page, AFTER_THE_WAIT_MS, true);
 	await page.goto('/projects/pages/tasks/pages-t1?project=pages');
 
 	const refusal = page.getByTestId('canvas-gpu-refusal');
-	await expect(refusal).toContainText('WebGPU is required (not available in this browser)');
+	await expect(refusal).toContainText('WebGPU is required (no GPU adapter available)');
 	await expect(refusal.getByRole('link', { name: 'Back to the project' })).toHaveAttribute(
 		'href',
 		'/projects/pages?project=pages',

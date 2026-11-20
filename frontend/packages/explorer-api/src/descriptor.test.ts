@@ -171,6 +171,8 @@ describe('DatasetView — transcripts corpus', () => {
 	it('normalizes relevance so higher is always better', () => {
 		expect(v.relevanceOf({ _distance: 0.4 } as Row, 'semantic')).toBeCloseTo(1.6);
 		expect(v.relevanceOf({ _score: 3 } as Row, 'fts')).toBe(3);
+		// A fused row's score is its fusion's, not the leg's own it happened to come from.
+		expect(v.relevanceOf({ _rrf: 0.03, _score: 9, _distance: 0.1 } as Row, 'all')).toBe(0.03);
 	});
 
 	it('exposes atlas channels including broadest-prefix', () => {

@@ -16,7 +16,7 @@
 	// state, so an unreachable service must not be allowed to render as "all live".
 	import { onMount } from 'svelte';
 	import { Bot, CircleAlert, FlaskConical } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
+	import { Badge } from '@riksarkivet/ui/badge';
 	import { assistProducers, type ProducerListing } from '$lib/viewer/remote/assist.remote';
 
 	// Read at zone level: no task, so no per-task compatibility verdict. `null` is the query's own

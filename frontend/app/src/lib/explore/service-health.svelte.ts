@@ -1,13 +1,9 @@
 /**
  * Live service health, polled once for the whole app.
  *
- * The backend already tells us which encoders are reachable — `/api/health` reports `embed.ok` and
- * `rerank.ok`. Nothing was reading it except the sidebar's status dot, so the search bar happily offered
- * Meaning and Hybrid modes on a deployment where neither can run: measured 2026-07-26 through the ingress,
- * `mode=fts` → 200 with rows, `mode=semantic` and `mode=hybrid` → 503 "embed …", because the viewer's
- * `embed_url` still defaults to `http://127.0.0.1:8001` (lance-media's sidecar-era default) and the chart
- * never re-pointed it. A user picked a mode, got a failure toast, and learned nothing about why. The one
- * signal was a red dot in a corner — permanently red, so ignorable.
+ * The backend tells us which encoders are reachable: `/api/health` reports `embed.ok` and `rerank.ok`. The search
+ * bar offers Meaning and Hybrid only where the embedding service answers, since a deployment without one answers
+ * `mode=semantic` and `mode=hybrid` with 503 "embed …" (measured 2026-07-26 through the ingress).
  *
  * Driven by HEALTH rather than a build-time flag on purpose: the moment an encoder is deployed and
  * `embed.ok` flips true, the modes light up on the next poll with nothing to remember to change. A flag
@@ -53,10 +49,9 @@ class ServiceHealth {
 	 *
 	 *  This exists so that "one store, one poll" is true for *callers who need the payload*, not only for
 	 *  the two components that watch it. The descriptor store needs `db.path` to derive the default dataset
-	 *  id and used to call `getHealth()` itself — a third independent fetch of the same endpoint on every
-	 *  media page load, which is exactly the drift this class's docstring warns about. It await-ed a fresh
-	 *  response because it needs the value; `subscribe()` cannot serve that, since it returns a teardown and
-	 *  the first reading has not landed yet when it returns.
+	 *  id; it awaits this rather than calling `getHealth()` itself, which would be a third fetch of the same
+	 *  endpoint on every page load. `subscribe()` cannot serve it, since it returns a teardown and the first
+	 *  reading has not landed yet when it returns.
 	 *
 	 *  Concurrent callers share the one in-flight request: without that, the descriptor store and a
 	 *  subscribing component racing on mount would each open a connection and the deduplication would be
@@ -105,17 +100,16 @@ class ServiceHealth {
 		return this.current === null ? true : this.current.rerank.ok !== false;
 	}
 
-	/** Why a capability is unavailable, for a tooltip — the backend's own error, not a guess. */
+	/** Why a capability is unavailable, for a tooltip. The probe says only whether each service answered: where it is
+	 *  and why it failed are the viewer's log's. */
 	get embedReason(): string | null {
 		if (this.canEmbed) return null;
-		const url = this.current?.embed.url ?? 'the embedding service';
-		return `No embedding service reachable at ${url}, so a query cannot be turned into a vector.`;
+		return 'No embedding service is reachable, so a query cannot be turned into a vector.';
 	}
 
 	get rerankReason(): string | null {
 		if (this.canRerank) return null;
-		const url = this.current?.rerank.url ?? 'the rerank service';
-		return `No rerank service reachable at ${url}.`;
+		return 'No rerank service is reachable.';
 	}
 }
 

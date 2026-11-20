@@ -25,6 +25,7 @@ The transport is injected (`Publisher`), so every path here runs against a real 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
@@ -190,7 +191,8 @@ async def run_publish(
         material = await store.publish_material(project_id)
 
         await step("building plan")
-        plan = build_plan(project, material, publish_id=publish_id, published_at=published_at)
+        # Every task's shapes, up to 10,000 each: built in a thread, so the loop keeps serving while it runs.
+        plan = await asyncio.to_thread(build_plan, project, material, publish_id=publish_id, published_at=published_at)
         table_id = table_id_for(project, publish_id, namespace)
 
         # §7.2: every captured (table, version) is an input, and none is fabricated. Refused before anything is written

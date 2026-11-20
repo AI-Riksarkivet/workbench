@@ -1,4 +1,5 @@
-"""The search result cache evicts by BYTES as well as entry count (#141).
+"""The search result cache evicts by BYTES as well as entry count (#141), and is shared safely by the threads the search
+routes run on.
 
 256 entries was a count, not a memory bound: a hit row carries display.body (transcript text), so a
 full page of hits runs to megabytes and the cache could hold ~30× the pod's headroom while staying
@@ -7,9 +8,20 @@ full page of hits runs to megabytes and the cache could hold ~30× the pod's hea
 
 from __future__ import annotations
 
+import json
+import sys
+import threading
+from pathlib import Path
 from typing import Any, cast
 
+import pyarrow as pa
+
+from client_kit.lancekit.registry import DatasetRegistry
+from client_kit.media.config import MediaSettings
 from search.services.result_cache import entry_bytes, run_cached
+from search.services.spec import SearchSpec
+from service_kit.governed.token_exchange import LakehouseCaller
+from tests.media_catalog import lakehouse_dir, write_table
 
 
 def _fake_key(monkeypatch: Any, name: str) -> None:
@@ -20,7 +32,7 @@ def _fake_key(monkeypatch: Any, name: str) -> None:
 
 def _run(cache: dict[Any, Any], rows: list[dict[str, Any]], name: str, monkeypatch: Any, *, max_size: int = 10, max_bytes: int = 0) -> list[dict[str, Any]]:
     _fake_key(monkeypatch, name)
-    return run_cached(cache, max_size, max_bytes, cast(Any, None), cast(Any, None), None, None, lambda: rows)
+    return run_cached(cache, threading.Lock(), max_size, max_bytes, cast(Any, None), cast(Any, None), None, None, lambda: rows)
 
 
 def test_byte_ceiling_evicts_oldest(monkeypatch: Any) -> None:
@@ -60,3 +72,48 @@ def test_hit_returns_rows_and_refreshes_recency(monkeypatch: Any) -> None:
     hit = _run(cache, [{"body": "NOT recomputed"}], "a", monkeypatch)
     assert hit == rows  # served from cache, produce() ignored
     assert [k[2] for k in cache] == ["b", "a"]  # a moved to newest
+
+
+_DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "search": {"row_table": "chunks"}}
+_ROWS = pa.table({"doc_id": ["a"]}, schema=pa.schema([("doc_id", pa.string())], metadata={b"lance_media.descriptor": json.dumps(_DESCRIPTOR).encode()}))
+
+
+def test_searches_running_at_once_share_the_cache_and_each_gets_its_answer(tmp_path: Path) -> None:
+    """The search routes run in the threadpool, so one app's cache is read, moved and evicted from several threads at
+    once. Eight threads ask three questions of a cache that holds two, so every ask evicts another's entry, over a real
+    table whose version keys each entry; the interpreter switches threads as often as it can, to reach the gap between
+    one thread's read and its write."""
+    write_table(tmp_path, ["wh", "ns", "chunks"], _ROWS)
+    registry = DatasetRegistry(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
+    handle = registry.get("lake~wh$ns", LakehouseCaller(subject="anon"))
+    cache: dict[Any, Any] = {}
+    lock = threading.Lock()
+    specs = [SearchSpec.model_validate({"q": q}) for q in ("cat", "dog", "owl")]
+    failures: list[BaseException] = []
+    wrong: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def ask(worker: int) -> None:
+        for round_ in range(400):
+            spec = specs[(worker + round_) % len(specs)]
+            try:
+                hits = run_cached(cache, lock, 2, 0, handle, spec, None, None, lambda spec=spec: [{"doc_id": spec.q}])
+            except Exception as exc:  # noqa: BLE001 - any exception is the defect this test is for
+                failures.append(exc)
+                return
+            if hits != [{"doc_id": spec.q}]:
+                wrong.append((spec.q, hits))
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=ask, args=(worker,)) for worker in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+    finally:
+        sys.setswitchinterval(previous)
+
+    assert failures == [], f"a search failed on the shared cache: {failures[0]!r}"
+    assert wrong == []
+    assert len(cache) <= 2

@@ -19,14 +19,6 @@
 				"scripts/gen-corner-fixture.ts"
 			]
 		},
-		"explorer": {
-			"entry": [
-				"src/**/*.remote.ts",
-				"src/**/*.server.ts",
-				"e2e/**/warmup.setup.ts",
-				"e2e/**/mock-*.ts"
-			]
-		},
 		"annotator": {
 			"entry": [
 				"src/**/*.remote.ts",
@@ -34,23 +26,6 @@
 				"server.ts",
 				"e2e/**/warmup.setup.ts",
 				"e2e/**/mock-*.ts"
-			]
-		},
-		"studio": {
-			"entry": [
-				"src/**/*.remote.ts",
-				"src/**/*.server.ts",
-				"server.ts",
-				"e2e/**/warmup.setup.ts",
-				"e2e/**/mock-*.ts"
-			]
-		},
-		"packages/ui": {
-			"entry": [
-				"src/lib/**/index.{ts,js}"
-			],
-			"project": [
-				"src/**/*.{ts,js,svelte}"
 			]
 		}
 	}

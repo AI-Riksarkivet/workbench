@@ -8,8 +8,8 @@
 	// This is where text annotation LIVES now; the inspector keeps a per-row copy for the selected
 	// row, but reading and labeling a page's text no longer means working inside a side panel.
 	import { ChevronDown, ChevronUp } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { AnnotatorController } from '../annotator.svelte';
 	import { textLaneLines } from '../text-lane';
 	import TextSpanSurface from './TextSpanSurface.svelte';

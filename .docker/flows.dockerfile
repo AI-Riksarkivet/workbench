@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.11
-# rask flows service image — FastAPI on python:3.13-slim-bookworm.
-# The studio flow-builder's server half: node catalog, graph validation, durable run execution (each run
+# The flows service image (parked, ADR 0011) — FastAPI on python:3.13-slim-bookworm.
+# Its node catalog, graph validation, durable run execution (each run
 # and its steps kept in the service's own Postgres).
 # Build (DAGGER builds every image in this repo — this recipe is the definition, not the driver):
 #   dagger call image --name=flows
@@ -51,7 +51,7 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/AI-Riksarkivet/rask" \
       org.opencontainers.image.title="rask-flows" \
-      org.opencontainers.image.description="rask flows service — the studio flow-builder's node catalog, graph validation and run execution, FastAPI on :8840"
+      org.opencontainers.image.description="the workbench flows service: node catalog, graph validation and run execution, FastAPI on :8840"
 
 # curl: used by the docker-compose healthcheck.
 # hadolint ignore=DL3008  # Reason: tini and ca-certificates have no stable version pins in apt on slim; pinning would break on next base image update.

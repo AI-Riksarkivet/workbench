@@ -1296,8 +1296,8 @@ Bun.serve({
 					chunks: CHUNKS.length,
 					documents: DOCS.length,
 				},
-				embed: { ok: true, url: 'http://embed' },
-				rerank: { ok: true, url: 'http://rerank' },
+				embed: { ok: true },
+				rerank: { ok: true },
 			});
 		}
 		if (url.pathname === '/api/documents' && req.method === 'GET') {

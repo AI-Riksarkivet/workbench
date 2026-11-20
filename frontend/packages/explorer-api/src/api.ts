@@ -337,7 +337,8 @@ export async function getDiarization(
 }
 
 // ── Health ──────────────────────────────────────────────────────────────
-const PingSchema = v.object({ ok: v.boolean(), url: v.string(), error: v.nullish(v.string()) });
+// Whether each encoder answered, and nothing else: the probe answers anyone, so it names no address and no error.
+const PingSchema = v.object({ ok: v.boolean() });
 // `db` is NULLISH by contract, not defensively: /api/health is the plane's liveness probe and answers 200
 // with `db: null` + `db_error` when no corpus dataset resolves (the chart's default emptyDir corpus
 // volume). Before that it 404'd, which every media/annotator page load logged to the console and the badge

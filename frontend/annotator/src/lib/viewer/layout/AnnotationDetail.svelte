@@ -2,8 +2,8 @@
 	// Single-annotation inspector/editor. Controlled: edits route through the facade
 	// (canvas + overlay updated together). (Ported from ra-anno AnnotationSidebar detail.)
 	import { Check, X, RotateCcw, ChevronUp, ChevronDown, Link2, Link2Off } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
 	import TextInput from '$lib/ui/TextInput.svelte';
 	import TextSpanSurface from './TextSpanSurface.svelte';
 	import { statusVariant } from './statusStyle';

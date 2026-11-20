@@ -33,8 +33,8 @@ const DATASETS = {
 };
 const HEALTH = {
 	db: { path: '/corpus/demo.lance', tables: ['documents', 'chunks'], chunks: 1, documents: 1 },
-	embed: { ok: true, url: '', error: null },
-	rerank: { ok: true, url: '', error: null },
+	embed: { ok: true },
+	rerank: { ok: true },
 };
 const DESCRIPTOR = {
 	id: 'demo',

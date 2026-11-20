@@ -62,23 +62,27 @@ def reciprocal_rank_fusion(
 ) -> list[dict[str, Any]]:
     """Fuse per-corpus ranked lists into ONE ordering.
 
-    Each input must already be ordered best-first — that ordering is the entire signal. Ties break on
-    the identity tuple so the result is deterministic: an unstable order across identical requests
-    makes pagination lie, and it is the kind of bug that only shows up under load.
+    Each input must already be ordered best-first — that ordering is the entire signal. Equal scores
+    are ordered by what a person would rank them by: the better best rank in any one list, then the
+    earlier list (the order the caller gave them: the keyword leg before the vector legs, the corpora
+    as requested), then the identity, so the result is deterministic: an unstable order across
+    identical requests makes pagination lie, and it is the kind of bug that only shows up under load.
     """
     scored: dict[tuple[Any, ...], float] = {}
+    best: dict[tuple[Any, ...], tuple[int, int]] = {}
     first_seen: dict[tuple[Any, ...], dict[str, Any]] = {}
 
-    for hits in ranked_lists:
+    for position, hits in enumerate(ranked_lists):
         for rank, hit in enumerate(hits):
             identity = _identity(hit, key_fields)
             scored[identity] = scored.get(identity, 0.0) + 1.0 / (k + rank + 1)
+            best[identity] = min(best.get(identity, (rank, position)), (rank, position))
             # Keep the FIRST occurrence: within one corpus a document appears once, and across
             # corpora the identity already separates them, so this only matters for a malformed
             # input list — where taking the first is at least deterministic.
             first_seen.setdefault(identity, hit)
 
-    ordered = sorted(scored.items(), key=lambda pair: (-pair[1], tuple(str(x) for x in pair[0])))
+    ordered = sorted(scored.items(), key=lambda pair: (-pair[1], *best[pair[0]], tuple(str(x) for x in pair[0])))
     fused = []
     for identity, score in ordered[: limit if limit is not None else len(ordered)]:
         hit = dict(first_seen[identity])

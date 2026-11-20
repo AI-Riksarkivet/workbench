@@ -11,7 +11,7 @@
 	// queued where, or refused why. With no jobs runner deployed the service answers with an
 	// honest mock and the toast says so; this panel repeats it rather than reading as success.
 	import { Send } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { reviewSelection } from '$lib/labeling/review-selection.svelte';
 	import type { AnnotatorController } from '../annotator.svelte';
 

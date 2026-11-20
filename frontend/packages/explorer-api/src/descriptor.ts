@@ -172,6 +172,9 @@ export type Alignment = v.InferOutput<typeof AlignmentSchema>;
  *  column through untouched, so the schema names no corpus column. Typed
  *  field access goes through {@link DatasetView}. */
 export const RowSchema = v.looseObject({
+	// A fused ordering's score (search's reciprocal-rank fusion: an `all` search, or one across several datasets): the
+	// one relevance comparable across its legs, which each row's own `_score` or `_distance` is not.
+	_rrf: v.optional(v.number()),
 	_score: v.optional(v.number()),
 	_distance: v.optional(v.number()),
 	_relevance_score: v.optional(v.number()),
@@ -262,6 +265,7 @@ export function relevanceOf(row: Row, mode?: SearchMode): number | null {
 		case 'scene':
 			return null;
 		default:
+			if (row._rrf != null) return row._rrf;
 			if (row._relevance_score != null) return row._relevance_score;
 			if (row._score != null) return row._score;
 			if (row._distance != null) return COSINE_DISTANCE_MAX - row._distance;

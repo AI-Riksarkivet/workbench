@@ -5,7 +5,7 @@
 	import { page } from '$app/state';
 	import { ModeWatcher } from 'mode-watcher';
 	import { Toaster } from 'svelte-sonner';
-	import { AppShell } from '@workbench/ui/shell';
+	import { AppShell } from '$lib/shell';
 
 	import { ANNOTATOR_ZONE_NAV } from '$lib/nav';
 	import { base } from '$app/paths';

@@ -24,7 +24,7 @@ from annotator.api.security import AuthorizerDep, CheckerDep, CurrentSubject, la
 from annotator.api.v1.responses import LegalEvent, ProjectDetail, ProjectListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.people import RECORDS_PERSON
-from annotator.projects.machines import IllegalTransition, legal_project_events
+from annotator.projects.machines import legal_project_events
 from annotator.projects.models import (
     DESCRIPTION_MAX,
     INSTRUCTIONS_MAX,
@@ -36,7 +36,7 @@ from annotator.projects.models import (
 )
 from annotator.projects.ontology import RequestOntology
 from annotator.text import Text
-from service_kit.exceptions import ConflictError, NotFoundError
+from service_kit.exceptions import NotFoundError
 from service_kit.governed.audit import AuditOutcome, audit
 from service_kit.governed.fga import Authorizer, Grant, user_object
 from service_kit.naming import CONTROL_ID_PATTERN
@@ -241,10 +241,7 @@ async def update_project_ontology(
         raise lacking(subject, MANAGE_RELATION, obj)
     if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
-    try:
-        stored = await store.set_ontology(project_id, payload.ontology.stored())
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    stored = await store.set_ontology(project_id, payload.ontology.stored())
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_ONTOLOGY, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=MANAGE_RELATION)
     return stored
 
@@ -268,9 +265,6 @@ async def update_project_settings(
         raise lacking(subject, MANAGE_RELATION, obj)
     if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
-    try:
-        stored = await store.update_settings(project_id, payload)
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    stored = await store.update_settings(project_id, payload)
     audit(AnnotatorAuditAction.ANNOTATION_PROJECT_UPDATE_SETTINGS, AuditOutcome.SUCCESS, subject=subject, resource=project_id, relation=MANAGE_RELATION)
     return stored

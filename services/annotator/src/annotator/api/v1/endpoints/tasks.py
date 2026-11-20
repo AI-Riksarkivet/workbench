@@ -40,7 +40,6 @@ from annotator.projects.machines import (
     FROZEN_PROJECT_STATES,
     TASK_EDGES,
     CallerFacts,
-    IllegalTransition,
     Refusal,
     caller_events,
     edit_violation,
@@ -200,20 +199,18 @@ async def fire_task_event(
     # the store re-checks the rule against the holder of the moment, and needs the answer then.
     subject_can_manage = "can_manage" in facts.held
 
-    try:
-        # `actor` is always the VERIFIED caller; `assignee` is the recipient a manager names on `assign`.
-        updated = await store.fire_task(
-            task_id,
-            event=payload.event,
-            actor=subject,
-            subject_can_manage=subject_can_manage,
-            lease_seconds=payload.lease_seconds,
-            assignee=payload.assignee,
-            message=payload.message,
-            shape_ids=payload.shape_ids,
-        )
-    except IllegalTransition as exc:  # lost a race: the rows moved between this read and the transaction
-        raise ConflictError(str(exc)) from exc
+    # `actor` is always the VERIFIED caller; `assignee` is the recipient a manager names on `assign`. Rows that moved
+    # between this read and the transaction are an IllegalTransition, a 409.
+    updated = await store.fire_task(
+        task_id,
+        event=payload.event,
+        actor=subject,
+        subject_can_manage=subject_can_manage,
+        lease_seconds=payload.lease_seconds,
+        assignee=payload.assignee,
+        message=payload.message,
+        shape_ids=payload.shape_ids,
+    )
 
     audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.SUCCESS, event=payload.event, subject=subject, resource=task_id)
     return await with_legal_events(store, updated, checker, subject)
@@ -334,17 +331,14 @@ async def import_annotations(
     def append(current: Draft | None, _now: datetime) -> tuple[list[Shape], list[Link]]:
         return [*(current.shapes if current else []), *shapes], [*(current.links if current else []), *links]
 
-    try:
-        draft = await store.change_draft(
-            task_id,
-            author=subject,
-            change=append,
-            # The revision the ids were checked against, so a save that lands in between is a 409 rather than a clash.
-            base_revision=existing.revision if existing else 0,
-            origin="import",
-        )
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    draft = await store.change_draft(
+        task_id,
+        author=subject,
+        change=append,
+        # The revision the ids were checked against, so a save that lands in between is a 409 rather than a clash.
+        base_revision=existing.revision if existing else 0,
+        origin="import",
+    )
 
     audit(AnnotatorAuditAction.TASK_IMPORT, AuditOutcome.SUCCESS, subject=subject, resource=task_id)
     return DraftImport(imported=len(shapes), links=len(links), draft=draft)

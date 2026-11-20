@@ -14,14 +14,14 @@
 	//    offering a tool that cannot work there.
 	import { onDestroy, onMount } from 'svelte';
 	import { Check, FlaskConical, Minus, MousePointerClick, Plus, Sparkles, X } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import * as Popover from '@workbench/ui/popover';
-	import * as Tooltip from '@workbench/ui/tooltip';
-	import { RainbowButton } from '@workbench/ui/rainbow-button';
-	import { cn } from '@workbench/ui/utils';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import * as Popover from '@riksarkivet/ui/popover';
+	import * as Tooltip from '@riksarkivet/ui/tooltip';
+	import { RainbowButton } from '@riksarkivet/ui/rainbow-button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import TextInput from '$lib/ui/TextInput.svelte';
-	import { Slider } from '@workbench/ui/slider';
+	import { Slider } from '@riksarkivet/ui/slider';
 	import { assistProducers, type ProducerInfo } from '../remote/assist.remote';
 	import AssistRegistry from './AssistRegistry.svelte';
 	import PropagatePanel from './PropagatePanel.svelte';

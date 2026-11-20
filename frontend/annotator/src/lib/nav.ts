@@ -1,5 +1,5 @@
 import { Bot, FolderKanban, Layers, Scale, SlidersHorizontal } from '@lucide/svelte';
-import { exact, seg, type ZoneNav } from '@workbench/ui/shell';
+import { exact, seg, type ZoneNav } from '$lib/shell';
 
 // The annotate zone's OWN sidebar routes.
 //

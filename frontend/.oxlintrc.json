@@ -64,26 +64,7 @@
 			// (`$app/paths`), which fills a route id's parameters and adds any base path.
 			"files": ["app/**"],
 			"rules": {
-				"svelte/no-navigation-without-resolve": "error",
-				// The app's design system is `@riksarkivet/ui` (AI-Riksarkivet/ui, pinned by commit). `@workbench/ui` is
-				// the frozen copy the old apps still import until they are deleted; the app never takes it back.
-				"no-restricted-imports": [
-					"error",
-					{
-						"paths": [
-							{
-								"name": "@workbench/ui",
-								"message": "The app's design system is @riksarkivet/ui; @workbench/ui is frozen legacy for the old apps."
-							}
-						],
-						"patterns": [
-							{
-								"group": ["@workbench/ui/*"],
-								"message": "The app's design system is @riksarkivet/ui; @workbench/ui is frozen legacy for the old apps."
-							}
-						]
-					}
-				]
+				"svelte/no-navigation-without-resolve": "error"
 			}
 		},
 		{

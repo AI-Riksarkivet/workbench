@@ -11,8 +11,8 @@
 	// Deliberately NOT the drawing canvas. It shows the item and its verdict actions; an item that
 	// needs shapes drawn still belongs on the canvas, and the link to it is right here. Pretending a
 	// drawer is a PixiJS surface would be a worse lie than not offering one.
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
 	import { ChevronLeft, ChevronRight, ExternalLink, X } from '@lucide/svelte';
 
 	import { datasetVersionText, predictedLabels } from './item-columns';

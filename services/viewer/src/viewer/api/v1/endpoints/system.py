@@ -61,19 +61,16 @@ def _health(caller: LakehouseCaller, state: AppState, dataset: str | None) -> He
     `db_error` and no facts while the probe still answers 200 with encoder reachability, which names
     no corpus.
 
-    It used to resolve the dataset FIRST, so a deployment whose corpus volume is empty (now the chart
-    default: ``explorer.corpus.mode=emptyDir``, since the old hostPath wedged every fresh cluster) answered
-    404 "dataset 'transcripts_v2' not found" to the one endpoint the media and annotator zones poll on
-    every page load. Observed live 2026-07-28 through both zones' BFF proxies: a console 404 per load,
-    the sidebar dot permanently red, and — because the descriptor store derives the default dataset id
-    from ``db.path`` — no dataset at all, all reported as "backend unreachable" when the backend was
-    perfectly healthy and simply had nothing loaded.
+    The dataset is OPTIONAL here, read after the pings: a probe that answered 404 when no dataset resolves
+    could not tell "service down" from "nothing loaded" (observed live 2026-07-28: a console 404 on every
+    page load and a status dot reading "backend unreachable" for a healthy service with nothing loaded).
+    Encoder reachability is always reported (it does not depend on a dataset), and ``db`` is ``None`` with
+    ``db_error`` saying no dataset could be read. The dataset-bound
+    endpoints beside this one still 404 — that is correct for a read of a thing that isn't there; it is only
+    wrong for the probe that asks whether anything is there at all.
 
-    A probe that cannot distinguish "service down" from "no corpus mounted" is worse than no probe, so
-    the dataset became OPTIONAL here: encoder reachability is always reported (it does not depend on a
-    dataset), and ``db`` is ``None`` with ``db_error`` carrying the resolution failure verbatim. The
-    dataset-bound endpoints beside this one still 404 — that is correct for a read of a thing that isn't
-    there; it is only wrong for the probe that asks whether anything is there at all.
+    The probe answers anyone, so it names no exception, no message and no internal address: what failed, and
+    where, is logged with its exception type, which tells a timeout from a refusal from a failed lookup.
     """
     # One pooled client per process (state.http); the module fallback only fires
     # for bare AppState constructions in unit tests.
@@ -82,12 +79,10 @@ def _health(caller: LakehouseCaller, state: AppState, dataset: str | None) -> He
     def _ping(url: str) -> VllmPing:
         try:
             r = http.get(f"{url}/health", timeout=1.5)
-            return VllmPing(ok=r.status_code == 200, url=url)
-        except Exception as e:
-            # Keep the exception TYPE — httpx messages alone (e.g. a bare host)
-            # don't identify whether it was a timeout, refusal, or DNS failure.
-            first_line = str(e).split("\n")[0][:100]
-            return VllmPing(ok=False, url=url, error=f"{type(e).__name__}: {first_line}")
+            return VllmPing(ok=r.status_code == 200)
+        except (httpx.HTTPError, httpx.InvalidURL) as e:
+            logger.info("health: %s did not answer (%s: %s)", url, type(e).__name__, str(e).split("\n")[0][:200])
+            return VllmPing(ok=False)
 
     # Pinged FIRST and unconditionally: encoder reachability is what the search-mode gating reads and it
     # has nothing to do with whether a dataset is loaded.
@@ -101,8 +96,7 @@ def _health(caller: LakehouseCaller, state: AppState, dataset: str | None) -> He
         # un-loaded corpus; anything else (a broken S3 endpoint, a corrupt manifest) is equally a
         # "no db facts" answer and equally not a reason to fail the probe.
         logger.info("health: no dataset resolved (%s: %s)", type(e).__name__, e)
-        reason = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
-        return HealthResponse(db=None, db_error=reason, embed=embed, rerank=rerank)
+        return HealthResponse(db=None, db_error="no dataset could be read", embed=embed, rerank=rerank)
 
     declared = handle.declared
     tables = handle.descriptor.tables

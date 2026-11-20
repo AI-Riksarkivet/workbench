@@ -14,10 +14,10 @@
 	// choosing between two similar documents; it was only ever wrong as the DEFAULT for a surface
 	// named after bulk work.
 	import { ArrowDown, ArrowUp, ChevronsUpDown } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Input } from '@workbench/ui/input';
-	import * as Table from '@workbench/ui/table';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Input } from '@riksarkivet/ui/input';
+	import * as Table from '@riksarkivet/ui/table';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { DatasetView } from '@workbench/explorer-api/descriptor';
 
 	import { compareDocs, docCellText, docColumns, DOC_ID } from './doc-columns';

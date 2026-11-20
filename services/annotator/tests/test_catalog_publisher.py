@@ -18,6 +18,7 @@ holds up to the saga:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -134,6 +135,30 @@ async def test_create_posts_exist_ok_with_schema_typed_rows_and_its_run(catalog:
     # catalog's reader or type an all-sentinel publish as nulls.
     table = pa.ipc.open_stream(call.body).read_all()
     assert (table.schema.names, table.num_rows) == (list(PUBLISHED_LABELS_SCHEMA.names), 2)
+
+
+@pytest.mark.asyncio
+async def test_the_create_encodes_its_rows_off_the_loop(catalog: _Catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A publish's rows are every task's shapes: encoded on the event loop they would freeze every request and the probes.
+    The encode here goes on only once a coroutine on the loop releases it, so it is released only off the loop."""
+    released: list[bool] = []
+    gate = threading.Event()
+    encode = lakehouse._arrow_stream_bytes
+
+    def _slow_encode(plan: PublishPlan) -> bytes:
+        released.append(gate.wait(timeout=5))
+        return encode(plan)
+
+    monkeypatch.setattr(lakehouse, "_arrow_stream_bytes", _slow_encode)
+
+    async def _release() -> None:
+        await asyncio.sleep(0.05)
+        gate.set()
+
+    publisher = CatalogPublisher(catalog.url, source="lake")
+    await asyncio.gather(publisher.create_table("acme$published$t_1", _plan(), properties={}, run_id="0199a1b2c3d47e5f8a9b0c1d2e3f4a07", inputs=[]), _release())
+
+    assert released == [True], "the publish's rows were encoded ON the event loop"
 
 
 @pytest.mark.asyncio

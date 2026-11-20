@@ -1,12 +1,8 @@
 <script lang="ts">
-	// The zone's text field. It is a deliberate MIRROR of @workbench/ui's input component (same token
-	// classes, same h-8 / rounded-lg / ring-3 geometry) because @workbench/ui does not expose `./input`
-	// in its package exports yet — only the data-table's filter wrapper reaches it. Keeping the
-	// mirror here, in one file, is why every field in the annotator can look like a data/admin
-	// field without each call site hand-rolling border+ring classes. When @workbench/ui exports its
-	// input, delete this file and re-point the four importers at it.
+	// The old annotator's text field: a mirror of the design system's input (same token classes, same h-8 /
+	// rounded-lg / ring-3 geometry), kept in one file until this app is deleted (WB-109).
 	import type { HTMLInputAttributes } from 'svelte/elements';
-	import { cn } from '@workbench/ui/utils';
+	import { cn } from '@riksarkivet/ui/utils';
 
 	let {
 		value = $bindable(''),

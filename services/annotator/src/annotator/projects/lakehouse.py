@@ -146,7 +146,7 @@ class CatalogPublisher:
         inputs: list[tuple[str, int]],
     ) -> int:
         """Create (or converge on) the published table; return its version."""
-        body = _arrow_stream_bytes(plan)
+        body = await asyncio.to_thread(_arrow_stream_bytes, plan)
         headers = {**self._headers(), RUN_ID_HEADER: run_id, JOB_NAMESPACE_HEADER: PUBLISH_JOB[0], JOB_HEADER: PUBLISH_JOB[1]}
         if inputs:
             headers[INPUTS_HEADER] = json.dumps([{"table": self._in_lakehouse(table), "version": version} for table, version in inputs])

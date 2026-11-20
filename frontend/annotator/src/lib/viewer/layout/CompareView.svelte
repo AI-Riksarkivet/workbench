@@ -13,7 +13,7 @@
 	// same table the moment panes shared a key. The view REPLACES the canvas while open — the
 	// route mounts one or the other, never both.
 	import { ArrowLeft, Check } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { toast } from 'svelte-sonner';
 
 	import {

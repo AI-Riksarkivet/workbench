@@ -243,7 +243,7 @@ def make_service_app(
     #
     # ROOT, not under `api_prefix`: a kubelet does not know a service's prefix. Unconditional because
     # the router is dependency-free — `ready_check` is the optional half, for a service with a hard
-    # dependency worth reporting (an actor plane, say).
+    # dependency worth reporting (a state store, say).
     #
     # `/api/health` is untouched: it is the frontend-facing badge the estate documents it to be. The
     # point is that it is not a READINESS answer — it is a constant, so probing it reports "ready"

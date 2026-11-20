@@ -1,25 +1,18 @@
-"""``/api/health`` must answer 200 with no corpus dataset — it is a PROBE, not a dataset read.
+"""``/api/health`` answers 200 with no corpus dataset — it is a PROBE, not a dataset read — and tells anyone who asks
+nothing of the service's internals.
 
-Regression pin for live-proof 2026-07-28 defect 4. The endpoint used to resolve the default dataset
-before it could answer anything, so a deployment with an empty corpus volume — now the chart's DEFAULT
-(``explorer.corpus.mode=emptyDir``, because the old unconditional hostPath wedged every fresh cluster)
-answered::
+A probe that answered 404 when no dataset resolves could not tell "service down" from "nothing loaded" (live-proof
+2026-07-28, defect 4: a console 404 on every page load, and "backend unreachable" for a healthy service). Anyone may
+call it, so it says only what is unavailable, never an exception, its message or an internal address.
 
-    404 {"detail": "dataset 'lake~acme$corpus' not found under /media-corpus"}
-
-to the one endpoint the media AND annotator zones poll on every single page load (both zones' `api/**`
-BFF catch-all proxies to the viewer). Measured live through both: a console 404 per page load, and the
-zone reporting "backend unreachable" for a backend that was Running and healthy and merely had nothing
-loaded. A probe that cannot tell "service down" from "no corpus" is worse than no probe.
-
-Driven over HTTP at the boundary with the SAME problem+json handlers the service registers, so a
-regression that reinstates the 404 fails here rather than in a browser console.
+Driven over HTTP at the boundary with the SAME problem+json handlers the service registers.
 """
 
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,10 +26,10 @@ from viewer.api.v1.endpoints.system import router as system_router
 
 
 class _DeadEncoders:
-    """The default encoder posture: nothing deployed, so every ping refuses."""
+    """The default encoder posture: nothing deployed, so every ping refuses, as httpx says it."""
 
     def get(self, url: str, timeout: float = 0.0) -> Any:
-        raise ConnectionError(f"All connection attempts failed to {url}")
+        raise httpx.ConnectError(f"All connection attempts failed to {url}")
 
 
 @pytest.fixture
@@ -52,22 +45,27 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         yield c
 
 
-def test_health_is_200_with_no_dataset_loaded(client: TestClient) -> None:
+def test_health_is_200_with_no_dataset_loaded_and_tells_no_internal_detail(client: TestClient) -> None:
     r = client.get("/api/health")
     assert r.status_code == 200, (
         f"/api/health returned {r.status_code} on a service with no corpus dataset: {r.text}. "
         "It is the media plane's liveness probe — the media + annotator zones poll it on every page "
         "load, so a non-200 here is a console error per load and a UI that blames the network."
     )
+    # Anyone may call the probe: it says what is unavailable, never an exception, its message or an internal address.
+    body = r.json()
+    assert (body["db"], body["embed"]["ok"], body["rerank"]["ok"]) == (None, False, False)
+    assert "Error" not in r.text
+    assert "http" not in r.text
+    assert "/media-corpus" not in r.text
 
 
 def test_a_dataset_bound_endpoint_on_the_same_app_still_404s(client: TestClient) -> None:
     """The proof that the fix is scoped to the PROBE, not a blanket softening.
 
     Same app, same empty catalog: ``/api/columns`` reads a dataset, so its 404 is correct and stays.
-    It is also the mechanical proof that this fixture reproduces the pre-fix failure — the identical
-    resolution path that now degrades under ``/api/health`` still renders 404 problem+json here, which is
-    exactly what every media/annotator page load used to get from the probe.
+    It is also the proof that this fixture has no dataset: the resolution path ``/api/health`` degrades
+    on renders 404 problem+json here.
     """
     r = client.get("/api/columns")
     assert r.status_code == 404, f"a dataset READ with no dataset must still 404, got {r.status_code}"

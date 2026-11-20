@@ -1,18 +1,15 @@
-"""The media CORS layer advertises the write methods its apps actually serve.
+"""The media CORS layer: closed unless a deployment names an origin, outermost, and advertising the write methods its
+apps serve.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" `ANN-04` (cross-service — the fix
-travels with the shared middleware). The media factory `client_kit.media.middleware.register_media_middleware` — used by viewer, search and annotator —
-set `allow_methods=["GET", "POST", "OPTIONS"]`, while the annotator alone serves seven PUT/PATCH/DELETE
-routes (member put/delete, draft put, ontology patch, project-event put/delete). With `cors_origins`
-defaulting to `["*"]`, a cross-origin browser preflight for those methods is answered without them in
-`Access-Control-Allow-Methods`, so the real request is blocked. This guards the shared seam for all
-three media services at once.
+The app reaches every service same-origin through the Gateway, so a media app admits no other origin unless its settings
+name one. When one is named, CORS is the outermost layer, so a response another layer answers itself (the body cap's
+413, the request id's) carries the headers that let the browser read it, and a preflight for the annotator's
+PUT/PATCH/DELETE routes is answered with them. Guards the shared seam of the viewer, search and the annotator at once.
 """
 
 from __future__ import annotations
 
-import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from client_kit.media.config import Settings as MediaSettings
@@ -20,24 +17,32 @@ from client_kit.media.middleware import register_media_middleware
 from tests.media_catalog import lakehouse_dir
 
 
-def _preflight_allowed_methods(method: str) -> str:
+_ORIGIN = "https://example.test"
+
+
+def _app(**settings: object) -> TestClient:
     app = FastAPI()
-    register_media_middleware(app, MediaSettings.model_validate({**lakehouse_dir("/catalog")}))
+    register_media_middleware(app, MediaSettings.model_validate({**lakehouse_dir("/catalog"), "MEDIA_MAX_BODY_BYTES": 16, **settings}))
 
-    @app.api_route("/thing", methods=[method])
-    async def _thing() -> dict[str, str]:  # pragma: no cover - never invoked; only the preflight is
-        return {"ok": "yes"}
+    @app.api_route("/thing", methods=["POST", "PUT"])
+    async def _thing(request: Request) -> dict[str, int]:
+        return {"read": len(await request.body())}
 
-    resp = TestClient(app).options(
-        "/thing",
-        headers={"Origin": "https://example.test", "Access-Control-Request-Method": method},
-    )
-    return resp.headers.get("access-control-allow-methods", "")
+    return TestClient(app)
 
 
-@pytest.mark.parametrize("method", ["PUT"])
-def test_media_preflight_advertises_write_methods(method: str) -> None:
-    advertised = _preflight_allowed_methods(method)
-    assert method in advertised, (
-        f"media CORS preflight advertises '{advertised}' — {method} routes (the annotator's members/drafts/ontology) are blocked cross-origin"
-    )
+def test_no_other_origin_is_admitted_unless_one_is_named() -> None:
+    preflight = _app().options("/thing", headers={"Origin": _ORIGIN, "Access-Control-Request-Method": "PUT"})
+
+    assert "access-control-allow-origin" not in preflight.headers
+
+
+def test_a_named_origin_is_answered_on_every_response_and_offered_the_write_methods() -> None:
+    client = _app(MEDIA_CORS_ORIGINS=[_ORIGIN])
+
+    preflight = client.options("/thing", headers={"Origin": _ORIGIN, "Access-Control-Request-Method": "PUT"})
+    over_cap = client.post("/thing", content=b"x" * 64, headers={"Origin": _ORIGIN})
+
+    assert "PUT" in preflight.headers.get("access-control-allow-methods", "")
+    assert over_cap.status_code == 413
+    assert over_cap.headers.get("access-control-allow-origin") == _ORIGIN, f"the 413 is unreadable by the caller that provoked it: {dict(over_cap.headers)}"

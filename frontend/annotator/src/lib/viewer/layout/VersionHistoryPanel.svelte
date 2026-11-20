@@ -4,7 +4,7 @@
 	// past version against the current rows. Opt-in (an extra fetch), lazy-loaded. All
 	// fetch/diff logic is in @workbench/labeling/history (framework-agnostic); this is the view.
 	import { ChevronDown, ChevronRight, History } from '@lucide/svelte';
-	import { cn } from '@workbench/ui/utils';
+	import { cn } from '@riksarkivet/ui/utils';
 	import {
 		diffSignatures,
 		fetchVersions,

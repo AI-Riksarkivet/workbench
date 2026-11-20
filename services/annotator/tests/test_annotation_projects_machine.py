@@ -1,8 +1,7 @@
 """The annotation-project domain core — entities, both state machines, the publish contract.
 
-Named by `OPEN-WORK.md#design--annotation-projects` §S1. These tests deliberately need **no store, no
-corpus mount, no OpenFGA and no running service**: the domain core is store-free, which is what makes
-slices S1/S3 buildable ahead of the actor plane.
+These tests need **no store, no corpus mount, no OpenFGA and no running service**: the domain core is store-free, and
+the state store (`annotator.state.store`) applies these same pure machines inside its transactions.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ def test_project_edges_carry_the_permission_that_gates_them() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-# The identity-bound rules (§5.2), as the ONE function both sides of the sidecar apply
+# The identity-bound rules (§5.2), as the ONE function the doors and the state store apply
 # --------------------------------------------------------------------------------------------------
 
 

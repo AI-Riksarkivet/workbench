@@ -8,9 +8,9 @@
 	// It shares ONE selection with the table (`rowSelection`, keyed by task id, bound from the
 	// parent), so every bulk action works identically from either mode. That is what makes this a
 	// second VIEW rather than a second, weaker table.
-	import { Badge } from '@workbench/ui/badge';
-	import { Checkbox } from '@workbench/ui/checkbox';
-	import type { RowSelectionState } from '@workbench/ui/data-table';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Checkbox } from '@riksarkivet/ui/checkbox';
+	import type { RowSelectionState } from '@riksarkivet/ui/data-table';
 
 	import { predictedLabels } from './item-columns';
 	import { taskStateVariant } from './presentation.js';

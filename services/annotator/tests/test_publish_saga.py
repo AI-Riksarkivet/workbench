@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -20,6 +21,7 @@ import pytest
 import pytest_asyncio
 
 from annotator.core.config import AnnotatorSettings
+from annotator.projects import saga
 from annotator.projects.lakehouse import PublishRunner
 from annotator.projects.models import AnnotationProject, ProjectState, PublishRecord, Shape, Task, TaskState
 from annotator.projects.publish import PublishRefusal
@@ -166,6 +168,31 @@ async def test_the_saga_narrates_its_steps_in_order_so_a_publish_is_not_just_a_s
     assert steps[:2] == ["reading tasks", "building plan"]
     assert steps[2].startswith("creating table acme$published$vasa_")
     assert steps[3:] == ["recording publish"]
+
+
+@pytest.mark.asyncio
+async def test_the_saga_builds_its_plan_off_the_loop(store: AnnotatorStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A plan is every task's shapes, up to 10,000 each: built on the event loop it would freeze every request and the
+    probes. The build here goes on only once a coroutine on the loop releases it, so it is released only off the loop."""
+    project_id = await _publishing(store, ONE_ACCEPTED)
+    released: list[bool] = []
+    gate = threading.Event()
+    build = saga.build_plan
+
+    def _slow_build(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - stands in for the real build, whatever it returns
+        released.append(gate.wait(timeout=5))
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(saga, "build_plan", _slow_build)
+
+    async def _release() -> None:
+        await asyncio.sleep(0.05)
+        gate.set()
+
+    await asyncio.gather(_run(store, project_id, _Publisher()), _release())
+
+    assert released == [True], "the publish plan was built ON the event loop"
+    assert (await _state(store, project_id)).state is ProjectState.PUBLISHED
 
 
 @pytest.mark.asyncio

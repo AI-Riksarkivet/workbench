@@ -10,10 +10,9 @@
 	import { loadAnnotations } from '@workbench/labeling/annotations-client';
 
 	import { type PixiContext, type TemporalSegment, WaveSurface } from '@workbench/engine';
-	import { Button } from '@workbench/ui/button';
-	// @workbench/ui has no slider yet, so the seek bar keeps the @workbench/ui primitive — it is already
-	// token-styled, so it themes with the rest of the transport.
-	import { Slider } from '@workbench/ui/slider';
+	import { Button } from '@riksarkivet/ui/button';
+	// The seek bar is the design system's slider, token-styled, so it themes with the rest of the transport.
+	import { Slider } from '@riksarkivet/ui/slider';
 	import TransportBar from './layout/TransportBar.svelte';
 	import {
 		clampTime,

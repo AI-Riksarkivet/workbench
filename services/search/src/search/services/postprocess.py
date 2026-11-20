@@ -117,21 +117,3 @@ def attach_captions(
     by_key = {row_key(r, key_fields): r.get(caption_column) for r in rows}
     for h in hits:
         h["caption"] = by_key.get(row_key(h, key_fields))
-
-
-def rrf_fuse(rankings: list[list[dict[str, Any]]], *, key_fields: Sequence[str], k: int = 60) -> list[dict[str, Any]]:
-    """Reciprocal-rank fusion across N ranked lists keyed on the identity fields.
-
-    Lance's hybrid query handles RRF natively when both FTS and vector are in
-    play; this helper covers the multi-leg ``all`` mode where we issue distinct
-    queries (text / frame / caption vectors) and must merge them ourselves.
-    """
-    scored: dict[RowKey, float] = {}
-    rep: dict[RowKey, dict[str, Any]] = {}
-    for ranking in rankings:
-        for rank, hit in enumerate(ranking):
-            key = row_key(hit, key_fields)
-            scored[key] = scored.get(key, 0.0) + 1.0 / (k + rank)
-            # Keep the first occurrence (highest-ranked) as the canonical row.
-            rep.setdefault(key, hit)
-    return sorted(rep.values(), key=lambda h: -scored[row_key(h, key_fields)])

@@ -77,6 +77,9 @@ class AppState(BaseModel):
     # discipline as points_cache; bounded by settings.search_cache_size AND
     # settings.search_cache_bytes (0 = off / no byte bound respectively).
     search_cache: dict[tuple[str, str, str], tuple[list[Any], int]] = Field(default_factory=dict)
+    # The search routes run in the threadpool, so the cache is read, moved and evicted from several threads at once: each
+    # of those is done holding this lock (search.services.result_cache.run_cached), never the search itself.
+    search_cache_lock: Any = Field(default_factory=threading.Lock)
     # The dataset registry, the one resolution path. Same first-build hazard as voice_encoder: sync handlers run in a
     # threadpool, so two concurrent first requests would otherwise both construct the registry.
     registry: Any | None = None  # client_kit.lancekit.registry.DatasetRegistry

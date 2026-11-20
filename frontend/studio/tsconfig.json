@@ -1,4 +1,0 @@
-{
-	"//": "One line, not a hand-inlined option block: the strictness lives in the config package's base, and an app that restates it drifts from it. SvelteKit's generated config goes first; the base wins where they overlap.",
-	"extends": ["./.svelte-kit/tsconfig.json", "../packages/config/tsconfig.base.json"]
-}

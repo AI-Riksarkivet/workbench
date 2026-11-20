@@ -15,6 +15,15 @@ import {
 // DPoP round trip against `e2e/mock-oidc.ts`, same-origin under `/oidc`.
 const local = (port: number): string => `http://localhost:${port}`;
 
+/** Chromium's software GPU adapter, which every project that runs the app draws with. */
+const SOFTWARE_ADAPTER = [
+	'--enable-unsafe-webgpu',
+	'--enable-features=Vulkan',
+	'--use-vulkan=swiftshader',
+	'--use-webgpu-adapter=swiftshader',
+	'--use-angle=swiftshader',
+];
+
 export default defineConfig({
 	testDir: './e2e',
 	timeout: 30_000,
@@ -24,13 +33,22 @@ export default defineConfig({
 	retries: process.env.CI ? 1 : 0,
 	reporter: process.env.CI ? 'github' : 'list',
 	use: { baseURL: EDGE, trace: 'on-first-retry', ...devices['Desktop Chrome'] },
-	// Headless Chromium offers no WebGPU adapter by default, which is the browser the atlas and the graph
-	// must refuse plainly. `webgpu` runs the specs that draw on Chromium's software adapter (SwiftShader
-	// over Vulkan, `--enable-unsafe-webgpu`), in the new headless mode (`channel: 'chromium'`), whose
-	// screenshots composite a WebGPU canvas (the headless shell's show it blank, measured 2026-11-14), so a
-	// spec reads what the renderer drew. The labeling canvas (`canvas.spec.ts`, and the write `auth.spec.ts` makes on it) and the player's page viewer (`player.spec.ts`) draw with WebGPU too, and so do a plain table's set-up views (`setup.spec.ts`); the shell (`shell.spec.ts`) is read here because its page transitions run as in a person's browser, which the headless shell's do not.
+	// The supported browser is Chromium with a GPU adapter (ADR 0018), so every project that runs the app gives Chromium
+	// its software adapter (SwiftShader over Vulkan, `--enable-unsafe-webgpu`). `chromium` runs the headless shell,
+	// which offers that adapter (measured 2026-11-20: in 13 ms) but shows a WebGPU canvas blank in a screenshot.
+	// `webgpu` runs the specs that read what a renderer drew, in the new headless mode (`channel: 'chromium'`), whose
+	// screenshots composite a WebGPU canvas (measured 2026-11-14): the atlas and the graph, the labeling canvas
+	// (`canvas.spec.ts`, and the write `auth.spec.ts` makes on it), the player's page viewer (`player.spec.ts`), a plain
+	// table's set-up views (`setup.spec.ts`) and the time strip; the shell (`shell.spec.ts`) is read there because its page
+	// transitions run as in a person's browser, which the headless shell's do not. `no-webgpu` (the headless shell with
+	// no adapter) and `firefox` (no WebGPU) are the browsers the app does not support, and run only the page that says
+	// so (`unsupported.spec.ts`).
 	projects: [
-		{ name: 'chromium', testIgnore: /(webgpu|canvas|player|auth|setup|temporal|shell)\.spec\.ts$/ },
+		{
+			name: 'chromium',
+			testIgnore: /(webgpu|canvas|player|auth|setup|temporal|shell|unsupported)\.spec\.ts$/,
+			use: { launchOptions: { args: SOFTWARE_ADAPTER } },
+		},
 		{
 			name: 'webgpu',
 			testMatch: /(webgpu|canvas|player|auth|setup|temporal|shell)\.spec\.ts$/,
@@ -38,18 +56,13 @@ export default defineConfig({
 			// loaded host, a 0.25 s view transition took 2.4 s to finish and the labeling canvas was ready 5-6 s
 			// after the page load, past the 5 s default. An assertion in this project waits up to 10 s.
 			expect: { timeout: 10_000 },
-			use: {
-				channel: 'chromium',
-				launchOptions: {
-					args: [
-						'--enable-unsafe-webgpu',
-						'--enable-features=Vulkan',
-						'--use-vulkan=swiftshader',
-						'--use-webgpu-adapter=swiftshader',
-						'--use-angle=swiftshader',
-					],
-				},
-			},
+			use: { channel: 'chromium', launchOptions: { args: SOFTWARE_ADAPTER } },
+		},
+		{ name: 'no-webgpu', testMatch: /unsupported\.spec\.ts$/ },
+		{
+			name: 'firefox',
+			testMatch: /unsupported\.spec\.ts$/,
+			use: { ...devices['Desktop Firefox'] },
 		},
 	],
 	webServer: [

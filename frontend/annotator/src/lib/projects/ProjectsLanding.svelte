@@ -5,15 +5,15 @@
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { page } from '$app/state';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Card } from '@workbench/ui/card';
-	import { Checkbox } from '@workbench/ui/checkbox';
-	import { Input } from '@workbench/ui/input';
-	import { Textarea } from '@workbench/ui/textarea';
-	import { Progress } from '@workbench/ui/progress';
-	import { Select } from '@workbench/ui/select';
-	import * as Tabs from '@workbench/ui/tabs';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Card } from '@riksarkivet/ui/card';
+	import { Checkbox } from '@riksarkivet/ui/checkbox';
+	import { Input } from '@riksarkivet/ui/input';
+	import { Textarea } from '@riksarkivet/ui/textarea';
+	import { Progress } from '@riksarkivet/ui/progress';
+	import { Select } from '@riksarkivet/ui/select';
+	import * as Tabs from '@riksarkivet/ui/tabs';
 	import { FolderPlus, RefreshCw } from '@lucide/svelte';
 
 	import { activeTenant } from './active-project.js';

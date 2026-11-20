@@ -23,7 +23,7 @@ import {
 
 type Env = Record<string, string | undefined>;
 
-/** The identity the shared AppShell's nav-user renders — structurally the `@workbench/ui` shell's `NavUser`
+/** The identity the shared AppShell's nav-user renders — structurally the old annotator shell's `NavUser` (`frontend/annotator/src/lib/shell`)
  *  (name/email/initials), produced here (the data seam) and consumed there (the view), no cross-package dep. */
 export interface SessionUser {
 	/** The verified subject: what a person's own documents in this browser are kept under. */

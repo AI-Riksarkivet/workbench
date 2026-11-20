@@ -39,8 +39,7 @@ export type ShapeType = (typeof SHAPE_TYPES)[number];
  *  already canonical passes through, which keeps `polygon`/`mask`/`segment` a no-op. */
 const FROM_ENGINE: Record<string, ShapeType> = {
 	rect: 'bbox',
-	// The pre-fix canvas emitted this. Kept so drafts already persisted in actor state — and rows
-	// already written to the annotations table — still normalize instead of being silently dropped.
+	// A name some engines emit, and that published rows may hold: it normalizes instead of being dropped.
 	rectangle: 'bbox',
 	point: 'keypoint',
 	line: 'polyline',

@@ -12,6 +12,7 @@ import logging
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
 from annotator.annotations.access import EditableUnit, UnitKey
 from annotator.annotations.schema import SaveResult
@@ -20,10 +21,8 @@ from annotator.api.dependencies import StoreDep
 from annotator.api.security import READS_DATASET, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from annotator.people import RECORDS_PERSON
-from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import TaskState
 from client_kit.media.deps import DatasetParam, StateDep
-from service_kit.exceptions import ConflictError
 
 
 logger = logging.getLogger(__name__)
@@ -54,11 +53,9 @@ async def revert_save(
     dataset: DatasetParam = None,
 ) -> SaveResult:
     """Undo the save that wrote ``body.revision`` of the task's work, as ONE new revision (see module docstring)."""
-    corpus = resolve(state, dataset, caller)
+    corpus = await run_in_threadpool(resolve, state, dataset, caller)
     parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
-    try:
-        draft, touched = await store.revert_save(task.task_id, author=author, revision=body.revision, reviewing=task.state is TaskState.IN_REVIEW)
-    except IllegalTransition as exc:  # the task moved between the door's read and the transaction
-        raise ConflictError(str(exc)) from exc
+    # A task that moved between the door's read and the transaction is an IllegalTransition, a 409.
+    draft, touched = await store.revert_save(task.task_id, author=author, revision=body.revision, reviewing=task.state is TaskState.IN_REVIEW)
     logger.info("reverted task %s's save v%d → v%d", task.task_id, body.revision, draft.revision)
     return SaveResult(saved=touched, version=draft.revision)

@@ -15,8 +15,8 @@
 		type DocumentsResponse,
 	} from '@workbench/explorer-api';
 	import { setActiveView, type DatasetView } from '@workbench/explorer-api/descriptor';
-	import { Button } from '@workbench/ui/button';
-	import { Select } from '@workbench/ui/select';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Select } from '@riksarkivet/ui/select';
 	import DocTile from './DocTile.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';

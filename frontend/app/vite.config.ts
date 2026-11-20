@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { riksarkivetUi } from '@riksarkivet/ui/vite';
-import { defineConfig, type Connect, type Plugin, type ProxyOptions } from 'vite';
+import { build, defineConfig, type Connect, type Plugin, type ProxyOptions } from 'vite';
 import { APPEARANCE } from './src/lib/appearance-options.ts';
 
 // The dev server's runtime config: `WORKBENCH_APP_CONFIG_FILE` when set, else the committed
@@ -76,6 +76,53 @@ function appConfig(): Plugin {
 	};
 }
 
+/**
+ * `/browser-check.js`: the check that a browser can run the app at all, with the page that says why it cannot
+ * (`src/lib/browser-check.ts`, ADR 0018), built into one classic script that `app.html` runs in <head> before the app's
+ * stylesheets and modules (a module would run after them). Same-origin, so the strict CSP admits it with no hash. Built
+ * for old syntax, since its readers include browsers too old for the app. Emitted into the client build, and served by
+ * the dev server, as the design system's appearance boot script is.
+ */
+function browserCheck(): Plugin {
+	const entry = fileURLToPath(new URL('./src/lib/browser-check.ts', import.meta.url));
+	const fileName = 'browser-check.js';
+	const bundle = async (): Promise<string> => {
+		const result = await build({
+			configFile: false,
+			logLevel: 'silent',
+			build: {
+				write: false,
+				minify: true,
+				target: 'es2015',
+				rollupOptions: { input: entry, output: { format: 'iife', entryFileNames: fileName } },
+			},
+		});
+		for (const output of Array.isArray(result) ? result : [result]) {
+			if (!('output' in output)) continue;
+			const chunk = output.output.find((item) => item.type === 'chunk');
+			if (chunk?.type === 'chunk') return chunk.code;
+		}
+		throw new Error('the browser check built to nothing');
+	};
+	let ssr = false;
+	return {
+		name: 'browser-check',
+		configResolved: (config) => void (ssr = Boolean(config.build.ssr)),
+		async generateBundle() {
+			if (!ssr) this.emitFile({ type: 'asset', fileName, source: await bundle() });
+		},
+		configureServer: (server) =>
+			void server.middlewares.use((req, res, next) => {
+				if (req.url !== `/${fileName}`) return next();
+				bundle().then((code) => {
+					res.setHeader('content-type', 'text/javascript');
+					res.setHeader('cache-control', 'no-store');
+					res.end(code);
+				}, next);
+			}),
+	};
+}
+
 // Every `/api/*` call is same-origin. The dev server forwards them to the Gateway at
 // `WORKBENCH_EDGE_URL`, the same routes a deployed app takes: the local stack's `edge.ts` serves them.
 // (The Playwright suite runs the built app behind `edge.ts` with its mocks instead.)
@@ -89,6 +136,7 @@ export default defineConfig({
 		// script `/appearance-boot.js`, which `app.html` loads before the first paint (same-origin, so the strict CSP
 		// admits it with no hash), with the options the root layout starts the store with.
 		riksarkivetUi(APPEARANCE),
+		browserCheck(),
 		tailwindcss(),
 		sveltekit({
 			preprocess: vitePreprocess(),

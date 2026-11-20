@@ -1,6 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
-import { ACCENT_SURFACES, ACCENT_TINTS } from '../../packages/ui/src/lib/appearance/appearance.ts';
-import { THEMES } from '../../packages/ui/src/lib/appearance/core.ts';
+import {
+	AFTER_THE_WAIT_MS,
+	adapterAnswersLate,
+	sawUnsupported,
+	watchUnsupported,
+	WITHIN_THE_WAIT_MS,
+} from './adapter';
+import { ACCENT_SURFACES, ACCENT_TINTS, THEME_IDS } from './appearance-lists';
 import { accentOnSurfaces, textContrast } from './contrast';
 import { callsOf, person, signIn, watchCsp } from './session';
 import { EDGE } from './ports';
@@ -67,6 +73,9 @@ test('the CSP is a header, strict, and the pages report no violation', async ({
 }) => {
 	await signIn(context, person('Barbara'));
 	const violations = await watchCsp(page);
+	// The atlas's own refusal is the page drawn here; `webgpu.spec.ts` draws it under the CSP.
+	test.slow();
+	await adapterAnswersLate(page, AFTER_THE_WAIT_MS, true);
 
 	const response = await page.goto('/datasets');
 	await page.waitForURL(/\/datasets$/);
@@ -89,6 +98,20 @@ test('the CSP is a header, strict, and the pages report no violation', async ({
 	).toHaveCount(3);
 	await expect(page.getByText('WebGPU is required (no GPU adapter available)')).toBeVisible();
 	expect(await violations()).toEqual([]);
+});
+
+test('a supported browser whose GPU adapter answers slowly starts the app, and is never shown the unsupported page', async ({
+	page,
+	context,
+}) => {
+	await signIn(context, person('Ada'));
+	await watchUnsupported(page);
+	await adapterAnswersLate(page, WITHIN_THE_WAIT_MS);
+
+	await page.goto('/datasets');
+
+	await expect(page.getByRole('heading', { level: 1, name: 'Datasets' })).toBeVisible();
+	expect(await sawUnsupported(page)).toBe(false);
 });
 
 test('the dataset list shows what the viewer lists, each a link to its page', async ({
@@ -329,7 +352,7 @@ test('an accent reads as text on every surface the theme paints and on its own t
 	const accents = [null, '#ff00ff', '#ffe94d', '#888888', '#0000ff', '#000000', '#ffffff'];
 	const table: Record<string, unknown>[] = [];
 	const failures: string[] = [];
-	for (const { id: theme } of THEMES) {
+	for (const theme of THEME_IDS) {
 		for (const accent of accents) {
 			await page.evaluate(
 				(record) => localStorage.setItem('workbench-appearance', record),
@@ -340,7 +363,7 @@ test('an accent reads as text on every surface the theme paints and on its own t
 			await expect(settled).toBeVisible();
 			await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
 			if (accent) await expect(page.locator('html')).toHaveAttribute('style', /--accent-h/);
-			const measured = await accentOnSurfaces(page, [...ACCENT_SURFACES], [...ACCENT_TINTS]);
+			const measured = await accentOnSurfaces(page, ACCENT_SURFACES, ACCENT_TINTS);
 			table.push({ theme, accent: accent ?? 'theme', ...measured });
 			for (const [mode, m] of Object.entries(measured)) {
 				if (m.onSurfaces < 4.5)

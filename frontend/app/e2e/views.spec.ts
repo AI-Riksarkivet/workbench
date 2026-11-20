@@ -1,11 +1,12 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect as baseExpect, test, type Page } from '@playwright/test';
 import type { MockIdentity } from './mock-oidc';
+import { AFTER_THE_WAIT_MS, adapterAnswersLate } from './adapter';
 import { EDGE } from './ports';
 import { callsOf, person, signIn } from './session';
 
-// A dataset's views as panels of its one dock, the atlas, the graph and the tree, in a browser with no WebGPU
-// adapter (headless Chromium offers none): the panels that draw with WebGPU refuse plainly and fetch nothing
-// they cannot draw, and everything that does not draw still works. `webgpu.spec.ts` runs the renderers.
+// A dataset's views as panels of its one dock, the atlas, the graph and the tree, in a browser whose GPU adapter answers
+// with none only after the app has started (`adapterAnswersLate`): the panels that draw with WebGPU refuse plainly and
+// fetch nothing they cannot draw, and everything that does not draw still works. `webgpu.spec.ts` runs the renderers.
 
 /** Make one viewer door fail, or answer that nothing is built there, for this person only. */
 async function fault(
@@ -20,6 +21,14 @@ async function fault(
 
 const results = (page: Page) => page.getByRole('list', { name: 'Search results' });
 const tab = (page: Page, name: string) => page.getByRole('tab', { name: new RegExp(`^${name}`) });
+
+// Every page load waits past the app's wait for the adapter, so an assertion here waits up to 10 s.
+const expect = baseExpect.configure({ timeout: 10_000 });
+
+test.beforeEach(async ({ page }) => {
+	test.slow();
+	await adapterAnswersLate(page, AFTER_THE_WAIT_MS, true);
+});
 
 test('the dock is the one way to every view: its menu opens a panel, and lists one the dataset cannot feed with why', async ({
 	page,

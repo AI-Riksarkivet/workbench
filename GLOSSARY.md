@@ -323,14 +323,15 @@ _Avoid_: palette
 
 **Design system**:
 `@riksarkivet/ui`: the tokens, themes, components and the one Storybook, in its own repository, which the app pins by
-commit. `@workbench/ui` is its frozen old copy that only the old apps import.
+commit.
 _Lives in_: `AI-Riksarkivet/ui`; ADRs 0015, 0016.
-_Avoid_: component library (for the frozen copy), UI kit
+_Avoid_: UI kit
 
 ### Parked
 
 **Flows**:
-Model pipelines over datasets, with an editor in the old studio and explorer apps and a service that runs them. Parked:
-no screen and no deployment until labeling works on real data with a real model.
-_Lives in_: `services/flows`; `frontend/studio`; `frontend/explorer`'s `/workflow`; ADR 0011.
+Model pipelines over datasets, and the service that runs them. Parked: no screen and no deployment until labeling
+works on real data with a real model; its old editors were deleted (ADR 0021), and its screen is built in the app when
+it resumes.
+_Lives in_: `services/flows`; ADRs 0011, 0021.
 _Avoid_: workflows, studio (the old app's name)

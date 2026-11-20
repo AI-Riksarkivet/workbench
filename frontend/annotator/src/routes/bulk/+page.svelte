@@ -5,8 +5,8 @@
 	// /tasks/[id]; without it the page says where to come from instead of rendering dead chrome.
 	import { base } from '$app/paths';
 	import { page } from '$app/state';
-	import { Button } from '@workbench/ui/button';
-	import { Card } from '@workbench/ui/card';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Card } from '@riksarkivet/ui/card';
 	import BulkGrid from '$lib/bulk/BulkGrid.svelte';
 	import { fetchProject, listTasks } from '$lib/projects/remote/projects.remote';
 

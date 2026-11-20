@@ -23,9 +23,12 @@ from annotator.projects.models import ProjectState, Task, TaskState, Transition
 from service_kit.exceptions import ConflictError
 
 
-class IllegalTransition(ValueError):
+class IllegalTransition(ConflictError):
     """Raised for an edge absent from the table — the closed-world guarantee of §5 — and for a transition whose
-    preconditions the task's or project's own rows refuse. ``str()`` is the sentence a 409 carries."""
+    preconditions the task's or project's own rows refuse. A 409 wherever it is raised, with no route translating it;
+    ``str()`` is the sentence it carries, and its problem type is a conflict's."""
+
+    problem_type = "about:blank#conflicterror"
 
     def __init__(self, kind: str, state: str, event: str, *, message: str | None = None) -> None:
         # The state's value, not an enum member's repr: the sentence reaches a person.

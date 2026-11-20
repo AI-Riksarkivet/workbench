@@ -473,6 +473,27 @@ def test_an_import_the_store_cannot_hold_is_a_422_and_writes_nothing(cells: dict
     assert d.draft() is None
 
 
+@pytest.mark.parametrize(
+    "cells",
+    [
+        pytest.param({"x": "left"}, id="a-coordinate"),
+        pytest.param({"char_start": "first"}, id="an-offset"),
+        pytest.param({"polygon": ["one", "two"]}, id="a-polygon-point"),
+    ],
+)
+def test_an_import_row_whose_number_is_not_one_is_a_400_naming_the_row(cells: dict[str, Any], door: Callable[..., _Door]) -> None:
+    """A row's cell the caller must fix is refused like every other bad row of an import: a 400 naming the row, and no
+    draft written."""
+    d = door(allow=True)
+    d.seed(_task(state=TaskState.CLAIMED, assignee=SUBJECT))
+
+    r = d.client.post("/tasks/t1/import", content=_ipc([{"id": "a1", "shape_type": "bbox", **cells}]))
+
+    assert (r.status_code, r.json()["type"]) == (400, "about:blank#validationerror"), r.text[:300]
+    assert "row 0" in r.json()["detail"]
+    assert d.draft() is None
+
+
 def test_an_import_takes_another_tools_long_ids_and_refuses_by_row_what_it_cannot_take(door: Callable[..., _Door]) -> None:
     """An import carries ids another tool minted: a 3000-character id and a link to it are kept as they are. A link to a
     shape the import and the draft do not hold is refused by name, an id past the one bound every shape-id door shares

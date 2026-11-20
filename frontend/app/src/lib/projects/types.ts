@@ -5,7 +5,7 @@
  * (the campaign: ontology + review policy + sent items), and `task` for one item's assignment
  * (the claim/submit/review FSM unit, which readers meet as an "item"). The reader vocabulary is
  * unified — routes say `/tasks/<id>`, copy says "labeling task"/"item" — while the wire keeps
- * these names: renaming the service's aggregate touches the actor types, the FGA model and the
+ * these names: renaming the service's aggregate touches its state tables, the FGA model and the
  * publish lineage, and is a separate decision from what a person reads.
  *
  * The backend supplies `legal_events` derived from its own transition tables (machines.py) — the

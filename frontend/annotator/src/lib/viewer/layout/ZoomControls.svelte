@@ -1,8 +1,8 @@
 <script lang="ts">
 	// Floating zoom cluster (bottom-right over the canvas). Controlled by the facade.
 	import { ZoomIn, ZoomOut, Maximize } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { AnnotatorController } from '../annotator.svelte';
 
 	let { controller, class: className }: { controller: AnnotatorController; class?: string } =

@@ -8,10 +8,10 @@
 	//
 	// Nothing new server-side beyond the endpoint: this reads neighbours and hands their keys to the
 	// SAME selection the bulk bar already sends.
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { Sparkles } from '@lucide/svelte';
 
-	import { Input } from '@workbench/ui/input';
+	import { Input } from '@riksarkivet/ui/input';
 	import { MAX_SIMILAR_N } from './similar-limits';
 	import { findSimilar } from './remote/similar.remote';
 	import {

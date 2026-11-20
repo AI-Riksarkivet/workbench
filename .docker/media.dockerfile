@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.11
 # The media image — the viewer and search services, built from the ROOT uv workspace (src-layout services
-# installed as wheels; no PYTHONPATH, no raw source COPY in the final stage). The product chart's explorer runs
-# both from it with a different command (chart/templates/explorer.yaml → `rask.image` "media"):
+# installed as wheels; no PYTHONPATH, no raw source COPY in the final stage). The chart runs
+# both from it with a different command (chart/templates/media.yaml):
 #   viewer.main:app (:8101) · search.main:app (:8102)
 # — wrapped in `opentelemetry-instrument` when observability is on (opentelemetry-distro, which both declare).
 # They are clients of the lakehouse, so they build apart from its image (.docker/rest-catalog.dockerfile): deleting

@@ -6,17 +6,9 @@ import { resetApiBase } from './base';
  * `/api/health` answers 200 with `db: null` when the media service is up but no corpus dataset resolves,
  * and this client must ACCEPT that.
  *
- * Live-proof 2026-07-28, defect 4. The endpoint used to resolve the default dataset before answering, so
- * a deployment with an empty corpus volume — now the chart's default, because the old unconditional
- * hostPath wedged every fresh cluster in ContainerCreating — returned
- * `404 dataset 'transcripts_v2' not found under /media-corpus` to the ONE endpoint both the media and the
- * annotator zone poll on every page load. Measured through both zones' BFF proxies: a console 404 per
- * load, a permanently red status dot, and the zone reporting "backend unreachable" about a backend that
- * was Running and healthy with nothing loaded.
- *
- * The backend now degrades (db: null + db_error) — but a tolerant server and a strict client is still a
- * broken page: the valibot schema would have thrown on the missing `db`, turning a 200 into a client-side
- * parse error and changing nothing a user could see. Both halves are the fix, so both are pinned.
+ * A probe that answered 404 when no dataset resolves could not tell "service down" from "nothing loaded" (live-proof
+ * 2026-07-28, defect 4), so the backend answers 200 with `db: null` and `db_error`, and each encoder only as reachable or
+ * not. A strict client would turn that 200 into a parse error, so the client half is pinned here.
  */
 beforeEach(() => resetApiBase());
 
@@ -31,22 +23,22 @@ function respondWith(body: unknown): typeof fetch {
 		)) as unknown as typeof fetch;
 }
 
-const DEAD_PING = { ok: false, url: 'http://127.0.0.1:8001', error: 'ConnectionError: refused' };
+const DEAD_PING = { ok: false };
 
 describe('health with no dataset loaded', () => {
 	it('parses a 200 whose db is null', async () => {
 		const health = await getHealth(
 			respondWith({
 				db: null,
-				db_error: "NotFoundError: dataset 'transcripts_v2' not found under /media-corpus",
+				db_error: 'no dataset could be read',
 				embed: DEAD_PING,
 				rerank: DEAD_PING,
 			}),
 		);
 		expect(health.db).toBeNull();
-		// The reason must survive parsing — it is what lets the UI say "no dataset" instead of guessing
-		// "unreachable", which is the entire behavioural difference this fix buys.
-		expect(health.db_error).toContain('transcripts_v2');
+		// The reason must survive parsing: it is what lets the UI say "no dataset" instead of guessing
+		// "unreachable".
+		expect(health.db_error).toBe('no dataset could be read');
 	});
 
 	it('parses a 200 that omits db entirely', async () => {
@@ -75,8 +67,8 @@ describe('health with no dataset loaded', () => {
 					chunks: 3,
 					documents: 1,
 				},
-				embed: { ok: true, url: 'http://e:8001' },
-				rerank: { ok: true, url: 'http://r:8002' },
+				embed: { ok: true },
+				rerank: { ok: true },
 			}),
 		);
 		expect(health.db?.path).toBe('/media-corpus/transcripts_v2.lance');

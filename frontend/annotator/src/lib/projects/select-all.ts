@@ -11,7 +11,7 @@
  * see is how a bulk action lands on rows nobody looked at.
  */
 
-import type { RowSelectionState } from '@workbench/ui/data-table';
+import type { RowSelectionState } from '@riksarkivet/ui/data-table';
 
 import type { TaskDetail } from './types';
 

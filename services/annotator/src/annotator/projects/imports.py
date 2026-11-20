@@ -185,17 +185,20 @@ def _shape(row: dict[str, Any], index: int, taken: set[str]) -> Shape:
         value = _cell(row, name)
         if value is not None:
             fields[name] = str(value)
-    for name in _NUMERIC:
-        value = _cell(row, name)
-        if value is not None:
-            fields[name] = float(value)
-    for name in _INTEGER:
-        value = _cell(row, name)
-        if value is not None:
-            fields[name] = int(value)
-    polygon = _cell(row, "polygon")
-    if polygon is not None:
-        fields["polygon"] = [float(v) for v in polygon]
+    try:
+        for name in _NUMERIC:
+            value = _cell(row, name)
+            if value is not None:
+                fields[name] = float(value)
+        for name in _INTEGER:
+            value = _cell(row, name)
+            if value is not None:
+                fields[name] = int(value)
+        polygon = _cell(row, "polygon")
+        if polygon is not None:
+            fields["polygon"] = [float(v) for v in polygon]
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"import refused — row {index} holds a number that is not one ({exc})") from exc
     difficult = _cell(row, "difficult")
     if difficult is not None:
         fields["difficult"] = bool(difficult)
@@ -203,7 +206,7 @@ def _shape(row: dict[str, Any], index: int, taken: set[str]) -> Shape:
 
     try:
         return Shape.model_validate(fields)
-    except Exception as exc:  # noqa: BLE001 - pydantic's message names the field; re-raise as a 422
+    except pydantic.ValidationError as exc:  # its message names the field
         raise ValidationError(f"import refused — row {index} is not a valid annotation ({exc})") from exc
 
 

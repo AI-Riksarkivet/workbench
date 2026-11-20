@@ -5,7 +5,7 @@
  * Read at request time because kubelet rewrites the projected file in place at ~515 s of a 600 s token
  * (measured, P5.3 d): a value taken once when the route module loads is expired ten minutes after the
  * zone starts. Nothing else rides with it: the lineage door takes the subject from the verified token,
- * so a name header or the shared sidecar token would only be a second, unverified claim.
+ * so a name header or any shared token would only be a second, unverified claim.
  */
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -5,17 +5,13 @@
 	"packageManager": "bun@1.4.2",
 	"workspaces": [
 		"app",
-		"explorer",
 		"annotator",
-		"studio",
 		"packages/*"
 	],
 	"scripts": {
 		"build": "bun run --filter '*' build",
 		"check": "bun run --filter '*' check",
 		"dev:annotator": "bun --cwd=annotator run dev",
-		"dev:explorer": "bun --cwd=explorer run dev",
-		"dev:studio": "bun --cwd=studio run dev",
 		"fmt": "bun run --filter '*' fmt",
 		"fmt:check": "bun run --filter '*' fmt:check",
 		"gen:types": "openapi-typescript ../docs/rask/lineage-openapi.json --default-non-nullable false -o packages/api/src/generated/lineage.ts",
@@ -32,7 +28,6 @@
 		"openapi-typescript": "^7.13.0",
 		"oxfmt": "^0.78.0",
 		"oxlint": "^1.79.0",
-		"svelte-check": "^4.7.4",
 		"typescript": "^6.0.3"
 	},
 	"patchedDependencies": {

@@ -9,7 +9,7 @@
 	// canvas for classification projects. Ours composes: over an image it sits above the canvas,
 	// over text above the document, over audio above the waveform — the question follows the item.
 	import { Check } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { spanColor } from '../span-render';
 	import type { AnnotatorController } from '../annotator.svelte';
 

@@ -16,5 +16,6 @@ The browsers a production install must serve were asked on 2026-11-14 and not an
 
 ## Consequences
 
-- The browser suite runs Chromium only, and that is the whole supported surface.
+- The supported surface is Chromium with a GPU adapter, and the browser suite runs the app there only. It also runs
+  Firefox and Chromium without an adapter, only to pin the page an unsupported browser is shown (WB-105).
 - "For now": a production target with other browsers reopens this decision, and ADR 0007 with it.

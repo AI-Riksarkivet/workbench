@@ -12,6 +12,7 @@ from datetime import datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter
+from starlette.concurrency import run_in_threadpool
 
 from annotator.annotations.access import EditableTask, require_task_units
 from annotator.annotations.schema import SaveResult, TagBatch, TagWrite
@@ -19,11 +20,9 @@ from annotator.api.dependencies import StoreDep
 from annotator.api.security import READS_DATASET, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from annotator.people import RECORDS_PERSON
-from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import Draft, Link, Shape, TaskState
 from client_kit.lancekit.keys import validate_doc_key
 from client_kit.media.deps import DatasetParam, StateDep
-from service_kit.exceptions import ConflictError
 
 
 logger = logging.getLogger(__name__)
@@ -72,7 +71,7 @@ async def apply_tags(
 ) -> SaveResult:
     """Apply a TagBatch to the task's work: adds insert-if-absent, removes delete by the deterministic id. Idempotent; a
     batch reaches only the named task's draft, and every unit it tags must be that task's (`require_task_units`)."""
-    corpus = resolve(state, dataset, caller)
+    corpus = await run_in_threadpool(resolve, state, dataset, caller)
     writes = [*body.adds, *body.removes]
     require_task_units(task, [_unit_key(w) for w in writes], dataset)
     doc_ids = {place: validate_doc_key(corpus.declared, w.doc_id) for place, w in enumerate(writes)}
@@ -80,17 +79,14 @@ async def apply_tags(
     def change(current: Draft | None, now: datetime) -> tuple[list[Shape], list[Link]]:
         return tagged(current, body, task=task.task_id, doc_ids=doc_ids, author=author, now=now)
 
-    try:
-        draft = await store.change_draft(
-            task.task_id,
-            author=author,
-            change=change,
-            base_revision=body.base_version,
-            require_base=False,
-            reviewing=task.state is TaskState.IN_REVIEW,
-        )
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    draft = await store.change_draft(
+        task.task_id,
+        author=author,
+        change=change,
+        base_revision=body.base_version,
+        require_base=False,
+        reviewing=task.state is TaskState.IN_REVIEW,
+    )
     touched = sum(len(w.labels) for w in writes)
     logger.info("tagged task %s → v%d (%d add(s), %d removal(s))", task.task_id, draft.revision, len(body.adds), len(body.removes))
     return SaveResult(saved=touched, version=draft.revision)

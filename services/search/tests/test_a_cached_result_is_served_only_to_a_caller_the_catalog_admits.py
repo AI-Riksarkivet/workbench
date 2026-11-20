@@ -10,6 +10,7 @@ per bearer (``tests.vending_catalog``), over a real local table.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -40,14 +41,15 @@ def test_a_refused_caller_is_not_served_what_another_caller_cached(monkeypatch: 
     cache: dict[Any, Any] = {}
     spec = SearchSpec.model_validate({"q": "cat"})
     catalog.answers["caller-a"] = "fail"
-    assert run_cached(cache, 16, 0, as_a, spec, None, None, lambda: [{"doc_id": "a", "seen_by": "caller-a"}])
+    lock = threading.Lock()
+    assert run_cached(cache, lock, 16, 0, as_a, spec, None, None, lambda: [{"doc_id": "a", "seen_by": "caller-a"}])
     catalog.answers["caller-b"] = "refuse"
 
     def _must_not_run() -> list[dict[str, Any]]:
         raise AssertionError("the refused caller's search ran")
 
     with pytest.raises(ForbiddenError):
-        run_cached(cache, 16, 0, as_b, spec, None, None, _must_not_run)
+        run_cached(cache, lock, 16, 0, as_b, spec, None, None, _must_not_run)
 
     catalog.close()
     assert cache == {}

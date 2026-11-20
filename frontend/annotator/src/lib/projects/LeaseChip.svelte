@@ -2,7 +2,7 @@
 	// A2's honest lease chip. The wall clock is part of the truth here: a lease that lapsed between
 	// server reminder ticks must read EXPIRED, never "held" — showing a corpse lease as held is how
 	// an annotator loses work to a reclaim they were never warned about.
-	import { Badge } from '@workbench/ui/badge';
+	import { Badge } from '@riksarkivet/ui/badge';
 
 	import { wallClock } from './clock.svelte';
 	import { leaseView, formatLease } from './lease.js';

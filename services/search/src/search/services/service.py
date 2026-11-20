@@ -38,7 +38,8 @@ from search.services.constants import (
 )
 from search.services.filters import build_where_clause
 from search.services.frames import frame_fts_search, frame_search
-from search.services.postprocess import postprocess_hits, rrf_fuse
+from search.services.fuse import reciprocal_rank_fusion
+from search.services.postprocess import postprocess_hits
 from search.services.query_errors import is_caller_input_error
 from search.services.rerank import rerank_by_text
 from search.services.spec import SearchMode, SearchSpec
@@ -353,7 +354,8 @@ def _search_all(ctx: SearchContext) -> list[dict[str, Any]]:
 
     if attempted and not rankings:
         raise ValidationError("no search leg could run this query")
-    fused = rrf_fuse(rankings, key_fields=target.key_fields)
+    # The one fusion the search ranks by, the same as a search across several datasets (`search.services.fuse`).
+    fused = reciprocal_rank_fusion(rankings, key_fields=target.key_fields)
     # Optional cross-encoder rerank on the fused head (rerank_n), then trim to
     # spec.n. Without rerank we just take the fused top-n.
     return _maybe_rerank(ctx, fused)[: spec.n]

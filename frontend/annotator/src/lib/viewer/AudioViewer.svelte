@@ -9,7 +9,7 @@
 	import { loadAnnotations } from '@workbench/labeling/annotations-client';
 	import { ZoomIn, ZoomOut } from '@lucide/svelte';
 	import { WaveSurface, type TemporalSegment } from '@workbench/engine';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import TransportBar from './layout/TransportBar.svelte';
 	import {
 		clampTime,

@@ -36,7 +36,6 @@ from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import (
     PROJECT_EDGES,
     PROJECT_SEND_STATES,
-    IllegalTransition,
     caller_events,
     project_transition,
 )
@@ -178,10 +177,7 @@ async def fire_project_event(
         raise ForbiddenError(f"{payload.event} is fired by the publish saga, not by a principal, and cannot be posted over HTTP")
 
     current = await _project(store, project_id)
-    try:
-        _target, permission = project_transition(current.state, payload.event)
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    _target, permission = project_transition(current.state, payload.event)
 
     # RESOLVED ONCE, here, and pinned with the publish token, so the write lands in the namespace this request named.
     target: str | None = None
@@ -207,11 +203,8 @@ async def fire_project_event(
     elif permission is not None:
         await _check(checker, subject, permission, obj, AnnotatorAuditAction.PROJECT_TRANSITION, event=payload.event)
 
-    try:
-        updated = await store.fire_project(project_id, event=payload.event, actor=subject, target_namespace=target)
-    except IllegalTransition as exc:
-        # The store's own preconditions — every task terminal, and a non-empty project.
-        raise ConflictError(str(exc)) from exc
+    # The store's own preconditions (every task terminal, and a non-empty project) refuse as an IllegalTransition, a 409.
+    updated = await store.fire_project(project_id, event=payload.event, actor=subject, target_namespace=target)
 
     if payload.event == "publish":
         runner.spawn(project_id)
@@ -231,10 +224,7 @@ GroupId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9
 
 async def _adjudicate(store: AnnotatorStore, checker: Checker, subject: str, project_id: str, group_id: str, task_id: str | None) -> AnnotationProject:
     await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_ADJUDICATE)
-    try:
-        updated = await store.adjudicate(project_id, group=group_id, task_id=task_id, actor=subject)
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    updated = await store.adjudicate(project_id, group=group_id, task_id=task_id, actor=subject)
     audit(AnnotatorAuditAction.PROJECT_ADJUDICATE, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
     return updated
 
@@ -283,10 +273,7 @@ async def drop_task(
     await _check(checker, subject, "can_manage", f"project:{project_id}", AnnotatorAuditAction.PROJECT_DROP_TASK)
     if await store.get_project(project_id) is None:
         raise NotFoundError(f"annotation project {project_id} does not exist")
-    try:
-        result = await store.drop_task(project_id, task_id)
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    result = await store.drop_task(project_id, task_id)
     audit(AnnotatorAuditAction.PROJECT_DROP_TASK, AuditOutcome.SUCCESS, subject=subject, resource=project_id)
     return DropReceipt.model_validate(result.model_dump())
 
@@ -422,10 +409,7 @@ async def send_items(
         # Every replica of a group gets the SAME suggestion: consensus asks several people the same question.
         tasks.append(Task(task_id=item.task_id or new_id(), project_id=project_id, source=source, media=item.media, prediction=predictions[index]))
 
-    try:
-        created = await store.send_tasks(project_id, tasks, cap=SEND_CAP)
-    except IllegalTransition as exc:
-        raise ConflictError(str(exc)) from exc
+    created = await store.send_tasks(project_id, tasks, cap=SEND_CAP)
 
     # BIND each corpus the items come from to this project (`corpus:<dataset>#project`), so the people who annotate
     # here may write that corpus's annotations through the workbench (`can_annotate` on the corpus). The send's own

@@ -3,8 +3,8 @@
 	// and emits navigate. Document-plane today (pages); for audio/video this becomes
 	// a segment/scene strip — same controlled contract. (Ported from ra-anno PageNavBar.)
 	import { ChevronLeft, ChevronRight, Columns2 } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 
 	export interface PageRef {
 		key: string;

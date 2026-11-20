@@ -8,9 +8,9 @@
 	//
 	// Nothing new server-side: this is the existing `sendItems` command, given a selection and a
 	// project chooser. Bulk labeling is deliberately NOT a new write path.
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Select } from '@workbench/ui/select';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Select } from '@riksarkivet/ui/select';
 
 	import { listProjects, sendItems } from '$lib/projects/remote/projects.remote';
 	import { bulkLabelChoices, itemsFromSelection, refuseReason } from './bulk-send';

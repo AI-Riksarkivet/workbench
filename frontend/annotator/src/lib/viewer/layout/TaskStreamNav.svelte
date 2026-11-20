@@ -14,7 +14,7 @@
 	// middle-clickable, copyable and restorable by reload — the canvas is URL-driven throughout.
 	// Same-zone, so no `data-sveltekit-reload`.
 	import { ChevronLeft, ChevronRight } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 
 	import type { StreamPosition } from '../task-stream';
 

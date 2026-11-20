@@ -7,11 +7,11 @@
 	//     itself), never just a spinner;
 	//  3. `publish_failed` shows the recorded error AND the step it died at, with a retry that
 	//     reuses the same publish token (the saga's idempotency contract).
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Card } from '@workbench/ui/card';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { Input } from '@workbench/ui/input';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Card } from '@riksarkivet/ui/card';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { Input } from '@riksarkivet/ui/input';
 	import { Rocket, RotateCcw } from '@lucide/svelte';
 
 	import { fireProjectEvent } from './remote/projects.remote';

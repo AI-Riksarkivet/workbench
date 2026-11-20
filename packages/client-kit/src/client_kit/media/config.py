@@ -46,7 +46,8 @@ class MediaSettings(BaseSettings):
     rerank_url: str = Field(default="http://127.0.0.1:8002", alias="MEDIA_RERANK_URL")
     host: str = Field(default="127.0.0.1", alias="MEDIA_HOST")
     descriptor_dir: Path = Field(default=Path("config/descriptors"), alias="MEDIA_DESCRIPTOR_DIR")
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"], alias="MEDIA_CORS_ORIGINS")
+    # The origins a browser may call from besides the app's own; none by default, since the app is same-origin.
+    cors_origins: list[str] = Field(default_factory=list, alias="MEDIA_CORS_ORIGINS")
 
     # Version-keyed search result cache (the read-fast tier). Number of result
     # sets to retain per app instance; 0 disables it entirely (then no per-request

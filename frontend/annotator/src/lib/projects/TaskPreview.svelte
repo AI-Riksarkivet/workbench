@@ -5,7 +5,7 @@
 	// span keymap, the inspector's transcription/typed fields, the link rail. It previews the
 	// CONTROL surfaces, not the canvas — pixels come from the item, and the contract is what a
 	// template decides.
-	import { Badge } from '@workbench/ui/badge';
+	import { Badge } from '@riksarkivet/ui/badge';
 	import { Link2, Square, SquareDashed, Timer, Waypoints } from '@lucide/svelte';
 	import { previewModel } from './task-preview.js';
 	import type { TaskDraft } from './task-yaml.js';

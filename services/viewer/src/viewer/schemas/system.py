@@ -9,11 +9,10 @@ from pydantic import BaseModel, Field
 
 
 class VllmPing(BaseModel):
-    """Best-effort reachability of one vLLM server (embed or rerank)."""
+    """Best-effort reachability of one vLLM server (embed or rerank). Whether it answered, and nothing else: the probe
+    answers anyone, so where the server is and why it failed stay in the service's log."""
 
     ok: bool
-    url: str
-    error: str | None = None
 
 
 class DbFacts(BaseModel):
@@ -32,8 +31,8 @@ class HealthResponse(BaseModel):
     on a deployment with no corpus loaded (the chart's default ``explorer.corpus.mode=emptyDir``). It used
     to be required, which forced the endpoint to resolve a dataset before it could answer at all — so
     an empty corpus turned the probe the media + annotator zones poll on every page load into a 404
-    (live-proof 2026-07-28, defect 4). ``db_error`` carries WHY, so the badge can say "no dataset"
-    instead of "backend unreachable".
+    (live-proof 2026-07-28, defect 4). ``db_error`` says that no dataset could be read, so the badge can say
+    "no dataset" instead of "backend unreachable"; the exception behind it stays in the service's log.
     """
 
     db: DbFacts | None = None

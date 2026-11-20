@@ -12,8 +12,7 @@ describe('zone telemetry', () => {
 
 	it('names the span by ROUTE ID, never the concrete URL', async () => {
 		// A span name is a metric dimension in waiting — every span-metrics connector promotes it — so a
-		// concrete URL here would mint one series per object id. That is the rule this estate has already
-		// been burned by breaking at the sidecar, one layer down.
+		// concrete URL here would mint one series per object id.
 		const handle = makeTelemetryHandle('web-lakehouse');
 		let seen: Request | undefined;
 		const response = await handle({

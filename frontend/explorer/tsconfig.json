@@ -1,6 +1,0 @@
-{
-	"extends": ["./.svelte-kit/tsconfig.json", "@workbench/config/tsconfig.base.json"],
-	"compilerOptions": {
-		"types": ["bun", "@webgpu/types"]
-	}
-}

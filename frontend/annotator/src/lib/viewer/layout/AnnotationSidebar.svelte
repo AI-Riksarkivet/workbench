@@ -3,9 +3,9 @@
 	// + the layer panel. Controlled by the facade. (Ported from ra-anno, split into
 	// focused sub-components per our no-god-files rule.)
 	import { ChevronLeft, List, Table } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { statusDot } from './statusStyle';
 	import AnnotationDetail from './AnnotationDetail.svelte';
 	import AnnotationList from './AnnotationList.svelte';

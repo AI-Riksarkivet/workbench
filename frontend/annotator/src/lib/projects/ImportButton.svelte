@@ -11,7 +11,7 @@
 	// would throw away the only thing that lets someone fix the file.
 	import { base } from '$app/paths';
 	import { Upload } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 
 	let {
 		taskId,

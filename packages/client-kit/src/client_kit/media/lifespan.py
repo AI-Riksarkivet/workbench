@@ -84,8 +84,8 @@ async def media_lifespan(
     THE DRAIN IS ARMED AT SIGTERM, not at lifespan shutdown: the ``shutting_down`` flag below flips in
     the ``finally``, which uvicorn only reaches AFTER it has stopped accepting connections and
     drained — so the admission guards that read it refused nothing, ever. Kubernetes sends SIGTERM at
-    the START of termination, and that window is exactly when the sidecar is still delivering. (Owner
-    ruling 2026-08-25.)
+    the START of termination, while the Gateway may still be sending this pod requests. (Owner ruling
+    2026-08-25.)
 
     Teardown runs in a ``finally``, so an exception past the ``yield`` cannot skip it — the bare
     ``yield`` this replaces leaked the http client, the embedder and the reranker on exactly the path

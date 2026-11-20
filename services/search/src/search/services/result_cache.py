@@ -26,6 +26,7 @@ from service_kit.exceptions import ServiceUnavailableError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from contextlib import AbstractContextManager
 
     from client_kit.lancekit.registry import DatasetHandle
     from search.services.spec import SearchSpec
@@ -145,6 +146,7 @@ def entry_bytes(result: list[dict[str, Any]]) -> int:
 
 def run_cached(
     cache: dict[CacheKey, tuple[list[dict[str, Any]], int]],
+    lock: AbstractContextManager[object],
     max_size: int,
     max_bytes: int,
     handle: DatasetHandle,
@@ -160,16 +162,21 @@ def run_cached(
     a hit row carries transcript text, so 256 entries was a count, not a cap;
     #141). ``max_bytes <= 0`` disables the byte bound only. An entry larger than
     the whole byte budget is returned uncached — the cache must never hold a
-    single object that busts its own ceiling."""
+    single object that busts its own ceiling.
+
+    The search routes run in the threadpool, so ``cache`` is shared by threads: every read, move and eviction of it is
+    made holding ``lock`` (the app's ``search_cache_lock``), and the search itself, and the version reads that key it,
+    run outside it."""
     if max_size <= 0:
         return produce()
     key = cache_key(handle, spec, filters, image_bytes)
     if key is None:
         return produce()
-    hit = cache.get(key)
-    if hit is not None:
-        cache[key] = cache.pop(key)  # move-to-end → LRU recency
-        return hit[0]
+    with lock:
+        hit = cache.pop(key, None)
+        if hit is not None:
+            cache[key] = hit  # move-to-end → LRU recency
+            return hit[0]
     result = produce()
     nbytes = entry_bytes(result)
     if 0 < max_bytes < nbytes:
@@ -178,6 +185,8 @@ def run_cached(
     # AppState (`points_cache`), which kept a count-only bound and could hold 1.2 GB of Arrow payloads
     # in a one-replica pod. Copying it there would have left the same shape for a third cache, so it
     # is one function now and both callers inherit both bounds.
-    evict_to_bounds(cache, max_entries=max_size, max_bytes=max_bytes, incoming_bytes=nbytes)
-    cache[key] = (result, nbytes)
+    with lock:
+        cache.pop(key, None)  # another thread may have stored this answer meanwhile; it is stored once
+        evict_to_bounds(cache, max_entries=max_size, max_bytes=max_bytes, incoming_bytes=nbytes)
+        cache[key] = (result, nbytes)
     return result

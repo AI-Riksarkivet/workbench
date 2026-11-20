@@ -95,13 +95,9 @@
 	// (a new embedding column) appears as its own option keyed by its space name,
 	// so a fresh embedding is searchable with no code change here. Image-encoder
 	// spaces use the Image attach affordance instead of a dial entry.
-	// A mode is offered when the DATASET declares it AND the DEPLOYMENT can serve it. Those are two
-	// different questions and only the first was being asked: this estate ran with no embedding service
-	// (the viewer's `embed_url` still defaulted to lance-media's sidecar-era 127.0.0.1:8001 and the chart
-	// never re-pointed it), so Vector and Hybrid were listed, selectable, and 503'd — measured through the
-	// ingress on 2026-07-26: `mode=fts` 200 with rows, `mode=semantic` and `mode=hybrid` 503 "embed …".
-	// A user picked one, got a failure toast, and learned nothing; the only signal was a permanently red
-	// dot in the sidebar corner.
+	// A mode is offered when the DATASET declares it AND the DEPLOYMENT can serve it: a deployment with no
+	// embedding service answers `mode=semantic` and `mode=hybrid` with 503 "embed …" (measured through the
+	// ingress on 2026-07-26), so offering them there only earns a failure toast that explains nothing.
 	//
 	// Disabled rather than hidden, on purpose. Hiding says "this dataset has no vectors", which is a
 	// different and wrong story — the corpus HAS 145k vector-bearing chunks. Disabled with the reason says

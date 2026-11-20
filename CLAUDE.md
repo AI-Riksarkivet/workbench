@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **The workbench: explore, search and annotate the datasets in a rask lakehouse, read any Lance data beside it, and run
 model pipelines over them**, as one product (FiftyOne-like). Its parts:
 
-- **explorer**: the viewer, search and the explorer UI;
+- **explorer**: the viewer, search, and a dataset's views in the app;
 - **annotator**: the annotator, its assist runner and its UI;
-- **flows**: model pipelines and the studio UI; parked, with no screen and no deployment (owner, 2026-11-18; ADR 0011).
+- **flows**: model pipelines; parked, with no screen and no deployment (owner, 2026-11-18; ADR 0011), its old editors
+  deleted (ADR 0021).
 
 **It reads the sources a deployment declares, and is a client of rask, never part of it** (owner, 2026-11-16: "as a client
 for rask, or without rask with lance-namespace or a Lance table directly"). The sources are one declaration in git
@@ -149,8 +150,8 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_FLOWS_RUN_MAX_ATTEMPTS`, `_RETENTION_DAYS` | how many times a run may be claimed before it fails for good (default 5), and how long an ended run stays before every replica's sweep deletes it (30 days) |
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
-names, changed freely: service-kit, and the frontend packages `@workbench/api`, `@workbench/config` and
-`@workbench/flow`. Its design system is `@riksarkivet/ui` (`AI-Riksarkivet/ui`), a repository of its own. Its settings are `WORKBENCH_*` environment variables
+names, changed freely: service-kit, and the frontend packages `@workbench/api` and `@workbench/config`. Its
+licence is Apache-2.0 (`LICENSE`, ADR 0024). Its design system is `@riksarkivet/ui` (`AI-Riksarkivet/ui`), a repository of its own. Its settings are `WORKBENCH_*` environment variables
 (the `LANCE_*` ones name what it asks of a lakehouse). rask's repository is `AI-Riksarkivet/rask`;
 compute (Ray Serve, the runners) is a repository of its own, called over HTTP.
 
@@ -169,7 +170,7 @@ docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.source
 every view (graph and tree beside the atlas, one navigation, the view in the address); R6 the set-ups of any table;
 D3b-2a the labeling canvas's classes, names and review panel, and audio and video labeling on the shared viewers;
 D3b-2b text spans, compare and assist; then work in progress moved into the annotator's Postgres (Lance written only
-at publish); D3c-a the project's screens (data manager, browse, review, settings, people by name); D3c-b the bulk-labeling grid (the Label tab). Still open: live updates and deleting `frontend/annotator` (D3c-c); D4, one flows area, waits while flows is parked (ADR 0011). Flows' runs no longer need a sidecar: each run and each step's outcome are rows in flows'
+at publish); D3c-a the project's screens (data manager, browse, review, settings, people by name); D3c-b the bulk-labeling grid (the Label tab). Still open: live updates and deleting `frontend/annotator` (D3c-c); D4, one flows area, waits while flows is parked (ADR 0011). Each flows run and each step's outcome are rows in flows'
 own PostgreSQL, driven under a lease by any replica and resumed after a crash by any replica's re-drive
 (`flows.store`, `flows.runner`), so the workbench runs without Dapr. Flows has no chart workload yet; the one that
 deploys it comes with a CloudNativePG cluster of its own beside the annotator's. Of `frontend/annotator`, the app now holds its text viewer and
@@ -376,19 +377,22 @@ Two language-pure planes, as in rask; never blur them.
     `workbench-appearance`, the `ink` theme, dark), passed to the library's Vite plugin `riksarkivetUi` (`vite.config.ts`),
     which emits `/appearance-boot.js` that `app.html` loads before the first paint (same-origin, so the CSP needs no
     hash), and to `appearance.start()` in the root layout; every canvas redraws on `appearance.resolved`. The theme CSS
-    needs relative colour syntax (`oklch(from …)`): Chromium 119, Firefox 128, Safari 16.4 at least; only Chromium is
-    exercised here. What the library leaves to its apps is the app's own code: its shell (`#lib/shell`) and `Subject`
-    (`#lib/identity`, a principal shown shortened with the full value as its tooltip). The app's lint
-    (`no-restricted-imports` in `frontend/.oxlintrc.json`) refuses `@workbench/ui`.
-  - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
-    its Atlas node opens, the player), until D4 merges it with studio's flows (parked, ADR 0011). `frontend/annotator`,
-    `frontend/studio`: the old SvelteKit 2 apps; never deployable. Everything of the annotator's that is kept is in the
-    app (its project pages, every canvas, compare, assist, the data manager, browse and the bulk grid); what remains is
-    deleting it and `@workbench/engine`, kept until then for it alone (D3c-c).
-  - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `flow`, `explorer-api`,
-    `engine`, `labeling`). `@workbench/ui` is FROZEN legacy: the old copy of the design system the old apps still
-    import, deleted with the last of them (D3c, D4); it gets no change, its Storybook is gone (THE Storybook is the UI
-    repository's), and a component is changed in `AI-Riksarkivet/ui`.
+    needs relative colour syntax (`oklch(from …)`): Chromium 119, Firefox 128, Safari 16.4 at least. What the library
+    leaves to its apps is the app's own code: its shell (`#lib/shell`) and `Subject` (`#lib/identity`, a principal shown
+    shortened with the full value as its tooltip).
+    The supported browsers are current Chrome and Edge on a machine with a GPU (ADR 0018). A browser that cannot run
+    the app is shown one plain page instead (`#lib/browser-support.ts`): `/browser-check.js` (built from
+    `#lib/browser-check.ts` by `vite.config.ts`, loaded by `app.html` after the appearance boot script) stops the
+    document's loading where relative colour syntax or `navigator.gpu` is missing, and the `init` hook
+    (`src/hooks.client.ts`) waits up to `ADAPTER_WAIT_MS` for the GPU adapter, through the probe every canvas reads, and
+    shows the page when none comes; an answer later than that starts the app, and each canvas refuses plainly. The
+    browser suite runs the app in Chromium with its software adapter (`chromium`, `webgpu`), and the page in Chromium
+    without an adapter (`no-webgpu`) and in Firefox (`firefox`), `e2e/unsupported.spec.ts`.
+  - `frontend/annotator`: the old SvelteKit 2 app; never deployable. Everything of it that is kept is in the app (its
+    project pages, every canvas, compare, assist, the data manager, browse and the bulk grid); what remains is deleting
+    it and `@workbench/engine` and `@workbench/api`, kept until then for it alone (D3c-c, WB-109). It draws with
+    `@riksarkivet/ui` at the app's pin and carries its own copy of the old shell (`src/lib/shell`).
+  - `frontend/packages/*`: their libraries, `@workbench/*` (`api`, `config`, `explorer-api`, `engine`, `labeling`).
 - `.docker/<stem>.dockerfile`: one per deployable (`media` = viewer + search, `annotator`, `flows`, `assist-runner`, `frontend` = the app),
   built from the repository root against the root `uv.lock`.
 - `.dagger/`: the Dagger module (`image`, `lint`, `test`, `frontend-check`, `app-end-to-end`, `fga-test`).
@@ -406,7 +410,7 @@ Two language-pure planes, as in rask; never blur them.
 - `scripts/`: dev and ops scripts.
 
 Workspace membership is globbed: `[tool.uv.workspace] members = ["packages/*", "services/*"]` and
-`frontend/package.json` `workspaces = ["app", "explorer", "annotator", "studio", "packages/*"]`. A new Python member must ship a
+`frontend/package.json` `workspaces = ["app", "annotator", "packages/*"]`. A new Python member must ship a
 `pyproject.toml` (uv refuses the workspace otherwise); a new JS package must ship a `package.json` (bun silently skips
 it otherwise). Add a new Python import name to ruff's `known-first-party` in the same change.
 

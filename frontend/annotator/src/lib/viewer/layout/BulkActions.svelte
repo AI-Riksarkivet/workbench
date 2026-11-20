@@ -3,8 +3,8 @@
 	// Accept/reject/label the whole selection at once (Label Studio "apply to selection"),
 	// all through the controller's picked LabelOp seam.
 	import { Check, X } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
 	import type { AnnotatorController } from '../annotator.svelte';
 
 	let { controller }: { controller: AnnotatorController } = $props();
