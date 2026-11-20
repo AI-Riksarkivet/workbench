@@ -8,6 +8,7 @@ same answer. Each way an endpoint can behave is a model of its own, so a person 
 - ``stand-in-segmenter``: a polygon around the clicks or the box.
 - ``stand-in-slow``: never finishes its answer; it sends a byte now and then until the caller gives up.
 - ``stand-in-failing``: answers 500.
+- ``stand-in-tagger``: takes no prompt; one tag about the whole item, labelled with the task's first class.
 
 It accepts any bearer token and refuses a call with none (401): who a token names is a real endpoint's to verify.
 
@@ -50,12 +51,14 @@ DETECTOR: Final = "stand-in-detector"
 SEGMENTER: Final = "stand-in-segmenter"
 SLOW: Final = "stand-in-slow"
 FAILING: Final = "stand-in-failing"
+TAGGER: Final = "stand-in-tagger"
 
 MODELS: Final[tuple[ModelInfo, ...]] = (
     ModelInfo(name=DETECTOR, version=VERSION, title="Stand-in detector", reads=["image"], prompts=["text", "box"], returns=["bbox"]),
     ModelInfo(name=SEGMENTER, version=VERSION, title="Stand-in segmenter", reads=["image"], prompts=["box", "points"], returns=["polygon"]),
     ModelInfo(name=SLOW, version=VERSION, title="Stand-in that never answers", reads=["image"], prompts=["text", "box"], returns=["bbox"]),
     ModelInfo(name=FAILING, version=VERSION, title="Stand-in that fails", reads=["image"], prompts=["text", "box"], returns=["bbox"]),
+    ModelInfo(name=TAGGER, version=VERSION, title="Stand-in tagger", reads=["image"], prompts=[], returns=["tag"]),
 )
 
 #: The box the detector proposes when the person drew none, and the side of the patch grown around a click.
@@ -64,6 +67,7 @@ CLICK_PATCH: Final = 120.0
 #: The detector's score, and the segmenter's with no click; each click raises the segmenter's by `CLICK_GAIN` up to
 #: `SCORE_CEILING`, so a session that refines shows a score that moves.
 DETECTOR_SCORE: Final = 0.7
+TAGGER_SCORE: Final = 0.6
 SEGMENTER_SCORE: Final = 0.75
 CLICK_GAIN: Final = 0.05
 SCORE_CEILING: Final = 0.95
@@ -131,6 +135,10 @@ def _segment(ask: ProposalsRequest) -> list[Proposal]:
     return [Proposal(shape_type="polygon", x=x, y=y, width=width, height=height, polygon=polygon, label=_label(ask), score=score)]
 
 
+def _tag(ask: ProposalsRequest) -> list[Proposal]:
+    return [Proposal(shape_type="tag", label=_label(ask), score=TAGGER_SCORE)]
+
+
 async def _drip_until_the_caller_leaves(request: Request) -> AsyncIterator[bytes]:
     """An answer that never ends: a byte of JSON whitespace now and then, for as long as the caller stays. A caller that
     bounds only each read waits for ever; one that bounds the whole ask gives up at its deadline."""
@@ -191,7 +199,8 @@ def create_stand_in() -> FastAPI:
             return StreamingResponse(_drip_until_the_caller_leaves(request), media_type="application/json")
         if model.name == FAILING:
             raise _Refused(HTTPStatus.INTERNAL_SERVER_ERROR, f"{FAILING} fails every ask")
-        proposals = _segment(ask) if model.name == SEGMENTER else _detect(ask)
+        answer = {SEGMENTER: _segment, TAGGER: _tag}.get(model.name, _detect)
+        proposals = answer(ask)
         return ProposalsResponse(model=model.name, version=model.version, proposals=proposals)
 
     return app

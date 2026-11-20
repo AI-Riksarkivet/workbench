@@ -1007,12 +1007,15 @@
 			</Button>
 		</div>
 	{/if}
-	<p id={instructions} class="text-muted-foreground text-xs">
-		Arrows move, Shift with an arrow selects, Space picks one, Ctrl+A the page; 1–9 label the
-		selection (or the item in focus, then the next), Alt with a digit adds a label beside the
-		others, Delete clears, Alt+A keeps and Alt+R removes every proposal, Ctrl+Z undoes, Enter opens
-		the item on the canvas, Escape clears the selection.
-	</p>
+	{#if labels.length > 0}
+		<!-- The grid's keys, said only where it has classes to label. -->
+		<p id={instructions} class="text-muted-foreground text-xs" data-testid="grid-keys-help">
+			Arrows move, Shift with an arrow selects, Space picks one, Ctrl+A the page; 1–9 label the
+			selection (or the item in focus, then the next), Alt with a digit adds a label beside the
+			others, Delete clears, Alt+A keeps and Alt+R removes every proposal, Ctrl+Z undoes, Enter
+			opens the item on the canvas, Escape clears the selection.
+		</p>
+	{/if}
 
 	{#if selection.size > 0}
 		<div
@@ -1148,7 +1151,7 @@
 			aria-multiselectable="true"
 			aria-rowcount={rows.length}
 			aria-colcount={columns}
-			aria-describedby={instructions}
+			aria-describedby={labels.length > 0 ? instructions : undefined}
 			class="flex flex-col gap-3"
 			data-testid="label-grid"
 			{@attach measure}

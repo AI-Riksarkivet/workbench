@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pyarrow as pa
@@ -415,6 +415,19 @@ def test_a_proposal_of_a_shape_the_tasks_classes_do_not_take_is_refused_and_said
     answer = _ask(client, stand_in.SEGMENTER, points=[{"x": 200, "y": 200}])
 
     assert (answer.status_code, [p["shape_type"] for p in answer.json()["proposals"]], answer.json()["dropped"]) == (200, kept, dropped)
+
+
+def test_a_model_that_takes_no_prompt_is_asked_with_the_item_alone(client_for: Build, endpoint: str) -> None:
+    client = client_for(endpoint, tools=["tag"])
+
+    answer = _ask(client, stand_in.TAGGER)
+
+    (ask,) = [seen for seen in _ASKS if seen["path"] == "/v1/proposals"]
+    assert cast("dict[str, Any]", ask["body"])["prompts"] == {"text": None, "box": None, "points": []}
+    assert (answer.status_code, [(p["shape_type"], p["label"], p["score"]) for p in answer.json()["proposals"]]) == (
+        200,
+        [("tag", "seal", stand_in.TAGGER_SCORE)],
+    )
 
 
 def test_the_published_protocol_is_the_one_the_stand_in_speaks() -> None:

@@ -145,6 +145,7 @@ an ask is a 503.
 | `stand-in-segmenter` | A polygon around the clicks or the box; each click raises the score. |
 | `stand-in-slow` | Never finishes its answer (a byte now and then): the person reads the timeout. |
 | `stand-in-failing` | Answers 500: the person reads the error. |
+| `stand-in-tagger` | Takes no prompt: one tag about the whole item, labelled with the task's first class, score 0.6. |
 
 `python -m annotator.model_endpoint.stand_in` serves it (`MODEL_STAND_IN_HOST`, `MODEL_STAND_IN_PORT`; 127.0.0.1:8120).
 `make local` runs it on port 8706, and `make deploy-dev` installs it from `deploy/fixtures/model-stand-in`.

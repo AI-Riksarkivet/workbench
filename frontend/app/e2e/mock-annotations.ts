@@ -417,6 +417,15 @@ const MODELS = [
 		compatible: null,
 	},
 	{
+		name: 'stand-in-tagger',
+		version: VERSION,
+		title: 'Stand-in tagger',
+		reads: ['image'],
+		prompts: [],
+		returns: ['tag'],
+		compatible: null,
+	},
+	{
 		name: 'stand-in-slow',
 		version: VERSION,
 		title: 'Stand-in that never answers',
@@ -450,9 +459,24 @@ const ASK_FIELDS = new Set(['model', 'prompt', 'region', 'points', 'task_id']);
 
 /** The stand-in's answer, proposal for proposal: the detector's box where the person drew one (else a fixed box), the
  *  segmenter's diamond over its positive clicks' box padded by half a 120-pixel patch (or over the drawn box), its score
- *  rising with each click; each labelled with the task's first class (`pages`' `figure`). */
+ *  rising with each click, the tagger's one tag from the item alone; each labelled with the task's first class (`pages`'
+ *  `figure`). */
 function proposals(body: AssistBody): Record<string, unknown>[] {
 	const label = 'figure';
+	if (body.model === 'stand-in-tagger')
+		return [
+			{
+				shape_type: 'tag',
+				x: 0,
+				y: 0,
+				width: 0,
+				height: 0,
+				polygon: [],
+				label,
+				text: '',
+				score: 0.6,
+			},
+		];
 	if (body.model === 'stand-in-segmenter') {
 		let box = body.region ?? { x: 0, y: 0, width: 0, height: 0 };
 		if (body.points.length > 0) {

@@ -1283,7 +1283,7 @@ test('a model asked from the canvas proposes shapes, each naming its model, vers
 	const panel = await openAssist(page);
 	// The endpoint's models by title, and what each is: its name and version. Which prompts each takes is the endpoint's
 	// word: the detector is asked with words, the segmenter armed for a box or clicks.
-	await expect(panel.getByTestId('assist-model')).toHaveCount(4);
+	await expect(panel.getByTestId('assist-model')).toHaveCount(5);
 	await expect(modelRow(panel, 'stand-in-detector')).toContainText('Stand-in detector');
 	await expect(modelRow(panel, 'stand-in-detector').getByTestId('assist-model-version')).toHaveText(
 		'stand-in-detector · stand-in.1 · returns bbox',
@@ -1384,8 +1384,33 @@ test('a model asked from the canvas proposes shapes, each naming its model, vers
 	await page.getByRole('button', { name: 'Back to list' }).click();
 	const rejected = list.getByRole('button', { name: /stand-in-segmenter/ });
 	await expect(rejected.getByTestId('not-published')).toHaveText('rejected · not published');
+	await expect(page.getByTestId('canvas-notice')).toHaveText('Rejected: it is not published');
 	await rejected.click();
 	await expect(detail.getByTestId('not-published')).toHaveText('not published');
+	await page.getByRole('button', { name: 'Back to list' }).click();
+
+	// A model that takes no prompt is offered as it is, and asked with none: its tag is a proposal like any other.
+	await openAssist(page);
+	await modelRow(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('canvas-notice')).toContainText(
+		'1 proposal from stand-in-tagger stand-in.1',
+	);
+	expect(asked.at(-1)?.postDataJSON()).toEqual({
+		model: 'stand-in-tagger',
+		prompt: null,
+		region: null,
+		points: [],
+		task_id: 'pages-t1',
+	});
+	await expect(
+		list.getByTestId('annotation-made-by').filter({ hasText: 'stand-in-tagger' }),
+	).toHaveText('stand-in-tagger · stand-in.1 · 0.60');
+	await expect(panelHead.getByTestId('keep-all-proposals')).toHaveText(/Keep all \(3\)/);
+	await page.keyboard.press('Alt+r');
+	await expect(panelHead.getByTestId('keep-all-proposals')).toHaveCount(0);
+	await expect(
+		list.getByTestId('annotation-made-by').filter({ hasText: 'stand-in-tagger' }),
+	).toHaveCount(0);
 });
 
 test('an endpoint that does not answer in time, one that fails, and a deployment with none are each said, never as an empty answer', async ({

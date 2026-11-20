@@ -1505,7 +1505,18 @@ export class AnnotatorController implements Zoomable {
 		if (i == null) return;
 		const q = this.reviewQueue; // capture pre-change order (the row re-sorts after)
 		const pos = q.findIndex((r) => r.index === i);
+		const was = q[pos]?.status;
 		this.setStatus(i, status);
+		// What the verdict did, said in place of whatever the live region said before (an assist's answer, a save).
+		if (
+			this.readOnly === null &&
+			was !== status &&
+			(status === 'accepted' || status === 'rejected')
+		)
+			this.notice = {
+				tone: 'success',
+				text: status === 'rejected' ? 'Rejected: it is not published' : 'Kept',
+			};
 		const rest = pos < 0 ? q : q.slice(pos + 1);
 		const nextRow = rest.find((r) => r.status === 'prediction') ?? rest[0];
 		this.select(nextRow ? nextRow.index : null);

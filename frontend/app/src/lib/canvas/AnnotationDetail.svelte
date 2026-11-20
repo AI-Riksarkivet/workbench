@@ -294,10 +294,14 @@
 				variant="outline"
 				size="sm"
 				class="flex-1"
-				title="Accept &amp; advance (A / Enter)"
+				title={row.status === 'prediction'
+					? 'Keep the proposal & advance (A / Enter)'
+					: 'Accept & advance (A / Enter)'}
 				onclick={() => controller.acceptAndAdvance('accepted')}
 			>
-				<Check class="size-3.5" /> Accept
+				<!-- A person keeps a model's proposal; any other row is accepted. -->
+				<Check class="size-3.5" />
+				{row.status === 'prediction' ? 'Keep' : 'Accept'}
 			</Button>
 			<Button
 				variant="outline"

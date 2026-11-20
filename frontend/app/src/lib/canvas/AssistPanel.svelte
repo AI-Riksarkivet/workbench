@@ -4,7 +4,8 @@
 	// version), which prompts each takes and whether what it returns fits the task. What the panel offers comes from
 	// those prompts: a model that takes words is asked with the words to find ("Find", over the whole picture), one that
 	// takes a box or clicks is armed, so a box drawn on the picture or each click is its prompt ("this", or with − "not
-	// this"), every answer of a click session replacing the last until Done. Proposals arrive as `prediction` rows for
+	// this"), every answer of a click session replacing the last until Done, and one that takes no prompt answers from the
+	// item alone ("Ask"). Proposals arrive as `prediction` rows for
 	// the person to keep (A) or reject (R), or all at once (Alt+A, Alt+R), each naming its model, version and score. An
 	// ask that fails is said here in the annotator's words, never as an answer with nothing in it. A picture, or a
 	// video's frame, is what a model looks at: on a text or a recording the panel says so instead.
@@ -37,12 +38,9 @@
 		else failure = answer.detail;
 	}
 
-	/** The models a person can ask from the canvas: those that take a prompt the canvas gives. */
-	const offered = $derived(
-		(listing?.models ?? []).filter(
-			(m) => takes(m, 'text') || takes(m, 'box') || takes(m, 'points'),
-		),
-	);
+	/** Every model the endpoint lists: one that takes no prompt answers from the item alone, and is asked as it is. */
+	const offered = $derived(listing?.models ?? []);
+	const promptless = (m: AssistModel): boolean => m.prompts.length === 0;
 	const anyWords = $derived(offered.some((m) => takes(m, 'text')));
 
 	function find(m: AssistModel): void {
@@ -96,7 +94,7 @@
 				</p>
 			{:else if offered.length === 0}
 				<p class="text-muted-foreground text-xs" data-testid="assist-no-models">
-					The model endpoint serves no model that takes words, a box or clicks.
+					The model endpoint serves no model.
 				</p>
 			{:else}
 				{#if anyWords}
@@ -126,6 +124,14 @@
 											', ',
 										)}) is no shape this task's classes take"
 										data-testid="assist-incompatible">does not fit this task</Badge
+									>
+								{/if}
+								{#if promptless(m)}
+									<Button
+										size="xs"
+										variant="outline"
+										disabled={controller.assistBusy}
+										onclick={() => find(m)}>Ask</Button
 									>
 								{/if}
 								{#if takes(m, 'text')}
