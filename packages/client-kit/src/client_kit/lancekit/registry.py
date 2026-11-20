@@ -86,10 +86,18 @@ DISCOVERY_DEADLINE_S: Final = 20.0
 #: declared table no one has written is listed with no version to open, as one whose data was removed is; measured
 #: 2026-11-16, the dev lakehouse lists three such tables, each with a `declare_table` its only event and no version.
 LISTED_NOT_WRITTEN: Final = "the catalog lists it, but holds no version of it to read: declared and never written, or its data removed"
+#: How long a dataset found holding a listed table with no version to read is answered as found, before it is opened
+#: again: a listing every page makes does not open a table that is not there each time, and a table written since is
+#: seen within this.
+ABSENT_RECHECK_S: Final = 60.0
 
 
 class UnknownDatasetError(LookupError):
     """The id names no dataset the catalog shows this caller."""
+
+
+class DatasetAbsentError(UnknownDatasetError):
+    """Every table the catalog lists in the dataset holds no version to read (:data:`LISTED_NOT_WRITTEN`)."""
 
 
 class CallerSessions(BaseModel):
@@ -347,6 +355,7 @@ _REASONS: Final = (
     (lance_namespace.TableNotFoundError, "it is not there any more"),
     (lance_namespace.NamespaceNotFoundError, "it is not there any more"),
     (ServiceUnavailableError, "the catalog or its store did not answer"),
+    (DatasetAbsentError, LISTED_NOT_WRITTEN),
 )
 COULD_NOT_READ: Final = "it could not be read right now"
 _REFUSALS: Final = (ForbiddenError, UnauthorizedError, lance_namespace.PermissionDeniedError, lance_namespace.UnauthenticatedError)
@@ -363,14 +372,16 @@ def _tables_of(source: RaskSource | NamespaceSource | TablesSource, listed: list
     return listed
 
 
-def discover(source: RaskSource | NamespaceSource | TablesSource, client: LanceNamespace, deadline: float) -> SourceDiscovery:
+def discover(
+    source: RaskSource | NamespaceSource | TablesSource, client: LanceNamespace, deadline: float, *, clock: Callable[[], float] = time.monotonic
+) -> SourceDiscovery:
     """Every namespace of ``source`` that holds tables, found by walking ListNamespaces from the root and asking each
     namespace's ListTables: tables may sit at the root, one level down, or at any depth
     (`lance_docs/ns_catalog/namespace/index.md` § Namespace Hierarchy; a V1 directory catalog lists no child namespace
     and every table at the root, `lance_docs/ns_catalog/namespace/supported-catalogs/lance-dir.md` § ListNamespaces).
 
     Bounded by :data:`DISCOVERY_NAMESPACES`, :data:`DISCOVERY_DEPTH`, :data:`LISTING_NAMES`, :data:`LISTING_PAGES` and
-    ``deadline`` (a monotonic time), and honest: a namespace whose listing fails, and a child whose name could not be one
+    ``deadline`` (a time on ``clock``), and honest: a namespace whose listing fails, and a child whose name could not be one
     (it holds a delimiter or a path character), is reported with its reason, and a walk cut at a bound says so. A
     lakehouse's warehouses (the first level) serve no tables, so only deeper namespaces are asked for theirs.
     """
@@ -380,7 +391,7 @@ def discover(source: RaskSource | NamespaceSource | TablesSource, client: LanceN
     while queue:
         namespace = queue.pop(0)
         visited += 1
-        if visited > DISCOVERY_NAMESPACES or time.monotonic() > deadline:
+        if visited > DISCOVERY_NAMESPACES or clock() > deadline:
             found.truncated = True
             break
         label = qualify(source, namespace)
@@ -443,8 +454,13 @@ def load_dataset_descriptor(
             # A refusal is the caller's answer for the dataset, never a table's reason to show it without that table.
             raise
         except Exception as exc:
-            logger.warning("table %s of %s could not be opened", name, dataset_id, exc_info=True)
             absent = isinstance(exc, ValueError | OSError) and reads_as_absent(exc)
+            if absent:
+                # An expected condition (a table declared and never written, or its data removed): one line, which names
+                # the table and not where its data was looked for.
+                logger.warning("table %s of %s is listed but holds no version to read", name, dataset_id)
+            else:
+                logger.warning("table %s of %s could not be opened", name, dataset_id, exc_info=True)
             unreadable[name] = LISTED_NOT_WRITTEN if absent else reason_for(exc)
             transient |= unreadable[name] == COULD_NOT_READ or isinstance(exc, ServiceUnavailableError)
             continue
@@ -496,9 +512,20 @@ _SURVEYS: Final = ThreadPoolExecutor(max_workers=8, thread_name_prefix="source-s
 class DatasetRegistry:
     """The datasets of every declared source, as each caller sees them, with a bounded cache of the handles opened."""
 
-    def __init__(self, settings: MediaSettings) -> None:
+    def __init__(self, settings: MediaSettings, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._settings = settings
+        #: The one clock the registry reads (a survey's deadline, `ABSENT_RECHECK_S`): monotonic, a test's own where it
+        #: names one. A handle's own reuse of an open is measured against the vend's expiry, a wall-clock time
+        #: (`reusable_until`).
+        self._clock = clock
         self._handles: OrderedDict[tuple[str, str], DatasetHandle] = OrderedDict()
+        #: When a cached handle holding a table with nothing to read is opened again, by (caller, dataset): one entry per
+        #: cached handle, dropped with it.
+        self._recheck: dict[tuple[str, str], float] = {}
+        #: The (caller, dataset)s found holding nothing to read, and until when they are answered so unopened: per caller,
+        #: since what a catalog lists is the caller's answer, and at most as many as the handle cache holds, the least
+        #: recently found dropped first.
+        self._absent: OrderedDict[tuple[str, str], float] = OrderedDict()
         self._sessions: OrderedDict[tuple[str, str], CallerSessions] = OrderedDict()
         self._lock = threading.Lock()
         self._handle_cap = HANDLES_PER_SOURCE * len(settings.sources.items)
@@ -510,7 +537,7 @@ class DatasetRegistry:
 
     def _survey(self, source: RaskSource | NamespaceSource | TablesSource, caller: LakehouseCaller, deadline: float) -> Survey:
         try:
-            found = discover(source, self.client(source, caller), deadline)
+            found = discover(source, self.client(source, caller), deadline, clock=self._clock)
         except Exception as exc:
             logger.warning("source %s could not be listed", source.name, exc_info=True)
             found = SourceDiscovery(
@@ -518,11 +545,14 @@ class DatasetRegistry:
             )
         survey = Survey(discovery=found)
         for dataset_id in found.datasets:
-            if time.monotonic() > deadline:
+            if self._clock() > deadline:
                 found.truncated = True
                 break
             try:
                 survey.opened.append(self.get(dataset_id, caller).descriptor)
+            except DatasetAbsentError as exc:
+                # Expected, and said where it was found (`load_dataset_descriptor`): no second line, no traceback.
+                found.unlisted.append(Unlisted(id=dataset_id, reason=reason_for(exc)))
             except Exception as exc:
                 logger.warning("dataset %s could not be opened", dataset_id, exc_info=True)
                 found.unlisted.append(Unlisted(id=dataset_id, reason=reason_for(exc)))
@@ -533,7 +563,7 @@ class DatasetRegistry:
         :data:`DISCOVERY_DEADLINE_S`, in the declaration's order: one that cannot be read, or does not answer in time, is
         reported as such and never hides the others."""
         sources = [source for source in self._settings.sources.items if source.name in caller.admitted]
-        deadline = time.monotonic() + DISCOVERY_DEADLINE_S
+        deadline = self._clock() + DISCOVERY_DEADLINE_S
         futures: list[Future[Survey]] = []
         for source in sources:
             context = contextvars.copy_context()
@@ -541,7 +571,7 @@ class DatasetRegistry:
         surveys: list[Survey] = []
         for source, future in zip(sources, futures, strict=True):
             try:
-                surveys.append(future.result(timeout=max(0.0, deadline - time.monotonic()) + CALL_TIMEOUT_S))
+                surveys.append(future.result(timeout=max(0.0, deadline - self._clock()) + CALL_TIMEOUT_S))
             except FutureTimeoutError:
                 reason = f"it did not answer within {DISCOVERY_DEADLINE_S:.0f} s"
                 late = SourceDiscovery(
@@ -552,11 +582,14 @@ class DatasetRegistry:
 
     def get(self, dataset_id: str, caller: LakehouseCaller) -> DatasetHandle:
         """The caller's handle on ``dataset_id`` (``<source>~<namespace>``), opened on first use and cached for this caller
-        alone; a dataset a table of which could not be read right now is not cached, so the next request reads it again.
+        alone; a dataset a table of which could not be read right now is not cached, so the next request reads it again,
+        and one holding a table the catalog lists with no version to read is opened again after :data:`ABSENT_RECHECK_S`.
 
         Raises:
             UnknownDatasetError: The id names no declared source, is not a namespace id the source admits, or the source
                 holds no such namespace.
+            DatasetAbsentError: No table the catalog lists in it holds a version to read; answered so, unopened, for
+                :data:`ABSENT_RECHECK_S`.
             ForbiddenError: The source is the workbench's to decide and the caller is not one of its readers; asked before
                 the caller's cached handle is served (`client_kit.sources.require_admitted`).
         """
@@ -567,8 +600,12 @@ class DatasetRegistry:
         require_admitted(located.source, caller)
         key = (caller.subject, dataset_id)
         with self._lock:
+            now = self._clock()
+            absent_until = self._absent.get(key)
+            if absent_until is not None and absent_until > now:
+                raise DatasetAbsentError(f"dataset {dataset_id!r}: {LISTED_NOT_WRITTEN}")
             handle = self._handles.get(key)
-            if handle is not None:
+            if handle is not None and self._recheck.get(key, now + 1) > now:
                 self._handles.move_to_end(key)
                 return handle
         client = self.client(located.source, caller)
@@ -580,6 +617,17 @@ class DatasetRegistry:
             raise UnknownDatasetError(f"dataset {dataset_id!r} not found: {exc}") from exc
         if not descriptor.tables and not descriptor.unreadable:
             raise UnknownDatasetError(f"dataset {dataset_id!r} holds no table")
+        holds_absent = LISTED_NOT_WRITTEN in descriptor.unreadable.values()
+        if not descriptor.tables and set(descriptor.unreadable.values()) == {LISTED_NOT_WRITTEN}:
+            # Nothing in it can be read: the dataset is answered as absent, and not opened again for a while.
+            with self._lock:
+                self._handles.pop(key, None)
+                self._recheck.pop(key, None)
+                self._absent[key] = self._clock() + ABSENT_RECHECK_S
+                self._absent.move_to_end(key)
+                while len(self._absent) > self._handle_cap:
+                    self._absent.popitem(last=False)
+            raise DatasetAbsentError(f"dataset {dataset_id!r}: {LISTED_NOT_WRITTEN}")
         # The lancedb connection shares the namespace client, so lancedb's opens carry the same token and trace context.
         connection = LanceNamespaceDBConnection(namespace_client=client, session=sessions.lancedb, read_consistency_interval=timedelta(0))
         handle = DatasetHandle(
@@ -594,10 +642,18 @@ class DatasetRegistry:
         if descriptor.transient:
             return handle
         with self._lock:
+            self._absent.pop(key, None)
             self._handles[key] = handle
             self._handles.move_to_end(key)
+            # A dataset holding a table with nothing to read is opened again after a while, so a table written since is
+            # seen; one whose every table opened is kept until it is evicted.
+            if holds_absent:
+                self._recheck[key] = self._clock() + ABSENT_RECHECK_S
+            else:
+                self._recheck.pop(key, None)
             while len(self._handles) > self._handle_cap:
-                self._handles.popitem(last=False)
+                evicted, _ = self._handles.popitem(last=False)
+                self._recheck.pop(evicted, None)
         logger.info("opened dataset %s (%d tables)", dataset_id, len(descriptor.tables))
         return handle
 
@@ -625,5 +681,5 @@ class DatasetRegistry:
             UnknownDatasetError: No default dataset is configured.
         """
         if self._settings.default_dataset is None:
-            raise UnknownDatasetError("the request names no dataset and MEDIA_DEFAULT_DATASET is not set")
+            raise UnknownDatasetError("the request names no dataset and WORKBENCH_DEFAULT_DATASET is not set")
         return self.get(self._settings.default_dataset, caller)

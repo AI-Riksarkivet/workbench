@@ -1,34 +1,37 @@
-"""Shared factory for rask backend services.
+"""THE app factory: every workbench service is built by `make_service_app`, the media services (the viewer, search and
+the annotator, through `client_kit.media.app`) and flows alike.
 
-`make_service_app` builds a FastAPI app with shared config, exception handlers, middleware, probes
-and logging. Both the lifespan and the settings are injectable: stateless services get the minimal
-`default_lifespan` (settings only); services needing resources (Lance, S3) pass their own
-factory.
+It installs, once and identically for each: logging, the audit trail's switch, the exception handlers, the middleware
+(request id, body cap, CORS), the probes, the SIGTERM drain, the request's trace and the export of its telemetry. What
+is a service's own arrives as arguments: its settings (one shape, `service_kit.config.Settings` or a subclass), its
+routers, its lifespan, its readiness check and the response headers a browser may read.
 
 THIS IS A SUBMODULE, not the package `__init__`: as the `__init__`, importing ANYTHING under
 `service_kit` — `service_kit.config` for a `Settings`, `service_kit.exceptions` for an error type —
-would first execute this module and so import FastAPI, python-dotenv, the OTel wiring, the middleware
+would first execute this module and so import FastAPI, the OTel wiring, the middleware
 stack and the probe router, and every consumer would pay for the app factory whether it wanted an app
 or not. `service_kit/__init__.py` re-exports these names lazily, so `from service_kit import
 make_service_app` resolves here.
 """
 
+import asyncio
 import logging
 import os
 import sys
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Final
 
-from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI
 
 from service_kit.config import Settings
 from service_kit.context import CorrelationFilter, DiagnosticFormatter
+from service_kit.draining import arm_drain_on_sigterm
 from service_kit.exceptions import register_handlers
 from service_kit.governed.audit import configure_audit
 from service_kit.lifecycle import mark_draining, mark_started
 from service_kit.middleware import register_middleware
-from service_kit.otel import setup_otel
+from service_kit.otel import Telemetry, TelemetrySinks, setup_otel
 from service_kit.probes import ReadyCheck, make_probes_router
 from service_kit.slash import SlashToleranceMiddleware
 
@@ -95,25 +98,24 @@ def setup_logging() -> None:
 
 
 def build_settings() -> Settings:
-    load_dotenv()
+    """The settings the process's environment gives."""
     return Settings.model_validate({})
 
 
-def default_lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
-    """Minimal lifespan for stateless services: expose `settings` on `app.state`.
-
-    Services that need resources (Lance, S3) inject their own factory.
-    """
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        app.state.settings = settings
-        yield
-
-    return lifespan
+#: How long a stopping service waits for its telemetry to be sent. The chart gives the lifespan's teardown
+#: `lifecycle.teardownSeconds` (10 s) after uvicorn's drain, inside the pod's grace period (40 s); this takes half of it,
+#: leaving the rest to what the service's own teardown closes.
+TELEMETRY_CLOSE_S: Final = 5.0
 
 
-type LifespanFactory = Callable[[Settings], Callable[[FastAPI], AbstractAsyncContextManager[None]]]
+#: A service's own lifespan: what it opens before it serves and closes after, run inside the factory's.
+type Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
+
+
+@asynccontextmanager
+async def _nothing_to_open(app: FastAPI) -> AsyncGenerator[None]:
+    del app
+    yield
 
 
 def _install_ns_problem_handlers(app: FastAPI) -> None:
@@ -153,25 +155,31 @@ def _install_ns_problem_handlers(app: FastAPI) -> None:
 def make_service_app(
     *,
     title: str,
-    routers: Sequence[APIRouter],
-    proxy_router: APIRouter | None = None,
-    lifespan: LifespanFactory | None = None,
+    routers: Sequence[APIRouter] = (),
+    root_routers: Sequence[APIRouter] = (),
+    lifespan: Lifespan | None = None,
     ready_check: ReadyCheck | None = None,
     settings: Settings | None = None,
+    expose_headers: Sequence[str] = (),
+    telemetry: TelemetrySinks | None = None,
 ) -> FastAPI:
-    """Build a backend FastAPI app with shared config/handlers/middleware.
+    """Build a service's FastAPI app.
 
-    `routers` are mounted under `settings.api_prefix`; `proxy_router` is
-    mounted at the root, outside the prefix. The lifespan defaults to the minimal
-    `default_lifespan` unless `lifespan=` is passed.
+    ``title`` names the service, in its OpenAPI document and as the ``service.name`` its telemetry is exported under.
+    ``routers`` are mounted under ``settings.api_prefix``, ``root_routers`` at the root, at the paths they name
+    themselves. ``lifespan`` is the service's own (what it opens and closes); the factory runs it inside its own, which
+    puts ``settings`` on ``app.state.settings`` first. ``expose_headers`` are the response headers a named origin may read
+    beside the request id. ``telemetry`` is where the telemetry goes when ``settings.otel_enabled``: the OTLP exporters
+    unless a test names its own sinks.
 
-    `settings` IS INJECTABLE, and omitting it builds one from the environment. Every caller builds its
-    app at MODULE level, so without this parameter `build_settings()` —
-    `load_dotenv()` plus a whole `Settings` validation off the process environment — would run as an
-    unavoidable side effect of importing the service. Nothing could state
-    the configuration it wanted: a caller could only mutate the environment and hope it got there before the import did. Passing an object closes that,
-    and it is the same object the router prefix, the docs URLs, the middleware, `app.state.settings`
-    and the lifespan factory all see — one instance, not a re-read per consumer.
+    The layers a request meets, outermost first: the OpenTelemetry instrumentation (when telemetry is on), Starlette's
+    server-error handler (the 500 for an exception nothing else handled), the trailing slash tolerance, the request id,
+    the request line (one per response, `middleware.RequestLogMiddleware`), CORS, the body cap, then the domain exception
+    handlers and the routers.
+
+    `settings` IS INJECTABLE, and omitting it builds one from the environment: every caller builds its app at MODULE
+    level, so the object passed is the one configuration the router prefix, the docs URLs, the middleware,
+    `app.state.settings` and the telemetry all see.
     """
     setup_logging()
     # `build_settings()` is still the DEFAULT, not a fallback for a bad argument: `setup_logging()`
@@ -182,41 +190,39 @@ def make_service_app(
     # instead of deciding it. Immediately after `setup_logging`, which sets the root level this must
     # override in both directions.
     configure_audit(enabled=settings.audit_enabled)
-    base_factory: LifespanFactory = lifespan if lifespan is not None else default_lifespan
+    base: Lifespan = lifespan if lifespan is not None else _nothing_to_open
+    # Filled once the app exists: the instrumentation wraps the app the lifespan below belongs to.
+    installed: list[Telemetry] = []
 
-    def lifespan_factory(s: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
-        base = base_factory(s)
-
-        @asynccontextmanager
-        async def wrapped(app: FastAPI) -> AsyncGenerator[None]:
-            # THE LIFECYCLE FLAGS `/readyz` READS ARE SET HERE, for every app this factory builds.
-            #
-            # `service_kit.probes` gates readiness on `startup_complete` / `shutting_down`, and those
-            # two names were a CONVENTION between the probe and each service's own lifespan. Left to
-            # the lifespans, five of the apps built here never held up their end, so `/readyz`
-            # answered `starting` for the whole life of every one of those pods and the drain never
-            # began; one lifespan logged the string "startup_complete" while setting no attribute,
-            # which is how the miss read as done.
-            #
-            # AFTER the base lifespan has entered, never before: the base builds the resources the
-            # service needs, so announcing readiness ahead of it would be a lie about a half-built
-            # app. And in a `finally`, so a base lifespan that raises on the way out still leaves the
-            # process reporting unready rather than ready-and-dying.
+    @asynccontextmanager
+    async def wrapped(app: FastAPI) -> AsyncGenerator[None]:
+        # THE LIFECYCLE IS THE FACTORY'S, for every app: started once the service's own lifespan has opened what it
+        # serves with (never before, which would announce a half-built app), draining from SIGTERM (the drain hands
+        # the signal on to uvicorn) or from the lifespan's end, whichever comes first, and in a `finally`, so a
+        # lifespan that raises on the way out still leaves the process unready. What else `/readyz` asks is the
+        # service's `ready_check`, answered from the state of what it opened.
+        app.state.settings = settings
+        try:
             async with base(app):
                 mark_started(app)
+                disarm = arm_drain_on_sigterm(app)
                 try:
                     yield
                 finally:
                     mark_draining(app)
-
-        return wrapped
+                    disarm()
+        finally:
+            # Last, after the service has closed what it opened, so what its teardown logged is sent too; off the event
+            # loop, and within `TELEMETRY_CLOSE_S` whatever the gateway does.
+            for telemetry_handle in installed:
+                if not await asyncio.to_thread(telemetry_handle.close_within, TELEMETRY_CLOSE_S):
+                    logging.getLogger(__name__).warning("telemetry_not_sent_at_shutdown", extra={"waited_s": TELEMETRY_CLOSE_S})
 
     app = FastAPI(
         title=title,
         version="0.1.0",
-        lifespan=lifespan_factory(settings),
-        # Opt-IN, and it used to be hard-coded on with no way for a service to say no. See
-        # `Settings.docs_enabled` for why the default is closed rather than open.
+        lifespan=wrapped,
+        # Opt-IN. See `Settings.docs_enabled` for why the default is closed rather than open.
         docs_url=f"{settings.api_prefix}/docs" if settings.docs_enabled else None,
         redoc_url=f"{settings.api_prefix}/redoc" if settings.docs_enabled else None,
         openapi_url=f"{settings.api_prefix}/openapi.json" if settings.docs_enabled else None,
@@ -232,7 +238,7 @@ def make_service_app(
     # error body has one shape: the divergence docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md
     # "The Python estate audit" X11 files, one service's 422 body differing from its siblings'.
     _install_ns_problem_handlers(app)
-    register_middleware(app, settings)
+    register_middleware(app, settings, expose_headers=expose_headers)
 
     # THE OPERATIONAL PROBES, root-mounted, for every app this factory builds.
     #
@@ -252,14 +258,17 @@ def make_service_app(
 
     for router in routers:
         app.include_router(router, prefix=settings.api_prefix)
-    if proxy_router is not None:
-        app.include_router(proxy_router)
+    for router in root_routers:
+        app.include_router(router)
 
     # Resolve the other trailing-slash spelling in-process instead of a
     # 307 redirect that would leak the service's in-pod address (see slash.py).
     app.router.redirect_slashes = False
     app.add_middleware(SlashToleranceMiddleware, routes_provider=lambda: app.router.routes)
 
-    setup_otel(app, service_name=title, settings=settings)
+    telemetry_handle = setup_otel(app, service_name=title, settings=settings, sinks=telemetry)
+    app.state.telemetry = telemetry_handle
+    if telemetry_handle is not None:
+        installed.append(telemetry_handle)
 
     return app

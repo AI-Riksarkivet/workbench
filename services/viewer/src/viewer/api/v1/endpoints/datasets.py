@@ -20,7 +20,7 @@ from client_kit.lancekit.descriptor import DatasetDescriptor
 from client_kit.lancekit.introspect import TableInfo
 from client_kit.lancekit.registry import DatasetHandle, Survey, Unlisted
 from client_kit.media.deps import StateDep
-from client_kit.media.state import dataset_handle, ensure_registry
+from client_kit.media.state import dataset_handle
 from service_kit.exceptions import NotFoundError
 from viewer.api.security import AUTHENTICATED, READS_DATASET, CallerDep
 from viewer.services.derived_views import VECTOR_MAX_DIM
@@ -146,7 +146,7 @@ async def list_datasets(caller: CallerDep, state: StateDep) -> DatasetsResponse:
     not answer in time, is reported with a short reason.
     """
     # Off the loop: listing and opening are catalog calls and manifest reads, and this is the first call every page makes.
-    surveys = await run_in_threadpool(ensure_registry(state).survey, caller)
+    surveys = await run_in_threadpool(state.registry.survey, caller)
     return DatasetsResponse(sources=[_listing(survey) for survey in surveys])
 
 

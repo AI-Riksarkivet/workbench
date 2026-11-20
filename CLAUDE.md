@@ -156,6 +156,12 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE`, `_AUDIENCE_SCOPE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse (asking for the audience's scope where the provider reads one, Dex's `audience:server:client_id:<audience>`) |
 | `WORKBENCH_LAKEHOUSE_DELEGATION` | `exchange` (default) or `forward`: how the primary issuer's people's reads reach the lakehouse; `forward` needs `WORKBENCH_DPOP_REQUIRED=false`. A further issuer names its own in its `WORKBENCH_OIDC_PROVIDERS` entry (`lakehouse`, with its own client), or its people's reads are refused: a token is exchanged only at the issuer that signed it. Under `forward` a read presents the person's latest token, never one past its own `exp` (`token_exchange.PersonTokens`) |
 | `WORKBENCH_SOURCES_FILE` | the sources declaration (`{"sources": [...]}`, `client_kit.sources`), a file the chart renders from `sources` (`<release>-sources`); a relative local path in it is read beside the file. `WORKBENCH_SOURCES` gives the list inline (tests). No source names a credential: a property or storage option off the allow-list (`client_kit.source_keys`) is refused at load, by name |
+| `WORKBENCH_DEFAULT_DATASET`, `WORKBENCH_DESCRIPTOR_DIR` | the dataset a request naming none reads (`<source>~<namespace>`; the annotator's must be annotatable), and where a dataset's descriptor may be given as a file |
+| `WORKBENCH_CORS_ORIGINS`, `WORKBENCH_DOCS`, `WORKBENCH_MAX_BODY_BYTES`, `WORKBENCH_AUDIT_ENABLED` | what the app factory (`service_kit.app.make_service_app`) builds every service with: the origins besides the app's own a browser may call from (none by default), the interactive docs (off), the request-body cap (64 MiB; the viewer and search 32, the annotator 16), the audit trail (on) |
+| `WORKBENCH_OTEL_ENABLED`, `WORKBENCH_OTEL_TOKEN_FILE` | whether a service exports its traces, metrics and logs (the audit trail on its own scope, `workbench.audit`, which the platform's gateway may route to a table of its own) over OTLP/HTTP to the `OTEL_EXPORTER_OTLP_*` endpoint, as its own `service.name`; and the mounted projected token each export presents, read when it is sent (`service_kit.otel`) |
+| `WORKBENCH_EMBED_URL`, `WORKBENCH_RERANK_URL` | the embedding and reranking model servers search queries and the viewer's health reports on |
+| `VIEWER_CACHE_BYTES`, `VIEWER_DERIVED_BUILDS` | the one byte budget the viewer's drawn answers share (the chart's `media.viewer.cacheBytes`), and how many derived views it builds at once |
+| `SEARCH_CACHE_SIZE`, `SEARCH_CACHE_BYTES` | search's version-keyed result cache: how many result sets, and how many bytes (0 disables each) |
 | `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
 | `ANNOTATOR_PUBLISH_LEASE_SECONDS`, `_REDRIVE_SECONDS`, `_CONCURRENCY` | a publish run's lease on its project (default 300 s), how often each replica sweeps for publishes no live run holds (30 s, jittered), and how many runs one replica drives at once (2, below the pool size) |
 | `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned; required with sign-in on beside a source the workbench authorizes, and the chart gives it to the viewer and search there as to the annotator |
@@ -286,9 +292,11 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 
 Two language-pure planes, as in rask; never blur them.
 
-- `packages/`: reusable Python libraries, no entrypoints. `service-kit` (the service base: app factory, governed
-  auth, settings) and `client-kit` (the media app factory and dataset registry the viewer, search and annotator
-  share, and `client_kit.sources`, the declared sources). Every dataset is a namespace of a declared source opened
+- `packages/`: reusable Python libraries, no entrypoints. `service-kit` (the service base: THE app factory every
+  service is built by, `make_service_app`, with its exception handlers, middleware, probes, drain and telemetry;
+  governed auth; settings) and `client-kit` (what the viewer, search and annotator compose onto that factory: their
+  shared settings, lifespan, readiness and dataset registry, `client_kit.media`; and `client_kit.sources`, the
+  declared sources). Every dataset is a namespace of a declared source opened
   through lance-namespace, as the caller on a lakehouse (on the credentials the catalog vends) and with no token anywhere
   else: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.

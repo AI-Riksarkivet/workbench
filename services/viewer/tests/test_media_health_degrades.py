@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
@@ -35,7 +35,7 @@ class _DeadEncoders:
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     """The default dataset names a namespace an empty directory catalog does not hold — an un-seeded corpus."""
-    settings = Settings.model_validate({**lakehouse_dir(str(tmp_path)), "MEDIA_DEFAULT_DATASET": "lake~acme$corpus"})
+    settings = MediaSettings.model_validate({**lakehouse_dir(str(tmp_path)), "WORKBENCH_DEFAULT_DATASET": "lake~acme$corpus"})
     state = AppState(settings=settings, http=_DeadEncoders())
     app = FastAPI()
     register_handlers(app)

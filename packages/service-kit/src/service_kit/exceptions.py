@@ -137,7 +137,15 @@ def _problem(exc: DomainError) -> dict[str, Any]:
 def route_template(request: Request) -> str | None:
     """The template of the route a request matched (``/api/signed-media/{token}``), or None where none matched: what a
     log line names a request by, never its path, which can carry a credential (a signed media URL's token)."""
-    path = getattr(request.scope.get("route"), "path", None)
+    return scope_route_template(request.scope)
+
+
+def scope_route_template(scope: Mapping[str, Any]) -> str | None:
+    """:func:`route_template` of a routed ASGI scope. The route FastAPI (0.140) records for one of an included router's
+    routes is that router's own, without the prefixes it is mounted under; the template it was matched by, prefixes and
+    all, is on the effective route it records beside it."""
+    effective = (scope.get("fastapi") or {}).get("effective_route_context")
+    path = getattr(effective, "path", None) or getattr(scope.get("route"), "path", None)
     return path if isinstance(path, str) else None
 
 

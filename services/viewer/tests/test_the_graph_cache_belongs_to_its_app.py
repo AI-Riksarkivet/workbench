@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.state import AppState
 from service_kit.governed.deps import ANONYMOUS_CALLER
 from viewer.api.v1.endpoints import graph as graph_ep
@@ -101,8 +101,8 @@ def test_two_apps_do_not_share_one_engine_cache(monkeypatch: pytest.MonkeyPatch)
     """A second app must build its OWN engine — it has its own registry, settings and lifetime."""
     built = _count_builds(monkeypatch)
 
-    graph_ep.get_status(ANONYMOUS_CALLER, AppState(settings=Settings()), dataset="isolation-corpus")
-    graph_ep.get_status(ANONYMOUS_CALLER, AppState(settings=Settings()), dataset="isolation-corpus")
+    graph_ep.get_status(ANONYMOUS_CALLER, AppState(settings=MediaSettings()), dataset="isolation-corpus")
+    graph_ep.get_status(ANONYMOUS_CALLER, AppState(settings=MediaSettings()), dataset="isolation-corpus")
 
     assert len(built) == 2, (
         f"the second app was served the first app's cached engine (builds: {built}) — one module-global dict is shared by every app in the process"
@@ -117,7 +117,7 @@ def test_tearing_an_app_down_releases_its_engines(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(graph_ep, "_build_resources", lambda *_a, **_k: holder[0])
     alive = weakref.ref(holder[0])
 
-    state = AppState(settings=Settings())
+    state = AppState(settings=MediaSettings())
     graph_ep.get_status(ANONYMOUS_CALLER, state, dataset="teardown-corpus")
 
     holder.clear()
@@ -138,7 +138,7 @@ def test_a_cold_build_for_one_dataset_does_not_block_another(monkeypatch: pytest
         return _resources()
 
     monkeypatch.setattr(graph_ep, "_build_resources", _build)
-    state = AppState(settings=Settings())
+    state = AppState(settings=MediaSettings())
 
     slow = threading.Thread(target=lambda: graph_ep.get_status(ANONYMOUS_CALLER, state, dataset="slow"), daemon=True)
     slow.start()
@@ -170,7 +170,7 @@ def test_concurrent_first_requests_build_once(monkeypatch: pytest.MonkeyPatch) -
         return _resources()
 
     monkeypatch.setattr(graph_ep, "_build_resources", _build)
-    state = AppState(settings=Settings())
+    state = AppState(settings=MediaSettings())
 
     def _request() -> None:
         gate.wait()

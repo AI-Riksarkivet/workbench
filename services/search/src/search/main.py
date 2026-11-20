@@ -1,9 +1,8 @@
 """Search service entry — the lance-ns thin-``main.py`` template.
 
 Module-level ``app``; ALL construction in the lifespan onto ``app.state`` (importing this module does
-zero I/O). The lifespan and the assembly are both SHARED — ``client_kit.media.lifespan`` and
-``client_kit.media.app`` — because viewer, search and annotator are three deployments of one shape
-and used to hand-write it three times (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" DUP-16 / X12 / DUP-20).
+zero I/O). Built by the kit's factory with the media services' composition onto it (``client_kit.media.app``) and
+their shared lifespan (``client_kit.media.lifespan``): viewer, search and annotator are three deployments of one shape.
 """
 
 from __future__ import annotations
@@ -13,15 +12,16 @@ import logging
 from fastapi import FastAPI
 
 from client_kit.media.app import build_media_app
-from client_kit.media.config import MediaSettings, get_settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.lifespan import make_media_lifespan
 from client_kit.media.state import AppState
 from client_kit.rate_limit import register_rate_limiting
 from search.api.v1.router import router as api_router
-from search.core.config import get_search_settings
+from search.core.config import SearchSettings, get_search_settings
 from search.core.rate_limit import limiter
 from service_kit import setup_logging
 from service_kit.obs import configure_app_logging
+from service_kit.otel import TelemetrySinks
 
 
 logger = logging.getLogger(__name__)
@@ -69,32 +69,22 @@ def _with_rate_limiting(app: FastAPI) -> FastAPI:
     return app
 
 
-app = _with_rate_limiting(
-    build_media_app(
-        title="lance-media search",
-        settings=get_search_settings(),
-        routers=[api_router],
-        lifespan=lifespan,
+def build_app(settings: SearchSettings | None = None, *, telemetry: TelemetrySinks | None = None) -> FastAPI:
+    """Search as the pod serves it, with its lifespan; ``telemetry`` names other sinks than the OTLP exporters."""
+    return _with_rate_limiting(
+        build_media_app(title="search", settings=settings or get_search_settings(), routers=[api_router], lifespan=lifespan, telemetry=telemetry)
     )
-)
 
 
-def run() -> None:
-    import uvicorn
-
-    s = get_search_settings()
-    uvicorn.run("search.main:app", host=s.host, port=s.service_port)
+app = build_app()
 
 
-def create_search_app(state: AppState, settings: MediaSettings | None = None) -> FastAPI:
+def create_search_app(state: AppState, settings: SearchSettings | None = None) -> FastAPI:
     """Search app around externally-opened state — the test/composition seam.
 
-    THE SAME BUILDER production uses (X12). This used to construct a bare ``FastAPI`` with
-    ``register_handlers`` and nothing else — no ``install_problem_handlers``, no middleware, no body
-    cap, no probes — so an app built here could not reproduce the one regression the deployed app's
-    comments are about (an ``UnauthenticatedError`` answering 500 instead of 401), and its 429s were
-    shaped differently too. No lifespan, because the caller supplies the state this app runs over.
+    THE SAME BUILDER production uses (X12), so an app built here maps every error, and shapes every 429, as the deployed
+    one does. No lifespan, because the caller supplies the state this app runs over.
     """
-    test_app = _with_rate_limiting(build_media_app(title="search api", settings=settings or get_settings(), routers=[api_router]))
+    test_app = _with_rate_limiting(build_media_app(title="search", settings=settings or get_search_settings(), routers=[api_router]))
     test_app.state.resources = state
     return test_app

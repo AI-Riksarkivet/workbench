@@ -26,7 +26,7 @@ from annotator.projects.ontology import LabelClass, LabelOntology, RelationClass
 from service_kit.exceptions import ValidationError
 
 
-#: The annotator's default body cap (MEDIA_MAX_BODY_BYTES), far above every body here.
+#: The annotator's default body cap (WORKBENCH_MAX_BODY_BYTES), far above every body here.
 _BODY_LIMIT = 32 * 1024 * 1024
 
 

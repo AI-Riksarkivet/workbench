@@ -1,10 +1,12 @@
 """Shared, app-wide resources built in lifespan and read via DI.
 
-``AppState`` lives on ``app.state.resources`` and is reached through the
-``StateDep`` dependency — routers never touch ``app.state`` directly. Data
-resolution goes through :func:`dataset_handle` (the multi-dataset registry);
-the encoder/voice slots stay ``None`` until first use so an FTS-only
-deployment never connects to a GPU server.
+``AppState`` lives on ``app.state.resources`` and is reached through the ``StateDep`` dependency — routers never touch
+``app.state`` directly. Data resolution goes through :func:`dataset_handle` (the multi-dataset registry), which the
+state opens when it is built, before the service reports ready.
+
+What stays unbuilt until first use, and why: a dataset's handle is the CALLER's (opened on their token, cached for them
+alone), so no handle can be opened before a caller asks; the model clients (``embedder``, ``reranker``) belong to model
+servers a deployment may not run, and the embedder's query dimension is read from the caller's dataset.
 """
 
 from __future__ import annotations
@@ -15,11 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from client_kit.lancekit.registry import DatasetRegistry
 from client_kit.media.config import MediaSettings
 
 
 if TYPE_CHECKING:
-    from client_kit.lancekit.registry import DatasetHandle, DatasetRegistry
+    from client_kit.lancekit.registry import DatasetHandle
     from service_kit.governed.token_exchange import LakehouseCaller
 
 logger = logging.getLogger(__name__)
@@ -31,7 +34,7 @@ class AppState(BaseModel):
     The Lance/lancedb handles aren't Pydantic-validatable, hence
     ``arbitrary_types_allowed``. ``embedder``/``reranker`` are mutable slots that
     :mod:`search.services.clients` fills on first use and reuses thereafter. ``settings``
-    carries the typed app config (vLLM URLs, host/port, CORS), read fresh per state.
+    carries the typed app config, read fresh per state.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -39,14 +42,10 @@ class AppState(BaseModel):
     # Required, per state: there is no default catalog to read, and a default built from the process environment would
     # bind every state in the process to one configuration. A service passes its own (`make_media_state`).
     settings: MediaSettings
+    #: The dataset registry, the one resolution path, built with the state from its settings: building it opens no source.
+    registry: DatasetRegistry = Field(default_factory=lambda fields: DatasetRegistry(fields["settings"]))
     embedder: Any | None = None  # search.services.encoders.embedding.VLLMEmbeddingClient
     reranker: Any | None = None  # search.services.encoders.reranker.VLLMReranker
-    # Lazy in-process voice encoder for the upload voice search (CPU by design;
-    # the GPUs belong to the vLLM servers). None until the first upload; the
-    # lock guards first-load — sync handlers run in a threadpool, so two
-    # concurrent first uploads would otherwise both construct the model.
-    voice_encoder: Any | None = None  # viewer.services.wespeaker.VoiceEncoder
-    voice_encoder_lock: Any = Field(default_factory=threading.Lock)
     # One HTTP connection pool per process (health pings) — never per-request.
     http: Any | None = None  # httpx.Client
     # Memoized /points payloads keyed on (space, dataset version) — per-app, not
@@ -64,46 +63,20 @@ class AppState(BaseModel):
     derived_cache: dict[tuple[str, str, int, str, str], tuple[bytes, int]] = Field(default_factory=dict)
     derived_flights: dict[tuple[str, str, int, str, str], Any] = Field(default_factory=dict)
     # The slots those builds take (viewer.services.build_slots.BuildSlots), made on the first build from the viewer's
-    # settings; only the app's event loop touches it.
+    # settings: a count of builds under way, which opens nothing; only the app's event loop touches it.
     derived_slots: Any | None = None
-    # The viewer's own opens of the tables its signed media URLs name (viewer.services.signed_media.ServiceReads), made on
-    # first use under the lock.
+    # The viewer's own opens of the tables its signed media URLs name (viewer.services.signed_media.ServiceReads), built
+    # with the viewer's state (`viewer.main.create_viewer_state`).
     service_reads: Any | None = None
-    service_reads_lock: Any = Field(default_factory=threading.Lock)
     # Version-keyed search result cache (search.services.result_cache): keyed
     # (dataset, table-version signature, query hash) → (the query's hits, their
     # approximate byte size — carried so eviction can honour the byte ceiling
     # without re-serializing every entry). Same per-app, version-invalidated
-    # discipline as points_cache; bounded by settings.search_cache_size AND
-    # settings.search_cache_bytes (0 = off / no byte bound respectively).
+    # discipline as points_cache; bounded by search's cache size and bytes settings.
     search_cache: dict[tuple[str, str, str], tuple[list[Any], int]] = Field(default_factory=dict)
     # The search routes run in the threadpool, so the cache is read, moved and evicted from several threads at once: each
     # of those is done holding this lock (search.services.result_cache.run_cached), never the search itself.
     search_cache_lock: Any = Field(default_factory=threading.Lock)
-    # The dataset registry, the one resolution path. Same first-build hazard as voice_encoder: sync handlers run in a
-    # threadpool, so two concurrent first requests would otherwise both construct the registry.
-    registry: Any | None = None  # client_kit.lancekit.registry.DatasetRegistry
-    registry_lock: Any = Field(default_factory=threading.Lock)
-
-
-def ensure_registry(state: AppState) -> DatasetRegistry:
-    """The ONE lazy first-build of ``state.registry`` (SK-06).
-
-    Every path that needs the registry (id resolution via :func:`dataset_handle`, the viewer's enumeration, which has no
-    dataset id to resolve through) goes through here, so the guarded construction exists exactly once.
-    """
-    # Imported per call, not at module top: the media plane stays importable without the Lance stack until a registry
-    # is actually needed.
-    from client_kit.lancekit.registry import DatasetRegistry
-
-    if state.registry is None:
-        # Double-checked so the steady state never takes the lock; without it two concurrent first requests both
-        # construct, and the loser's registry (with whatever it already opened) is silently discarded.
-        with state.registry_lock:
-            if state.registry is None:
-                state.registry = DatasetRegistry(state.settings)
-    registry: DatasetRegistry = state.registry
-    return registry
 
 
 def dataset_handle(state: AppState, dataset_id: str | None, caller: LakehouseCaller) -> DatasetHandle:
@@ -116,9 +89,8 @@ def dataset_handle(state: AppState, dataset_id: str | None, caller: LakehouseCal
     from client_kit.lancekit.registry import UnknownDatasetError
     from service_kit.exceptions import NotFoundError
 
-    registry = ensure_registry(state)
     try:
-        return registry.get(dataset_id, caller) if dataset_id else registry.default(caller)
+        return state.registry.get(dataset_id, caller) if dataset_id else state.registry.default(caller)
     except UnknownDatasetError as exc:
         raise NotFoundError(str(exc)) from exc
     except ValueError as exc:  # invalid/missing descriptor — a config problem, not a 500

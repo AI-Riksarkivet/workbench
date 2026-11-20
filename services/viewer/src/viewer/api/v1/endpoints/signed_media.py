@@ -255,11 +255,11 @@ async def sign_media_urls(
 
 
 def _service_reads(state: AppState) -> ServiceReads:
-    with state.service_reads_lock:
-        if state.service_reads is None:
-            state.service_reads = ServiceReads()
-        reads: ServiceReads = state.service_reads
-        return reads
+    """The viewer's own opens, built with its state (`viewer.main.create_viewer_state`)."""
+    reads = state.service_reads
+    if not isinstance(reads, ServiceReads):
+        raise TypeError(f"the viewer's state holds no ServiceReads but {type(reads).__name__}")
+    return reads
 
 
 class _OpenCell(BaseModel):

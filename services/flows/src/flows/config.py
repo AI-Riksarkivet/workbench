@@ -1,9 +1,8 @@
 """flows-only settings.
 
-`service_kit.config.Settings` stays the shared base (api_prefix, CORS, OTel) and is read the
-way every fleet service reads it — `make_service_app` builds it and the lifespan puts it on
-`app.state.settings`. This class holds the fields that are nobody else's business, in the same
-pydantic-settings shape, so a flows-only knob does not widen the estate-wide config class.
+`service_kit.config.Settings` is the shared base (api_prefix, CORS, OTel), which `make_service_app` builds and puts on
+`app.state.settings`. This class extends it with the fields that are nobody else's business, so it reads every field
+from its one environment name, as the base does.
 
 The Serve ORIGIN is the important one. It is `:8000` — Ray Serve's own HTTP ingress — which is a
 different port and a different protocol from the Ray dashboard (`:8265`) that `settings.ray_dashboard_url`
@@ -15,26 +14,12 @@ from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from service_kit.config import Settings
 from service_kit.governed.settings import GovernedAuthSettings
 
 
-class FlowsSettings(GovernedAuthSettings, BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-        case_sensitive=False,
-        # `populate_by_name` also teaches the env source the bare FIELD NAME as a second
-        # lookup, so every alias below silently gained an un-namespaced twin. `env_prefix`
-        # redirects that fallback onto the namespace the aliases already declare; an explicit
-        # alias bypasses it, so the deliberately-bare ones still land. See
-        # tests/unit/test_settings_env_namespace.py.
-        populate_by_name=True,
-        env_prefix="LANCE_",
-    )
-
+class FlowsSettings(GovernedAuthSettings, Settings):
     #: Ray Serve's HTTP ingress origin. A `model` node POSTs to `{serve_url}/{app}`.
     serve_url: str = Field(default="http://localhost:8000", alias="WORKBENCH_FLOWS_SERVE_URL")
 
@@ -98,6 +83,5 @@ class FlowsSettings(GovernedAuthSettings, BaseSettings):
 
 
 def build_flows_settings() -> FlowsSettings:
-    """Read once, at startup. `model_config.env_file` makes pydantic-settings read `.env` itself —
-    the same mechanism `service_kit.build_settings` relies on — so there is no second dotenv load."""
+    """Read once, at startup, from the process's environment, as `service_kit.build_settings` reads the shared ones."""
     return FlowsSettings.model_validate({})

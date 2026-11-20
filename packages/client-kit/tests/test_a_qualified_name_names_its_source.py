@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from annotator.core.config import AnnotatorSettings
-from client_kit.media.config import GovernedMediaSettings, Settings
+from client_kit.media.config import GovernedMediaSettings, MediaSettings
 from search.core.config import SearchSettings
 from viewer.core.config import ViewerSettings
 
@@ -33,8 +33,8 @@ SOURCES = [
 ]
 
 
-def _settings(**env: object) -> Settings:
-    return Settings.model_validate({"WORKBENCH_SOURCES": SOURCES, **env})
+def _settings(**env: object) -> MediaSettings:
+    return MediaSettings.model_validate({"WORKBENCH_SOURCES": SOURCES, **env})
 
 
 @pytest.mark.parametrize(
@@ -118,7 +118,7 @@ def test_a_source_naming_one_table_holds_no_other() -> None:
             "names no `locations`",
             id="rest-no-locations",
         ),
-        pytest.param({"WORKBENCH_SOURCES": SOURCES, "MEDIA_DEFAULT_DATASET": "lake~bronze"}, "not warehouse-qualified", id="default-no-source-holds"),
+        pytest.param({"WORKBENCH_SOURCES": SOURCES, "WORKBENCH_DEFAULT_DATASET": "lake~bronze"}, "not warehouse-qualified", id="default-no-source-holds"),
     ],
 )
 def test_a_declaration_that_cannot_be_read_as_written_fails_the_settings(
@@ -129,20 +129,20 @@ def test_a_declaration_that_cannot_be_read_as_written_fails_the_settings(
     declaration.write_text(json.dumps({"sources": SOURCES}))
     given = {name: (str(declaration) if value == "FILE" else value) for name, value in declared.items()}
     with pytest.raises(ValidationError, match=error):
-        Settings.model_validate(given)
+        MediaSettings.model_validate(given)
 
 
 def test_the_declaration_file_is_what_the_settings_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("WORKBENCH_SOURCES")
     declaration = tmp_path / "sources.json"
     declaration.write_text(json.dumps({"sources": SOURCES}))
-    assert [s.name for s in Settings.model_validate({"WORKBENCH_SOURCES_FILE": str(declaration)}).sources.items] == ["lake", "archive", "one"]
+    assert [s.name for s in MediaSettings.model_validate({"WORKBENCH_SOURCES_FILE": str(declaration)}).sources.items] == ["lake", "archive", "one"]
 
 
 def test_a_harmless_storage_key_the_deny_list_refused_is_accepted() -> None:
     harmless = {"aws_role_session_name": "workbench", "aws_role_arn": "arn:aws:iam::1:role/r", "region": "eu-north-1"}
 
-    settings = Settings.model_validate({"WORKBENCH_SOURCES": [{**SOURCES[2], "storage": harmless}]})
+    settings = MediaSettings.model_validate({"WORKBENCH_SOURCES": [{**SOURCES[2], "storage": harmless}]})
 
     assert settings.sources.named("one").model_dump()["storage"] == harmless
 

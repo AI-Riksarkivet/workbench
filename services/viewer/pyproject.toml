@@ -11,10 +11,6 @@ dependencies = [
     "service-kit[governed,arrow]",
     # The media app factory, its lifespan and the dataset registry the doors serve from.
     "client-kit",
-    # The chart launches this service under `opentelemetry-instrument` (chart/templates/explorer.yaml), whose distro
-    # installs the SDK's providers at start; without it the launcher installs none (measured 2026-10-24).
-    "opentelemetry-distro>=0.65b0",
-    "opentelemetry-exporter-otlp>=1.44.0",
     "fastapi>=0.115",
     "pydantic>=2.7",
     "python-multipart>=0.0.9",

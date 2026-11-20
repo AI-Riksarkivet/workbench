@@ -410,7 +410,7 @@ def test_the_default_dataset_is_read_only_by_its_sources_readers_whatever_else_t
             "WORKBENCH_SOURCES": [
                 {"kind": "namespace", "name": "src", "impl": "dir", "properties": {"root": str(root)}, "readers": {"people": [f"{IDP_ID}~reader"]}}
             ],
-            "MEDIA_DEFAULT_DATASET": "src~wh$ns",
+            "WORKBENCH_DEFAULT_DATASET": "src~wh$ns",
             "WORKBENCH_OIDC_ENABLED": True,
             "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
             "WORKBENCH_OIDC_ISSUER": dex.issuer,

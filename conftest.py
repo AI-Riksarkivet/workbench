@@ -11,6 +11,7 @@ it builds. Authentication, ON by default, is turned off for the offline suites t
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -76,3 +77,28 @@ def no_refresher_outlives_its_test() -> Iterator[None]:
     yield
     left = [thread for thread in threading.enumerate() if thread.name == "oidc-refresher" and thread.is_alive()]
     assert left == [], f"{len(left)} OIDC refresher thread(s) left running"
+
+
+@pytest.fixture(autouse=True)
+def no_telemetry_outlives_its_test() -> Iterator[None]:
+    """An app that exported telemetry took it down at its shutdown (`service_kit.otel.Telemetry.close`): no OTel log
+    handler is left on the root logger. The SDK's process-wide providers are set once per process, so they are put back
+    unset here, as OpenTelemetry's own test utilities do: the next test's app installs its own."""
+    from opentelemetry import trace
+    from opentelemetry._logs import _internal as logs_internal
+    from opentelemetry.instrumentation.logging.handler import LoggingHandler
+    from opentelemetry.metrics import _internal as metrics_internal
+    from opentelemetry.util._once import Once
+
+    yield
+    handlers = [handler for handler in logging.getLogger().handlers if isinstance(handler, LoggingHandler)]
+    for handler in handlers:
+        logging.getLogger().removeHandler(handler)
+    for module, provider, once in (
+        (trace, "_TRACER_PROVIDER", "_TRACER_PROVIDER_SET_ONCE"),
+        (metrics_internal, "_METER_PROVIDER", "_METER_PROVIDER_SET_ONCE"),
+        (logs_internal, "_LOGGER_PROVIDER", "_LOGGER_PROVIDER_SET_ONCE"),
+    ):
+        setattr(module, provider, None)
+        setattr(module, once, Once())
+    assert handlers == [], f"{len(handlers)} OTel log handler(s) left on the root logger"

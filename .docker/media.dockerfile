@@ -3,7 +3,8 @@
 # installed as wheels; no PYTHONPATH, no raw source COPY in the final stage). The chart runs
 # both from it with a different command (chart/templates/media.yaml):
 #   viewer.main:app (:8101) · search.main:app (:8102)
-# — wrapped in `opentelemetry-instrument` when observability is on (opentelemetry-distro, which both declare).
+# — under plain uvicorn: each app exports its own telemetry when `WORKBENCH_OTEL_ENABLED` is on, the SDK wired in process
+# by the app factory (`service_kit.otel`), so no launcher wraps the command.
 # They are clients of the lakehouse, so they build apart from its image (.docker/rest-catalog.dockerfile): deleting
 # them changes nothing the lakehouse image installs ([[XC-177]]).
 # Build context = repo root:  scripts/dagger-image.sh --name media --tag media:dev
@@ -116,4 +117,6 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
     CMD ["python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8101)); s.close()"]
 
 ENTRYPOINT ["tini", "--"]
-CMD ["uvicorn", "viewer.main:app", "--host", "0.0.0.0", "--port", "8101"]
+# No access log: it prints the path and query (a signed media URL's token, a search's words); the app writes one
+# line per request naming its route's template instead.
+CMD ["uvicorn", "viewer.main:app", "--host", "0.0.0.0", "--port", "8101", "--no-access-log"]

@@ -184,7 +184,7 @@ def test_a_service_naming_no_state_database_refuses_the_project_plane_and_stays_
         503,
         "the project and task plane is unavailable: the annotator names no state database (ANNOTATOR_STATE_HOST is unset)",
     )
-    assert (ready.status_code, ready.json()["components"]) == (200, {"state": "unconfigured"})
+    assert (ready.status_code, ready.json()["components"]) == (200, {"registry": "ready", "sign_in": "off", "authz": "off", "state": "unconfigured"})
 
 
 def test_the_local_person_belongs_to_the_local_organisation(service: Any) -> None:

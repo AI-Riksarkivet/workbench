@@ -21,13 +21,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from client_kit.lancekit.descriptor import AtlasSpace, Declared
-from client_kit.media.config import MediaSettings
 from service_kit.exceptions import ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
 from viewer.api import security
 from viewer.api.v1.endpoints import atlas
+from viewer.core.config import ViewerSettings
 from viewer.main import create_viewer_app
 
 
@@ -47,7 +47,7 @@ _ROWS = pa.table(
 
 
 def _app(root: Path) -> FastAPI:
-    return create_viewer_app(MediaSettings.model_validate({**lakehouse_dir(str(root))}))
+    return create_viewer_app(ViewerSettings.model_validate({**lakehouse_dir(str(root))}))
 
 
 def test_a_payload_the_browser_holds_is_revalidated_not_sent_again(tmp_path: Path) -> None:
@@ -88,7 +88,7 @@ def test_callers_asking_for_one_cold_payload_at_once_share_one_build_and_its_fai
 def test_a_refused_caller_is_not_served_the_payload_another_caller_warmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     location = write_table(tmp_path, ["wh", "corpus", "chunks"], _ROWS, descriptor=_DESCRIPTOR).uri
     catalog = VendingCatalog(location, {"caller-a": {}, "caller-b": "refuse"})
-    app = create_viewer_app(MediaSettings.model_validate({**lakehouse_rest(catalog.url)}))
+    app = create_viewer_app(ViewerSettings.model_validate({**lakehouse_rest(catalog.url)}))
     as_whom = {"token": "caller-a"}
     app.dependency_overrides[security._deps.lakehouse_caller] = lambda: LakehouseCaller(subject=f"keycloak~{as_whom['token']}", token=lambda: as_whom["token"])
     try:

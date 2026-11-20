@@ -1,16 +1,11 @@
-"""Per-service settings — the shared data-plane config plus viewer-local knobs.
-
-lance-ns gives each service its own ``core/config.py`` with a service env prefix;
-the shared MEDIA_* data-plane variables stay common (one Lance root serves all
-three), and only service-local knobs (VIEWER_*) are prefixed.
-"""
+"""The viewer's settings: the media services' shared ones (``WORKBENCH_*``) and its own (``VIEWER_*``)."""
 
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
 
-from client_kit.media.config import GovernedMediaSettings
+from client_kit.media.config import GovernedMediaSettings, MediaSettings
 
 
 class ViewerSettings(GovernedMediaSettings):
@@ -20,8 +15,12 @@ class ViewerSettings(GovernedMediaSettings):
     other source is read only by its declared readers, which the workbench's own OpenFGA decides (`GovernedMediaSettings`).
     """
 
-    service_name: str = "viewer"
-    service_port: int = Field(default=8101, alias="VIEWER_PORT")
+    #: The one MEMORY ceiling the viewer's drawn answers share: the stamped atlas's `/points` payloads and the views a
+    #: person sets up on a table nobody stamped (their atlas, graph, tree and profile) are kept within it together, the
+    #: least recently used dropped first, and an answer larger than it is never kept. The entry counts are only the
+    #: lookup bounds. `0` disables the byte bound only. The chart sets it from `media.viewer.cacheBytes`, sized against
+    #: the pod's memory limit.
+    cache_bytes: int = Field(default=192 * 1024 * 1024, ge=0, alias="VIEWER_CACHE_BYTES")
 
     #: Where the voiceprint runner's Ray Serve app answers. EMPTY DISABLES the upload form, and that
     #: is the honest default: the read plane no longer carries a speaker encoder, so an estate that
@@ -41,6 +40,13 @@ class ViewerSettings(GovernedMediaSettings):
     derived_builds: int = Field(default=2, ge=1, le=8, alias="VIEWER_DERIVED_BUILDS")
     #: How long a signed media URL serves its object.
     media_url_ttl_seconds: int = Field(default=300, ge=10, le=3600, alias="VIEWER_MEDIA_URL_TTL_SECONDS")
+
+
+def viewer_settings(settings: MediaSettings) -> ViewerSettings:
+    """``settings`` as the viewer's own: the state a viewer serves from is built from them (`viewer.main`)."""
+    if not isinstance(settings, ViewerSettings):
+        raise TypeError(f"the viewer serves from ViewerSettings, not {type(settings).__name__}")
+    return settings
 
 
 @lru_cache

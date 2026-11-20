@@ -1,13 +1,13 @@
 """Structured compliance audit trail — a dedicated audit-event stream, separate from operational logs.
 
 Every security-relevant action (authn success/failure, authz allow/deny, credential vending, admin ops)
-is emitted as one structured event on the ``lance.audit`` logger: who (subject), what (action), the resource,
-the outcome, and when (the record timestamp). A dedicated logger name keeps audit records a single,
-filterable stream — routable and retainable independently of the noisy app INFO tier — and they export via
-OTLP to GreptimeDB like every other log, queryable by ``audit.action`` / ``audit.outcome`` / ``audit.subject``
-(the dedicated ``lance.audit`` logger name).
+is emitted as one structured event on the ``workbench.audit`` logger: who (subject), what (action), the resource,
+the outcome, and when (the record timestamp). The workbench's trail is its own, apart from any lakehouse's: with
+telemetry on, its records leave over OTLP like every other log, on their own instrumentation scope, the logger's name
+``workbench.audit``, queryable by ``audit.action`` / ``audit.outcome`` / ``audit.subject``. Routing that scope to a
+table and retention of its own is the platform's gateway's job; one that does not stores it with the general logs.
 
-The whole trail is gated by one flag (:func:`configure_audit`, from a service's ``LANCE_AUDIT_ENABLED``
+The whole trail is gated by one flag (:func:`configure_audit`, from a service's ``WORKBENCH_AUDIT_ENABLED``
 setting): a deployment turns audit on or off for its compliance posture by setting the dedicated logger's
 level. Fields are consistent across every call site, so a record never misses who / what / outcome.
 """
@@ -23,7 +23,7 @@ from service_kit.context import current_request_id
 
 
 #: The one well-known audit logger name (not a per-module logger) so audit records are a single stream.
-AUDIT_LOGGER = "lance.audit"
+AUDIT_LOGGER = "workbench.audit"
 _log = logging.getLogger(AUDIT_LOGGER)
 
 #: The record's format version, stamped on every record as ``audit.format``. A compliance query names the fields of
@@ -42,49 +42,17 @@ class AuditOutcome(StrEnum):
 
 
 class AuditAction(StrEnum):
-    """The lakehouse's closed action vocabulary: every action a lakehouse service records is one of these.
+    """The kit's closed action vocabulary: what its shared doors record (who was let in, a verdict, a data read).
 
     An authorization verdict is ``AUTHZ`` and names the relation it decided in ``audit.relation``, so "every verdict on
-    this table" is one filter however many relations the model grows. A client of the lakehouse records under a closed
-    vocabulary of its own: :func:`audit` takes any ``StrEnum``, so no free string reaches the trail from anywhere.
+    this object" is one filter however many relations the model grows. Each service records its own actions under a
+    closed vocabulary of its own (`<service>.audit_actions`): :func:`audit` takes any ``StrEnum``, so no free string
+    reaches the trail from anywhere.
     """
 
     AUTHN = "authn"
     AUTHZ = "authz"
-    AUTHZ_DECISION = "authz_decision"
     READ_DATA = "read_data"
-    VEND_CREDENTIALS = "vend_credentials"
-    COMMIT_VERSION = "commit_version"
-    COMMIT_VERSION_ANNOUNCED = "commit_version_announced"
-    PUBLICATION_ANNOUNCED = "publication_announced"
-    EVENT_STREAM_OPENED = "event_stream_opened"
-    LIST_PROJECTS = "list_projects"
-    ACCESS_GRANT = "access_grant"
-    ACCESS_REVOKE = "access_revoke"
-    ACCESS_REVIEW = "access_review"
-    ACCESS_SIMULATE = "access_simulate"
-    ACCESS_SIMULATE_HYPOTHETICAL = "access_simulate_hypothetical"
-    ACCESS_GRAPH = "access_graph"
-    ACCESS_TUPLES_READ = "access_tuples_read"
-    ACCESS_TUPLE_WRITE = "access_tuple_write"
-    ACCESS_TUPLE_DELETE = "access_tuple_delete"
-    ACCESS_LIST_OBJECTS = "access_list_objects"
-    ACCESS_LIST_USERS = "access_list_users"
-    ACCESS_EXPAND = "access_expand"
-    MANAGED_ACCESS_SET = "managed_access_set"
-    PROJECT_MEMBER_GRANT = "project_member_grant"
-    PROJECT_MEMBER_REVOKE = "project_member_revoke"
-    PRINCIPAL_DELETE = "principal_delete"
-    ROLE_CREATE = "role_create"
-    ROLE_DELETE = "role_delete"
-    ROLE_ASSIGN = "role_assign"
-    ROLE_UNASSIGN = "role_unassign"
-    ERASURE_OBLIGATION_RECORDED = "erasure_obligation_recorded"
-    ERASURE_REF_OBLIGED = "erasure_ref_obliged"
-    ERASURE_OBLIGATION_VERIFIED = "erasure_obligation_verified"
-    EXPIRE_VERSIONS = "expire_versions"
-    DLQ_REPLAY = "dlq_replay"
-    DLQ_PARKED_REPLAY = "dlq_parked_replay"
 
 
 def configure_audit(*, enabled: bool) -> None:

@@ -27,6 +27,7 @@ from client_kit.media.lifespan import make_media_lifespan
 from client_kit.media.state import AppState
 from service_kit import setup_logging
 from service_kit.obs import configure_app_logging
+from service_kit.otel import TelemetrySinks
 from service_kit.schemas.health import Readiness, ReadinessStatus
 
 
@@ -114,17 +115,17 @@ lifespan = make_media_lifespan(
     teardown=_close_state,
 )
 
-app = build_media_app(
-    title="lance-media annotator",
-    settings=get_annotator_settings(),
-    routers=[api_router],
-    lifespan=lifespan,
-    ready_check=_state_ready,
-)
+
+def build_app(settings: AnnotatorSettings | None = None, *, telemetry: TelemetrySinks | None = None) -> FastAPI:
+    """The annotator as the pod serves it, with its lifespan; ``telemetry`` names other sinks than the OTLP exporters."""
+    return build_media_app(
+        title="annotator",
+        settings=settings or get_annotator_settings(),
+        routers=[api_router],
+        lifespan=lifespan,
+        ready_check=_state_ready,
+        telemetry=telemetry,
+    )
 
 
-def run() -> None:
-    import uvicorn
-
-    s = get_annotator_settings()
-    uvicorn.run("annotator.main:app", host=s.host, port=s.service_port)
+app = build_app()

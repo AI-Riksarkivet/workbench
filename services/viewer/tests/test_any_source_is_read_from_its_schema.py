@@ -15,7 +15,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import secrets
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -101,6 +103,39 @@ def test_every_source_lists_its_datasets_whatever_their_depth(client: TestClient
         ("lake", "rask", [("lake~acme$corpus", True, ["chunks"], None)], []),
         ("archive", "namespace", [("archive~", False, ["at_root", "wide"], UNMARKED), ("archive~a$b$c", False, ["observations"], UNMARKED)], []),
         ("scans", "tables", [("scans~", False, ["scans"], None)], []),
+    ]
+
+
+def test_a_listed_table_whose_data_is_gone_is_answered_unavailable_once_a_while_and_hides_nothing_else(
+    client: TestClient, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The catalog still lists the table, its versions are gone (a table whose data was removed, as seen live): a dataset
+    holding nothing else to read is unlisted with the reason and a 404 at its door, one holding other tables is listed
+    with that table named, each said in ONE warning line with no traceback, and the next listing opens neither again."""
+    archive = namespace_client(tmp_path / "archive")
+    for table in (["wide"], ["a", "b", "c", "observations"]):
+        uri = lance.dataset(namespace_client=archive, table_id=table).uri.removeprefix("file://")
+        shutil.rmtree(Path(uri) / "_versions")
+    caplog.set_level(logging.WARNING, logger="client_kit.lancekit.registry")
+
+    listings = [client.get("/api/datasets").json()["sources"] for _ in range(2)]
+    door = client.get("/api/datasets/archive~a$b$c")
+
+    gone = "the catalog lists it, but holds no version of it to read: declared and never written, or its data removed"
+    archive_listing = [(s["datasets"], s["unlisted"]) for s in listings[0] if s["name"] == "archive"]
+    assert listings[0] == listings[1]
+    assert [(s["name"], [d["id"] for d in s["datasets"]]) for s in listings[0]] == [
+        ("lake", ["lake~acme$corpus"]),
+        ("archive", ["archive~"]),
+        ("scans", ["scans~"]),
+    ]
+    assert [([(d["id"], sorted(d["tables"]), d["unreadable"]) for d in datasets], unlisted) for datasets, unlisted in archive_listing] == [
+        ([("archive~", ["at_root"], {"wide": gone})], [{"id": "archive~a$b$c", "reason": gone}])
+    ]
+    assert (door.status_code, gone in door.json()["detail"]) == (404, True)
+    assert sorted((r.getMessage(), r.exc_info) for r in caplog.records if r.name == "client_kit.lancekit.registry") == [
+        ("table observations of archive~a$b$c is listed but holds no version to read", None),
+        ("table wide of archive~ is listed but holds no version to read", None),
     ]
 
 

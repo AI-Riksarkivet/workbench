@@ -86,7 +86,7 @@ def test_a_source_no_catalog_decides_for_is_searched_by_its_declared_readers_alo
             "WORKBENCH_SOURCES": [
                 {"kind": "namespace", "name": "src", "impl": "dir", "properties": {"root": str(root)}, "readers": {"people": [f"{IDP_ID}~reader"]}}
             ],
-            "MEDIA_DEFAULT_DATASET": "src~wh$corpus",
+            "WORKBENCH_DEFAULT_DATASET": "src~wh$corpus",
             "WORKBENCH_OIDC_ENABLED": True,
             "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
             "WORKBENCH_OIDC_ISSUER": dex.issuer,

@@ -11,12 +11,12 @@ routers under `WORKBENCH_API_PREFIX` (`/api` in the chart and in `scripts/local-
 """
 
 from flows import health, routes
-from flows.lifespan import make_lifespan
+from flows.lifespan import lifespan
 from service_kit import make_service_app
 
 
 app = make_service_app(
     title="flows",
     routers=[health.router, routes.router],
-    lifespan=make_lifespan,
+    lifespan=lifespan,
 )

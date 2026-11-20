@@ -41,7 +41,7 @@ def _app(settings: FlowsSettings) -> FastAPI:
 
 
 def _settings() -> FlowsSettings:
-    return FlowsSettings(serve_url="http://serve.invalid:8000")
+    return FlowsSettings.model_validate({"WORKBENCH_FLOWS_SERVE_URL": "http://serve.invalid:8000"})
 
 
 @pytest.fixture

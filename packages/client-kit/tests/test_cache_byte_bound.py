@@ -10,7 +10,7 @@ million rows. At ~100 MB per payload that is 1.2 GB resident in a pod the chart 
 the viewer OOM-kills and every explorer route dies with it.
 
 The identical cache one field over — `search_cache`, same `AppState` — already carries
-`search_cache_bytes = 64 MiB` alongside its count bound, because someone measured this. The fix was
+a 64 MiB byte bound (`SEARCH_CACHE_BYTES`) alongside its count bound, because someone measured this. The fix was
 applied to one of the two twins.
 
 SO THE BOUND IS EXTRACTED RATHER THAN COPIED A SECOND TIME. That is the actual defect: two caches

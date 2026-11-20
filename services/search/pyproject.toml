@@ -12,10 +12,6 @@ dependencies = [
     "service-kit[governed]",
     # [ratelimit] because `search.core.rate_limit` imports `client_kit.rate_limit` -> slowapi, for the same reason.
     "client-kit[ratelimit]",
-    # The chart launches this service under `opentelemetry-instrument` (chart/templates/explorer.yaml), whose distro
-    # installs the SDK's providers at start; without it the launcher installs none (measured 2026-10-24).
-    "opentelemetry-distro>=0.65b0",
-    "opentelemetry-exporter-otlp>=1.44.0",
     "fastapi>=0.115",
     "pydantic>=2.7",
     "python-multipart>=0.0.9",

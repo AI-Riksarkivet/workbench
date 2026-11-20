@@ -88,4 +88,5 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "flows:app", \
      "--host", "0.0.0.0", "--port", "8840", \
      "--proxy-headers", \
-     "--forwarded-allow-ips", "127.0.0.1"]
+     "--forwarded-allow-ips", "127.0.0.1", \
+     "--no-access-log"]

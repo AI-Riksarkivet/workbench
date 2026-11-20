@@ -27,7 +27,7 @@ CAP = 1000
 
 
 def _capped_app() -> FastAPI:
-    app = make_service_app(title="capped", routers=[], settings=Settings(max_body_bytes=CAP))
+    app = make_service_app(title="capped", routers=[], settings=Settings.model_validate({"WORKBENCH_MAX_BODY_BYTES": CAP}))
 
     @app.post("/echo")
     async def _echo(request: Request) -> dict[str, int]:

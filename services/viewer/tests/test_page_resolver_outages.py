@@ -23,7 +23,7 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.state import AppState
 from service_kit.exceptions import NotFoundError, ServiceUnavailableError
 from service_kit.governed.token_exchange import LakehouseCaller
@@ -37,7 +37,7 @@ SECRET = "connect to object-store.internal:9000: connection refused"
 
 
 def _state(monkeypatch: pytest.MonkeyPatch, catalog_uri: str) -> AppState:
-    return AppState(settings=Settings.model_validate({**lakehouse_rest(catalog_uri)}))
+    return AppState(settings=MediaSettings.model_validate({**lakehouse_rest(catalog_uri)}))
 
 
 class _Failing(http.server.BaseHTTPRequestHandler):
@@ -82,7 +82,7 @@ def test_an_unreadable_dataset_is_an_outage_not_a_404(monkeypatch: pytest.Monkey
         raise OSError(f"{SECRET} at {LOCATION}")
 
     monkeypatch.setattr(pages_ep.lance, "dataset", _boom)
-    state = AppState(settings=Settings.model_validate({**lakehouse_dir(str(tmp_path))}))
+    state = AppState(settings=MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
 
     with pytest.raises(ServiceUnavailableError) as caught:
         pages_ep.open_page_table(state, TABLE, LakehouseCaller(subject="keycloak~gina", token=lambda: "tok"))
@@ -96,7 +96,7 @@ def test_a_table_the_catalog_does_not_hold_stays_a_404(tmp_path: Path) -> None:
     """Absence must not become 503: that would make a missing registration look retryable and hide it behind an outage
     alert."""
     write_table(tmp_path, ["acme", "bronze", "other"], pa.table({"id": [1]}))
-    state = AppState(settings=Settings.model_validate({**lakehouse_dir(str(tmp_path))}))
+    state = AppState(settings=MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
 
     with pytest.raises(NotFoundError):
         pages_ep.open_page_table(state, TABLE, LakehouseCaller(subject="keycloak~gina", token=lambda: "tok"))

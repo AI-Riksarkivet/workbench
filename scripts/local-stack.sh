@@ -21,7 +21,7 @@
 #   LOCAL_SOURCES       the declaration copied there (default: `scripts/local-sources.json`); another names the same
 #                       seeded directories otherwise (a demo read as a source marked annotatable beside an empty
 #                       lakehouse stand-in, say), its relative paths read beside it
-#   MEDIA_DEFAULT_DATASET  the dataset an item naming none is sent from (default: `lake~demo$corpus`)
+#   WORKBENCH_DEFAULT_DATASET  the dataset an item naming none is sent from (default: `lake~demo$corpus`)
 #   EDGE_PORT           the origin the browser uses (default 8700); serve.ts listens on EDGE_PORT + 1000
 #   VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT   the services' own ports (8701, 8702, 8703, 8704)
 #   STATE_PORT          the pinned PostgreSQL `make postgres` exports (default 8705), holding the annotator's database
@@ -48,7 +48,7 @@ LOCAL_CATALOG="${LOCAL_CATALOG:-${TMPDIR:-/tmp}/workbench-catalog}"
 mkdir -p "$LOCAL_CATALOG"
 cp "${LOCAL_SOURCES:-$ROOT/scripts/local-sources.json}" "$LOCAL_CATALOG/sources.json"
 export WORKBENCH_SOURCES_FILE="$LOCAL_CATALOG/sources.json"
-export MEDIA_DEFAULT_DATASET="${MEDIA_DEFAULT_DATASET:-lake~demo\$corpus}"
+export WORKBENCH_DEFAULT_DATASET="${WORKBENCH_DEFAULT_DATASET:-lake~demo\$corpus}"
 
 EDGE_PORT="${EDGE_PORT:-8700}"
 STATE_PORT="${STATE_PORT:-8705}"
@@ -225,10 +225,10 @@ export ANNOTATOR_STATE_HOST="$LOOPBACK" ANNOTATOR_STATE_PORT="$STATE_PORT" ANNOT
 export WORKBENCH_FLOWS_STATE_HOST="$LOOPBACK" WORKBENCH_FLOWS_STATE_PORT="$STATE_PORT" WORKBENCH_FLOWS_STATE_DATABASE=flows \
   WORKBENCH_FLOWS_STATE_USER=postgres WORKBENCH_FLOWS_STATE_SSLMODE=disable
 
-run viewer uv run --no-sync uvicorn viewer.main:app --host "$LOOPBACK" --port "$VIEWER_PORT"
-run search uv run --no-sync uvicorn search.main:app --host "$LOOPBACK" --port "$SEARCH_PORT"
-run annotator uv run --no-sync uvicorn annotator.main:app --host "$LOOPBACK" --port "$ANNOTATOR_PORT"
-run flows uv run --no-sync uvicorn flows:app --host "$LOOPBACK" --port "$FLOWS_PORT"
+run viewer uv run --no-sync uvicorn viewer.main:app --host "$LOOPBACK" --port "$VIEWER_PORT" --no-access-log
+run search uv run --no-sync uvicorn search.main:app --host "$LOOPBACK" --port "$SEARCH_PORT" --no-access-log
+run annotator uv run --no-sync uvicorn annotator.main:app --host "$LOOPBACK" --port "$ANNOTATOR_PORT" --no-access-log
+run flows uv run --no-sync uvicorn flows:app --host "$LOOPBACK" --port "$FLOWS_PORT" --no-access-log
 run edge env -C "$ROOT/frontend/app" PORT="$EDGE_PORT" HOST="$LOOPBACK" WORKBENCH_APP_CONFIG_FILE="$APP_CONFIG" \
   VIEWER_API="http://$LOOPBACK:$VIEWER_PORT" SEARCH_API="http://$LOOPBACK:$SEARCH_PORT" ANNOTATOR_API="http://$LOOPBACK:$ANNOTATOR_PORT" \
   bun edge.ts

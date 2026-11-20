@@ -27,7 +27,7 @@ from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.lakehouse import PublishRunner
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Task, TaskState
 from annotator.state.store import AnnotatorStore
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
 from tests.media_catalog import write_table
@@ -98,7 +98,7 @@ def work_client(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[T
     chunks = pa.table({"doc_id": [WORK_DOC], "speech_id": pa.array([0], pa.int64()), "chunk_id": pa.array([19], pa.int64())})
     write_table(tmp_path, ["acme", "proj1", "chunks"], chunks, descriptor={"identity": {"key_fields": key_fields}})
     app = state_app(annotations_router, tasks.router)
-    app.state.resources = AppState(settings=Settings.model_validate({"WORKBENCH_SOURCES": work_sources(tmp_path)}))
+    app.state.resources = AppState(settings=MediaSettings.model_validate({"WORKBENCH_SOURCES": work_sources(tmp_path)}))
     with TestClient(app) as client:
         store, portal = app.state.store, client.portal
         assert portal is not None, "the client is not running the app"

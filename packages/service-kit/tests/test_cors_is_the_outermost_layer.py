@@ -1,18 +1,13 @@
-"""SK-22 — CORS was registered FIRST and so ran INNERMOST, under every other layer.
+"""CORS in every app the one factory builds: closed unless a deployment names an origin, and outermost when one is.
 
-Starlette inserts each `add_middleware` at the front of the stack, so the LAST registration is the
-outermost. `register_middleware` registered CORS first and the body cap last, which put CORS beneath
-BodySizeLimit, Timing and RequestID — and beneath `SlashToleranceMiddleware`, which `make_service_app`
-adds on top of all four.
-
-The consequence is a browser-visible one. Only a response the ROUTER produced ever got an
-`Access-Control-Allow-Origin`; every response manufactured above CORS went back bare. The body-limit
-413 is the one that matters, because it is the answer to an ordinary too-large upload: the browser
-blocked it as a cross-origin violation, so the client saw an opaque network failure instead of the
-413 telling it to use the direct path.
+Starlette inserts each `add_middleware` at the front of the stack, so the LAST registration is the outermost. With CORS
+outermost, a response another layer answers itself (the body-limit 413, the answer to an ordinary too-large upload)
+carries the headers that let a named origin read it, rather than reaching the browser as an opaque network failure. The
+app reaches every service same-origin through the Gateway, so no other origin is admitted unless the settings name one;
+a preflight for the write methods the services route (the annotator's PUT/PATCH/DELETE) is answered with them.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
 from service_kit import make_service_app
@@ -22,18 +17,15 @@ from service_kit.config import Settings
 _ORIGIN = "https://ui.example"
 
 
-def _settings(**over: object) -> Settings:
-    return Settings.model_validate({"WORKBENCH_CORS_ORIGINS": [_ORIGIN], "WORKBENCH_API_PREFIX": "/api", **over})
-
-
-def _app(**over: object):
+def _app(**over: object) -> FastAPI:
     router = APIRouter()
 
-    @router.post("/echo")
+    @router.api_route("/echo", methods=["POST", "PUT"])
     async def echo() -> dict[str, str]:
         return {"ok": "1"}
 
-    return make_service_app(title="cors-order", routers=[router], settings=_settings(**over))
+    settings = Settings.model_validate({"WORKBENCH_CORS_ORIGINS": [_ORIGIN], "WORKBENCH_API_PREFIX": "/api", **over})
+    return make_service_app(title="cors-order", routers=[router], settings=settings)
 
 
 def test_an_over_cap_rejection_is_readable_by_the_browser() -> None:
@@ -48,13 +40,18 @@ def test_a_handled_response_keeps_its_cors_headers() -> None:
         response = client.post("/api/echo", headers={"Origin": _ORIGIN})
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == _ORIGIN
-        # The ids the docstring promises to expose survive the reorder.
-        assert "x-request-id" in response.headers
-        assert "x-response-time" in response.headers
+        assert "x-request-id" in response.headers.get("access-control-expose-headers", "").lower()
 
 
-def test_a_preflight_is_still_answered() -> None:
+def test_a_named_origin_is_offered_the_write_methods() -> None:
     with TestClient(_app()) as client:
-        response = client.options("/api/echo", headers={"Origin": _ORIGIN, "Access-Control-Request-Method": "POST"})
+        response = client.options("/api/echo", headers={"Origin": _ORIGIN, "Access-Control-Request-Method": "PUT"})
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == _ORIGIN
+        assert "PUT" in response.headers.get("access-control-allow-methods", "")
+
+
+def test_no_other_origin_is_admitted_unless_one_is_named() -> None:
+    with TestClient(_app(WORKBENCH_CORS_ORIGINS=[])) as client:
+        preflight = client.options("/api/echo", headers={"Origin": _ORIGIN, "Access-Control-Request-Method": "PUT"})
+        assert "access-control-allow-origin" not in preflight.headers

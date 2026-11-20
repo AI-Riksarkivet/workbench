@@ -426,7 +426,7 @@ def test_cold_builds_take_a_slot_one_answer_is_built_once_and_one_past_the_budge
     for caller in callers:
         caller.join()
     kept = client.get(f"{BASE}/points/atlas", params={"x": "east", "y": "north"}).status_code
-    small = make_client(MEDIA_POINTS_CACHE_BYTES=64)
+    small = make_client(VIEWER_CACHE_BYTES=64)
     unkept = [small.get(f"{BASE}/points/atlas", params={"x": "east", "y": "north"}).status_code for _ in range(2)]
 
     assert (answers, busy.status_code, busy.headers.get("retry-after"), kept) == ([200, 200, 200], 503, "5", 200)

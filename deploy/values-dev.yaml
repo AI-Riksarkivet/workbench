@@ -45,10 +45,16 @@ sources:
         - dex~a7d3182d-0d75-4ce6-930f-dcb5c0d9f8ad # dave
 demo:
   enabled: true
+# The dev estate's OTLP gateway (rask's `observability` fixture, Service `otel-collector` in namespace `observability`),
+# which admits an export only on a cluster ServiceAccount token for its audience `rask-otlp` (its `oidc` extension, read
+# 2026-11-20): each pod presents its own. It routes no scope of the workbench's to a table of its own, so the workbench's
+# audit records (scope `workbench.audit`) are stored with the general logs there.
 otel:
   enabled: true
-  endpoint: http://rask-otel-collector.default.svc:4318
+  endpoint: http://otel-collector.observability.svc:4318
   environment: dev
+  identity:
+    audience: rask-otlp
 image:
   repository: localhost:5000/workbench-annotator
 media:

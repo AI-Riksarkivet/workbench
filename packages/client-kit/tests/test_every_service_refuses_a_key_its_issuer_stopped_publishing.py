@@ -15,7 +15,6 @@ its key (a periodic read, or the forced read the token asked for), and every req
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack
@@ -24,15 +23,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from annotator.core.config import get_annotator_settings
-from search import main as search_main
-from search.core.config import SearchSettings, get_search_settings
 from service_kit.governed import oidc
 from tests.identity import IDP_ID, WORKBENCH_AUDIENCE, Provider
+from tests.media_services import SERVICES, running
 from tests.openfga import OpenFgaStore
 from tests.postgres import StateDatabase
-from viewer import main as viewer_main
-from viewer.core.config import ViewerSettings, get_viewer_settings
 
 
 #: What each service is asked, by name: a door every person may reach once the verifier lets them in.
@@ -57,28 +52,9 @@ def services(
         "WORKBENCH_DPOP_REQUIRED": False,
         "WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED": False,
     }
-    viewer = ViewerSettings.model_validate(shared)
-    search = SearchSettings.model_validate(shared)
-    monkeypatch.setattr(viewer_main, "get_viewer_settings", lambda: viewer)
-    viewer_main.app.dependency_overrides[get_viewer_settings] = lambda: viewer
-    monkeypatch.setattr(search_main, "get_search_settings", lambda: search)
-    search_main.app.dependency_overrides[get_search_settings] = lambda: search
-    for name, value in (state_database.env() | {k: v if isinstance(v, str) else json.dumps(v) for k, v in shared.items()}).items():
-        monkeypatch.setenv(name, value)
-    get_annotator_settings.cache_clear()
-    from annotator.main import app as annotator_app
-
-    try:
-        with ExitStack() as running:
-            yield {
-                "viewer": running.enter_context(TestClient(viewer_main.app)),
-                "search": running.enter_context(TestClient(search_main.app)),
-                "annotator": running.enter_context(TestClient(annotator_app)),
-            }
-    finally:
-        viewer_main.app.dependency_overrides.clear()
-        search_main.app.dependency_overrides.clear()
-        get_annotator_settings.cache_clear()
+    own = {"viewer": shared, "search": shared, "annotator": shared | state_database.env()}
+    with ExitStack() as stack:
+        yield {service: stack.enter_context(running(service, own[service], monkeypatch)) for service in SERVICES}
 
 
 def _statuses(services: dict[str, TestClient], token: str) -> dict[str, int]:

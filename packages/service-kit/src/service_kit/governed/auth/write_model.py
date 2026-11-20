@@ -28,8 +28,8 @@ from typing import Final
 
 from openfga_sdk.models.read_request_tuple_key import ReadRequestTupleKey
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from service_kit.config import Settings
 from service_kit.governed.fga import DEFAULT_STORE_NAME, MAX_TUPLES_PER_WRITE, Authorizer, Grant, make_client, provision, user_object
 from service_kit.governed.principal import PrincipalKey
 
@@ -94,10 +94,8 @@ class Declaration(BaseModel):
         return orgs | readers
 
 
-class WriterSettings(BaseSettings):
-    """The writer's settings, from the Job's environment."""
-
-    model_config = SettingsConfigDict(populate_by_name=True)
+class WriterSettings(Settings):
+    """The writer's settings, from the Job's environment, each read from its one name (`service_kit.config.Settings`)."""
 
     api_url: str = Field(alias="WORKBENCH_FGA_API_URL")
     store: str = Field(default=DEFAULT_STORE_NAME, alias="WORKBENCH_FGA_STORE")

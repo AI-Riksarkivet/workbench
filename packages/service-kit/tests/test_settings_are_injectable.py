@@ -1,7 +1,7 @@
 """SK-08 — `make_service_app` builds its own `Settings` at IMPORT time and offers no way in.
 
 A factory caller that invokes `make_service_app(...)` at module level makes `build_settings()` —
-`load_dotenv()` plus a full `Settings.model_validate({})` off the process environment — run as a
+a full `Settings.model_validate({})` off the process environment — run as a
 side effect of importing its module. A test, a script or a second app in the same process cannot say
 what the settings are; it can only mutate the environment before the import and hope nothing imported
 first.
@@ -11,8 +11,8 @@ The seam is a parameter. `settings=` supplied ⇒ that object IS the app's setti
 Omitted ⇒ `build_settings()` exactly as before, so no caller changes.
 """
 
-from collections.abc import AsyncGenerator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
@@ -48,15 +48,10 @@ def test_the_injected_settings_reach_the_router_prefix_and_the_docs_urls() -> No
 def test_the_injected_settings_reach_a_service_lifespan() -> None:
     seen: list[Settings] = []
 
-    def lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
-        seen.append(settings)
-
-        @asynccontextmanager
-        async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
-            app.state.settings = settings
-            yield
-
-        return _lifespan
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        seen.append(app.state.settings)
+        yield
 
     settings = _injected()
     with TestClient(make_service_app(title="injected", routers=[APIRouter()], lifespan=lifespan, settings=settings)):

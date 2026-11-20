@@ -44,7 +44,7 @@ from service_kit.exceptions import DomainError, NotFoundError, ServiceUnavailabl
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep, SettingsDep
 from viewer.api.v1.endpoints.datasets import TableParam, table_at
-from viewer.core.config import ViewerSettings
+from viewer.core.config import ViewerSettings, viewer_settings
 from viewer.services.build_slots import BuildSlot, BuildSlots
 from viewer.services.derived_views import (
     PROFILE_ROWS,
@@ -78,7 +78,7 @@ from viewer.services.plain_rows import ColumnView, columns_of, page_of_rowids
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
-#: The most answers kept at once (the lookup bound); their bytes share `points_cache_bytes` with the atlas's points.
+#: The most answers kept at once (the lookup bound); their bytes share the viewer's `cache_bytes` with the atlas's points.
 _CACHE_ENTRIES = 48
 #: How often a caller waiting on a build asks whether its client is still there, in seconds.
 _POLL_SECONDS = 0.5
@@ -194,7 +194,9 @@ async def _wait(flight: _Flight, request: Request) -> bytes:
 async def _build(state: AppState, key: Key, run: Callable[[], bytes], slot: BuildSlot | None) -> bytes:
     try:
         body = await run_in_threadpool(run)
-        keep_shared(state.derived_cache, key, body, others=[state.points_cache], max_entries=_CACHE_ENTRIES, max_bytes=state.settings.points_cache_bytes)
+        keep_shared(
+            state.derived_cache, key, body, others=[state.points_cache], max_entries=_CACHE_ENTRIES, max_bytes=viewer_settings(state.settings).cache_bytes
+        )
         return body
     finally:
         if slot is not None:

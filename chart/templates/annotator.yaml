@@ -67,6 +67,8 @@ spec:
             - "--timeout-graceful-shutdown={{ $drain }}"
             - "--proxy-headers"
             - "--forwarded-allow-ips={{ .Values.forwardedAllowIps }}"
+            # No access log: the app writes one line per request naming its route's template, never its path or query.
+            - "--no-access-log"
           lifecycle:
             preStop:
               exec:
@@ -92,12 +94,12 @@ spec:
             - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
             {{- end }}
             {{- end }}
+            {{- include "workbench.otelMount" . | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.port }}
           env:
-            - { name: MEDIA_HOST, value: "0.0.0.0" }
-            - { name: MEDIA_DOCS, value: {{ .Values.docs | quote }} }
+            - { name: WORKBENCH_DOCS, value: {{ .Values.docs | quote }} }
             # The sources this release declares: the items' datasets are read through lance-namespace, a lakehouse's on the
             # credential its catalog vends the person, so the pod holds no store key. The work in progress is the annotator's
             # own state below; only a publish writes to a lakehouse.
@@ -118,15 +120,7 @@ spec:
             {{- if .Values.assist.enabled }}
             - { name: ANNOTATOR_ASSIST_URL, value: {{ printf "http://%s-assist:%v/v1/assist" $r .Values.assist.port | quote }} }
             {{- end }}
-            {{- if .Values.otel.enabled }}
-            - { name: WORKBENCH_OTEL_ENABLED, value: "true" }
-            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ include "annotator.otlpEndpoint" . | quote }} }
-            - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf" }
-            - { name: OTEL_METRIC_EXPORT_INTERVAL, value: "5000" }
-            - { name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS, value: "/livez,/readyz,/healthz,/api/health,/metrics" }
-            - { name: OTEL_SERVICE_NAME, value: "annotator" }
-            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=workbench,deployment.environment.name={{ .Values.otel.environment }},service.version={{ .Chart.AppVersion }}" }
-            {{- end }}
+            {{- include "workbench.otelEnv" (list . "annotator") | nindent 12 }}
             {{- if .Values.auth.enabled }}
             {{- include "annotator.authEnv" . | nindent 12 }}
             {{- else }}
@@ -180,3 +174,4 @@ spec:
           secret:
             secretName: {{ $cluster }}-ca
             items: [{ key: ca.crt, path: ca.crt }]
+        {{- include "workbench.otelVolume" . | nindent 8 }}

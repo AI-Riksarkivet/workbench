@@ -23,6 +23,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from service_kit.config import StringList
 from service_kit.governed.dpop import DEFAULT_WINDOW_SECONDS
 from service_kit.governed.fga import DEFAULT_STORE_NAME
 from service_kit.governed.principal import CLIENT_IDP_SUFFIX, is_machine_idp, require_idp_id
@@ -165,7 +166,7 @@ class OidcSettings:
     oidc_idp_id: str | None = Field(default=None, alias="WORKBENCH_OIDC_IDP_ID")
     #: The claims a person's subject is read from, the first the token carries winning; unset is `sub` alone, which
     #: OpenID Connect Core 1.0 § 2 makes unique and never reassigned within the issuer. Never read beside `oidc_connectors`.
-    oidc_subject_claims: list[str] | None = Field(default=None, alias="WORKBENCH_OIDC_SUBJECT_CLAIMS")
+    oidc_subject_claims: StringList | None = Field(default=None, alias="WORKBENCH_OIDC_SUBJECT_CLAIMS")
     #: The idp id each Dex connector's people are principals of (`{"local": "dex"}`), as the lakehouse names them.
     oidc_connectors: dict[str, str] = Field(default_factory=dict, alias="WORKBENCH_OIDC_CONNECTORS")
     #: How the issuer marks a token its client was issued for itself, which names no person and is refused.

@@ -82,6 +82,9 @@ spec:
             - "--timeout-graceful-shutdown={{ $drain }}"
             - "--proxy-headers"
             - "--forwarded-allow-ips={{ $.Values.forwardedAllowIps }}"
+            # No access log: it prints the path and query, and a signed media URL's path is its credential, a search's
+            # query a person's words. The app writes one line per request naming its route's template instead.
+            - "--no-access-log"
           lifecycle:
             preStop:
               exec:
@@ -98,24 +101,15 @@ spec:
             - name: http
               containerPort: {{ $s.port }}
           env:
-            - { name: MEDIA_HOST, value: "0.0.0.0" }
-            - { name: MEDIA_DOCS, value: {{ $.Values.docs | quote }} }
-            # The app calls each service's doors under `/api` below the service's public prefix.
-            - { name: WORKBENCH_API_PREFIX, value: "/api" }
+            # Each service's doors are at the `/api/...` paths it names itself, below its public prefix.
+            - { name: WORKBENCH_DOCS, value: {{ $.Values.docs | quote }} }
             {{- include "workbench.sourcesEnv" $ | nindent 12 }}
             {{- if eq $service "viewer" }}
             - { name: VIEWER_MEDIA_URL_KEY_FILE, value: /var/run/secrets/viewer/media-url-key/media-url-key }
-            - { name: MEDIA_POINTS_CACHE_BYTES, value: {{ $s.cacheBytes | int64 | quote }} }
+            - { name: VIEWER_CACHE_BYTES, value: {{ $s.cacheBytes | int64 | quote }} }
             - { name: VIEWER_DERIVED_BUILDS, value: {{ $s.derivedBuilds | int | quote }} }
             {{- end }}
-            {{- if $.Values.otel.enabled }}
-            - { name: WORKBENCH_OTEL_ENABLED, value: "true" }
-            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ include "annotator.otlpEndpoint" $ | quote }} }
-            - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf" }
-            - { name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS, value: "/livez,/readyz,/healthz,/api/health,/metrics" }
-            - { name: OTEL_SERVICE_NAME, value: {{ $service | quote }} }
-            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=workbench,deployment.environment.name={{ $.Values.otel.environment }},service.version={{ $.Chart.AppVersion }}" }
-            {{- end }}
+            {{- include "workbench.otelEnv" (list $ $service) | nindent 12 }}
             {{- if $.Values.auth.enabled }}
             {{- include "workbench.oidcEnv" (list $ (include "workbench.publicUrl" (list $ $s.prefix))) | nindent 12 }}
             {{- if $client }}
@@ -164,6 +158,7 @@ spec:
             {{- if $.Values.storeIdentity.audience }}
             - { name: store-identity, mountPath: /var/run/secrets/workbench/store, readOnly: true }
             {{- end }}
+            {{- include "workbench.otelMount" $ | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: "2Gi" } }
         {{- include "workbench.sourcesVolume" $ | nindent 8 }}
@@ -194,6 +189,7 @@ spec:
             sources:
               - serviceAccountToken: { path: token, audience: {{ . | quote }}, expirationSeconds: {{ $.Values.storeIdentity.expirationSeconds }} }
         {{- end }}
+        {{- include "workbench.otelVolume" $ | nindent 8 }}
 {{- if $.Values.route.enabled }}
 ---
 apiVersion: gateway.networking.k8s.io/v1

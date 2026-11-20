@@ -29,7 +29,7 @@ from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.models import AnnotationProject, ProjectState, Task
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
@@ -38,7 +38,7 @@ from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "search": {"row_table": "chunks"}}
 
 
-def _send(state_app: Callable[..., FastAPI], settings: Settings, body: dict[str, Any]) -> tuple[Any, list[Task]]:
+def _send(state_app: Callable[..., FastAPI], settings: MediaSettings, body: dict[str, Any]) -> tuple[Any, list[Task]]:
     """Send ``body`` into a labeling project p1 and answer the response and the tasks the project then holds."""
     app = state_app(router)
 
@@ -70,17 +70,17 @@ def _send(state_app: Callable[..., FastAPI], settings: Settings, body: dict[str,
 
 
 @pytest.fixture
-def catalog(tmp_path: Path) -> Settings:
+def catalog(tmp_path: Path) -> MediaSettings:
     """A directory catalog holding one dataset, ``lake:acme$demo``."""
     write_table(tmp_path, ["acme", "demo", "chunks"], pa.table({"doc_id": ["doc0"]}), descriptor=DESCRIPTOR)
-    return Settings.model_validate({**lakehouse_dir(str(tmp_path))})
+    return MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))})
 
 
 def _items(*wheres: str | None) -> dict[str, Any]:
     return {"items": [{"source": {"kind": "chunks", "keys": [f"doc{i}/0/1"], "where": w}, "media": {"kind": "image"}} for i, w in enumerate(wheres)]}
 
 
-def test_an_item_naming_an_unknown_dataset_is_refused(state_app: Callable[..., FastAPI], catalog: Settings) -> None:
+def test_an_item_naming_an_unknown_dataset_is_refused(state_app: Callable[..., FastAPI], catalog: MediaSettings) -> None:
     r, held = _send(state_app, catalog, _items("lake~acme$gone-away"))
 
     assert r.status_code == 409, r.text
@@ -104,11 +104,11 @@ def test_an_item_of_a_source_not_marked_annotatable_is_refused_with_the_reason(s
     of an unmarked one, named or taken by default, is refused before the catalog is asked, naming why, and nothing is
     written; and the annotator refuses to start with such a default."""
     sources = _beside_the_lake(tmp_path, annotatable=None)
-    settings = Settings.model_validate({"WORKBENCH_SOURCES": sources, "MEDIA_DEFAULT_DATASET": "archive~field$survey"})
+    settings = MediaSettings.model_validate({"WORKBENCH_SOURCES": sources, "WORKBENCH_DEFAULT_DATASET": "archive~field$survey"})
 
     r, held = _send(state_app, settings, _items("archive~field$survey" if named else None))
     with pytest.raises(ValidationError, match="cannot be the annotator's default: source 'archive' is not marked annotatable"):
-        AnnotatorSettings.model_validate({"WORKBENCH_SOURCES": sources, "MEDIA_DEFAULT_DATASET": "archive~field$survey"})
+        AnnotatorSettings.model_validate({"WORKBENCH_SOURCES": sources, "WORKBENCH_DEFAULT_DATASET": "archive~field$survey"})
 
     assert (r.status_code, r.json()["detail"], held) == (409, "nothing was sent: archive~field$survey: source 'archive' is not marked annotatable", [])
 
@@ -116,7 +116,7 @@ def test_an_item_of_a_source_not_marked_annotatable_is_refused_with_the_reason(s
 def test_an_item_of_a_source_marked_annotatable_is_sent_with_its_table_and_version(state_app: Callable[..., FastAPI], tmp_path: Path) -> None:
     """A source git marks annotatable is sent from like the lakehouse: the item records the row table it was read from and
     the version the sender saw, held to that table as any version is."""
-    settings = Settings.model_validate({"WORKBENCH_SOURCES": _beside_the_lake(tmp_path, annotatable=True)})
+    settings = MediaSettings.model_validate({"WORKBENCH_SOURCES": _beside_the_lake(tmp_path, annotatable=True)})
     body = _items("archive~field$survey")
     body["items"][0]["source"]["dataset_version"] = 1
 
@@ -126,7 +126,7 @@ def test_an_item_of_a_source_marked_annotatable_is_sent_with_its_table_and_versi
     assert [(t.source.where, t.source.table, t.source.dataset_version) for t in held] == [("archive~field$survey", "archive~field$survey$chunks", 1)]
 
 
-def test_a_known_dataset_sends_normally(state_app: Callable[..., FastAPI], catalog: Settings) -> None:
+def test_a_known_dataset_sends_normally(state_app: Callable[..., FastAPI], catalog: MediaSettings) -> None:
     r, held = _send(state_app, catalog, _items("lake~acme$demo"))
 
     assert r.status_code == 201, r.text
@@ -143,7 +143,7 @@ def test_a_known_dataset_sends_normally(state_app: Callable[..., FastAPI], catal
     ],
 )
 def test_an_items_version_is_kept_only_when_its_table_has_it(
-    state_app: Callable[..., FastAPI], catalog: Settings, version: int, status: int, kept: int | None
+    state_app: Callable[..., FastAPI], catalog: MediaSettings, version: int, status: int, kept: int | None
 ) -> None:
     """The version an item names is the sender's, and the publish names it as an input: the send keeps it only once the
     catalog shows the stamped table at that version, and writes nothing otherwise."""
@@ -162,7 +162,7 @@ def test_an_unverifiable_catalog_refuses_the_send_and_writes_nothing(state_app: 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed = probe.getsockname()[1]
-    unreachable = Settings.model_validate({**lakehouse_rest(f"http://127.0.0.1:{closed}")})
+    unreachable = MediaSettings.model_validate({**lakehouse_rest(f"http://127.0.0.1:{closed}")})
 
     r, held = _send(state_app, unreachable, _items("lake~acme$anything"))
 

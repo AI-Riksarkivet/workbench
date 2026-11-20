@@ -10,10 +10,8 @@ from a failed call has a value that correlates with nothing. The hook is the joi
 nothing, so it is safe on a streamed body such as a 206 Range response, where a `BaseHTTPMiddleware` layer
 fully buffers the body and cannot be used.
 
-THE HOOK'S REACH IS THE `setup_otel` FAMILY, not the estate. It is a Python callable passed to
-`FastAPIInstrumentor.instrument_app`, so only an app that wires the SDK in process can install it —
-the `make_service_app` services. The eight the chart launches under
-`opentelemetry-instrument` carry the id in their logs and on no span.
+THE HOOK'S REACH IS EVERY SERVICE: it is a Python callable `setup_otel` passes to
+`FastAPIInstrumentor.instrument_app`, and every service is built by `make_service_app`, which calls it.
 
 PII STAYS OFF THE SPAN. The reference is explicit: "Don't put PII (email, raw user id, auth tokens) in
 span attributes — those go to the trace backend forever." The estate is clean there today and this

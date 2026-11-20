@@ -7,7 +7,7 @@ entry is a hundred megabytes.
 
 WHY THIS IS SHARED RATHER THAN WRITTEN TWICE. It already was written twice. `AppState` carries two
 caches with the same version-keyed invalidation model — `search_cache` and `points_cache` — and only
-the first got a byte ceiling (`search_cache_bytes = 64 MiB`), because someone measured the problem on
+the first got a byte ceiling (search's `SEARCH_CACHE_BYTES`, 64 MiB), because someone measured the problem on
 that one. The other kept `while len(cache) >= 12` under a comment that says "each is multi-MB"
 without turning that into a bound: `available_modes` derives one space per declared embedding key, so
 three spaces across four corpora is already twelve distinct keys, and at ~100 MB per Arrow payload
@@ -17,8 +17,8 @@ route dies with it.
 Fixing the second twin by copying the first would leave the same shape for a third. So the eviction
 is one function, and a cache added to `AppState` inherits both bounds instead of re-deciding them.
 
-`max_bytes <= 0` disables the BYTE bound only, matching what `search_cache_bytes` already documents —
-the two must not diverge on the meaning of their own settings.
+`max_bytes <= 0` disables the BYTE bound only, as `SEARCH_CACHE_BYTES` and `VIEWER_CACHE_BYTES` document it — the
+caches must not diverge on the meaning of their own settings.
 """
 
 from __future__ import annotations

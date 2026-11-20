@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from coco_to_annotations import main, rows_for_image, to_ipc  # ty: ignore[unresolved-import] — sys.path above  # noqa: E402
 
 
-#: The annotator's default body cap (MEDIA_MAX_BODY_BYTES), far above every body here.
+#: The annotator's default body cap (WORKBENCH_MAX_BODY_BYTES), far above every body here.
 _BODY_LIMIT = 32 * 1024 * 1024
 
 

@@ -10,26 +10,21 @@ for the whole life of the pod, so a readiness gate over it never opens, and ``sh
 flips, so the drain never begins. So the factory sets them.
 """
 
-from collections.abc import AsyncGenerator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
 from service_kit import make_service_app
-from service_kit.config import Settings
 from service_kit.lifecycle import is_draining, is_started
 
 
-def _bare_lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
-    """A minimal service's lifespan: it sets `settings` and nothing else."""
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        app.state.settings = settings
-        yield
-
-    return lifespan
+@asynccontextmanager
+async def _bare_lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    """A minimal service's lifespan: it opens nothing."""
+    del app
+    yield
 
 
 def _app() -> FastAPI:

@@ -15,9 +15,9 @@ import numpy as np
 import pyarrow as pa
 from fastapi.testclient import TestClient
 
-from client_kit.media.config import MediaSettings
 from client_kit.media.lifespan import make_media_state
 from search.api.dependencies import get_embedder
+from search.core.config import SearchSettings
 from search.main import create_search_app
 from search.services.fuse import DEFAULT_K
 from tests.media_catalog import lakehouse_dir, write_table
@@ -56,7 +56,7 @@ def test_an_all_search_fuses_its_legs_and_a_tie_goes_to_the_keyword_legs_first(t
     )
     ds = write_table(tmp_path, ["wh", "corpus", "chunks"], rows, descriptor=_DESCRIPTOR)
     ds.create_scalar_index("text", index_type="INVERTED")
-    settings = MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))})
+    settings = SearchSettings.model_validate({**lakehouse_dir(str(tmp_path))})
     app = create_search_app(make_media_state(settings), settings)
     app.dependency_overrides[get_embedder] = lambda: _Encoder
 

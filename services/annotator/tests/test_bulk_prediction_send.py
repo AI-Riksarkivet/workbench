@@ -33,7 +33,7 @@ from annotator.api.v1.endpoints import project_events as ev
 from annotator.projects.models import MAX_SOURCE_KEYS, AnnotationProject, Draft, ProjectState, Task
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.deps import get_state
 from client_kit.media.state import AppState
 from tests.media_catalog import lakehouse_dir, write_table
@@ -91,7 +91,7 @@ def wired(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Callabl
         app.dependency_overrides[get_checker] = lambda: checker
         app.dependency_overrides[get_authorizer] = lambda: None
         app.dependency_overrides[current_subject] = lambda: SUBJECT
-        state = AppState(settings=Settings.model_validate({**lakehouse_dir(str(tmp_path))}))
+        state = AppState(settings=MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
         app.dependency_overrides[get_state] = lambda: state
         client = TestClient(app)
         client.__enter__()

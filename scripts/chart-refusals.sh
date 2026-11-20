@@ -98,6 +98,43 @@ configures "silent sign-in, on by default" 'silentSignIn\":true' "${APIS[@]}" --
   --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
 configures "silent sign-in, off for the dev Dex" 'silentSignIn\":false' "${APIS[@]}" "${BASE[@]}"
 
+# every <what> <present|absent> <line> <helm args beyond the base...>: each of the three services' Deployments (the viewer,
+# search, the annotator) renders that line, or none renders it.
+every() {
+  local what="$1" want="$2" line="$3"
+  shift 3
+  local out rendered
+  out="$(helm template workbench chart -n workbench "$@")"
+  for service in viewer search annotator; do
+    checked=$((checked + 1))
+    rendered="$(deployment "workbench-$service" <<<"$out")"
+    if [ -z "$rendered" ]; then
+      echo "NO DEPLOYMENT: workbench-$service ($what)" >&2
+      failed=$((failed + 1))
+    elif [ "$want" = present ] && ! grep -qF -- "$line" <<<"$rendered"; then
+      echo "NOT CARRIED: workbench-$service renders no \"$line\" ($what)" >&2
+      failed=$((failed + 1))
+    elif [ "$want" = absent ] && grep -qF -- "$line" <<<"$rendered"; then
+      echo "CARRIED: workbench-$service renders \"$line\" ($what)" >&2
+      failed=$((failed + 1))
+    fi
+  done
+}
+
+# Every setting is one `WORKBENCH_*` name or the service's own: no `MEDIA_*` name is rendered.
+every "no MEDIA_* setting" absent "name: MEDIA_" "${APIS[@]}" "${BASE[@]}"
+every "the docs switch, by its one name" present "name: WORKBENCH_DOCS," "${APIS[@]}" "${BASE[@]}"
+# Each service exports its telemetry as itself, presenting the pod's own token for the gateway's audience, as a file.
+every "telemetry on" present 'WORKBENCH_OTEL_ENABLED, value: "true"' "${APIS[@]}" "${BASE[@]}"
+every "the OTLP token, as a file" present "WORKBENCH_OTEL_TOKEN_FILE, value: /var/run/secrets/workbench/otlp/token" "${APIS[@]}" "${BASE[@]}"
+every "the OTLP token, projected for the gateway's audience" present 'serviceAccountToken: { path: token, audience: "rask-otlp"' \
+  "${APIS[@]}" "${BASE[@]}"
+every "no OTLP token where the gateway asks none" absent "otlp-identity" "${APIS[@]}" "${BASE[@]}" --set otel.identity.audience=
+every "no telemetry while it is off" absent "OTEL_" "${APIS[@]}" "${BASE[@]}" --set otel.enabled=false
+# uvicorn's access line prints the path and query (a signed media URL's token, a search's words): off for every service,
+# whose app writes one line per request naming its route's template instead.
+every "no uvicorn access log" present '"--no-access-log"' "${APIS[@]}" "${BASE[@]}"
+
 # The platform's prerequisites, named when a cluster does not serve them.
 refuses "CloudNativePG is a prerequisite" --api-versions generators.external-secrets.io/v1alpha1/Password "${BASE[@]}"
 refuses "dev.secrets.enabled generates keys with the External Secrets Operator's Password generator" \

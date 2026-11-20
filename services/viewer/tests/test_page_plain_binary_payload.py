@@ -28,7 +28,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.state import AppState
 from service_kit.exceptions import register_handlers
 from service_kit.governed.token_exchange import LakehouseCaller
@@ -80,7 +80,7 @@ def _app() -> FastAPI:
     settings = ViewerSettings()
     app.dependency_overrides[get_viewer_settings] = lambda: settings
     app.dependency_overrides[pg.CallerDep.__metadata__[0].dependency] = lambda: LakehouseCaller(subject="keycloak~gina", token=lambda: "caller-jwt")
-    state = AppState(settings=Settings())
+    state = AppState(settings=MediaSettings())
     app.dependency_overrides[pg.StateDep.__metadata__[0].dependency] = lambda: state
     return app
 

@@ -15,6 +15,43 @@ app.kubernetes.io/component: annotator
 
 {{- define "annotator.otlpEndpoint" -}}{{ required "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" .Values.otel.endpoint }}{{- end -}}
 
+{{- /* A service's telemetry (`service_kit.otel`): with `otel.enabled`, its traces, metrics and logs (the audit trail on
+its own instrumentation scope, `workbench.audit`, which routing to a table of its own is the gateway's job) go over OTLP/HTTP to `otel.endpoint` under the service's own name, and,
+where the gateway asks who sends (`otel.identity.audience`), each export presents the pod's own ServiceAccount token
+for that audience, projected by the kubelet and read when the export is sent: no telemetry credential exists. Off, the
+service sends nothing. Called with (list $ <service>). */ -}}
+{{- define "workbench.otelEnv" -}}
+{{- $root := index . 0 -}}{{- $service := index . 1 -}}{{- $o := $root.Values.otel -}}
+{{- if $o.enabled }}
+- { name: WORKBENCH_OTEL_ENABLED, value: "true" }
+- { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ include "annotator.otlpEndpoint" $root | quote }} }
+- { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf" }
+- { name: OTEL_METRIC_EXPORT_INTERVAL, value: "5000" }
+- { name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS, value: "/livez,/readyz,/healthz,/api/health,/metrics" }
+- { name: OTEL_SERVICE_NAME, value: {{ $service | quote }} }
+- { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.namespace=workbench,deployment.environment.name={{ $o.environment }},service.version={{ $root.Chart.AppVersion }}" }
+{{- if $o.identity.audience }}
+- { name: WORKBENCH_OTEL_TOKEN_FILE, value: /var/run/secrets/workbench/otlp/token }
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{- define "workbench.otelMount" -}}
+{{- if and .Values.otel.enabled .Values.otel.identity.audience }}
+- { name: otlp-identity, mountPath: /var/run/secrets/workbench/otlp, readOnly: true }
+{{- end }}
+{{- end -}}
+
+{{- define "workbench.otelVolume" -}}
+{{- if and .Values.otel.enabled .Values.otel.identity.audience }}
+# The pod's own identity at the telemetry gateway, for that audience alone.
+- name: otlp-identity
+  projected:
+    sources:
+      - serviceAccountToken: { path: token, audience: {{ .Values.otel.identity.audience | quote }}, expirationSeconds: {{ .Values.otel.identity.expirationSeconds }} }
+{{- end }}
+{{- end -}}
+
 {{- /* The sources the services read (`client_kit.sources`), validated here so a release that could not be read as
 written fails at render: each a DNS-label `name`, one of three kinds, at most one `rask` lakehouse (by its catalog's REST
 `uri`, read as the person or as the workbench, never as nobody), a `namespace` by its lance-namespace `impl`, a `tables`

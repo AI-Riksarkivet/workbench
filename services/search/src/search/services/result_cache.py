@@ -5,7 +5,8 @@ Mirrors the atlas ``points_cache``: memoize a query's full result on
 advances that table's Lance version, so the key changes and the stale entry
 becomes unreachable — Firn's invalidation model, no manual busting. The cache
 lives on :class:`~client_kit.media.state.AppState` (per app instance, never
-module-global) and is sized by ``settings.search_cache_size`` (0 = disabled).
+module-global) and is sized by search's ``cache_size`` and ``cache_bytes`` settings (``SEARCH_CACHE_SIZE``,
+``SEARCH_CACHE_BYTES``; 0 disables each).
 
 It sits at the ROUTER layer (which owns AppState), so :func:`run_search` stays
 pure. The design — key = (dataset, selected-search version-signature, query-hash) — is the

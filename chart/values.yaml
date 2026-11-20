@@ -66,7 +66,7 @@ networkPolicy:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-# Interactive API docs (MEDIA_DOCS).
+# Interactive API docs (WORKBENCH_DOCS).
 docs: false
 # Peers whose x-forwarded-* headers uvicorn trusts (the Gateway's data plane); `*` is refused.
 forwardedAllowIps: 127.0.0.1
@@ -144,11 +144,17 @@ lifecycle:
   preStopSeconds: 5
   teardownSeconds: 10
 
-# Telemetry to an OTLP/HTTP endpoint (`endpoint`, required while enabled); off sends nothing.
+# Telemetry to an OTLP/HTTP endpoint (`endpoint`, required while enabled): every service's traces, metrics and logs,
+# the audit trail among them on its own instrumentation scope (`workbench.audit`: routing it to a table of its own is the gateway's job), each under the service's own name; off
+# sends nothing. Where the gateway asks who sends, `identity.audience` names the audience of the pod's own projected
+# ServiceAccount token each export presents (read when it is sent); empty, exports carry no credential.
 otel:
   enabled: false
   endpoint: ""
   environment: ""
+  identity:
+    audience: ""
+    expirationSeconds: 3600
 
 # Sign-in and authorization, the workbench's own. Every request names a person the platform's OIDC provider vouched for,
 # in a token addressed to the workbench's own audience; what they may do is the workbench's own OpenFGA store. Any OIDC

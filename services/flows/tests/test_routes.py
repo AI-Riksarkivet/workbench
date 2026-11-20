@@ -15,7 +15,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from flows import health, routes
-from flows.lifespan import make_lifespan
+from flows.lifespan import lifespan
 from service_kit import make_service_app
 from tests.flows_runs import ServeStandIn, ended, until
 from tests.postgres import StateDatabase
@@ -259,7 +259,7 @@ def test_a_cancelled_run_executes_no_step_it_had_not_started(serve: ServeStandIn
         "seeds": {"t": "page"},
     }
     monkeypatch.setenv("WORKBENCH_API_PREFIX", "/api")
-    with TestClient(make_service_app(title="flows", routers=[routes.router], lifespan=make_lifespan)) as client:
+    with TestClient(make_service_app(title="flows", routers=[routes.router], lifespan=lifespan)) as client:
         run_id = _start(client, two_models)["run_id"]
         until(lambda: serve.reached("first"), "the first model step was never started")
 
@@ -291,7 +291,7 @@ def test_the_run_doors_answer_503_on_a_process_with_no_run_store(monkeypatch: py
     """No run store named, no runs: the doors say why, and validation still serves."""
     monkeypatch.delenv("WORKBENCH_FLOWS_STATE_HOST")
     monkeypatch.setenv("WORKBENCH_API_PREFIX", "/api")
-    with TestClient(make_service_app(title="flows", routers=[health.router, routes.router], lifespan=make_lifespan)) as bare:
+    with TestClient(make_service_app(title="flows", routers=[health.router, routes.router], lifespan=lifespan)) as bare:
         refused = bare.post("/api/flows/projects/p1/runs", json=CHAIN)
         validated = bare.post("/api/flows/projects/p1/validate", json=CHAIN["graph"])
 

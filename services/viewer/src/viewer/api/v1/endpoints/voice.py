@@ -3,8 +3,8 @@
 Thin HTTP layer over :mod:`viewer.services.voice_service`: it resolves the
 request's dataset (optional ``dataset`` query param, ``None`` → the default
 DB), whitelists ``doc_id`` against the descriptor's identity pattern before
-any service code inlines it into a Lance filter literal, and owns the
-lock-guarded lazy voice encoder on ``state.voice_encoder``. The GET handlers
+any service code inlines it into a Lance filter literal, and builds the upload
+form's encoder per request (:func:`voice_encoder`, a client of the voiceprint runner's Serve app). The GET handlers
 stay sync — every read is a blocking Lance call, which the threadpool absorbs;
 the upload POST is async to await the multipart body, then offloads the
 blocking decode + CPU embed + Lance reads to the threadpool.

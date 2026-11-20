@@ -24,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flows import executor, health, routes
-from flows.lifespan import make_lifespan
+from flows.lifespan import lifespan
 from service_kit import make_service_app
 from tests.flows_runs import ServeStandIn, state_env
 from tests.postgres import StateDatabase
@@ -66,7 +66,7 @@ def client(flows_state: StateDatabase, monkeypatch: pytest.MonkeyPatch) -> Itera
     """The real flows app on its own Postgres, its routers mounted under `/api` as the chart and the local stack mount
     them."""
     monkeypatch.setenv("WORKBENCH_API_PREFIX", "/api")
-    app = make_service_app(title="flows", routers=[health.router, routes.router], lifespan=make_lifespan)
+    app = make_service_app(title="flows", routers=[health.router, routes.router], lifespan=lifespan)
     with TestClient(app) as test_client:
         yield test_client
 

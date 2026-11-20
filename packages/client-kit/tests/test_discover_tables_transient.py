@@ -11,6 +11,7 @@ is named so (with no location or exception text), the dataset is not cached, and
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import lance
@@ -21,6 +22,7 @@ from lance_namespace import DeclareTableRequest, LanceNamespace
 from client_kit.lancekit import registry
 from client_kit.media.config import MediaSettings
 from service_kit.governed.deps import ANONYMOUS_CALLER
+from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import lakehouse_dir, namespace_client, write_table
 
 
@@ -66,6 +68,93 @@ def test_a_table_declared_and_never_written_is_named_with_why_and_its_dataset_sh
     assert (descriptor.declared, sorted(descriptor.tables)) == (None, ["documents"])
     assert descriptor.unreadable == {"chunks": registry.LISTED_NOT_WRITTEN, "later": registry.LISTED_NOT_WRITTEN}
     assert descriptor.problem == "its descriptor names what the dataset lacks: search 'default': row_table 'chunks' does not exist"
+
+
+#: How soon a table written since is seen, as the registry promises it (`ABSENT_RECHECK_S`).
+A_MINUTE = 60.0
+
+
+class _Clock:
+    """A monotonic clock a test moves."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _gone_then_back(root: Path, table: str, namespace: str = "ns") -> Callable[[], object]:
+    """Move ``table``'s versions aside, as when its data is removed; the callable puts them back, as a write since does."""
+    uri = lance.dataset(namespace_client=namespace_client(root), table_id=["wh", namespace, table]).uri.removeprefix("file://")
+    versions, aside = Path(uri) / "_versions", root / f"{namespace}-{table}-versions-aside"
+    shutil.move(versions, aside)
+    return lambda: shutil.move(aside, versions)
+
+
+def _opened_tables(datasets: registry.DatasetRegistry, caller: LakehouseCaller, namespace: str = "ns") -> list[str] | str:
+    try:
+        return sorted(datasets.get(f"lake~wh${namespace}", caller).descriptor.tables)
+    except registry.DatasetAbsentError:
+        return "absent"
+
+
+def test_the_absences_remembered_are_bounded_and_the_oldest_is_forgotten_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(registry, "HANDLES_PER_SOURCE", 1)
+    for namespace in ("first", "second"):
+        write_table(tmp_path, ["wh", namespace, "chunks"], pa.table({"doc_id": ["a"]}))
+    datasets = registry.DatasetRegistry(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}), clock=_Clock())
+    back = [_gone_then_back(tmp_path, "chunks", namespace) for namespace in ("first", "second")]
+
+    found = [_opened_tables(datasets, ANONYMOUS_CALLER, namespace) for namespace in ("first", "second")]
+    for put_back in back:
+        put_back()
+    again = [_opened_tables(datasets, ANONYMOUS_CALLER, namespace) for namespace in ("first", "second")]
+
+    assert (found, again) == (["absent", "absent"], [["chunks"], "absent"])
+
+
+def test_a_dataset_whose_tables_are_all_gone_is_opened_again_once_the_interval_has_passed(tmp_path: Path) -> None:
+    clock = _Clock()
+    write_table(tmp_path, ["wh", "ns", "chunks"], pa.table({"doc_id": ["a"]}))
+    datasets = registry.DatasetRegistry(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}), clock=clock)
+    back = _gone_then_back(tmp_path, "chunks")
+
+    first = _opened_tables(datasets, ANONYMOUS_CALLER)
+    back()
+    within = _opened_tables(datasets, ANONYMOUS_CALLER)
+    clock.now += A_MINUTE
+    after = _opened_tables(datasets, ANONYMOUS_CALLER)
+
+    assert (first, within, after) == ("absent", "absent", ["chunks"])
+
+
+def test_one_callers_absent_answer_is_never_another_callers(tmp_path: Path) -> None:
+    write_table(tmp_path, ["wh", "ns", "chunks"], pa.table({"doc_id": ["a"]}))
+    datasets = registry.DatasetRegistry(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}), clock=_Clock())
+    back = _gone_then_back(tmp_path, "chunks")
+
+    first = _opened_tables(datasets, ANONYMOUS_CALLER)
+    back()
+    other = _opened_tables(datasets, LakehouseCaller(subject="dex~someone-else"))
+
+    assert (first, other) == ("absent", ["chunks"])
+
+
+def test_a_cached_dataset_holding_a_gone_table_is_opened_again_once_the_interval_has_passed(tmp_path: Path) -> None:
+    clock = _Clock()
+    write_table(tmp_path, ["wh", "ns", "chunks"], pa.table({"doc_id": ["a"]}))
+    write_table(tmp_path, ["wh", "ns", "documents"], pa.table({"doc_id": ["a"]}))
+    datasets = registry.DatasetRegistry(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}), clock=clock)
+    back = _gone_then_back(tmp_path, "chunks")
+
+    first = _opened_tables(datasets, ANONYMOUS_CALLER)
+    back()
+    within = _opened_tables(datasets, ANONYMOUS_CALLER)
+    clock.now += A_MINUTE
+    after = _opened_tables(datasets, ANONYMOUS_CALLER)
+
+    assert (first, within, after) == (["documents"], ["documents"], ["chunks", "documents"])
 
 
 def _remove(root: Path, table: str) -> None:

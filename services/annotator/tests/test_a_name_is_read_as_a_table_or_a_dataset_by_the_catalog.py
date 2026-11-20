@@ -17,7 +17,7 @@ import pytest
 
 from annotator import corpus
 from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
-from client_kit.media.config import Settings
+from client_kit.media.config import MediaSettings
 from client_kit.media.state import AppState
 from service_kit.governed.deps import ANONYMOUS_CALLER
 from tests.media_catalog import lakehouse_dir
@@ -37,7 +37,7 @@ def catalog(tmp_path: Path) -> AppState:
         schema=pa.schema([("doc_id", pa.string()), ("text", pa.string())], metadata={DESCRIPTOR_METADATA_KEY: json.dumps(DESCRIPTOR).encode()}),
     )
     lancedb.connect_namespace("dir", {"root": root}).create_table("chunks", rows, namespace_path=["acme", "media"])
-    return AppState(settings=Settings.model_validate({**lakehouse_dir(root)}))
+    return AppState(settings=MediaSettings.model_validate({**lakehouse_dir(root)}))
 
 
 def test_input_tables_reads_each_name_as_the_catalog_holds_it(catalog: AppState) -> None:

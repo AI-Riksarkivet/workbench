@@ -46,6 +46,7 @@ from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.api.v1.endpoints.media import FRAME_INDEX_COLUMN
 from viewer.api.v1.endpoints.system import DURATION_COLUMN
+from viewer.core.config import viewer_settings
 from viewer.schemas.atlas import AtlasStatusResponse, ChunkHits, ChunkKeys, ChunkRowIds
 from viewer.services.points import build_points
 
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/atlas", tags=["atlas"])
 
-#: Max memoized /points payloads (the LOOKUP bound). The MEMORY bound is `settings.points_cache_bytes`, shared with the
+#: Max memoized /points payloads (the LOOKUP bound). The MEMORY bound is the viewer's `cache_bytes`, shared with the
 #: derived views' cache (`keep_shared`).
 _POINTS_CACHE_MAX = 12
 
@@ -182,7 +183,9 @@ async def _points_payload(state: AppState, declared: Declared, space: AtlasSpace
 async def _build_points(state: AppState, declared: Declared, space: AtlasSpace, ds: lance.LanceDataset, key: PointsKey) -> bytes:
     try:
         body = await run_in_threadpool(build_points, declared, space, ds)
-        keep_shared(state.points_cache, key, body, others=[state.derived_cache], max_entries=_POINTS_CACHE_MAX, max_bytes=state.settings.points_cache_bytes)
+        keep_shared(
+            state.points_cache, key, body, others=[state.derived_cache], max_entries=_POINTS_CACHE_MAX, max_bytes=viewer_settings(state.settings).cache_bytes
+        )
         return body
     finally:
         state.points_flights.pop(key, None)

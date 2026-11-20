@@ -28,6 +28,7 @@ from client_kit.lancekit.registry import DatasetHandle
 from client_kit.media.state import AppState, dataset_handle
 from search.api.dependencies import EmbedderFactoryDep, RerankerFactoryDep, StateDep
 from search.api.security import READS_DATASET, CallerDep, FanOut
+from search.core.config import search_settings
 from search.core.rate_limit import SEARCH_LIMIT, SEARCH_SCOPE, limiter
 from search.services.filters import TOPIC_FILTER, extract_filters
 from search.services.fuse import reciprocal_rank_fusion
@@ -85,11 +86,12 @@ def _cached_search(
             image_bytes=image_bytes,
         )
 
+    settings = search_settings(state.settings)
     return run_cached(
         state.search_cache,
         state.search_cache_lock,
-        state.settings.search_cache_size,
-        state.settings.search_cache_bytes,
+        settings.cache_size,
+        settings.cache_bytes,
         handle,
         spec,
         filters,

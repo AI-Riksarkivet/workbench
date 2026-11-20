@@ -19,7 +19,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from flows.lifespan import make_lifespan
+from flows.lifespan import lifespan
 from flows.routes import router
 from service_kit import make_service_app
 from tests.identity import IDP_ID, WORKBENCH_AUDIENCE, BrowserKey, Provider
@@ -69,7 +69,7 @@ def client(
         ("user:keycloak~gus", "viewer", "project:p1"),
         ("user:keycloak~fay", "annotator", "project:p2"),
     )
-    app = make_service_app(title="flows", routers=[router], lifespan=make_lifespan)
+    app = make_service_app(title="flows", routers=[router], lifespan=lifespan)
     with TestClient(app) as test_client:
         yield test_client
 

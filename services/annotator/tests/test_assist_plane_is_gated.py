@@ -84,7 +84,7 @@ def _corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     write_table(tmp_path, ["acme", "corpus-1", "documents"], documents, descriptor=CORPUS_DECLARED)
     monkeypatch.setenv("WORKBENCH_SOURCES", json.dumps(lakehouse_dir(tmp_path)["WORKBENCH_SOURCES"]))
-    monkeypatch.setenv("MEDIA_DEFAULT_DATASET", "lake~acme$corpus-1")
+    monkeypatch.setenv("WORKBENCH_DEFAULT_DATASET", "lake~acme$corpus-1")
 
 
 BODY = {"producer": "sam", "prompt": "a line of text"}
@@ -130,7 +130,7 @@ def test_an_allowed_caller_gets_proposals_for_its_tasks_unit_named_by_the_datase
     chunks = pa.table({"doc_id": pa.array(["doc-1", "doc-1"]), "chunk_id": pa.array([0, 1], pa.int64())})
     write_table(tmp_path, ["acme", "pages", "documents"], documents, descriptor=declared)
     write_table(tmp_path, ["acme", "pages", "chunks"], chunks, descriptor=declared)
-    monkeypatch.setenv("MEDIA_DEFAULT_DATASET", "lake~acme$pages")
+    monkeypatch.setenv("WORKBENCH_DEFAULT_DATASET", "lake~acme$pages")
     app = state_app(router)
 
     async def allow(*, user: str, relation: str, obj: str, contextual: object = ()) -> bool:
