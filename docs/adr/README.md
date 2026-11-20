@@ -44,3 +44,11 @@ in issues #1, #7, #9 and #10, their comments, and the commit messages named in e
 | [0015](0015-the-design-system-lives-in-its-own-repository.md) | The design system lives in AI-Riksarkivet/ui, and Svelte Bits is never copied into it | 2026-11-18 | accepted |
 | [0016](0016-the-app-takes-its-design-system-by-a-pinned-commit.md) | The app takes its design system by a pinned commit | 2026-11-18 | accepted |
 | [0017](0017-colours-are-the-persons-theme.md) | Colours are the person's theme | 2026-11-18 | accepted |
+| [0018](0018-supported-browsers-are-chromium-with-a-gpu.md) | The supported browsers are current Chrome and Edge on a machine with a GPU | 2026-11-20 | accepted |
+| [0019](0019-an-unconfirmed-proposal-cannot-be-submitted.md) | An item with an unconfirmed proposal cannot be submitted | 2026-11-20 | accepted |
+| [0020](0020-a-reload-keeps-the-session-through-the-issuers-own.md) | A reload keeps the session through the issuer's own session, with no token stored | 2026-11-20 | accepted |
+| [0021](0021-the-old-frontends-are-deleted-while-flows-is-parked.md) | The old frontends are deleted while flows is parked | 2026-11-20 | accepted; amends 0011 |
+| [0022](0022-a-saved-view-is-shared-by-its-link.md) | A saved view is shared by its link | 2026-11-20 | accepted |
+| [0023](0023-the-workbench-calls-model-endpoints-and-deploys-none.md) | The workbench calls model endpoints and deploys no model | 2026-11-20 | accepted |
+| [0024](0024-the-code-is-licensed-apache-2-0.md) | The code is licensed Apache-2.0 | 2026-11-20 | accepted |
+| [0025](0025-live-covers-a-projects-screens-and-the-canvas.md) | Live updates cover a project's screens and the canvas; dataset pages wait | 2026-11-20 | accepted; scopes 0012 |
