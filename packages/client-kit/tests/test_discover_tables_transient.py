@@ -99,6 +99,28 @@ def _opened_tables(datasets: registry.DatasetRegistry, caller: LakehouseCaller, 
         return "absent"
 
 
+def test_a_dataset_whose_gone_table_is_still_gone_costs_a_listing_and_that_tables_open_when_rechecked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The recheck asks only what can have changed: the dataset's names (one ListTables) and the gone table (one open,
+    one DescribeTable). Its other tables are not described again: measured on the dev estate, a dataset of 17 readable
+    tables beside 2 gone ones took about 6 s every minute when the recheck opened it whole."""
+    clock = _Clock()
+    for table in ("chunks", "a", "b", "c", "d"):
+        write_table(tmp_path, ["wh", "ns", table], pa.table({"doc_id": ["a"]}))
+    datasets = registry.DatasetRegistry(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}), clock=clock)
+    _gone_then_back(tmp_path, "chunks")
+    first = _opened_tables(datasets, ANONYMOUS_CALLER)
+    calls: list[str] = []
+    client_type = type(namespace_client(tmp_path))
+    for name in ("describe_table", "list_tables", "list_namespaces"):
+        method = getattr(client_type, name)
+        monkeypatch.setattr(client_type, name, lambda *args, _name=name, _method=method, **kwargs: calls.append(_name) or _method(*args, **kwargs))
+
+    clock.now += A_MINUTE
+    rechecked = _opened_tables(datasets, ANONYMOUS_CALLER)
+
+    assert (first, rechecked, sorted(calls)) == (["a", "b", "c", "d"], ["a", "b", "c", "d"], ["describe_table", "list_tables"])
+
+
 def test_the_absences_remembered_are_bounded_and_the_oldest_is_forgotten_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(registry, "HANDLES_PER_SOURCE", 1)
     for namespace in ("first", "second"):

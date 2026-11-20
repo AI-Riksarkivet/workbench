@@ -52,7 +52,7 @@ from client_kit.lancekit.introspect import TableInfo, dataset_info
 from client_kit.media.config import MediaSettings
 from client_kit.source_names import check_segments
 from client_kit.sources import NamespaceSource, RaskSource, TablesSource, annotatable, connect_as, qualify, require_admitted
-from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError
+from service_kit.exceptions import DomainError, ForbiddenError, NotFoundError, ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.outage import reads_as_store_outage
 
@@ -610,6 +610,12 @@ class DatasetRegistry:
                 return handle
         client = self.client(located.source, caller)
         sessions = self._caller_sessions(located.source.name, caller.subject)
+        if handle is not None and self._still_gone(client, located.source, located.identifier, handle.descriptor, sessions.lance):
+            # Nothing that can have changed has: the handle stands, its gone tables asked again after the next interval.
+            with self._lock:
+                self._recheck[key] = self._clock() + ABSENT_RECHECK_S
+                self._handles.move_to_end(key)
+            return handle
         try:
             with translate_catalog_errors():
                 descriptor = load_dataset_descriptor(client, located.source, dataset_id, located.identifier, self._settings.descriptor_dir, sessions.lance)
@@ -656,6 +662,37 @@ class DatasetRegistry:
                 self._recheck.pop(evicted, None)
         logger.info("opened dataset %s (%d tables)", dataset_id, len(descriptor.tables))
         return handle
+
+    @staticmethod
+    def _still_gone(
+        client: LanceNamespace,
+        source: RaskSource | NamespaceSource | TablesSource,
+        namespace: list[str],
+        descriptor: DatasetDescriptor,
+        session: lance.Session,
+    ) -> bool:
+        """Whether a cached dataset holding gone tables is as it was: the catalog lists the same tables (one ListTables)
+        and each gone one still holds no version (one open each). Its readable tables are not described again: they are
+        reopened for a read when their vend runs out (`DatasetHandle`). Any other answer, or a failure, is a change, and
+        the dataset is opened again whole."""
+        gone = [name for name, reason in descriptor.unreadable.items() if reason == LISTED_NOT_WRITTEN]
+        try:
+            with translate_catalog_errors():
+                listed = set(_tables_of(source, _list_tables(client, namespace).names))
+                if listed != set(descriptor.tables) | set(descriptor.unreadable):
+                    return False
+                for name in gone:
+                    try:
+                        _open(client, [*namespace, name], session)
+                    except (ValueError, OSError) as exc:
+                        if reads_as_absent(exc):
+                            continue
+                        return False
+                    # It opens: written since.
+                    return False
+        except DomainError:
+            return False
+        return True
 
     def _caller_sessions(self, source: str, caller: str) -> CallerSessions:
         """``caller``'s sessions on ``source``, made on first use; the least recently used are dropped past
