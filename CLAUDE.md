@@ -9,7 +9,7 @@ model pipelines over them**, as one product (FiftyOne-like). Its parts:
 
 - **explorer**: the viewer, search and the explorer UI;
 - **annotator**: the annotator, its assist runner and its UI;
-- **flows**: model pipelines and the studio UI.
+- **flows**: model pipelines and the studio UI; parked, with no screen and no deployment (owner, 2026-11-18; ADR 0011).
 
 **It reads the sources a deployment declares, and is a client of rask, never part of it** (owner, 2026-11-16: "as a client
 for rask, or without rask with lance-namespace or a Lance table directly"). The sources are one declaration in git
@@ -120,22 +120,22 @@ names, changed freely: service-kit, and the frontend packages `@workbench/api`, 
 (the `LANCE_*` ones name what it asks of a lakehouse). rask's repository is `AI-Riksarkivet/rask`;
 compute (Ray Serve, the runners) is a repository of its own, called over HTTP.
 
-The code came out of rask's history at `64ef118a9` on 2026-11-14. The move and what remains to do are on issue #1
-(the spec, rows WB-1 onward).
+The code came out of rask's history at `64ef118a9` on 2026-11-14 (issue #1).
 
 ## Where the work stands
 
-The open rows are issues #6 to #10 (WB-A to WB-E), each with its decisions in its body and comments. #9 (WB-D, the
-one app) is split into steps, and each landed step has a comment saying what landed, the gates, what was not
-confirmed and the next step: **read #9's latest comment before starting.** The owner's order (2026-11-16) is to make
-it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
+Work is tracked one GitHub issue per row, in the order of a pinned map issue (§ Agent skills). Until the owner's
+`/to-spec` and `/to-tickets` file the first rows, the open issues are #1 and #6 to #10 (WB-A to WB-E); their bodies and
+comments record what landed and the owner's decisions, #9's above all. The open work found in them, re-checked against
+the code, is `docs/planning/INPUT-2026-11-20.md`, and the decisions already made are `docs/adr/`. The owner's order
+(2026-11-16) was to make it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
 keeps its state in its own Postgres (R2). R3 made sign-in work with whatever OIDC provider the cluster runs (token
 exchange and DPoP only where the provider's discovery offers them) and built the first cluster run (`make deploy-dev`,
 docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.sources`, above); R5 made a dataset one dock whose panels are
 every view (graph and tree beside the atlas, one navigation, the view in the address); R6 the set-ups of any table;
 D3b-2a the labeling canvas's classes, names and review panel, and audio and video labeling on the shared viewers;
 D3b-2b text spans, compare and assist; then work in progress moved into the annotator's Postgres (Lance written only
-at publish); D3c-a the project's screens (data manager, browse, review, settings, people by name); D3c-b the bulk-labeling grid (the Label tab); then D3c-c (live updates, and deleting `frontend/annotator`) and D4. Flows' runs no longer need a sidecar: each run and each step's outcome are rows in flows'
+at publish); D3c-a the project's screens (data manager, browse, review, settings, people by name); D3c-b the bulk-labeling grid (the Label tab). Still open: live updates and deleting `frontend/annotator` (D3c-c); D4, one flows area, waits while flows is parked (ADR 0011). Flows' runs no longer need a sidecar: each run and each step's outcome are rows in flows'
 own PostgreSQL, driven under a lease by any replica and resumed after a crash by any replica's re-drive
 (`flows.store`, `flows.runner`), so the workbench runs without Dapr. Flows has no chart workload yet; the one that
 deploys it comes with a CloudNativePG cluster of its own beside the annotator's. Of `frontend/annotator`, the app now holds its text viewer and
@@ -147,8 +147,9 @@ multi-key pairwise preference view (`CompareView` over `?keys=`; a task opens it
 panel and its jobs door (`PropagatePanel`, `propagate`: batch derivers belong to flows, D4), and the zone-wide `/assist`
 registry page (the canvas's panel lists the producers). Its bulk grid is the Label tab; not ported from it, by decision: its
 model-filled recipe columns (a batch deriver, flows' D4), its similarity anchor (the dataset's own similar search finds
-neighbours to send) and its inline transcription edit (the canvas's). Nothing
-has run on a cluster yet. Two live copies of one session must never drive the same worktree: before resuming an agent
+neighbours to send) and its inline transcription edit (the canvas's). The release
+runs on the development cluster (`make deploy-dev`, docs/DEPLOY.md), and each landed step's comment on #9 names the
+revision it was read back on. Two live copies of one session must never drive the same worktree: before resuming an agent
 after a restart, check `~/.claude/sessions/*.json` for a second process with the same session id.
 Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 
@@ -185,10 +186,12 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 - **Comments carry rationale and provenance, never history.** "This used to say X" belongs in the commit message.
 - **Every canvas draws with WebGPU only** (#10): pixi with `preference: ['webgpu']` (an array; a string falls back to
   WebGL), hand-written WebGPU in `#lib/gpu`, and the plain "WebGPU is required" state where it is missing.
-- **A step lands as one reviewed commit on `main`.** Two reviewers read it in parallel, one for standards and security
-  and one for the spec and usability (a browser walk with `playwright-cli` for UI), and every finding in the step's
-  own code is fixed, LOWs included. Then the gates (`dagger call frontend-check`, `dagger call app-end-to-end` at
-  0 failed and 0 flaky, the full `make test`), one commit with the tests delta, a push, and a comment on the row.
+- **A row lands as one reviewed commit on `main`** (coherent rows together; `docs/agents/issue-tracker.md`). Two
+  reviewers read it in parallel, one for standards and security and one for the spec and usability (a browser walk
+  with `playwright-cli` for UI), and every finding in the row's own code is fixed, LOWs included. Then the gates
+  (`dagger call frontend-check`, `dagger call app-end-to-end` at 0 failed and 0 flaky, the full `make test`), one
+  commit with the tests delta and `Refs #n`, a push, a deploy to the dev cluster, a live read-back, and the row closed
+  by hand naming the helm revision.
 
 ## Toolchain rules
 
@@ -322,7 +325,7 @@ Two language-pure planes, as in rask; never blur them.
     (their role and the identity rules, `machines.caller_events`), the one rule the table, the quick view and the
     canvas's panel offer from; a dataset whose items are its rows (a corpus of texts, no document) is browsed by its rows
     (`GET /api/rows`) and sent from there; a dataset's
-    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record (a task's work is its item's first unit, `access.work_unit`) and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`; the rows are the task's draft in the annotator's Postgres, served as Arrow (`annotations.work.wire_table`, the draft's revision as `X-Annotations-Version`) and changed by a save of only what changed, links included, in one transaction under the task's row lock (`AnnotatorStore.change_draft`, 409 on a stale revision of that task, a change that changes nothing writes nothing), a draft held to 10,000 shapes, 10,000 links and 8 MiB whichever door changes it (413 naming the cap), each save kept in a history of the task's last 50 within 8 MiB (`MAX_DRAFT_HISTORY`, `MAX_HISTORY_BYTES`, `draft_history`: each row what undoes its save, a past save rebuilt from the draft by undoing the later ones) that the History panel lists and reads a past save from; so a consensus item's replicas never share rows; a replica's rows and draft are read only by its own annotator or someone who may review it, `tasks.require_work_readable`, and a person who ever held one replica of a group may never claim or be assigned a sibling, `Task.holders`, so a release-and-claim hop cannot reach another annotator's work). A text item (a dataset with no document, sent as `text`) is its row's own text (`text/TextCanvas.svelte`); under a picture or a recording every row with text is a line (`text/TextLane.svelte`); a selection is a span (a `text` row naming its parent and `char_start`/`char_end`, offsets in code points on the wire and in the canvas, `text/codepoints.ts`, saved on the `spans` channel) with the class picker, overlapping spans on lanes, edges dragged or moved with Alt+←/→, and a corrected line (Enter applies it, Ctrl+S applies and saves) re-anchors its spans by a character diff (`span-remap.ts`, jsdiff), dropping a span whose words are all gone; the item's own text is written as a row (`source: dataset`) when the first span is marked in it, and Submit names an unclassed span as it names a region (`validate_against_ontology`). Compare (`compare/ComparePanel.svelte`, `compare/compare.ts`) sets, for someone who may review the item, another replica's work (its task's own draft in the annotator's Postgres) or the model's proposals beside the item's own, pairs them by overlap, draws theirs (a second Arrow layer on the picture, lanes on the time strip, dashed under a text) and takes one in, on the undo stack. Assist (`AssistPanel.svelte`) asks the annotator's `POST /api/assist/<unit key>?project=&dataset=` (the task's id in the body, the unit one of that task's; a model server fetches the frame at `client_kit.media.frames.chunk_frame_path`) with a detector's prompt or a segmenter's clicks; proposals land as `prediction` rows to keep (A) or reject (R). A drawn region opens the class picker (`ClassPicker.svelte`; the task's ontology classes, never the labels already on the item; digits, type-ahead, Enter, the last class the default; Escape discards a region on a task whose classes are closed; the open picker takes keys wherever the focus is, `controller.pickerKey`); the digits relabel the selection. The side panel's head (`TaskPanel.svelte`, `task-panel.ts`) says what the person is doing from the task's state, holder and their permissions, offers the transitions its `legal_events` allow (the task door answers them), lists what blocks a submit (`classes.ts`, the same rule as `validate_against_ontology`: every region carries a class once the ontology names any), and carries a reviewer's send-back note to the annotator. The page names the item from its row and dataset declaration (`#lib/projects/item-name.ts`) and names the breadcrumb's project and item (`#lib/shell/crumb-names.svelte.ts`), the ids as tooltips. A recording's or a video's unit opens the whole document on one time line (`temporal/TemporalCanvas.svelte`): the video's frame drawn by the image stage from a hidden `<video>` (a pixi `ImageSource` over the element, which the stage never empties as a `VideoSource`'s destroy would, frames uploaded per `requestVideoFrameCallback`), under it ONE time strip (`#lib/media/time/TimeStrip.svelte`, hand-written WebGPU rectangles in `#lib/gpu/rects.ts`: the waveform, speakers, parts, region lanes and each track's lane of keyframes), then the shared transport. Regions are `segment` rows in seconds (`t_start`/`t_end`, the save's `temporal` channel, the one undo stack); a video's tracks are box rows sharing a `group`, each keyframe its `t_start`, interpolated between, absent from an outside keyframe (a box of no area) to the next (`temporal/tracks.ts`). The dataset's player draws the same strip, read-only, and a video's frames through the same image stage. Image
+    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record (a task's work is its item's first unit, `access.work_unit`) and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`; the rows are the task's draft in the annotator's Postgres, served as Arrow (`annotations.work.wire_table`, the draft's revision as `X-Annotations-Version`) and changed by a save of only what changed, links included, in one transaction under the task's row lock (`AnnotatorStore.change_draft`, 409 on a stale revision of that task, a change that changes nothing writes nothing), a draft held to 10,000 shapes, 10,000 links and 8 MiB whichever door changes it (413 naming the cap), each save kept in a history of the task's last 50 within 8 MiB (`MAX_DRAFT_HISTORY`, `MAX_HISTORY_BYTES`, `draft_history`: each row what undoes its save, a past save rebuilt from the draft by undoing the later ones), of which the History panel lists the latest 20 and reads a past save from; so a consensus item's replicas never share rows; a replica's rows and draft are read only by its own annotator or someone who may review it, `tasks.require_work_readable`, and a person who ever held one replica of a group may never claim or be assigned a sibling, `Task.holders`, so a release-and-claim hop cannot reach another annotator's work). A text item (a dataset with no document, sent as `text`) is its row's own text (`text/TextCanvas.svelte`); under a picture or a recording every row with text is a line (`text/TextLane.svelte`); a selection is a span (a `text` row naming its parent and `char_start`/`char_end`, offsets in code points on the wire and in the canvas, `text/codepoints.ts`, saved on the `spans` channel) with the class picker, overlapping spans on lanes, edges dragged or moved with Alt+←/→, and a corrected line (Enter applies it, Ctrl+S applies and saves) re-anchors its spans by a character diff (`span-remap.ts`, jsdiff), dropping a span whose words are all gone; the item's own text is written as a row (`source: dataset`) when the first span is marked in it, and Submit names an unclassed span as it names a region (`validate_against_ontology`). Compare (`compare/ComparePanel.svelte`, `compare/compare.ts`) sets, for someone who may review the item, another replica's work (its task's own draft in the annotator's Postgres) or the model's proposals beside the item's own, pairs them by overlap, draws theirs (a second Arrow layer on the picture, lanes on the time strip, dashed under a text) and takes one in, on the undo stack. Assist (`AssistPanel.svelte`) asks the annotator's `POST /api/assist/<unit key>?project=&dataset=` (the task's id in the body, the unit one of that task's; a model server fetches the frame at `client_kit.media.frames.chunk_frame_path`) with a detector's prompt or a segmenter's clicks; proposals land as `prediction` rows to keep (A) or reject (R). A drawn region opens the class picker (`ClassPicker.svelte`; the task's ontology classes, never the labels already on the item; digits, type-ahead, Enter, the last class the default; Escape discards a region on a task whose classes are closed; the open picker takes keys wherever the focus is, `controller.pickerKey`); the digits relabel the selection. The side panel's head (`TaskPanel.svelte`, `task-panel.ts`) says what the person is doing from the task's state, holder and their permissions, offers the transitions its `legal_events` allow (the task door answers them), lists what blocks a submit (`classes.ts`, the same rule as `validate_against_ontology`: every region carries a class once the ontology names any), and carries a reviewer's send-back note to the annotator. The page names the item from its row and dataset declaration (`#lib/projects/item-name.ts`) and names the breadcrumb's project and item (`#lib/shell/crumb-names.svelte.ts`), the ids as tooltips. A recording's or a video's unit opens the whole document on one time line (`temporal/TemporalCanvas.svelte`): the video's frame drawn by the image stage from a hidden `<video>` (a pixi `ImageSource` over the element, which the stage never empties as a `VideoSource`'s destroy would, frames uploaded per `requestVideoFrameCallback`), under it ONE time strip (`#lib/media/time/TimeStrip.svelte`, hand-written WebGPU rectangles in `#lib/gpu/rects.ts`: the waveform, speakers, parts, region lanes and each track's lane of keyframes), then the shared transport. Regions are `segment` rows in seconds (`t_start`/`t_end`, the save's `temporal` channel, the one undo stack); a video's tracks are box rows sharing a `group`, each keyframe its `t_start`, interpolated between, absent from an outside keyframe (a box of no area) to the next (`temporal/tracks.ts`). The dataset's player draws the same strip, read-only, and a video's frames through the same image stage. Image
     `.docker/frontend.dockerfile`; released by the chart (`chart/`, `app.*`) at `/`.
     Its design system is `@riksarkivet/ui`, the public repository `AI-Riksarkivet/ui`, read from source (no build
     step) and pinned by a full commit sha in `frontend/app/package.json` (`github:AI-Riksarkivet/ui#<sha>`; `bun.lock`
@@ -344,9 +347,10 @@ Two language-pure planes, as in rask; never blur them.
     (`#lib/identity`, a principal shown shortened with the full value as its tooltip). The app's lint
     (`no-restricted-imports` in `frontend/.oxlintrc.json`) refuses `@workbench/ui`.
   - `frontend/explorer`: only its `/workflow` editor and what that needs (its layout, `lib/workflow`, the atlas map
-    its Atlas node opens, the player), until D4 merges it with studio's flows. `frontend/annotator`, `frontend/studio`:
-    the old SvelteKit 2 apps, moving into `frontend/app` (#9 D3, D4); never deployable. The annotator's project pages
-    and its image canvas are in the app (D3a, D3b-1); its temporal and text viewers, compare and assist follow (D3b-2), then its data manager and browse (D3c), which deletes it and `@workbench/engine`, kept until then for it alone.
+    its Atlas node opens, the player), until D4 merges it with studio's flows (parked, ADR 0011). `frontend/annotator`,
+    `frontend/studio`: the old SvelteKit 2 apps; never deployable. Everything of the annotator's that is kept is in the
+    app (its project pages, every canvas, compare, assist, the data manager, browse and the bulk grid); what remains is
+    deleting it and `@workbench/engine`, kept until then for it alone (D3c-c).
   - `frontend/packages/*`: their libraries, `@workbench/*` (`ui`, `api`, `config`, `flow`, `explorer-api`,
     `engine`, `labeling`). `@workbench/ui` is FROZEN legacy: the old copy of the design system the old apps still
     import, deleted with the last of them (D3c, D4); it gets no change, its Storybook is gone (THE Storybook is the UI
@@ -363,6 +367,8 @@ Two language-pure planes, as in rask; never blur them.
   (`dex-client.yaml`), and `fixtures/openfga`, the workbench's own development OpenFGA. `docs/DEPLOY.md` says how a
   release is installed on the development cluster (`make deploy-dev`) and on a platform.
 - `docs/rask/`: rask's published contract, vendored (`PROVENANCE.md` says from which sha and how to refresh it).
+- `GLOSSARY.md` (the glossary), `docs/adr/` (the decisions), `docs/agents/` (how the workflow's skills use this
+  repository) and `docs/planning/` (the inputs a planning session starts from): see § Agent skills.
 - `scripts/`: dev and ops scripts.
 
 Workspace membership is globbed: `[tool.uv.workspace] members = ["packages/*", "services/*"]` and
@@ -374,3 +380,55 @@ it otherwise). Add a new Python import name to ruff's `known-first-party` in the
 
 - Commit messages are Conventional Commits (the commit-msg hook checks it) and carry no `Co-Authored-By: Claude` line
   (the hook refuses it).
+- A commit names each row it carries with `Refs #n`, never `Closes`, `Fixes` or `Resolves`, which would close the
+  issue on push.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `AI-Riksarkivet/workbench`, one issue per row, titled `WB-1NN: …` (from `WB-101`; `WB-A` to `WB-E`
+and `WB-1` to `WB-11` are the ids already taken), ordered by one pinned map issue (`wayfinder:map`). See
+`docs/agents/issue-tracker.md`.
+
+### Workflow (the mattpocock skills, plugin `mattpocock-skills`)
+
+Work moves from idea to shipped along one path. Every step holds its output to the four facts in § Engineering
+principles, GitOps first.
+
+1. `/grill-with-docs` sharpens an idea by interview, and records terms in `GLOSSARY.md` and decisions as ADRs in
+   `docs/adr/`. The input for the first session is `docs/planning/INPUT-2026-11-20.md`.
+2. `/to-spec` writes the spec as an issue; `/to-tickets` splits it into rows with native blocking edges, each a
+   sub-issue of the spec and placed in the map.
+3. A row is built test-first (`/tdd` at the agreed seams), with the type checker and single test files as it goes and
+   the full suite once, then reviewed by the Standards and the Spec reviewers in parallel (as `/code-review` does), every
+   finding in the row's own code fixed, then committed, deployed and read back.
+4. `/triage` admits a row nobody on the team wrote, including every defect a live walk finds; `/diagnosing-bugs` takes
+   a hard bug to a red test first.
+
+**Who works a row** (owner, 2026-11-20): the agent works rows without waiting for `/implement`, by the rules in
+`docs/agents/issue-tracker.md`. `/grill-with-docs`, `/to-spec`, `/to-tickets` and `/triage` are started by the owner.
+
+**Every row, whoever works it, follows the collaboration rules in `docs/agents/issue-tracker.md`:**
+
+- **Claim first.** `gh issue edit <n> --add-assignee @me` is the first write, before a branch or a test.
+- **No unnamed sub-steps inside an umbrella issue.** A piece of work is a row, or it waits for one. A spec's or a
+  parent's comments record decisions and landed rows, never a backlog.
+- **Coherent rows ship together, straight to `main`**, with no pull request: one review round, one commit naming each
+  row with `Refs #n`, the gates once, one push, one deploy, a read-back proving each row's closes-when.
+- **A row closes by hand** once its fix is deployed to the dev cluster and read back live, with a comment naming the
+  workbench release's helm revision.
+
+**Run the planning skills from this repository.** `/grill-with-docs`, `/to-spec`, `/to-tickets` and `/triage` write
+`GLOSSARY.md`, ADRs and issues relative to the session's working directory: started in a session whose working directory
+is rask's checkout, they write into rask. Start them only in a session opened in a workbench checkout.
+
+### Triage labels
+
+The five default roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) and the
+categories `bug` and `enhancement`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` plus `docs/adr/`. The installed skills call the glossary `GLOSSARY.md`; here it is
+`GLOSSARY.md`, and no `GLOSSARY.md` is created. See `docs/agents/domain.md`.
