@@ -1,8 +1,8 @@
 # The workbench's model protocol, version 1
 
 The workbench deploys no model (ADR 0023). A deployment gives it the address of a **model endpoint**, and the workbench
-calls that endpoint by the protocol on this page (ADR 0030). A backend that speaks another protocol is reached through
-an adapter: a small service that speaks this protocol to the workbench and the backend's own to the backend.
+calls that endpoint by the protocol on this page (ADR 0030). A model backend is a Ray Serve deployment that speaks it
+itself, with no adapter between them (ADR 0032; § A Ray Serve deployment).
 
 Three things state the protocol, and a test holds them together:
 
@@ -11,14 +11,15 @@ Three things state the protocol, and a test holds them together:
 - `annotator.model_endpoint.protocol`, the models the workbench validates every ask and every answer with.
 
 The stand-in endpoint (`annotator.model_endpoint.stand_in`) speaks it and holds no model. The suite, the local stack and
-the development cluster run it.
+the development cluster run it. The suite also asks a Ray Serve deployment that speaks it (`tests/ray_model.py`).
 
 ## Who calls
 
 Every call carries `Authorization: Bearer <token>`: the caller's own token. On a cluster it is the calling pod's
 ServiceAccount token, projected by the kubelet for the endpoint's audience (the chart's `models.endpoint.audience`,
 `workbench-models` by default), valid for an hour and read from its file on every call. An endpoint verifies it against
-the cluster issuer's keys and so knows which workload calls. There is no shared key.
+the cluster issuer's keys, and its subject against the annotator's ServiceAccount, and so knows which workload calls
+(§ A Ray Serve deployment says how). There is no shared key.
 
 `requested_by` in an ask names the person the ask is made for, as the workbench names them. It is for the endpoint's
 own record and is not a credential.
@@ -54,7 +55,7 @@ The models the endpoint serves and what each can do.
 | `prompts` | What a person may add: `text` (words), `box` (a box drawn on a picture), `points` (clicks). Empty: none. |
 | `returns` | The shape types its proposals carry: `bbox`, `polygon`, `polyline`, `keypoint`, `mask`, `tag`, `text`, `segment`. |
 
-The shape types are the workbench's own vocabulary. An adapter maps its backend's names onto them.
+The shape types are the workbench's own vocabulary. A deployment maps its model's names onto them.
 
 ## `POST /v1/proposals`
 
@@ -136,6 +137,70 @@ an ask is a 503.
 - One endpoint per deployment.
 - The stand-in accepts any bearer token and refuses a call with none. Verifying whom a token names is a real
   endpoint's.
+
+## A Ray Serve deployment
+
+A model backend is a Ray Serve deployment that answers the two doors under its route prefix (ADR 0032). With
+`route_prefix="/models"` behind Serve's HTTP proxy, `models.endpoint.url` is `http://<rayservice>-serve-svc:8000/models`,
+and the workbench asks `/models/v1/models` and `/models/v1/proposals`.
+
+### Who calls: the deployment checks it
+
+**Serve verifies no token.** Its proxy hands the `Authorization` header to the replica untouched, so a deployment
+verifies every call itself, and refuses with a problem body:
+
+- **401** unless the bearer token is signed by a key the cluster's issuer publishes (RS256), names that issuer
+  (`iss`), the audience the chart's `models.endpoint.audience` names (`aud`, `workbench-models` by default), and
+  carries `exp`, `iat` and `sub`, judged with a small clock skew (30 s in the suite). A token missing any of these
+  claims is refused, not taken as never expiring.
+- **403** when the token passes and its `sub` is not the annotator's ServiceAccount,
+  `system:serviceaccount:<release namespace>:<release>-annotator` (`system:serviceaccount:workbench:workbench-annotator`
+  on the development cluster). The audience alone says nothing about who calls: any pod may project a ServiceAccount
+  token for any audience.
+- **The key set:** read from the issuer's OIDC discovery (`<issuer>/.well-known/openid-configuration`, its
+  `jwks_uri`; on Kubernetes the API server's `/openid/v1/jwks`, which the deployment's ServiceAccount must be allowed
+  to read: the `system:service-account-issuer-discovery` ClusterRole), and read again when a token names a key the
+  set held does not have, at most once in a short while (a second in the suite), since a cluster rotates its signing
+  key.
+
+### What the suite asks of one
+
+`tests/ray_model.py` is such a deployment with fixed answers, run on a Ray the annotator's endpoint tests start
+(`services/annotator/tests/test_assist_asks_a_model_endpoint.py`). Through the annotator's own doors, each of these is
+a test that fails if it stops being true:
+
+- assist gets the deployment's proposal, naming its model and version, from the largest picture the protocol carries
+  (16 MiB, 22 MB as base64, through Serve's proxy): the deployment answers the picture's SHA-256 as it decoded it, and
+  the test compares it;
+- a replica that holds an ask past the workbench's deadline is the person's timeout; one that answers 503 with
+  `Retry-After` is busy, with the same `Retry-After`; one that answers 500 is a failure in its own words;
+- the annotator's token is taken, and so is one its issuer's new key signed after a rotation; a token that is expired,
+  has no expiry, names another audience or another issuer, or whose claims were changed is refused, and the person
+  reads that the endpoint refused the workbench's identity (401); another workload's token is refused 403, read the
+  same way.
+
+Not asked of it: the listing through the annotator, an unknown model, an ask outside the protocol, the answer cap, and
+a redirect. The stand-in's tests pin the annotator's side of each, which does not depend on what serves the protocol.
+
+### Measured once, not pinned by a test
+
+On this host (aarch64, Ray 2.60.0, Python 3.13), 2026-11-20:
+
+- **Cost:** the `ray` package is 212 MB installed, its environment with its dependencies about 390 MB; a local Ray
+  starts in about 2.6 s and Serve with an app in about 2.0 s more (about 6 s inside the suite, with Ray's workers
+  starting), its driver about 260 MB of memory; a shutdown takes about 4 s. `ray[serve]` is a dev dependency, in no
+  image.
+- **Architectures:** wheels exist for linux aarch64 and x86-64; the suite runs it on aarch64 here and in the Dagger
+  lane, and on x86-64 in CI.
+- **Serve's own backpressure:** a deployment holding `max_ongoing_requests=1` and `max_queued_requests=1`, asked four
+  times at once, answered two and dropped two with 503 "Request dropped due to backpressure", plain text, with no
+  `Retry-After`. The annotator reads any 503 as busy, so the person reads that the endpoint is busy for now. Not
+  pinned: which asks a queue drops depends on when each arrives. `max_queued_requests` cannot be 0.
+- **Started under `uv run`**, Ray starts each worker through `uv run` too, on an uploaded copy of the working directory,
+  and none started; `RAY_ENABLE_UV_RUN_RUNTIME_ENV=0` makes the workers use the driver's interpreter. The suite sets it
+  in the root `conftest.py`.
+
+Not shown yet: a deployment on the development cluster, which has the KubeRay definitions and runs no Ray.
 
 ## The stand-in's models
 

@@ -123,7 +123,7 @@ func (m *Workbench) Test(
 		WithExec([]string{"chown", "-R", "tester", "/src"}).
 		WithUser("tester").
 		WithEnvVariable("PYTHONDONTWRITEBYTECODE", "1").
-		WithExec([]string{"/opt/venv/bin/python", "-m", "pytest", "-m", "not e2e", "-n", workers, "-q",
+		WithExec([]string{"/opt/venv/bin/python", "-m", "pytest", "-m", "not e2e", "-n", workers, "--dist", "loadgroup", "-q",
 			"-p", "no:cacheprovider", "--timeout=300", "--timeout-method=thread"}).
 		Stdout(ctx)
 }

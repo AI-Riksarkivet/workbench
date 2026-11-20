@@ -2,13 +2,17 @@
 
 The annotator's real doors over HTTP on a real PostgreSQL, calling the stand-in endpoint on a real socket
 (`annotator.model_endpoint.stand_in` under uvicorn), which is every way an endpoint can behave: it answers, it never
-answers, it fails. With no endpoint named, assist says it is unavailable.
+answers, it is busy, it fails. The same ways are asked of a Ray Serve deployment that speaks the protocol
+(`tests.ray_model`, on a Ray the module starts), the backend a cluster runs (ADR 0032). With no endpoint named, assist
+says it is unavailable.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -18,22 +22,27 @@ from typing import Any, cast
 import httpx
 import pyarrow as pa
 import pytest
+import ray
 import respx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from lance import blob_array, blob_field
+from pydantic import BaseModel, ConfigDict
+from ray import serve
 from starlette.types import Message, Receive, Scope, Send
 
 from annotator.annotations.router import router as annotations_router
 from annotator.api.security import current_subject, get_checker
 from annotator.api.v1.endpoints import assist, tasks
 from annotator.core.config import AnnotatorSettings
-from annotator.model_endpoint import stand_in
+from annotator.model_endpoint import protocol, stand_in
 from annotator.model_endpoint.client import MAX_ANSWER_BYTES
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Shape, Task, TaskState
 from annotator.projects.ontology import LabelClass, LabelOntology
 from client_kit.media.state import AppState
+from tests import ray_model
+from tests.identity import Provider
 from tests.media_catalog import write_table
 
 
@@ -98,6 +107,64 @@ def endpoint(running_stand_in: str) -> str:
     return running_stand_in
 
 
+#: The tests that ask Ray Serve share one Ray, on one test worker (`--dist loadgroup` in the lanes): each Ray takes about
+#: 6 s to start and 260 MB, measured on this host.
+ON_RAY = pytest.mark.xdist_group("ray-serve")
+#: The audience the annotator's projected ServiceAccount token names (the chart's `models.endpoint.audience`), and the
+#: subject a cluster's issuer gives the annotator's ServiceAccount.
+MODEL_AUDIENCE = "workbench-models"
+ANNOTATOR = "system:serviceaccount:workbench:workbench-annotator"
+ROOT = Path(__file__).parents[3]
+
+
+class RayServe(BaseModel):
+    """The running Ray Serve deployment: its address (a route prefix behind Serve's proxy) and the issuer it trusts."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    url: str
+    issuer: Provider
+
+    def token(self, subject: str = ANNOTATOR, *, audience: str = MODEL_AUDIENCE, lifetime: int = 300, omit: Sequence[str] = (), **claims: str) -> str:
+        """A token the deployment's issuer signs, for the annotator unless ``subject`` says otherwise."""
+        return self.issuer.mint(subject, audience=audience, lifetime=lifetime, omit=omit, **claims)
+
+
+@pytest.fixture(scope="module")
+def ray_serve() -> Iterator[RayServe]:
+    """A Ray of the module's own, with Serve's HTTP proxy on a free port and `tests.ray_model` deployed at `/models`."""
+    issuer = Provider()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    try:
+        # A Ray of its own (`local`), never one `RAY_ADDRESS` or a running `ray start` names.
+        ray.init(
+            address="local",
+            num_cpus=2,
+            include_dashboard=False,
+            log_to_driver=False,
+            configure_logging=False,
+            runtime_env={"env_vars": {"PYTHONPATH": str(ROOT)}},
+        )
+        serve.start(http_options={"host": "127.0.0.1", "port": port})
+        serve.run(ray_model.application(f"{issuer.issuer}/jwks", issuer.issuer, MODEL_AUDIENCE, ANNOTATOR), name="models", route_prefix="/models")
+        yield RayServe(url=f"http://127.0.0.1:{port}/models", issuer=issuer)
+    finally:
+        if ray.is_initialized():
+            serve.shutdown()
+            ray.shutdown()
+        issuer.close()
+
+
+def _serving(request: pytest.FixtureRequest, serves: str) -> tuple[str, str]:
+    """The address of the endpoint a test asks, and the token the annotator presents to it."""
+    if serves == "ray":
+        running = request.getfixturevalue("ray_serve")
+        return running.url, running.token()
+    return request.getfixturevalue("endpoint"), "the-annotators-own-token"
+
+
 Build = Callable[..., TestClient]
 
 
@@ -105,7 +172,7 @@ Build = Callable[..., TestClient]
 def client_for(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Build]:
     """The assist, annotations and task doors over the store, on a dataset whose unit has a frame; project p1 holds task
     t1 (the unit, claimed by the local person, labelling with the classes `seal` and `stamp`). ``endpoint`` names the
-    model endpoint, or none."""
+    model endpoint, or none; ``presents`` is the token the annotator presents to it, ``picture`` the unit's frame."""
     key_fields = ["doc_id", "speech_id", "chunk_id"]
     descriptor = {"identity": {"key_fields": key_fields}, "capabilities": {"frames": "frames.frame"}}
     keys = {"doc_id": [DOC], "speech_id": pa.array([0], pa.int64()), "chunk_id": pa.array([19], pa.int64())}
@@ -120,15 +187,23 @@ def client_for(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Bu
             blob_field("frame"),
         ]
     )
-    frames = pa.table(
-        {**keys, "frame_idx": pa.array([0], pa.int64()), "frame_mime": ["image/png; charset=binary"], "frame": blob_array([PICTURE])}, schema=schema
-    )
-    write_table(tmp_path, ["acme", "proj1", "frames"], frames)
     token = tmp_path / "model-endpoint-token"
-    token.write_text("the-annotators-own-token\n")
     opened: list[TestClient] = []
 
-    def build(endpoint: str | None, *, timeout: float = 30.0, tools: Sequence[str] = ("bbox", "polygon")) -> TestClient:
+    def build(
+        endpoint: str | None,
+        *,
+        timeout: float = 30.0,
+        tools: Sequence[str] = ("bbox", "polygon"),
+        presents: str = "the-annotators-own-token",
+        picture: bytes = PICTURE,
+    ) -> TestClient:
+        frames = pa.table(
+            {**keys, "frame_idx": pa.array([0], pa.int64()), "frame_mime": ["image/png; charset=binary"], "frame": blob_array([picture])},
+            schema=schema,
+        )
+        write_table(tmp_path, ["acme", "proj1", "frames"], frames)
+        token.write_text(presents + "\n")
         values: dict[str, object] = {
             "WORKBENCH_SOURCES": [{"kind": "namespace", "name": SOURCE, "impl": "dir", "properties": {"root": str(tmp_path)}, "annotatable": True}],
             "ANNOTATOR_MODEL_ENDPOINT_TIMEOUT_SECONDS": timeout,
@@ -232,22 +307,115 @@ def test_the_models_a_task_can_ask_are_the_endpoints_with_what_each_can_do(clien
     ]
 
 
-def test_an_endpoint_that_does_not_answer_in_time_is_a_timeout_the_person_reads(client_for: Build, endpoint: str) -> None:
-    client = client_for(endpoint, timeout=0.2)
+@pytest.mark.parametrize(
+    ("serves", "model", "timeout", "status", "detail", "retry_after"),
+    [
+        pytest.param("stand-in", stand_in.SLOW, 0.2, 504, "the model endpoint did not answer within 0.2 s", None, id="stand-in-slow"),
+        pytest.param(
+            "stand-in", stand_in.FAILING, 30.0, 502, f"the model endpoint failed (500): {stand_in.FAILING} fails every ask", None, id="stand-in-failing"
+        ),
+        pytest.param("ray", ray_model.SLOW, 0.5, 504, "the model endpoint did not answer within 0.5 s", None, id="ray-slow", marks=ON_RAY),
+        pytest.param(
+            "ray", ray_model.BUSY, 30.0, 503, f"the model endpoint is busy or unavailable for now: {ray_model.BUSY} is busy", "7", id="ray-busy", marks=ON_RAY
+        ),
+        pytest.param(
+            "ray", ray_model.FAILING, 30.0, 502, f"the model endpoint failed (500): {ray_model.FAILING} fails every ask", None, id="ray-failing", marks=ON_RAY
+        ),
+    ],
+)
+def test_an_endpoint_that_is_slow_busy_or_failing_is_an_error_the_person_reads(
+    request: pytest.FixtureRequest, client_for: Build, serves: str, model: str, timeout: float, status: int, detail: str, retry_after: str | None
+) -> None:
+    url, presents = _serving(request, serves)
+    client = client_for(url, timeout=timeout, presents=presents)
 
-    answer = _ask(client, stand_in.SLOW, prompt="a seal")
+    answer = _ask(client, model, prompt="a seal")
 
-    assert (answer.status_code, answer.headers["content-type"]) == (504, "application/problem+json"), answer.text
-    assert answer.json()["detail"] == "the model endpoint did not answer within 0.2 s"
+    assert (answer.status_code, answer.headers["content-type"], answer.headers.get("retry-after")) == (status, "application/problem+json", retry_after), (
+        answer.text
+    )
+    assert answer.json()["detail"] == detail
 
 
-def test_an_endpoint_that_fails_is_an_error_the_person_reads(client_for: Build, endpoint: str) -> None:
-    client = client_for(endpoint)
+@ON_RAY
+def test_assist_answers_from_a_ray_serve_deployment_that_was_shown_the_whole_full_size_picture(client_for: Build, ray_serve: RayServe) -> None:
+    # The largest picture the protocol carries: 16 MiB, 22 MB once base64, through Serve's HTTP proxy.
+    picture = bytes(range(256)) * (protocol.MAX_IMAGE_BYTES // 256)
+    client = client_for(ray_serve.url, presents=ray_serve.token(), picture=picture)
 
-    answer = _ask(client, stand_in.FAILING, prompt="a seal")
+    answer = _ask(client, ray_model.DETECTOR, prompt="a seal")
 
-    assert (answer.status_code, answer.headers["content-type"]) == (502, "application/problem+json"), answer.text
-    assert answer.json()["detail"] == f"the model endpoint failed (500): {stand_in.FAILING} fails every ask"
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {
+        "model": ray_model.DETECTOR,
+        "version": ray_model.VERSION,
+        "proposals": [
+            {
+                "shape_type": "bbox",
+                "x": 10.0,
+                "y": 20.0,
+                "width": 30.0,
+                "height": 40.0,
+                "polygon": [],
+                "label": "seal",
+                "text": hashlib.sha256(picture).hexdigest(),
+                "score": ray_model.DETECTOR_SCORE,
+            }
+        ],
+        "dropped": [],
+    }
+
+
+def _extended(token: str) -> str:
+    """``token`` with its expiry moved an hour ahead and its signature kept: what a caller presents who altered an expired
+    token. Only the signature can refuse it."""
+    head, payload, signature = token.split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    claims["exp"] = int(time.time()) + 3600
+    altered = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"{head}.{altered}.{signature}"
+
+
+#: What the person reads when the deployment refuses the token the annotator presents.
+REFUSED = "the model endpoint refused the workbench's own identity ({})"
+
+
+@ON_RAY
+@pytest.mark.parametrize(
+    ("presenting", "status", "detail"),
+    [
+        pytest.param("the-annotators", 200, None, id="the-annotators-token"),
+        pytest.param("after-a-rotation", 200, None, id="a-token-the-issuers-new-key-signed"),
+        pytest.param("expired", 502, REFUSED.format(401), id="an-expired-token"),
+        pytest.param("never-expires", 502, REFUSED.format(401), id="a-token-with-no-expiry"),
+        pytest.param("another-audience", 502, REFUSED.format(401), id="a-token-for-another-audience"),
+        pytest.param("another-issuer", 502, REFUSED.format(401), id="a-token-naming-another-issuer"),
+        pytest.param("tampered", 502, REFUSED.format(401), id="a-token-whose-claims-were-changed"),
+        pytest.param("another-workload", 502, REFUSED.format(403), id="another-workloads-token"),
+    ],
+)
+def test_the_ray_serve_deployment_takes_the_annotators_token_and_refuses_any_other(
+    client_for: Build, ray_serve: RayServe, presenting: str, status: int, detail: str | None
+) -> None:
+    if presenting == "after-a-rotation":
+        ray_serve.issuer.rotate()
+    tokens = {
+        "the-annotators": ray_serve.token,
+        "after-a-rotation": ray_serve.token,
+        # Past the deployment's 30 s of skew.
+        "expired": lambda: ray_serve.token(lifetime=-120),
+        "never-expires": lambda: ray_serve.token(omit=["exp"]),
+        "another-audience": lambda: ray_serve.token(audience="another-service"),
+        "another-issuer": lambda: ray_serve.token(iss="https://another-issuer.example"),
+        "tampered": lambda: _extended(ray_serve.token(lifetime=-120)),
+        # Signed by the cluster's issuer for the deployment's audience: any pod may project such a token.
+        "another-workload": lambda: ray_serve.token("system:serviceaccount:other:intruder"),
+    }
+    client = client_for(ray_serve.url, presents=tokens[presenting]())
+
+    answer = _ask(client, ray_model.DETECTOR, prompt="a seal")
+
+    assert (answer.status_code, answer.json().get("detail")) == (status, detail), answer.text
 
 
 def test_a_deployment_with_no_endpoint_lists_assist_as_unavailable_with_the_reason(client_for: Build) -> None:

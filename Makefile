@@ -74,7 +74,7 @@ local-stop:
 	bash scripts/local-stack.sh stop
 
 test: $(OPENFGA_BIN) $(POSTGRES_DIR)/bin/postgres
-	uv run pytest -m "not e2e" -n $(PYTEST_WORKERS)
+	uv run pytest -m "not e2e" -n $(PYTEST_WORKERS) --dist loadgroup
 
 lint:
 	uv run ruff check .

@@ -25,7 +25,7 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Final, Literal
 from urllib.parse import parse_qs
@@ -147,10 +147,21 @@ class Provider:
         self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self._kid = uuid.uuid4().hex[:8]
 
-    def mint(self, sub: str, *, audience: str | list[str] = WORKBENCH_AUDIENCE, jkt: str | None = None, lifetime: int = 300, **claims: Any) -> str:
-        """A token this provider signs for ``sub`` at ``audience``, bound to ``jkt`` when given."""
+    def mint(
+        self,
+        sub: str,
+        *,
+        audience: str | list[str] = WORKBENCH_AUDIENCE,
+        jkt: str | None = None,
+        lifetime: int = 300,
+        omit: Collection[str] = (),
+        **claims: Any,
+    ) -> str:
+        """A token this provider signs for ``sub`` at ``audience``, bound to ``jkt`` when given, without the claims named
+        in ``omit``."""
         now = int(time.time())
         body: dict[str, Any] = {"iss": self.issuer, "sub": sub, "aud": audience, "iat": now, "exp": now + lifetime} | claims
+        body = {name: value for name, value in body.items() if name not in omit}
         if jkt is not None:
             body["cnf"] = {"jkt": jkt}
         return jwt.encode(body, self._key, algorithm="RS256", headers={"kid": self._kid})

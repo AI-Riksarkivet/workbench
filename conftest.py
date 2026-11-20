@@ -5,7 +5,8 @@ under the system temp dir, declared as the deployment's one source (``WORKBENCH_
 media settings refuse to load naming no source, and the offline suites run on the stock ``dir`` catalog the media code runs on unchanged. A test whose claim is
 about the datasets builds them under its own ``tmp_path`` (``tests.media_catalog``) and names that root in the settings
 it builds. Authentication, ON by default, is turned off for the offline suites the one way a deployment can
-(``WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED``), so a test that signs a person in turns it on itself.
+(``WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED``), so a test that signs a person in turns it on itself. A Ray a test
+starts runs its workers on this interpreter (``RAY_ENABLE_UV_RUN_RUNTIME_ENV``).
 """
 
 from __future__ import annotations
@@ -32,6 +33,10 @@ os.environ.setdefault(
 # so the one way a deployment can.
 os.environ.setdefault("WORKBENCH_OIDC_ENABLED", "false")
 os.environ.setdefault("WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED", "true")
+# A Ray a test starts runs its workers on this interpreter. Run under `uv run`, Ray would start each worker through
+# `uv run` on an uploaded copy of the working directory instead, where none starts (measured on Ray 2.60.0). Ray reads
+# this once, when it is first imported, so it is set here, before any test module imports it.
+os.environ.setdefault("RAY_ENABLE_UV_RUN_RUNTIME_ENV", "0")
 
 
 @pytest.fixture(scope="session")
