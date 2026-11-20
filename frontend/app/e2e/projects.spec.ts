@@ -1388,29 +1388,51 @@ test('only a service’s own refusal of the session asks to sign in again, and a
 	await expect(page.getByTestId('session-prompt')).toHaveCount(0);
 });
 
-test('an issuer that restarted with a new key asks once to sign in again, and the page read with the new key is let in by a service that could not read the key yet, with no second prompt', async ({
+test('an issuer that restarted with a new key asks once to sign in again on the first refused read, keeps the page behind the prompt, and the page read with the new key is let in by a service that could not read the key yet, with no second prompt', async ({
 	page,
 	context,
 }) => {
 	const who = await as(context, 'Annotator');
 	const sub = encodeURIComponent(who.sub);
-	const address = '/projects/sorting?tab=label&at=sorting-03';
+	const address = '/projects/sorting?tab=label&at=sorting-03#work';
 	await page.goto(address);
 	await expect(cellOf(page, 'sorting-03')).toHaveAttribute('tabindex', '0');
+	const heading = page.getByRole('heading', { level: 1 });
+	const title = await heading.textContent();
+	const before = (await callsOf(page, who)).length;
 
 	// The issuer restarts with a new key and none of its old ones; the annotator's refresher reads it at once, the
-	// viewer's not yet, so the annotator refuses the session's token while the viewer still takes it.
+	// viewer's not yet, so the viewer still takes the session's token. Refresh reads the page again whatever it read a
+	// moment ago (`refresh`, never `touch`, in `reads.svelte.ts`). The annotator's first read of it asks the issuer once
+	// more: the second read without the key retires it there, so that read and every one of the page's reads that joined
+	// or followed it is refused, and none is told to come back.
 	await page.request.post(`${EDGE}/oidc/__rotate?sub=${sub}&kid=after-restart`);
 	await page.request.post(`${EDGE}/api/viewer/__reread?sub=${sub}&service=annotator`);
-	// A read settled within a second is reused (`reads.svelte.ts`, FRESH_MS); past it, coming back to the tab reads again.
-	await page.waitForTimeout(1100);
-	await page.getByTestId('tab-items').click();
-	await page.getByTestId('tab-label').click();
+	await page.getByRole('button', { name: 'Refresh' }).click();
 	const prompt = page.getByTestId('session-prompt');
 	await expect(prompt).toContainText('refused by the annotator');
 	await expect(page.getByRole('alert').filter({ hasText: 'Sign in again' })).toHaveCount(1);
-	await expect(page).toHaveURL(/tab=label/);
+	// The prompt came on the first refused read: the annotator asked its issuer once and told nothing to come back, so
+	// no read was sent again before it.
+	const sinceRotation = (await callsOf(page, who))
+		.slice(before)
+		.filter((call) => call.service === 'annotator');
+	const annotatorKeys = (
+		(await (await page.request.get(`${EDGE}/api/viewer/__keysets?sub=${sub}`)).json()) as Record<
+			string,
+			{ forced: number }
+		>
+	).annotator;
+	expect([
+		sinceRotation.some((call) => call.status === 401),
+		sinceRotation.filter((call) => call.status === 503),
+		annotatorKeys?.forced,
+	]).toEqual([true, [], 1]);
+	// Behind the prompt the page keeps what it showed: the project's name and its grid, not an error.
+	await expect(heading).toHaveText(title ?? '');
+	await expect(cellOf(page, 'sorting-03')).toBeVisible();
 	const asked = page.url();
+	expect(new URL(asked).hash).toBe('#work');
 	// The issuer is still coming up: the viewer's forced read of the new key fails once.
 	await page.request.post(`${EDGE}/oidc/__keys-fail?sub=${sub}&times=1`);
 	const issuer = page.waitForRequest((req) => new URL(req.url()).pathname === '/oidc/auth');

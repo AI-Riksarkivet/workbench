@@ -134,17 +134,36 @@ def _problem(exc: DomainError) -> dict[str, Any]:
     return body
 
 
+def route_template(request: Request) -> str | None:
+    """The template of the route a request matched (``/api/signed-media/{token}``), or None where none matched: what a
+    log line names a request by, never its path, which can carry a credential (a signed media URL's token)."""
+    path = getattr(request.scope.get("route"), "path", None)
+    return path if isinstance(path, str) else None
+
+
 def register_handlers(app: FastAPI) -> None:
     """Map every :class:`DomainError` and ``RequestValidationError`` to problem+json.
 
-    Server-class errors (>=500) are logged with the traceback; client-class are not
-    (they're expected).
+    A `ServiceUnavailableError` raised from no other exception is a refusal the code chose (the issuer's key set not
+    read again yet, no state store configured): its detail is the whole reason, so it is logged as one warning line
+    with the detail, the request's method and its route's template (`route_template`) in ``extra=``, and no traceback.
+    The detail rides in ``extra=``, which the formatter renders with ``repr`` (`context.DiagnosticFormatter`), because a
+    detail can carry an upstream's own text, and a newline in the message would start a forged line. Measured
+    2026-11-20: a traceback for each made 21 of them in two minutes of one service's log after the issuer restarted.
+    Every other server-class error (>=500), a 503 raised from a cause included, is logged with the traceback, which is
+    its diagnosis; client-class are not (they're expected), and a crash that is no domain error is `_unexpected`'s,
+    traceback and all.
     """
 
     @app.exception_handler(DomainError)
-    async def _domain(_: Request, exc: DomainError) -> JSONResponse:
-        if exc.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
-            log.exception("domain error", exc_info=exc)
+    async def _domain(request: Request, exc: DomainError) -> JSONResponse:
+        if isinstance(exc, ServiceUnavailableError) and exc.__cause__ is None:
+            log.warning(
+                "service_unavailable",
+                extra={"detail": exc.detail, "method": request.method, "route": route_template(request), "status": exc.status_code},
+            )
+        elif exc.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            log.exception("domain error", exc_info=exc, extra={"method": request.method, "route": route_template(request)})
         # `headers=` is not optional politeness. This handler builds its own response, so a
         # `Retry-After` set at the raise site was dropped here silently — the exception carried it
         # and the client never saw it. Both halves of that are independently invisible: without the
@@ -189,7 +208,7 @@ def register_handlers(app: FastAPI) -> None:
         stable title and detail. Leaking `str(exc)` here would put native/Arrow/S3 error text and
         filesystem paths on the wire for any unhandled fault.
         """
-        log.exception("unhandled error", extra={"method": request.method, "path": request.url.path})
+        log.exception("unhandled error", extra={"method": request.method, "route": route_template(request)})
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             media_type=PROBLEM_JSON,

@@ -41,8 +41,19 @@ Rask's own `make k3s-up` installs its Dex with rask's values alone, so it drops 
 The development Dex keeps its state in memory, so every restart signs with new keys and every token signed before is
 unverifiable. Each service's background refresher reads the issuer's key set every 60 s (`KEY_SET_MAX_AGE_SECONDS`,
 `service_kit.governed.oidc`), so the viewer, search and the annotator all refuse such a token within about a minute of
-the restart; a person sees one prompt to sign in again over the page they are on, and comes back to it (the canvas
-keeps its unsaved edits). Requests never read the issuer themselves: while it cannot be reached, a service goes on with
+the restart. Until a service has read the new set its reads still succeed. The first request naming the old key after
+that read asks the issuer once more (the forced read below); a second read running without the key retires it there
+(`RETIRE_AFTER_READS`: two reads, because replicas of one issuer can serve different sets for a while, and an issuer
+that serves a set without a key it still signs with for two reads running has that key refused until a read holds it
+again), so that request is refused 401 and every one after it at once, with no read and no wait (remembered 24 h, at
+most 32 per issuer, `RETIRED_KID_SECONDS`, `RETIRED_KIDS_PER_ISSUER`); the next periodic read retires it as well. Where
+another token spent the forced read's pace in the last 30 s, that first request is told to come back (503,
+`Retry-After`, at most 30 s), which the app waits out. So a person whose page is open sees one prompt to sign in again
+on the first read a service refuses, over the page as it was (what the page showed stays behind the prompt), and "Sign
+in again" brings them back to the same path, query and hash (the canvas keeps its unsaved edits). A service pod that started after the restart never saw the old key, so it cannot know it was
+withdrawn: the old token's first read there asks the issuer once (below) and is refused 401, or, with that read's pace
+spent, is told to come back (503, `Retry-After`), which the app waits out at most 3 times and 30 s before the prompt.
+Requests never read the issuer themselves: while it cannot be reached, a service goes on with
 the last key set it read for up to 300 s from that read (`KEY_SET_STALE_LIMIT_SECONDS`) and then answers 503 at once;
 the refresher tries again every 5 s (`FETCH_RETRY_SECONDS`), each attempt given 5 s in all (`FETCH_DEADLINE_SECONDS`;
 a read that drips or does not end, in its TLS handshake, its headers or its body, is cut there by a watchdog that

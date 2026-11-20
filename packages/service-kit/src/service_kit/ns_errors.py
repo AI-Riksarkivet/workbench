@@ -188,12 +188,15 @@ def install_problem_handlers(app: FastAPI, log: logging.Logger) -> None:
 
     Byte-identical blocks lived in the catalog and lineage mains (audit 2026-07-15) — one home keeps the
     RFC 9457 shapes, the 5xx-generic-detail policy, and the leak rules from drifting per service. FastAPI
-    imports stay inside the function so non-HTTP consumers of this module never pay for them.
+    imports stay inside the function so non-HTTP consumers of this module never pay for them. A log line names a
+    request by its route's template (`route_template`), never its path, which can carry a credential.
     """
     from fastapi import Request
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse
     from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    from service_kit.exceptions import route_template
 
     @app.exception_handler(LanceNamespaceError)
     async def handle_domain_error(request: Request, exc: LanceNamespaceError) -> JSONResponse:
@@ -209,13 +212,13 @@ def install_problem_handlers(app: FastAPI, log: logging.Logger) -> None:
             # A capability answer, not a fault: an info line, never a traceback. Keyed on the mapped
             # status rather than a literal so it follows the map (it was `status in _UNREDACTED_5XX`,
             # which stopped firing the moment Q3 moved that status out of the 5xx range).
-            log.info("unsupported_operation", extra={"method": request.method, "path": request.url.path, "status": status})
+            log.info("unsupported_operation", extra={"method": request.method, "route": route_template(request), "status": status})
         elif status >= 500:
-            log.exception("domain_error", extra={"method": request.method, "path": request.url.path, "status": status})
+            log.exception("domain_error", extra={"method": request.method, "route": route_template(request), "status": status})
         return JSONResponse(status_code=status, content=body, media_type=PROBLEM_JSON)
 
     def _store_unavailable(request: Request, exc: Exception) -> JSONResponse:
-        log.warning("object_store_unavailable", extra={"method": request.method, "path": request.url.path, "error": str(exc)[:300]})
+        log.warning("object_store_unavailable", extra={"method": request.method, "route": route_template(request), "error": str(exc)[:300]})
         return JSONResponse(
             status_code=503,
             content=problem_body(ErrorCode.SERVICE_UNAVAILABLE, status=503, title="ServiceUnavailable", detail="Service Unavailable"),
@@ -280,7 +283,7 @@ def install_problem_handlers(app: FastAPI, log: logging.Logger) -> None:
         if reads_as_store_outage(exc):
             return _store_unavailable(request, exc)
         # Internals (native/Arrow/S3 error text, paths) leak via logs only — never the body.
-        log.exception("unhandled_error", extra={"method": request.method, "path": request.url.path})
+        log.exception("unhandled_error", extra={"method": request.method, "route": route_template(request)})
         return JSONResponse(
             status_code=500,
             content=problem_body(ErrorCode.INTERNAL, status=500, title="InternalError", detail="Internal Server Error"),

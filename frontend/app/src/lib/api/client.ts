@@ -183,8 +183,12 @@ export function timedFetch(input: string, init: RequestInit = {}): Promise<Respo
 }
 
 /** A fetch outcome that keeps the HTTP status — `status: 0` is UNREACHABLE (no answer came), `n` is an
- *  answer with the service's `detail`, and `502` is contract drift (a body that fails its schema). */
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; detail: string };
+ *  answer with the service's `detail`, and `502` is contract drift (a body that fails its schema). `sessionRefused` is
+ *  a 401 that challenged the credential (`WWW-Authenticate`): the session refused, which the shell's one prompt answers
+ *  (`#lib/reauth.svelte.ts`), never a 401 a service only relays. */
+export type ApiResult<T> =
+	| { ok: true; data: T }
+	| { ok: false; status: number; detail: string; sessionRefused?: true };
 
 /** Lift `detail` out of an error body (FastAPI's `{detail}` and problem+json's `detail` alike). */
 function detailFrom(body: unknown, fallback: string): string {
@@ -197,11 +201,10 @@ function detailFrom(body: unknown, fallback: string): string {
 
 async function failure(res: Response, upstream: string): Promise<ApiResult<never>> {
 	const body: unknown = await res.json().catch(() => ({}));
-	return {
-		ok: false,
-		status: res.status,
-		detail: detailFrom(body, `${upstream} answered ${res.status}`),
-	};
+	const detail = detailFrom(body, `${upstream} answered ${res.status}`);
+	return res.status === 401 && res.headers.has('www-authenticate')
+		? { ok: false, status: res.status, detail, sessionRefused: true }
+		: { ok: false, status: res.status, detail };
 }
 
 /** A read of JSON, given up after {@link FETCH_TIMEOUT_MS}, parsed against `schema`. Never throws. */

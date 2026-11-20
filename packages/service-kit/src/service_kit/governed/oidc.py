@@ -38,8 +38,8 @@ Security posture (see CHANGELOG in the task notes):
 * **One rule for how long a key is trusted, in every service, kept off the request path.** One background refresher
   per verifier reads each issuer's key set every `KEY_SET_MAX_AGE_SECONDS`; a request never fetches and never waits on
   another, and judges its token on the set read last while that is younger than `KEY_SET_STALE_LIMIT_SECONDS`, else
-  answers 503 at once. The whole rule, and its one bounded exception (a `kid` the set does not hold), is
-  `OIDCVerifier`'s docstring.
+  answers 503 at once. The whole rule (a `kid` the issuer withdrew is refused at once), and its one bounded exception
+  (a `kid` the set does not hold and was never seen withdrawn), is `OIDCVerifier`'s docstring.
 * **Opaque failures, charged to their author.** A failure the presented token causes is a
   generic ``UnauthenticatedError``; one the provider or this deployment's configuration of it
   causes (discovery, the key set, a non-HTTPS URL, no algorithm in common) is a
@@ -140,6 +140,31 @@ KEY_SET_STALE_LIMIT_SECONDS: Final = 300.0
 #: Short enough that a pod which started while its issuer was briefly unreachable signs people in within 5 s of the
 #: issuer answering again; `/readyz` and `/livez` read no token, so the pod stays ready meanwhile.
 FETCH_RETRY_SECONDS: Final = 5.0
+
+#: How many successful reads of an issuer's key set running must lack a `kid` that a read before them held, with no read
+#: holding it between, before the `kid` is retired (`OIDCVerifier`). Two, not one: an issuer whose replicas behind one
+#: address serve different sets (a rollout under way, a cache per node) answers one read without a key it still signs
+#: with, and the next read may well hold it again. A key missing from two reads running is taken as withdrawn, which is
+#: a judgement, not proof: an issuer that serves a set without a key it still signs with for two reads running has that
+#: key's tokens refused until a read holds it again. Every successful read counts, the periodic one and a forced one
+#: alike: each samples what the issuer publishes, whatever started it, and forced reads are paced at one per
+#: `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS` per issuer, so a caller adds at most that many samples. Counting the forced
+#: read means a token of a rotated-out key meets one forced read after the first periodic read without it (refused 401
+#: when it lacks the key), and every request after it is refused at once.
+RETIRE_AFTER_READS: Final = 2
+
+#: How long a `kid` stays retired (refused at once, `OIDCVerifier`) after the read that retired it. Nothing needs
+#: remembering past the life of the last token the key signed, which no token outlives its `exp`; 24 h is the longest
+#: default token lifetime of the providers the workbench meets (Dex's `idTokens` expiry; Keycloak, Okta, Entra and
+#: Google mint for an hour or less). A token minted for longer whose key retired a day ago meets the unknown-`kid` rule
+#: instead, which refuses it as surely, at the cost of one paced read.
+RETIRED_KID_SECONDS: Final = 24 * 3600.0
+
+#: The most retired `kid`s remembered per issuer, the oldest forgotten first. 32: an honest issuer retires a key or two
+#: per rotation (Dex every 6 h by default, or at each restart on memory storage), so a day of them fits many times over;
+#: an issuer that publishes and withdraws keys by the thousand costs no more memory than this. A forgotten `kid` meets
+#: the unknown-`kid` rule, which is safe.
+RETIRED_KIDS_PER_ISSUER: Final = 32
 
 #: Asymmetric signing algorithms we are willing to accept. Symmetric (``HS*``) and
 #: ``none`` are deliberately excluded — accepting them with a public verification key
@@ -382,8 +407,9 @@ class _Issuer:
     recorded under the lock as it starts, ``forced_served`` the asks an ended attempt answered, ``forced_published`` the
     asks an ended attempt answered with a key set it read, and ``forced_unread`` says the last forced ask got none, so
     the refresher asks again at the retry pace); how many requests wait for it; how many attempts
-    have ended; and the fetch threads of abandoned attempts that still run. Not a model: mutable state behind a lock,
-    never boundary input.
+    have ended; the fetch threads of abandoned attempts that still run; the `kid`s absent from the latest reads, each with
+    how many reads running lacked it; and the retired `kid`s, each with when the read that retired it ended, oldest
+    first (`_retire`). Not a model: mutable state behind a lock, never boundary input.
     """
 
     def __init__(self, clock: Callable[[], float]) -> None:
@@ -402,6 +428,39 @@ class _Issuer:
         self.attempts = 0
         self.abandoned: list[threading.Thread] = []
         self.pace = _RefreshPace(clock)
+        self.retired: dict[str, float] = {}
+        self.absent: dict[str, int] = {}
+
+
+def _retire(state: _Issuer, before: _Keys | None, after: _Keys, now: float) -> None:
+    """Record what publishing ``after`` in place of ``before`` retires. A `kid` ``before`` held that ``after`` does not is
+    absent from one read; one absent from the reads before ``after`` and from ``after`` too is absent from one more; at
+    `RETIRE_AFTER_READS` it is retired, at ``now``. A `kid` ``after`` holds is neither absent nor retired, however it
+    was before. Only sets the issuer served reach here, so only `kid`s the issuer itself published can retire; with no
+    ``before`` (the first set this process read) none is absent. A `kid` retired `RETIRED_KID_SECONDS` before is
+    forgotten (by this read: the snapshot is at most `KEY_SET_STALE_LIMIT_SECONDS` old when a request consults it), and
+    past `RETIRED_KIDS_PER_ISSUER` the oldest, of the retired and of the absent alike."""
+    current = {key.key_id for key in after.keys if key.key_id is not None}
+    for kid in current:
+        state.retired.pop(kid, None)
+        state.absent.pop(kid, None)
+    absent = {kid: reads + 1 for kid, reads in state.absent.items()}
+    for key in () if before is None else before.keys:
+        if key.key_id is not None and key.key_id not in current:
+            absent[key.key_id] = 1
+    state.absent = {}
+    for kid, reads in absent.items():
+        if reads >= RETIRE_AFTER_READS:
+            state.retired[kid] = now
+        else:
+            state.absent[kid] = reads
+    while len(state.absent) > RETIRED_KIDS_PER_ISSUER:
+        del state.absent[next(iter(state.absent))]
+    for kid, at in list(state.retired.items()):
+        if now - at >= RETIRED_KID_SECONDS:
+            del state.retired[kid]
+    while len(state.retired) > RETIRED_KIDS_PER_ISSUER:
+        del state.retired[next(iter(state.retired))]
 
 
 class ProviderUnavailableError(ServiceUnavailableError):
@@ -449,13 +508,24 @@ class OIDCVerifier:
     * A request reads the snapshot: one younger than `KEY_SET_STALE_LIMIT_SECONDS` is the set its token is judged on;
       none, or an older one, is a 503 at once with ``Retry-After``. So every service drops a key the issuer stopped
       publishing within one refresh (60 s), and trusts none past 300 s from its fetch while the issuer is away.
-    * One bounded exception: a token naming a `kid` the snapshot does not hold (a rotation the refresher has not read
-      yet) asks for ONE forced refresh, at most one per issuer per `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`; it and every
-      such request arriving while that refresh is in flight, up to `FORCED_WAITERS` per issuer, wait for its outcome
-      for at most one deadline, and is let in when the set that refresh read holds its `kid`. The token is refused 401
-      only when a read of the issuer that STARTED after it asked read a key set that does not hold its `kid` (an attempt
-      records the asks it covers as it starts, `forced_started`): a read that began before the request asked may have
-      read the set as it was before the key was published. Every other outcome is the provider's, a 503 with
+    * A token naming a retired `kid` is refused 401 at once, with no read asked, no wait and no pace spent. A `kid` is
+      retired when a key set this verifier read held it and the `RETIRE_AFTER_READS` successful reads after it, periodic
+      or forced, all lack it: taken as the issuer withdrawing the key (Dex restarting on memory storage), so a session it
+      signed is over. One read without it is not enough, since replicas of one issuer can serve different sets; an
+      issuer that serves a set without a key it still signs with for that many reads running has that key's tokens
+      refused until a read holds it again. Only successful reads count, only `kid`s the issuer published can be
+      retired, each issuer's are its own, the first set a process reads retires nothing, a `kid` the current snapshot
+      holds is never refused for it (an issuer that publishes a key again), and a `kid` is forgotten after
+      `RETIRED_KID_SECONDS` or past `RETIRED_KIDS_PER_ISSUER`, when it meets the exception below, as does one a single
+      read lacked so far.
+    * One bounded exception: a token naming a `kid` the snapshot does not hold and that is not retired (a rotation the
+      refresher has not read yet, or a key withdrawn before this process first read the set) asks for ONE forced
+      refresh, at most one per issuer per `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`; it and every such request arriving
+      while that refresh is in flight, up to `FORCED_WAITERS` per issuer, wait for its outcome for at most one
+      deadline, and is let in when the set that refresh read holds its `kid`. The token is refused 401 only when a
+      read of the issuer that STARTED after it asked read a key set that does not hold its `kid` (an attempt records
+      the asks it covers as it starts, `forced_started`): a read that began before the request asked may have read the
+      set as it was before the key was published. Every other outcome is the provider's, a 503 with
       ``Retry-After`` (`_come_back`): the forced read failed or ran out (it is asked again at `FETCH_RETRY_SECONDS`), the
       cap was reached (one deadline), the read it waited for began before it asked and lacks its `kid`, or the pace is
       spent with no read in flight (until the pace or the periodic read allows one). So a forged `kid` ends nobody's
@@ -683,7 +753,9 @@ class OIDCVerifier:
                 # A re-read of discovery that failed keeps the documents read before, tried again at the pace.
                 state.discovery_retry_at = now + FETCH_RETRY_SECONDS
             if keys is not None and found is not None:
-                state.keys = _Keys(uri=found.jwks_uri, keys=tuple(keys), fetched_at=now)
+                published = _Keys(uri=found.jwks_uri, keys=tuple(keys), fetched_at=now)
+                _retire(state, state.keys, published, now)
+                state.keys = published
                 state.failure, state.retry_at = "", 0.0
                 state.forced_published, state.forced_unread = max(state.forced_published, forced), False
             elif outcome and failed is None:
@@ -909,7 +981,16 @@ class OIDCVerifier:
         if keys is None:
             raise self._unavailable(failure)
         key = next((key for key in keys.keys if key.key_id == kid), None)
+        if key is None and self._is_retired(configured, kid):
+            raise UnauthenticatedError("Invalid or expired token")
         return provider, key if key is not None else self._forced(configured, kid)
+
+    def _is_retired(self, configured: str, kid: str) -> bool:
+        """Whether ``kid`` is one ``configured`` published in a set this verifier read and left out of a later one, and
+        not yet forgotten (`_retire`). Asked only of a `kid` the snapshot does not hold, so a key the issuer publishes
+        again verifies again from the read that finds it back."""
+        with self._lock:
+            return kid in self._state[configured].retired
 
     def verify(self, token: str) -> IDToken:
         """Verify a bearer token and return its parsed claims.

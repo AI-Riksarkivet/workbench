@@ -88,8 +88,15 @@ lakehouse only through what rask publishes, the way any outside tool would:
   request never reads and never waits, and judges its token on the set read last while that is younger than 300 s,
   else answers 503 at once with Retry-After. So a key the issuer drops (Dex on memory storage drops them all at a
   restart) is refused everywhere within about a minute, and none is trusted past 300 s from its read while the issuer
-  is away. The one wait: a token naming a key the set does not hold asks for one forced read (at most one per issuer
-  per 30 s), and it and every such token arriving while that read is in flight, at most 8 per issuer (`FORCED_WAITERS`:
+  is away. A key that was in a set the process read and is absent from the two successful reads after it (periodic or
+  forced, `RETIRE_AFTER_READS`; one read is not enough, since replicas of an issuer can serve different sets) is
+  retired: a token naming it is refused 401 at once, with no read, no wait and no pace spent. Each issuer's own; only
+  keys the issuer published; never one the current set holds again; remembered 24 h and at most 32 per issuer
+  (`RETIRED_KID_SECONDS`, `RETIRED_KIDS_PER_ISSUER`); an issuer that serves a set without a key it still signs with for
+  two reads running has that key refused until a read holds it again. A key absent from one read so far, a forgotten
+  one, or one a pod that started after the rotation never saw, meets the rule that follows. The one wait: a token
+  naming a key the set does not hold and that is not retired asks for one forced read (at most one per issuer per
+  30 s), and it and every such token arriving while that read is in flight, at most 8 per issuer (`FORCED_WAITERS`:
   a page's parallel reads after signing in again at a restarted issuer fit, a flood of forged `kid`s parks no more),
   wait for its outcome at most 5 s, and is let in when that read holds its key. Such a token is refused 401 ONLY when a
   read that STARTED after it asked found a set without its key (a read that began before it may predate the key);
@@ -99,8 +106,11 @@ lakehouse only through what rask publishes, the way any outside tool would:
   nobody's session. The app sends a read that met such a 503 again after its Retry-After (`#lib/api/client.ts`, at
   most 3 times and 30 s in all; never a write), and answers any 401 that challenges the session (`WWW-Authenticate`:
   the door's own, and the delegation's "the session must be renewed") with ONE prompt to sign in again that comes back
-  to the same address (`#lib/reauth.svelte.ts`, the shell's session prompt), never a 403, a 503 or a 401 a service
-  only relays, and never sends the person away on its own.
+  to the same address (`#lib/reauth.svelte.ts`, the shell's session prompt), the page behind it keeping what its reads
+  had answered (`#lib/reads.svelte.ts`: a read the session was refused for leaves an answer it held), never a 403, a
+  503 or a 401 a service only relays, and never sends the person away on its own. After a restart of the issuer, the
+  first read a service refuses asks it once more (the second read without the key) and is refused; the page's reads
+  that wait on that same read are refused when it ends, and every read after it at once.
 - **Authorization** is the workbench's own OpenFGA model and store (`service_kit/governed/auth/model.fga`): an org's
   admins and members, a project's five roles (owner > manager > reviewer > annotator > viewer), and the tasks, corpora
   and flows that inherit from a project. It never asks rask's decision door or rask's OpenFGA store, and rask knows

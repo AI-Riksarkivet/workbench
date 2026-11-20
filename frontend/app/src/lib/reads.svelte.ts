@@ -13,6 +13,9 @@
  *  - A call deduplicates a burst (a read settled within {@link FRESH_MS} is reused) and otherwise
  *    re-reads, so opening a page shows the estate as it is now rather than a cached answer.
  *  - A failing read rejects (`error(403, …)` included) and leaves `.current` as it was.
+ *  - A read the session was refused for (an `ApiResult` with `sessionRefused`) leaves a `.current` that held an answer
+ *    as it was: the page behind the shell's one prompt to sign in again keeps what it showed, rather than turning into
+ *    an error. A read that never had an answer takes the refusal, so the page can say why it has nothing.
  *  - Calling a read never makes the CALLER depend on the read's own bookkeeping: an effect that calls
  *    `read()` must not re-run because that read started or settled (its `loading`), or a refresh from
  *    anywhere would re-run every effect that once asked for it.
@@ -48,6 +51,22 @@ async function validated<Out>(
 	return result.value;
 }
 
+/** Whether a read's value is a failed `ApiResult` that the session was refused for. */
+function sessionRefused(value: unknown): boolean {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		'sessionRefused' in value &&
+		value.sessionRefused === true
+	);
+}
+
+/** Whether a read's value is an answer worth keeping: anything but a failed `ApiResult`. */
+function answered(value: unknown): boolean {
+	if (value === undefined) return false;
+	return !(typeof value === 'object' && value !== null && 'ok' in value && value.ok === false);
+}
+
 /** One read, held. It is a Promise of its latest read; what is reactive is `.current`, `.error` and
  *  `.loading`. The promise itself is a plain field, so an effect that awaits a read does not come to
  *  depend on it and re-run when the read is refreshed elsewhere. */
@@ -75,7 +94,7 @@ class Query<T> implements Promise<T> {
 		const promise = this.#run().then(
 			(value) => {
 				if (latest()) {
-					this.current = value;
+					if (!(sessionRefused(value) && answered(this.current))) this.current = value;
 					this.error = undefined;
 					this.loading = false;
 					this.#settledAt = Date.now();

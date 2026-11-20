@@ -72,6 +72,9 @@ from service_kit.governed.oidc import (
     KEY_SET_MAX_AGE_SECONDS,
     KEY_SET_STALE_LIMIT_SECONDS,
     MAX_DOCUMENT_BYTES,
+    RETIRE_AFTER_READS,
+    RETIRED_KID_SECONDS,
+    RETIRED_KIDS_PER_ISSUER,
     UNKNOWN_KID_REFRESH_INTERVAL_SECONDS,
     OIDCVerifier,
 )
@@ -153,6 +156,9 @@ class _IdP(BaseModel):
     drip_headers: dict[str, int] = {}
     #: Paths answered 302 to another path.
     redirects: dict[str, str] = {}
+    #: Paths answered from these bodies in turn, one request each, in place of `documents`: replicas behind one address
+    #: that serve different documents.
+    turns: dict[str, list[bytes]] = {}
     #: Paths answered only once the test sets `release` (at the latest `HELD_SECONDS`, which bounds a hung test alone).
     held: set[str] = set()
     release: threading.Event = Field(default_factory=threading.Event)
@@ -202,6 +208,9 @@ def idp(rsa_key: rsa.RSAPrivateKey) -> Iterator[_IdP]:
             served.fetches[self.path] = served.fetches.get(self.path, 0) + 1
             fault = served.faults.get(self.path)
             body = served.documents.get(self.path)
+            if turn := served.turns.get(self.path):
+                body = turn[0]
+                turn.append(turn.pop(0))
             if served.drip_headers.get(self.path, 0) > 0:
                 served.drip_headers[self.path] -= 1
                 try:
@@ -537,12 +546,14 @@ def test_a_key_rotated_in_whose_forced_read_fails_is_told_to_come_back_and_is_le
 
 
 @pytest.mark.parametrize("door", ["/gated"])
-def test_a_key_the_issuer_stops_publishing_is_refused_once_the_set_held_is_a_minute_old(
+def test_a_key_the_issuer_stops_publishing_is_refused_once_the_set_held_is_a_minute_old_and_at_once_after_a_second_read(
     door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
 ) -> None:
     """An issuer that restarts with new keys (Dex on memory storage) leaves every token it signed before unverifiable. The
     refresher reads the set again at `KEY_SET_MAX_AGE_SECONDS` from its fetch, so every service drops the key within one
-    refresh of the issuer dropping it, whenever each of them last read it."""
+    refresh of the issuer dropping it, whenever each of them last read it. The first request naming the key asks for
+    one forced read, which lacks the key too: two reads running without it retire it, so that request is refused 401
+    and every later one is refused at once, with no further read of the issuer; a token signed by the new key is let in."""
     clock = _Clock()
     client = _client(idp, clock=clock)
     token = _token(idp, rsa_key, "RS256")
@@ -553,9 +564,153 @@ def test_a_key_the_issuer_stops_publishing_is_refused_once_the_set_held_is_a_min
 
     clock.now += 1
     _until_held_at(idp, clock.now)
+    state = _verifiers[-1]._state[idp.issuer]
+    statuses = [_call(idp, door, token, client=client)[0] for _ in range(FORCED_WAITERS + 4)]
+    renewed = _call(idp, door, _token(idp, stranger_key, "RS256", kid="after-restart"), client=client)[0]
+
+    assert (statuses, renewed, idp.fetches[JWKS_PATH], state.forced_asked) == ([401] * (FORCED_WAITERS + 4), 200, 3, 1)
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_an_issuer_whose_replicas_serve_different_sets_in_turn_never_has_its_key_refused(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """Behind one address, two replicas of the issuer serve different sets (a rollout under way, a cache per node), and
+    the reads land on them in turn: one holds the key the issuer signs with, the other does not. A read without the key
+    followed by one with it is no withdrawal, so a token signed by that key is never refused: where the set held lacks
+    it, its forced read finds it on the other replica."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    idp.turns[JWKS_PATH] = [_key_set(stranger_key, "other-replica"), idp.documents[JWKS_PATH]]
+
+    statuses: list[int] = []
+    for _ in range(6):
+        clock.now += KEY_SET_MAX_AGE_SECONDS
+        _until_held_at(idp, clock.now)
+        statuses += [_call(idp, door, token, client=client)[0] for _ in range(3)]
+
+    assert statuses == [200] * 18
+
+
+def _publish_and_hold(idp: _IdP, clock: _Clock, key_set: bytes) -> None:
+    """The issuer serves ``key_set`` and the refresher's next periodic read holds it."""
+    idp.documents[JWKS_PATH] = key_set
+    clock.now += KEY_SET_MAX_AGE_SECONDS
+    _until_held_at(idp, clock.now)
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_the_issuer_publishes_again_verifies_again_from_the_read_that_finds_it(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """A retired key the issuer publishes again (a rollback of its keys) is trusted again from the read that finds it, and
+    is retired no longer: when the issuer drops it once more, one read without it makes it no more than a key the set
+    does not hold, so its first request asks for a forced read rather than being refused at once."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    original, rotated = idp.documents[JWKS_PATH], _key_set(stranger_key, "after-restart")
+    for _ in range(RETIRE_AFTER_READS):
+        _publish_and_hold(idp, clock, rotated)
+    retired = _call(idp, door, token, client=client)[0]
+
+    _publish_and_hold(idp, clock, original)
+    status, body = _call(idp, door, token, client=client)
+    _publish_and_hold(idp, clock, rotated)
+    read_before = idp.fetches[JWKS_PATH]
+    dropped_again = _call(idp, door, token, client=client)[0]
+
+    assert (retired, status, dropped_again, idp.fetches[JWKS_PATH] - read_before) == (401, 200, 401, 1), body
+
+
+#: How a test's verifier comes to hold a set without the key `KID` names, in ``(idp, clock, client, rsa_key, stranger_key)``.
+_Unseen = Callable[[_IdP, _Clock, TestClient, rsa.RSAPrivateKey, rsa.RSAPrivateKey], None]
+
+
+def _never_seen(idp: _IdP, clock: _Clock, client: TestClient, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey) -> None:
+    """The process first read the set after the issuer had dropped the key: a pod restarted after the issuer's rotation."""
+    del clock, rsa_key
+    idp.documents[JWKS_PATH] = _key_set(stranger_key, "after-restart")
+    assert _call(idp, "/gated", _token(idp, stranger_key, "RS256", kid="after-restart"), client=client)[0] == 200
+
+
+def _forgotten_past_its_age(idp: _IdP, clock: _Clock, client: TestClient, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey) -> None:
+    """The key retired `RETIRED_KID_SECONDS` before the set held was read."""
+    assert _call(idp, "/gated", _token(idp, rsa_key, "RS256"), client=client)[0] == 200
+    for _ in range(RETIRE_AFTER_READS):
+        _publish_and_hold(idp, clock, _key_set(stranger_key, "after-restart"))
+    clock.now += RETIRED_KID_SECONDS - KEY_SET_MAX_AGE_SECONDS
+    _publish_and_hold(idp, clock, _key_set(stranger_key, "after-restart"))
+
+
+@pytest.mark.parametrize("unseen", [_never_seen, _forgotten_past_its_age], ids=["never-seen", "past-its-age"])
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_dropped_key_this_process_does_not_remember_retiring_costs_one_forced_read_and_is_refused(
+    door: str, unseen: _Unseen, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """What the retired memory does not hold meets the rule for a `kid` the set does not hold: one forced read, then 401.
+    So the memory's bounds cost a read, never a wrong answer; and a pod that started after the issuer's rotation, which
+    never saw the old key, judges it by that rule alone."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    unseen(idp, clock, client, rsa_key, stranger_key)
+    state = _verifiers[-1]._state[idp.issuer]
+    read_before = idp.fetches[JWKS_PATH]
+
     status, body = _call(idp, door, token, client=client)
 
-    assert status == 401, body
+    assert (status, idp.fetches[JWKS_PATH] - read_before, state.forced_asked) == (401, 1, 1), body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_past_the_cap_the_oldest_retired_key_is_forgotten_and_the_newest_are_refused_at_once(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """The issuer retires `RETIRED_KIDS_PER_ISSUER` keys after the first: the first, the oldest, is forgotten and meets the
+    rule for a `kid` the set does not hold (one forced read, then 401); the newest are still refused at once."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
+    # Each key is retired by the second read that lacks it, so the first key and the next `RETIRED_KIDS_PER_ISSUER` are
+    # retired once this many sets have followed it.
+    for n in range(RETIRED_KIDS_PER_ISSUER + RETIRE_AFTER_READS):
+        _publish_and_hold(idp, clock, _key_set(stranger_key, f"after-{n}"))
+    read_before = idp.fetches[JWKS_PATH]
+
+    newest = [_call(idp, door, _token(idp, rsa_key, "RS256", kid=f"after-{n}"), client=client)[0] for n in range(RETIRED_KIDS_PER_ISSUER)]
+    read_for_newest = idp.fetches[JWKS_PATH] - read_before
+    oldest = _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0]
+
+    assert (newest, read_for_newest, oldest, idp.fetches[JWKS_PATH] - read_before) == ([401] * RETIRED_KIDS_PER_ISSUER, 0, 401, 1)
+
+
+def test_a_key_one_issuer_retired_is_nothing_to_another(idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """Each issuer's retired keys are its own: a further issuer rotating its key retires it for that issuer's tokens
+    alone, and a token of the first issuer naming the same `kid` meets the first issuer's own rule (one forced read of
+    it, then 401)."""
+    further = Provider()
+    try:
+        clock = _Clock()
+        client = _client(idp, clock=clock, further=OidcProvider(issuer=further.issuer, idp_id="further", allow_insecure=True))
+        old = further.mint("ada", audience=AUDIENCE, jkt=BROWSER.jkt)
+        assert _call(idp, "/gated", old, client=client)[0] == 200
+        further.rotate()
+        held = _verifiers[-1]._state
+        for _ in range(RETIRE_AFTER_READS):
+            clock.now += KEY_SET_MAX_AGE_SECONDS
+            _until(lambda: all(getattr(held[issuer].keys, "fetched_at", None) == clock.now for issuer in (idp.issuer, further.issuer)))
+        reads = (idp.fetches[JWKS_PATH], further.fetches.count("/jwks"))
+
+        theirs = _call(idp, "/gated", old, client=client)[0]
+        ours = _call(idp, "/gated", _token(idp, rsa_key, "RS256", kid=str(jwt.get_unverified_header(old)["kid"])), client=client)[0]
+    finally:
+        further.close()
+
+    assert (theirs, ours, idp.fetches[JWKS_PATH] - reads[0], further.fetches.count("/jwks") - reads[1]) == (401, 401, 1, 0)
 
 
 def _burst(idp: _IdP, door: str, token: str, client: TestClient, n: int = 8) -> tuple[list[int], float]:

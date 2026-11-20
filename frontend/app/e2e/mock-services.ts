@@ -89,9 +89,16 @@ const ISSUER_READ_MS = 300;
  *  shortened so a spec does not wait it out. It is also the `Retry-After` such a request is answered with. */
 const KEY_RETRY_MS = 1000;
 
-/** One service's copy of one person's key set, its forced read (whether it read a set), and what it answered. */
+/** One service's copy of one person's key set, the keys it saw the issuer withdraw, its forced read (whether it read a
+ *  set), and what it answered. */
 interface KeySet {
 	held: Set<string>;
+	/** Keys a set this service read held and the `RETIRE_AFTER_READS` reads after it, periodic or forced, all lack:
+	 *  `service_kit.governed.oidc`'s retired `kid`s, refused at once with no forced read (its cap and age are never
+	 *  reached by a spec). */
+	retired: Set<string>;
+	/** Keys absent from the latest reads, with how many reads running lacked each. */
+	absent: Map<string, number>;
 	reading: Promise<boolean> | null;
 	askedAt: number;
 	/** When the refresher asks again for a forced read that failed; 0 when none is pending. */
@@ -108,6 +115,8 @@ function keySetOf(service: string, sub: string): KeySet {
 	if (found) return found;
 	const made: KeySet = {
 		held: new Set([FIRST_KEY]),
+		retired: new Set(),
+		absent: new Map(),
 		reading: null,
 		askedAt: -Infinity,
 		retryAt: 0,
@@ -127,13 +136,32 @@ async function issuerKeys(sub: string): Promise<Set<string>> {
 	return new Set(body.keys.map((key) => key.kid));
 }
 
+/** `service_kit.governed.oidc`'s `RETIRE_AFTER_READS`. */
+const RETIRE_AFTER_READS = 2;
+
+/** A set the service read replacing the one it held: a key the held set had and the new one lacks is absent from one
+ *  read, one absent before and from this read too from one more, and at `RETIRE_AFTER_READS` it is retired; what the
+ *  new one holds is neither. */
+function publish(set: KeySet, held: Set<string>): void {
+	const absent = new Map<string, number>();
+	for (const [kid, reads] of set.absent) if (!held.has(kid)) absent.set(kid, reads + 1);
+	for (const kid of set.held) if (!held.has(kid)) absent.set(kid, 1);
+	for (const kid of held) set.retired.delete(kid);
+	set.absent = new Map();
+	for (const [kid, reads] of absent) {
+		if (reads >= RETIRE_AFTER_READS) set.retired.add(kid);
+		else set.absent.set(kid, reads);
+	}
+	set.held = held;
+}
+
 /** The refresher asking the issuer again, `KEY_RETRY_MS` after a forced read failed, until it reads a set. */
 function askAgain(set: KeySet, sub: string): void {
 	set.retryAt = Date.now() + KEY_RETRY_MS;
 	setTimeout(() => {
 		issuerKeys(sub).then(
 			(held) => {
-				set.held = held;
+				publish(set, held);
 				set.retryAt = 0;
 			},
 			() => askAgain(set, sub),
@@ -141,8 +169,9 @@ function askAgain(set: KeySet, sub: string): void {
 	}, KEY_RETRY_MS);
 }
 
-/** What `service` makes of the key `claims` names: held; refused, only once a forced read that ended after this
- *  request asked read a set without it; or, every other way, come back in `retryAfter` ms. */
+/** What `service` makes of the key `claims` names: held; refused at once when it is retired; refused, only once a
+ *  forced read that ended after this request asked read a set without it; or, every other way, come back in
+ *  `retryAfter` ms. */
 async function keyVerdict(
 	service: string,
 	claims: TokenClaims,
@@ -150,6 +179,7 @@ async function keyVerdict(
 	const kid = claims.kid ?? FIRST_KEY;
 	const set = keySetOf(service, claims.sub);
 	if (set.held.has(kid)) return 'held';
+	if (set.retired.has(kid)) return 'refused';
 	let reading = set.reading;
 	if (reading === null) {
 		const now = Date.now();
@@ -161,7 +191,7 @@ async function keyVerdict(
 		reading = (async () => {
 			await Bun.sleep(ISSUER_READ_MS);
 			try {
-				set.held = await issuerKeys(claims.sub);
+				publish(set, await issuerKeys(claims.sub));
 				set.retryAt = 0;
 				return true;
 			} catch {
@@ -996,7 +1026,7 @@ Bun.serve({
 		}
 		if (url.pathname === '/__reread' && req.method === 'POST') {
 			const sub = url.searchParams.get('sub') ?? '';
-			keySetOf(url.searchParams.get('service') ?? '', sub).held = await issuerKeys(sub);
+			publish(keySetOf(url.searchParams.get('service') ?? '', sub), await issuerKeys(sub));
 			return json({ ok: true });
 		}
 		if (url.pathname === '/__keysets') {
