@@ -23,14 +23,14 @@
 		type PaginationState,
 		type RowSelectionState,
 		type SortingState,
-	} from '@workbench/ui/data-table';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { Input } from '@workbench/ui/input';
-	import { ResizableSplit } from '@workbench/ui/resizable-split';
-	import { Select } from '@workbench/ui/select';
-	import { Textarea } from '@workbench/ui/textarea';
+	} from '@riksarkivet/ui/data-table';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { Input } from '@riksarkivet/ui/input';
+	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
+	import { Select } from '@riksarkivet/ui/select';
+	import { Textarea } from '@riksarkivet/ui/textarea';
 	import { ExternalLink, Eye, LayoutGrid, Rows3, Trash2 } from '@lucide/svelte';
 
 	import { linkWith } from '#lib/project.ts';

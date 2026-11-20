@@ -3,7 +3,7 @@
 	 * A read that failed, said in the reader's terms: what could not be loaded, what to do about it, and
 	 * the service's own words beneath for whoever has to look into it, with a way to try again.
 	 */
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 
 	let {
 		what,

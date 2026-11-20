@@ -1,9 +1,9 @@
 <script lang="ts">
-	// Chrome on the workbench's design system, @workbench/ui (Button, Select, Input).
-	import { Button } from '@workbench/ui';
-	import { Select } from '@workbench/ui/select';
-	import { Input } from '@workbench/ui/input';
-	import type { SelectOption } from '@workbench/ui/select';
+	// Chrome on the design system, @riksarkivet/ui (Button, Select, Input).
+	import { Button } from '@riksarkivet/ui';
+	import { Select } from '@riksarkivet/ui/select';
+	import { Input } from '@riksarkivet/ui/input';
+	import type { SelectOption } from '@riksarkivet/ui/select';
 	import FilterPopover from '#lib/explore/components/filter-popover.svelte';
 	import HelpPopover from '#lib/explore/components/help-popover.svelte';
 	import SearchSettings from '#lib/explore/components/search-settings.svelte';

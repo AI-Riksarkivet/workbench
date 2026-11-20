@@ -3,10 +3,10 @@
 	// `AnnotatorStore.update_settings`; the door decides): the title, description and instructions; whether review is
 	// required and how long a claim lasts; the consensus. Saved together, only what changed is sent.
 	import { untrack } from 'svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Input } from '@workbench/ui/input';
-	import { Switch } from '@workbench/ui/switch';
-	import { Textarea } from '@workbench/ui/textarea';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Input } from '@riksarkivet/ui/input';
+	import { Switch } from '@riksarkivet/ui/switch';
+	import { Textarea } from '@riksarkivet/ui/textarea';
 
 	import { updateProjectSettings, type ProjectSettings } from '#lib/api/projects.api.ts';
 	import type { Project } from './types.ts';

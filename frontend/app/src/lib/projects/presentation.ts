@@ -2,7 +2,7 @@
  * Pure presentation maps for the projects plane — kept out of components so the chip colours and
  * progress math are unit-testable and cannot fork per surface.
  */
-import type { BadgeVariant } from '@workbench/ui/badge';
+import type { BadgeVariant } from '@riksarkivet/ui/badge';
 
 import type { ProjectState, TaskState } from './types.ts';
 

@@ -3,7 +3,7 @@
 	// recording's transcribed segment) as a line in reading order, each a span-labeling surface (`TextLines`). Shown when
 	// the task has classes that mark text and a row holds text; collapsible, so the picture keeps its room.
 	import { ChevronDown, ChevronUp } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import ClassPicker from '../ClassPicker.svelte';
 	import type { AnnotatorController } from '../controller.svelte.ts';
 	import TextLines from './TextLines.svelte';

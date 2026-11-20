@@ -1,4 +1,4 @@
-import { formatAbsolute, toDate } from '@workbench/ui/utils';
+import { formatAbsolute, toDate } from '@riksarkivet/ui/utils';
 
 const pad = (n: number): string => String(n).padStart(2, '0');
 

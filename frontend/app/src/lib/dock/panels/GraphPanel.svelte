@@ -13,10 +13,10 @@
 	 */
 	import { untrack } from 'svelte';
 	import { HelpCircle, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui';
-	import { Input } from '@workbench/ui/input';
-	import { Select, type SelectOption } from '@workbench/ui/select';
-	import { appearance } from '@workbench/ui/appearance';
+	import { Button } from '@riksarkivet/ui';
+	import { Input } from '@riksarkivet/ui/input';
+	import { Select, type SelectOption } from '@riksarkivet/ui/select';
+	import { appearance } from '@riksarkivet/ui/appearance';
 	import { graphStatus } from '#lib/api/graph.api.ts';
 	import { failureText } from '#lib/failure.ts';
 	import GpuGraph from '#lib/graph/gpu-graph.svelte';

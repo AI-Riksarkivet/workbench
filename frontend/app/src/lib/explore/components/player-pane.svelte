@@ -31,7 +31,7 @@
 		Minimize2,
 		MousePointerClick,
 	} from '@lucide/svelte';
-	import { Button } from '@workbench/ui';
+	import { Button } from '@riksarkivet/ui';
 	import { panesFor, shownTab } from '#lib/explore/pane-capabilities.ts';
 	import DiarizationTimeline from '#lib/explore/components/diarization-timeline.svelte';
 	import LoadFailure from '#lib/shell/load-failure.svelte';

@@ -11,7 +11,7 @@
 	 * person has stopped changing the columns for a moment (`CHECK_AFTER_MS`), never of the whole view: a
 	 * form being edited starts one small read, not a build per keystroke. It warns; it does not block.
 	 */
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { graphCheck, treeCheck, type TableProfile } from '#lib/api/derived.api.ts';
 	import { failureText } from '#lib/failure.ts';
 	import { prefillAtlas, prefillGraph, prefillTree, suggest, type Candidate } from './suggest.ts';

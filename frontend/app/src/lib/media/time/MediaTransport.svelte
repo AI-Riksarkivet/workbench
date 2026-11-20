@@ -6,9 +6,9 @@
 	// (`TimeStrip.svelte`).
 	import type { Snippet } from 'svelte';
 	import { Pause, Play, Volume1, Volume2, VolumeX } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Slider } from '@workbench/ui/slider';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Slider } from '@riksarkivet/ui/slider';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { formatClock } from './timeline.ts';
 
 	let {

@@ -21,7 +21,7 @@
 	// to the element. The current word is the design system's primary pair (`bg-primary` under
 	// `text-primary-foreground`), whose contrast the tokens hold in both themes.
 	import { formatClock, spanAt } from './timeline.ts';
-	import { cn } from '@workbench/ui/utils';
+	import { cn } from '@riksarkivet/ui/utils';
 
 	let {
 		lines,

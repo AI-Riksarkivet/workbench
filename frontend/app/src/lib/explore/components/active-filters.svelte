@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { activeView, type SearchSpec } from '@workbench/explorer-api';
-	import { Badge, Button } from '@workbench/ui';
+	import { Badge, Button } from '@riksarkivet/ui';
 	import { X } from '@lucide/svelte';
 
 	type Props = {

@@ -3,7 +3,7 @@
 	// (`?pass=review`): accept, send back with a note, or fix and accept on the canvas itself, by key, each verdict
 	// moving on to the next item in review. Their own submissions are left out: the door refuses a self-review. Where
 	// the project has replicas, the canvas sets the group's other replicas beside the item to compare.
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { Play } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';

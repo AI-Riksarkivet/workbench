@@ -40,7 +40,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY frontend/app app
 COPY frontend/packages packages
 
-# The app compiles @workbench/ui from its source (its exports name `src/`), so no package builds first.
+# The app compiles its packages from source (the design system @riksarkivet/ui, which the install fetched from GitHub
+# at the commit bun.lock pins, and its workspace packages: their exports name `src/`), so no package builds first.
 # hadolint ignore=DL3059
 RUN bun run --cwd=app build
 

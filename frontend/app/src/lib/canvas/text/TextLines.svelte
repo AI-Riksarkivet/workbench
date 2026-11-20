@@ -11,9 +11,9 @@
 	import { Check, Pencil, X } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { on } from 'svelte/events';
-	import { Button } from '@workbench/ui/button';
-	import { Textarea } from '@workbench/ui/textarea';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Textarea } from '@riksarkivet/ui/textarea';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { AnnotatorController } from '../controller.svelte.ts';
 	import {
 		movedEdge,

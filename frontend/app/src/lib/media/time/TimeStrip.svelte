@@ -8,7 +8,7 @@
 	// and 0 shows the whole recording. A press on the ruler or the waveform seeks, unless `onpointer` takes it. While
 	// playing, the view follows the playhead.
 	import { onMount, untrack, type Snippet } from 'svelte';
-	import { appearance } from '@workbench/ui/appearance';
+	import { appearance } from '@riksarkivet/ui/appearance';
 	import { RectRenderer, rgba } from '#lib/gpu/rects.ts';
 	import { formatClock } from './timeline.ts';
 	import {

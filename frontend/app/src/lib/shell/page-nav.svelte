@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { ChevronRight } from '@lucide/svelte';
-	import * as Collapsible from '@workbench/ui/collapsible';
-	import * as Sidebar from '@workbench/ui/sidebar';
-	import { useSidebar } from '@workbench/ui/sidebar';
+	import * as Collapsible from '@riksarkivet/ui/collapsible';
+	import * as Sidebar from '@riksarkivet/ui/sidebar';
+	import { useSidebar } from '@riksarkivet/ui/sidebar';
 	import { mergeProps } from 'bits-ui';
 	import type { PageNav, PageNavGroup, PageNavLeaf } from './nav-config.ts';
 

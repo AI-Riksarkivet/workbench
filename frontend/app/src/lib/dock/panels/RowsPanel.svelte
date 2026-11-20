@@ -9,7 +9,7 @@
 	 * screen, disabled, with the reason.
 	 */
 	import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Search, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { tableRows, type ColumnView } from '#lib/api/datasets.api.ts';
 	import { aloneKey, nodeRows, type Extent } from '#lib/api/derived.api.ts';
 	import { plainPanes } from '#lib/explore/pane-capabilities.ts';

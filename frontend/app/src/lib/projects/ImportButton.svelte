@@ -9,7 +9,7 @@
 	// would throw away the only thing that lets someone fix the file.
 	import { importAnnotations } from '#lib/api/projects.api.ts';
 	import { Upload } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 
 	let {
 		taskId,

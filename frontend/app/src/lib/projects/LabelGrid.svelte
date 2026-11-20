@@ -15,11 +15,11 @@
 	import { page } from '$app/state';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import type { Attachment } from 'svelte/attachments';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { Select } from '@workbench/ui/select';
-	import { Textarea } from '@workbench/ui/textarea';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { Select } from '@riksarkivet/ui/select';
+	import { Textarea } from '@riksarkivet/ui/textarea';
 	import { AudioLines, ExternalLink, Redo2, Undo2 } from '@lucide/svelte';
 
 	import { linkWith } from '#lib/project.ts';

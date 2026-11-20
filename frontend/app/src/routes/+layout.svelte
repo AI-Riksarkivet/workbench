@@ -2,7 +2,8 @@
 	import '../app.css';
 	import { onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { appearance } from '@workbench/ui/appearance';
+	import { appearance } from '@riksarkivet/ui/appearance';
+	import { APPEARANCE } from '#lib/appearance-options.ts';
 	import type { Snippet } from 'svelte';
 	import { AppShell, type NavUser } from '#lib/shell/index.ts';
 	import { auth, RENEW_MARGIN_SECONDS, renewOrSignIn } from '#lib/auth.svelte.ts';
@@ -62,8 +63,9 @@
 	});
 
 	// The person's theme, light or dark, and accent: kept in this browser and already on the page before it painted
-	// (`static/appearance-boot.js`); from here the store owns it, and follows the system when the mode is `system`.
-	$effect(() => appearance.start());
+	// (`/appearance-boot.js`, which the design system's Vite plugin builds with the same options); from here the store
+	// owns it, and follows the system when the mode is `system`.
+	$effect(() => appearance.start(APPEARANCE));
 
 	onNavigate((navigation) => {
 		if (!document.startViewTransition) return;

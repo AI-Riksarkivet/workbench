@@ -6,7 +6,7 @@
 	import { ChevronLeft, ChevronRight } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { keyIsNotTheCanvas } from './walk-keys.ts';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 
 	import type { StreamPosition } from './task-stream.ts';
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import * as Sidebar from '@workbench/ui/sidebar';
+	import * as Sidebar from '@riksarkivet/ui/sidebar';
 	import PageNav from './page-nav.svelte';
 	import type { PageNav as PageNavConfig } from './nav-config.ts';
 

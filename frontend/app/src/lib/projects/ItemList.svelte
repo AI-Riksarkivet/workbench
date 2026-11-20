@@ -1,8 +1,8 @@
 <script lang="ts">
 	// A page of items as a list of links onto the canvas, each named by its document where its row is read, with its
 	// state and who worked it: what the Browse and Review tabs list before a person walks them one at a time.
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
 	import { ChevronLeft, ChevronRight } from '@lucide/svelte';
 
 	import { corpusRows } from '#lib/api/projects.api.ts';

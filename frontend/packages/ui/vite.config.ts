@@ -2,7 +2,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
-// Used by Storybook to render components
+// The package's own tests (vitest).
 export default defineConfig({
 	plugins: [tailwindcss(), svelte()],
 	// A component test mounts in a DOM (happy-dom), so Svelte resolves to its browser build there.

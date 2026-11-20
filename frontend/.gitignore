@@ -6,4 +6,3 @@ node_modules
 */test-results
 test-results
 packages/*/dist
-storybook-static/

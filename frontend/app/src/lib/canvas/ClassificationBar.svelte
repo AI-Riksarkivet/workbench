@@ -6,7 +6,7 @@
 	// validator's job at submit, not the bar's.
 	//
 	import { Check } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let { controller }: { controller: AnnotatorController } = $props();

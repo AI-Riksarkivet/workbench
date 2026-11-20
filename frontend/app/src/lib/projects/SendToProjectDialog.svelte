@@ -8,10 +8,10 @@
 	 * `can_send_items` on it, and the dataset must be one the reader can read.
 	 */
 	import { resolve } from '$app/paths';
-	import { Button } from '@workbench/ui/button';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { Input } from '@workbench/ui/input';
-	import { Select } from '@workbench/ui/select';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { Input } from '@riksarkivet/ui/input';
+	import { Select } from '@riksarkivet/ui/select';
 	import { createProject, fetchProject, listProjects, sendItems } from '#lib/api/projects.api.ts';
 	import { sendItemsFor, sendRefusal, type SendSource } from './send.ts';
 

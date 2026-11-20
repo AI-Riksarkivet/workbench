@@ -12,8 +12,8 @@
 	 * by the set-up's own columns (`plain.pickNode`). What the read left out is said above the graph.
 	 */
 	import { Loader2, Settings2, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { appearance } from '@workbench/ui/appearance';
+	import { Button } from '@riksarkivet/ui/button';
+	import { appearance } from '@riksarkivet/ui/appearance';
 	import { derivedGraph, tableProfile } from '#lib/api/derived.api.ts';
 	import { buildHuePalette } from '#lib/atlas/atlas-colors.ts';
 	import { dockControl } from '#lib/dock/dock-control.svelte.ts';

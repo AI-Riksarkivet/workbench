@@ -13,9 +13,9 @@
 	import { page } from '$app/state';
 	import { signInAgainOnce, signedInAt } from '#lib/reauth.ts';
 	import { linkWith } from '#lib/project.ts';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import * as Tabs from '@workbench/ui/tabs';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import * as Tabs from '@riksarkivet/ui/tabs';
 	import { ArrowLeft, Inbox, Pencil, RefreshCw } from '@lucide/svelte';
 	import { fetchProject, fireProjectEvent, pageTasks } from '#lib/api/projects.api.ts';
 	import { goto } from '$app/navigation';

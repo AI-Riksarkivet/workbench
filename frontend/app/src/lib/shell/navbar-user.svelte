@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { Avatar, AvatarFallback } from '@workbench/ui/avatar';
-	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import { Avatar, AvatarFallback } from '@riksarkivet/ui/avatar';
+	import * as DropdownMenu from '@riksarkivet/ui/dropdown-menu';
 	import MenuLink from './menu-link.svelte';
-	import { Button } from '@workbench/ui/button';
-	import { AccentDialog, AppearanceMenu } from '@workbench/ui/appearance';
+	import { Button } from '@riksarkivet/ui/button';
+	import { AccentDialog, AppearanceMenu } from '@riksarkivet/ui/appearance';
 	import { LogIn, LogOut } from '@lucide/svelte';
 	import type { NavUser } from './nav-config.ts';
 

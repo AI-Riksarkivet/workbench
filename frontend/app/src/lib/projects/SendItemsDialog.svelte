@@ -1,9 +1,9 @@
 <script lang="ts">
 	// Items sent by key path, pasted one per line. A dataset's search results and atlas selection send theirs
 	// with `SendToProjectDialog`; this is the way in for keys from anywhere else.
-	import { Button } from '@workbench/ui/button';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { Textarea } from '@workbench/ui/textarea';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { Textarea } from '@riksarkivet/ui/textarea';
 
 	import { sendItems } from '#lib/api/projects.api.ts';
 

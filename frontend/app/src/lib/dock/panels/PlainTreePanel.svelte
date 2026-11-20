@@ -20,7 +20,7 @@
 	 * "(itself)" leaf the rows at it alone, read from the node's own door by its key.
 	 */
 	import { Loader2, Settings2, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { derivedTree, tableProfile } from '#lib/api/derived.api.ts';
 	import { dockControl } from '#lib/dock/dock-control.svelte.ts';
 	import { failureText } from '#lib/failure.ts';

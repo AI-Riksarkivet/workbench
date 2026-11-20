@@ -5,15 +5,15 @@
 	import { Plus } from '@lucide/svelte';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { ANNOTATOR_HINT } from './presentation.ts';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Card } from '@workbench/ui/card';
-	import { Checkbox } from '@workbench/ui/checkbox';
-	import { Input } from '@workbench/ui/input';
-	import { Textarea } from '@workbench/ui/textarea';
-	import { Progress } from '@workbench/ui/progress';
-	import { Select } from '@workbench/ui/select';
-	import * as Tabs from '@workbench/ui/tabs';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Card } from '@riksarkivet/ui/card';
+	import { Checkbox } from '@riksarkivet/ui/checkbox';
+	import { Input } from '@riksarkivet/ui/input';
+	import { Textarea } from '@riksarkivet/ui/textarea';
+	import { Progress } from '@riksarkivet/ui/progress';
+	import { Select } from '@riksarkivet/ui/select';
+	import * as Tabs from '@riksarkivet/ui/tabs';
 	import { FolderPlus, RefreshCw } from '@lucide/svelte';
 
 	import { createProject, listProjects } from '#lib/api/projects.api.ts';

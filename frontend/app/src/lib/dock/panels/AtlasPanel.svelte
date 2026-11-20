@@ -13,8 +13,8 @@
 	import { Inbox } from '@lucide/svelte';
 	import type { Hit } from '@workbench/explorer-api';
 	import { activeView } from '@workbench/explorer-api/descriptor';
-	import { Button } from '@workbench/ui/button';
-	import { ResizableSplit } from '@workbench/ui/resizable-split';
+	import { Button } from '@riksarkivet/ui/button';
+	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
 	import AtlasMap from '#lib/atlas/AtlasMap.svelte';
 	import { crossFilter } from '#lib/atlas/cross-filter.svelte.ts';
 	import { dockControl } from '#lib/dock/dock-control.svelte.ts';
@@ -25,7 +25,7 @@
 	import { loadCols, persistCols } from '#lib/explore/table-columns.ts';
 	import { projectOf } from '#lib/project.ts';
 	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
-	import { GatedAction } from '@workbench/ui/gated-action';
+	import { GatedAction } from '@riksarkivet/ui/gated-action';
 	import { sendGate } from '#lib/explore/pane-capabilities.ts';
 	import { selectionKeys } from '#lib/projects/send.ts';
 

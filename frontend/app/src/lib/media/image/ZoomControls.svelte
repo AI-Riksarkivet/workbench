@@ -2,8 +2,8 @@
 	// The zoom cluster that floats over a still (bottom right): zoom out, the scale, zoom in, fit and actual size.
 	// It drives whatever view it is handed: the player's viewer or the labeling canvas.
 	import { Maximize, ZoomIn, ZoomOut } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { Zoomable } from './zoom.ts';
 
 	let { target, class: className }: { target: Zoomable; class?: string } = $props();

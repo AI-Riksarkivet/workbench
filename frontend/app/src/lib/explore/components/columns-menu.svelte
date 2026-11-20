@@ -6,7 +6,7 @@
 	import type { Snippet } from 'svelte';
 	import { Columns3 } from '@lucide/svelte';
 	import { Popover } from 'bits-ui';
-	import { Button, buttonVariants } from '@workbench/ui';
+	import { Button, buttonVariants } from '@riksarkivet/ui';
 
 	type Props = {
 		columns: readonly { key: string; label: string }[];

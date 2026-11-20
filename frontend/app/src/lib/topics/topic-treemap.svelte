@@ -24,7 +24,7 @@
 	import { scaleOrdinal } from 'd3-scale';
 	import { schemeTableau10 } from 'd3-scale-chromatic';
 	import { ChevronRight, ArrowRight, Eye, EyeOff } from '@lucide/svelte';
-	import { Button } from '@workbench/ui';
+	import { Button } from '@riksarkivet/ui';
 	import type { TopicNode } from '@workbench/explorer-api';
 	import TopicSankey from './topic-sankey.svelte';
 

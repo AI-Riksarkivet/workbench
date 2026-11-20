@@ -2,9 +2,9 @@
 	// Layers section (lives inside the sidebar). Group-by column + per-group
 	// visibility + color, bound to the controller's LayerStore.
 	import { Eye, EyeOff, ChevronDown, ChevronRight, Layers } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Select } from '@workbench/ui/select';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Select } from '@riksarkivet/ui/select';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let { controller }: { controller: AnnotatorController } = $props();

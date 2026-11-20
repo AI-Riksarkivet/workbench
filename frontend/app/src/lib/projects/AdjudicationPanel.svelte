@@ -3,9 +3,9 @@
 	// canonical replica — never blends them. Renders only when replica groups exist. The pick is
 	// server-gated (can_manage) and server-validated (accepted members only, refused once
 	// provenance freezes); a refusal here is the SERVER's 403/409, surfaced verbatim.
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Card } from '@workbench/ui/card';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Card } from '@riksarkivet/ui/card';
 
 	import { adjudicate, clearAdjudication, pageTasks } from '#lib/api/projects.api.ts';
 	import { taskStateVariant } from './presentation.ts';

@@ -8,7 +8,7 @@
 	import { audioPreview } from '#lib/explore/audio-preview.svelte.ts';
 	import { fmtTime, queryTerms, makeHighlighter, cn, hitKey } from '#lib/explore/utils.ts';
 	import { AudioLines, FileText, Film, Image as ImageIcon, Play, Pause } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui';
+	import { Badge } from '@riksarkivet/ui';
 
 	type Props = {
 		hit: Hit;

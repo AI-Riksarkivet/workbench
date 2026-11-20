@@ -9,7 +9,6 @@
 		"**/.svelte-check/**",
 		"**/build/**",
 		"**/dist/**",
-		"**/storybook-static/**",
 		"**/*.generated.ts",
 		"**/src/generated/**",
 		"**/e2e/seeded-answers.json"

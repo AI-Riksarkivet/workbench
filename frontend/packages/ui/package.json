@@ -197,9 +197,7 @@
 		"test": "vitest run --passWithNoTests",
 		"lint": "oxlint .",
 		"fmt": "rsvelte-fmt .",
-		"fmt:check": "rsvelte-fmt --check .",
-		"storybook": "storybook dev -p 6006",
-		"build-storybook": "storybook build"
+		"fmt:check": "rsvelte-fmt --check ."
 	},
 	"dependencies": {
 		"@fontsource/ibm-plex-mono": "^5.2.7",
@@ -215,15 +213,10 @@
 		"tailwind-variants": "^3.2.2"
 	},
 	"devDependencies": {
-		"@storybook/addon-a11y": "^10.6.7",
-		"@storybook/addon-docs": "^10.6.7",
-		"@storybook/addon-svelte-csf": "^5.1.6",
-		"@storybook/svelte": "^10.6.7",
-		"@storybook/svelte-vite": "^10.6.7",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@tailwindcss/vite": "^4.3.3",
+		"@types/node": "^26.1.1",
 		"happy-dom": "^20.0.10",
-		"storybook": "^10.6.7",
 		"svelte": "^5.56.8",
 		"svelte-check": "^4.7.3",
 		"tailwindcss": "^4.3.3",

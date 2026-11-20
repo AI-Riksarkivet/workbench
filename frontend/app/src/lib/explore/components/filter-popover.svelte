@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { Button, Badge, buttonVariants } from '@workbench/ui';
-	import { Select } from '@workbench/ui/select';
-	import { Input } from '@workbench/ui/input';
-	import { type SelectOption } from '@workbench/ui/select';
+	import { Button, Badge, buttonVariants } from '@riksarkivet/ui';
+	import { Select } from '@riksarkivet/ui/select';
+	import { Input } from '@riksarkivet/ui/input';
+	import { type SelectOption } from '@riksarkivet/ui/select';
 	import { Popover } from 'bits-ui';
 	import { activeView, type SearchSpec, type ColumnInfo } from '@workbench/explorer-api';
 	import { Filter, X, Eye, EyeOff, Plus } from '@lucide/svelte';

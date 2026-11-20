@@ -21,8 +21,8 @@
 	// to arithmetic.
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { Magnet, Repeat, Rows3, ZoomIn, ZoomOut } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Input } from '@workbench/ui/input';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Input } from '@riksarkivet/ui/input';
 	import { loadAnnotations } from '#lib/api/annotations.api.ts';
 	import { documentPeaks } from '#lib/api/timeline.api.ts';
 	import ImageStage, { type ImageStageContext } from '#lib/media/image/ImageStage.svelte';

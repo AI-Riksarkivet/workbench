@@ -11,7 +11,7 @@
 	//
 	// Anchors, not buttons: a hop is a real URL, so it stays middle-clickable and reload-restorable,
 	// exactly like the arrows.
-	import { cn } from '@workbench/ui/utils';
+	import { cn } from '@riksarkivet/ui/utils';
 	import MediaThumb from '#lib/projects/MediaThumb.svelte';
 	import { taskImageUrl } from '#lib/projects/task-media.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';

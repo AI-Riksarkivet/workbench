@@ -15,10 +15,10 @@
 		Save,
 		SlidersHorizontal,
 	} from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import * as Popover from '@workbench/ui/popover';
-	import { Slider } from '@workbench/ui/slider';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import * as Popover from '@riksarkivet/ui/popover';
+	import { Slider } from '@riksarkivet/ui/slider';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { COMMITS_SHAPE } from '@workbench/labeling/shape-types';
 	import { TOOL_DEFS, bandsOf } from './tool-defs.ts';
 	import AssistPanel from './AssistPanel.svelte';

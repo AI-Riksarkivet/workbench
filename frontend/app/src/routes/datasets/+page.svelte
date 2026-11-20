@@ -9,7 +9,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { fetchDatasets } from '#lib/api/datasets.api.ts';
 	import { listProjects } from '#lib/api/projects.api.ts';
 	import { linkWith, projectOf } from '#lib/project.ts';

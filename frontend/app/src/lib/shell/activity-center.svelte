@@ -43,11 +43,11 @@
 
 <script lang="ts">
 	import { Bell, CircleCheck, CircleX } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { HoldToConfirm } from '@workbench/ui/hold-to-confirm';
-	import { RollingDigits } from '@workbench/ui/rolling-digits';
-	import * as Popover from '@workbench/ui/popover';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { HoldToConfirm } from '@riksarkivet/ui/hold-to-confirm';
+	import { RollingDigits } from '@riksarkivet/ui/rolling-digits';
+	import * as Popover from '@riksarkivet/ui/popover';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { formatZoned } from './timestamp.ts';
 
 	// The bell: the reader's OWN activity, the outcome of every write the app sent for them, kept

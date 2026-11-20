@@ -13,8 +13,8 @@
 	//
 	// The pane is held to the window's height: its head (the item by name, its state), its actions and the walk stay
 	// in view, and the picture, the suggestions and the notes scroll beneath them.
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
 	import { ChevronLeft, ChevronRight, ExternalLink, X } from '@lucide/svelte';
 
 	import { datasetVersionText, predictedLabels } from './item-columns.ts';

@@ -9,8 +9,8 @@
 	import { Popover } from 'bits-ui';
 	import { activeView, type SearchSpec } from '@workbench/explorer-api';
 	import { savedViews } from '#lib/explore/saved-views.svelte.ts';
-	import { Badge, Button, buttonVariants } from '@workbench/ui';
-	import { Input } from '@workbench/ui/input';
+	import { Badge, Button, buttonVariants } from '@riksarkivet/ui';
+	import { Input } from '@riksarkivet/ui/input';
 
 	let { spec, onapply }: { spec: SearchSpec; onapply: (s: SearchSpec) => void } = $props();
 

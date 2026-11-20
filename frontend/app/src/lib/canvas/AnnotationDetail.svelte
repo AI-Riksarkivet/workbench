@@ -2,9 +2,9 @@
 	// Single-annotation inspector/editor. Controlled: edits route through the controller
 	// (canvas and overlay updated together).
 	import { Check, X, RotateCcw, ChevronUp, ChevronDown, Link2, Link2Off } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { Input } from '@workbench/ui/input';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Input } from '@riksarkivet/ui/input';
 	import { STATUS_MEANING, statusVariant, statusWord } from './statusStyle.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 

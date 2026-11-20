@@ -3,10 +3,11 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import type { ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { build, defineConfig, type Connect, type Plugin, type ProxyOptions } from 'vite';
+import { riksarkivetUi } from '@riksarkivet/ui/vite';
+import { defineConfig, type Connect, type Plugin, type ProxyOptions } from 'vite';
+import { APPEARANCE } from './src/lib/appearance-options.ts';
 
 // The dev server's runtime config: `WORKBENCH_APP_CONFIG_FILE` when set, else the committed
 // `dev/config.json`, which turns sign-in off (`{"signIn": false}`) and names each service's public base,
@@ -75,54 +76,6 @@ function appConfig(): Plugin {
 	};
 }
 
-/**
- * The appearance boot script, `/appearance-boot.js`, which `app.html` loads before anything paints: built from
- * `@workbench/ui/appearance-boot` and the record definition it imports (`core.ts`), the same code the app's store reads
- * the record with, into one classic script (a module would run after the first paint). Same-origin, so the strict CSP
- * admits it with no hash. Emitted into the client build, and served by the dev server.
- */
-function appearanceBoot(): Plugin {
-	const entry = createRequire(import.meta.url).resolve('@workbench/ui/appearance-boot');
-	const bundle = async (): Promise<string> => {
-		const result = await build({
-			configFile: false,
-			logLevel: 'silent',
-			build: {
-				write: false,
-				minify: true,
-				lib: {
-					entry,
-					formats: ['iife'],
-					name: 'appearanceBoot',
-					fileName: () => 'appearance-boot.js',
-				},
-			},
-		});
-		const outputs = Array.isArray(result) ? result : [result];
-		for (const output of outputs) {
-			if ('output' in output) {
-				const chunk = output.output.find((item) => item.type === 'chunk');
-				if (chunk && 'code' in chunk) return chunk.code;
-			}
-		}
-		throw new Error('the appearance boot script built to nothing');
-	};
-	return {
-		name: 'appearance-boot',
-		async generateBundle() {
-			this.emitFile({ type: 'asset', fileName: 'appearance-boot.js', source: await bundle() });
-		},
-		configureServer: (server) =>
-			void server.middlewares.use((req, res, next) => {
-				if (req.url !== '/appearance-boot.js') return next();
-				void bundle().then((code) => {
-					res.setHeader('content-type', 'text/javascript');
-					res.end(code);
-				}, next);
-			}),
-	};
-}
-
 // Every `/api/*` call is same-origin. The dev server forwards them to the Gateway at
 // `WORKBENCH_EDGE_URL`, the same routes a deployed app takes: the local stack's `edge.ts` serves them.
 // (The Playwright suite runs the built app behind `edge.ts` with its mocks instead.)
@@ -132,7 +85,10 @@ const proxy: Record<string, ProxyOptions> = { '/api': { target: EDGE, changeOrig
 export default defineConfig({
 	plugins: [
 		appConfig(),
-		appearanceBoot(),
+		// The design system: its sources compiled by this build (left out of pre-bundling), and the appearance boot
+		// script `/appearance-boot.js`, which `app.html` loads before the first paint (same-origin, so the strict CSP
+		// admits it with no hash), with the options the root layout starts the store with.
+		riksarkivetUi(APPEARANCE),
 		tailwindcss(),
 		sveltekit({
 			preprocess: vitePreprocess(),

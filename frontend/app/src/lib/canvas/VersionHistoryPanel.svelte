@@ -4,7 +4,7 @@
 	// lazy-loaded. The reads are `#lib/api/annotations.api.ts`'s and the diff `@workbench/labeling/history`'s; this is
 	// the view.
 	import { ChevronDown, ChevronRight, History } from '@lucide/svelte';
-	import { cn } from '@workbench/ui/utils';
+	import { cn } from '@riksarkivet/ui/utils';
 	import {
 		diffSignatures,
 		type AnnotationVersion,

@@ -22,8 +22,8 @@
 	 * the way to set it up again, and nothing is read for it.
 	 */
 	import { Hand, Lasso, Loader2, Settings2, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { appearance } from '@workbench/ui/appearance';
+	import { Button } from '@riksarkivet/ui/button';
+	import { appearance } from '@riksarkivet/ui/appearance';
 	import { interpolateViridis } from 'd3-scale-chromatic';
 	import { derivedPoints, tableProfile } from '#lib/api/derived.api.ts';
 	import AtlasLegend from '#lib/atlas/AtlasLegend.svelte';

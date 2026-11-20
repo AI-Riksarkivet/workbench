@@ -1,11 +1,11 @@
 <script lang="ts">
 	// Searchable annotation list — the review queue. Predictions first, highest
 	// uncertainty first (the active-learning order), then click to select on canvas.
-	// The filter is @workbench/ui's DataTableTextFilter — the same search-icon + input pairing the
-	// data/admin list toolbars use (and the only route to @workbench/ui's own Input, which the
+	// The filter is @riksarkivet/ui's DataTableTextFilter — the same search-icon + input pairing the
+	// data/admin list toolbars use (and the only route to @riksarkivet/ui's own Input, which the
 	// package does not export directly).
-	import { DataTableTextFilter } from '@workbench/ui/data-table';
-	import { cn } from '@workbench/ui/utils';
+	import { DataTableTextFilter } from '@riksarkivet/ui/data-table';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { statusDot, statusWord } from './statusStyle.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 

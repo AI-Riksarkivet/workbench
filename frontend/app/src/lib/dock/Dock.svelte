@@ -18,9 +18,9 @@
 	import { onMount } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { Check, ExternalLink, Maximize2, Minimize2, Plus, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import { GatedAction } from '@workbench/ui/gated-action';
+	import { Button } from '@riksarkivet/ui/button';
+	import * as DropdownMenu from '@riksarkivet/ui/dropdown-menu';
+	import { GatedAction } from '@riksarkivet/ui/gated-action';
 	import type { PanelGates } from '#lib/explore/pane-capabilities.ts';
 	import { dockControl } from './dock-control.svelte.ts';
 	import AtlasPanel from './panels/AtlasPanel.svelte';

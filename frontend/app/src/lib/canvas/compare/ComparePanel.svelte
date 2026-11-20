@@ -6,8 +6,8 @@
 	// how they stand: only theirs, placed or classed otherwise, only the reader's, alike. "Take" puts their shape into
 	// the item, in place of the reader's where the two are one shape differing; one undo takes it back.
 	import { GitCompareArrows, X } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { fetchDraft } from '#lib/api/projects.api.ts';
 	import { buildBatchTable } from '../engine/index.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';

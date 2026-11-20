@@ -10,7 +10,7 @@
 	import { page } from '$app/state';
 	import RowPreview from '#lib/explore/components/row-preview.svelte';
 	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
-	import { GatedAction } from '@workbench/ui/gated-action';
+	import { GatedAction } from '@riksarkivet/ui/gated-action';
 	import { sendGate } from '#lib/explore/pane-capabilities.ts';
 	import { selectionKeys } from '#lib/projects/send.ts';
 	import { projectOf } from '#lib/project.ts';
@@ -31,8 +31,8 @@
 		X,
 	} from '@lucide/svelte';
 	import { activeView, type Document } from '@workbench/explorer-api';
-	import { Badge, Button } from '@workbench/ui';
-	import { Switch } from '@workbench/ui/switch';
+	import { Badge, Button } from '@riksarkivet/ui';
+	import { Switch } from '@riksarkivet/ui/switch';
 	import ActiveFilters from '#lib/explore/components/active-filters.svelte';
 	import DocTile from '#lib/explore/components/doc-tile.svelte';
 	import HitCard from '#lib/explore/components/hit-card.svelte';

@@ -4,10 +4,10 @@
 	// may make now. A submit saves first; a review that sends the item back carries a note, which its annotator reads
 	// here when they open it again.
 	import { Check, CheckCheck, CornerUpLeft, Hand, Send, Undo } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { Textarea } from '@workbench/ui/textarea';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { Textarea } from '@riksarkivet/ui/textarea';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { fireTaskEvent } from '#lib/api/projects.api.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
 	import { submittable } from './classes.ts';

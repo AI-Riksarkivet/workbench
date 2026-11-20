@@ -12,7 +12,6 @@
 	],
 	"scripts": {
 		"build": "bun run --filter '*' build",
-		"build-storybook": "bun --cwd=packages/ui run build-storybook",
 		"check": "bun run --filter '*' check",
 		"dev:annotator": "bun --cwd=annotator run dev",
 		"dev:explorer": "bun --cwd=explorer run dev",
@@ -22,7 +21,6 @@
 		"gen:types": "openapi-typescript ../docs/rask/lineage-openapi.json --default-non-nullable false -o packages/api/src/generated/lineage.ts",
 		"knip": "knip --no-config-hints",
 		"lint": "bun run --filter '*' lint",
-		"storybook": "bun --cwd=packages/ui run storybook",
 		"test": "bun run --filter '*' test",
 		"test:e2e": "bun run --filter '*' test:e2e"
 	},

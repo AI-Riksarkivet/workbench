@@ -19,11 +19,11 @@
 	import { onMount, untrack } from 'svelte';
 	import { beforeNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { Button } from '@workbench/ui/button';
-	import { Badge } from '@workbench/ui/badge';
-	import { Dialog } from '@workbench/ui/dialog';
-	import { ResizableSplit } from '@workbench/ui/resizable-split';
-	import { cn } from '@workbench/ui/utils';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Dialog } from '@riksarkivet/ui/dialog';
+	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { login } from '#lib/auth.svelte.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
 	import { viewTransitions } from '#lib/view-transition.svelte.ts';

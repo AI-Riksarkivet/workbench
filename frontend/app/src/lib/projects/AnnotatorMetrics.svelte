@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Who is doing the work, and how it is landing: each person's part over every item of the project, counted by the
 	// annotator (`include=contributors`), never from the one page the browser holds.
-	import { Badge } from '@workbench/ui/badge';
+	import { Badge } from '@riksarkivet/ui/badge';
 
 	import PersonName from './PersonName.svelte';
 	import type { Contributor, People } from './types.ts';

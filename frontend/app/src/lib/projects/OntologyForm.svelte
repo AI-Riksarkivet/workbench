@@ -8,10 +8,10 @@
 	// mid-edit. A component that MOUNTS when the dialog opens gets the same seeding from ordinary
 	// `$state(initial)` and cannot re-run at all.
 	import { untrack } from 'svelte';
-	import { Button } from '@workbench/ui/button';
-	import { Checkbox } from '@workbench/ui/checkbox';
-	import { Input } from '@workbench/ui/input';
-	import { Select } from '@workbench/ui/select';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Checkbox } from '@riksarkivet/ui/checkbox';
+	import { Input } from '@riksarkivet/ui/input';
+	import { Select } from '@riksarkivet/ui/select';
 
 	import { updateProjectOntology } from '#lib/api/projects.api.ts';
 	import type { Project } from './types.ts';

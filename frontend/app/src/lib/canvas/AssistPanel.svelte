@@ -7,11 +7,11 @@
 	// person to keep (A) or reject (R), as any proposal. A picture, or a video's frame, is what they look at: on a text or
 	// a recording the panel says so instead.
 	import { Check, Minus, Plus, Sparkles, X } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import * as Popover from '@workbench/ui/popover';
-	import { Slider } from '@workbench/ui/slider';
-	import { cn } from '@workbench/ui/utils';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import * as Popover from '@riksarkivet/ui/popover';
+	import { Slider } from '@riksarkivet/ui/slider';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { fetchProducers, type Producer } from '#lib/api/assist.api.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 

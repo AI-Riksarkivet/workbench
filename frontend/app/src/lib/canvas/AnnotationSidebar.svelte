@@ -3,9 +3,9 @@
 	// list or the one selected, the layers and the history. Controlled by the controller.
 	import type { Snippet } from 'svelte';
 	import { ChevronLeft, List, Table } from '@lucide/svelte';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import { cn } from '@workbench/ui/utils';
+	import { Badge } from '@riksarkivet/ui/badge';
+	import { Button } from '@riksarkivet/ui/button';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { STATUS_MEANING, statusDot, statusWord } from './statusStyle.ts';
 	import AnnotationDetail from './AnnotationDetail.svelte';
 	import AnnotationList from './AnnotationList.svelte';

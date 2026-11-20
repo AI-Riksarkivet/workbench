@@ -17,8 +17,8 @@
 	 * row opens in the Player. Maximized, the panel stands in for the page it replaced and lists the topic's
 	 * rows beside the map, playable in place.
 	 */
-	import { ResizableSplit } from '@workbench/ui/resizable-split';
-	import { Button } from '@workbench/ui/button';
+	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
+	import { Button } from '@riksarkivet/ui/button';
 	import { X } from '@lucide/svelte';
 	import { topicTree } from '#lib/api/topics.api.ts';
 	import { dockControl } from '#lib/dock/dock-control.svelte.ts';

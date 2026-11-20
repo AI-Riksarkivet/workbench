@@ -26,7 +26,7 @@
 	import { navigating, page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { afterNavigate, goto } from '$app/navigation';
-	import { Button } from '@workbench/ui/button';
+	import { Button } from '@riksarkivet/ui/button';
 	import { auth } from '#lib/auth.svelte.ts';
 	import Dock from '#lib/dock/Dock.svelte';
 	import { dockControl } from '#lib/dock/dock-control.svelte.ts';

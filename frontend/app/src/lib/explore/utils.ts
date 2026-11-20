@@ -1,7 +1,7 @@
 import { activeView, type Row } from '@workbench/explorer-api/descriptor';
 
 /** shadcn-svelte's standard `cn` helper: clsx for conditionals, twMerge for conflicts. */
-export { cn } from '@workbench/ui/utils';
+export { cn } from '@riksarkivet/ui/utils';
 /** Format seconds as `H:MM:SS` (or `M:SS` under an hour). */
 export { formatClock as fmtTime } from '#lib/media/time/timeline.ts';
 

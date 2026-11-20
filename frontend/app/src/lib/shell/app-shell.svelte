@@ -1,12 +1,12 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import * as Sidebar from '@workbench/ui/sidebar';
-	import { Separator } from '@workbench/ui/separator';
-	import { BlockMark } from '@workbench/ui/block-mark';
+	import * as Sidebar from '@riksarkivet/ui/sidebar';
+	import { Separator } from '@riksarkivet/ui/separator';
+	import { BlockMark } from '@riksarkivet/ui/block-mark';
 	import AppSidebar from './app-sidebar.svelte';
 	import NavbarUser from './navbar-user.svelte';
 	import ActivityCenter from './activity-center.svelte';
-	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import * as DropdownMenu from '@riksarkivet/ui/dropdown-menu';
 	import MenuLink from './menu-link.svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { ChevronRight, MoreHorizontal } from '@lucide/svelte';

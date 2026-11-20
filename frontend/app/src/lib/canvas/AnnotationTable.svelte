@@ -2,11 +2,11 @@
 	// Full columns/sort table of the unit's annotations — the review queue as a
 	// spreadsheet (ported from the pre-monorepo AnnotationTable, commit 6afcbc7, which
 	// the apps/explorer move dropped). Reads the controller's rows (no own fetch); click a
-	// row to select it on the canvas; click a header to sort. Built from @workbench/ui's Table
+	// row to select it on the canvas; click a header to sort. Built from @riksarkivet/ui's Table
 	// parts + SortHeader, so it IS the same table object the data/admin registries render.
-	import * as Table from '@workbench/ui/table';
-	import { SortHeader } from '@workbench/ui/sort-header';
-	import { cn } from '@workbench/ui/utils';
+	import * as Table from '@riksarkivet/ui/table';
+	import { SortHeader } from '@riksarkivet/ui/sort-header';
+	import { cn } from '@riksarkivet/ui/utils';
 	import { statusDot } from './statusStyle.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 

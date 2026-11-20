@@ -1,61 +1,9 @@
-# @workbench/ui
+# @workbench/ui (frozen)
 
-Svelte 5 component library. Bits UI primitives + Tailwind 4 + Storybook.
+The workbench's old copy of its design system, kept only because the old apps (`frontend/annotator`,
+`frontend/explorer`, `frontend/studio`) still import it. It is frozen: nothing new is added to it and it is not
+changed, and it is deleted with the last of those apps (issue #9, steps D3c and D4).
 
-## Develop
-
-```bash
-bun run --cwd packages/ui dev         # svelte-package -w
-bun run --cwd packages/ui storybook   # localhost:6006
-```
-
-Or from the repo root:
-
-```bash
-bun run dev:ui
-bun run storybook
-```
-
-## Consume from a SvelteKit app
-
-```jsonc
-{
-	"dependencies": {
-		"@workbench/ui": "workspace:*",
-		"bits-ui": "^2.18.0",
-	},
-}
-```
-
-Import from the per-component subpath exports (never the root barrel or a deep
-`@workbench/ui/dist/...` path):
-
-```svelte
-<script lang="ts">
-	import { Button } from '@workbench/ui/button';
-	import { Card } from '@workbench/ui/card';
-	import { Dialog } from '@workbench/ui/dialog';
-</script>
-```
-
-In the app's CSS:
-
-```css
-@import 'tailwindcss';
-@import 'tw-animate-css';
-@import '@workbench/ui/styles/tokens.css';
-
-/* Tailwind 4 skips node_modules — scan @workbench/ui/dist or its classes vanish. */
-@source '../../../../packages/ui/dist';
-```
-
-## Adding a component
-
-1. `src/lib/components/<name>/<name>.svelte`
-2. `<name>.stories.ts` (simple) or `<name>.stories.svelte` (composite, uses snippets)
-3. `index.ts` barrel
-4. Add the `./<name>` subpath to `package.json` `exports` — this is the
-   canonical import path (`@workbench/ui/<name>`); consumers import from the subpath.
-5. Optionally re-export from `src/lib/index.ts` (the root `.` barrel is a
-   curated convenience surface, not the full component set — subpaths are
-   authoritative).
+The design system is [`AI-Riksarkivet/ui`](https://github.com/AI-Riksarkivet/ui) (`@riksarkivet/ui`), which the app
+(`frontend/app`) installs pinned to a commit. Components, tokens, themes and their Storybook are changed there; the
+app's lint refuses an import of `@workbench/ui`.

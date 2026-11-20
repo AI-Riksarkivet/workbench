@@ -52,11 +52,11 @@
 	} from './atlas-legend.ts';
 	// The canvas is this component's own WebGPU renderer; only the overlay CONTROLS
 	// use the shared design system, so the map chrome matches the rest of the estate.
-	import { Button } from '@workbench/ui';
-	import { Select } from '@workbench/ui/select';
-	import type { SelectOption } from '@workbench/ui/select';
+	import { Button } from '@riksarkivet/ui';
+	import { Select } from '@riksarkivet/ui/select';
+	import type { SelectOption } from '@riksarkivet/ui/select';
 	import { Loader2, Lasso, X, Hand, Settings2 } from '@lucide/svelte';
-	import { appearance } from '@workbench/ui/appearance';
+	import { appearance } from '@riksarkivet/ui/appearance';
 
 	let {
 		active = $bindable(null),

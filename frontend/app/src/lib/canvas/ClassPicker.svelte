@@ -4,7 +4,7 @@
 	// move through it and Enter picks; it opens on the class picked last. Escape closes it, which for a region just drawn
 	// on a task with closed classes undoes the drawing (`controller.dismissPicker`). A press outside picks nothing and
 	// closes it the same way.
-	import { cn } from '@workbench/ui/utils';
+	import { cn } from '@riksarkivet/ui/utils';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let {

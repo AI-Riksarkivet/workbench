@@ -14,7 +14,6 @@ build/
 *.key
 node_modules/
 .svelte-kit/
-storybook-static/
 test-results/
 .localbin/
 .playwright-cli/

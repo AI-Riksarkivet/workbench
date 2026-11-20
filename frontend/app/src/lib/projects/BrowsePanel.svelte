@@ -7,8 +7,8 @@
 	// reviewers').
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { Button } from '@workbench/ui/button';
-	import { Select } from '@workbench/ui/select';
+	import { Button } from '@riksarkivet/ui/button';
+	import { Select } from '@riksarkivet/ui/select';
 	import { Play } from '@lucide/svelte';
 
 	import { pageTasks } from '#lib/api/projects.api.ts';

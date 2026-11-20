@@ -7,8 +7,8 @@
 	 * row cannot be (it has no identity a task can name), each disabled with its reason when it cannot.
 	 */
 	import { Sparkles, Send } from '@lucide/svelte';
-	import { Button } from '@workbench/ui/button';
-	import { GatedAction } from '@workbench/ui/gated-action';
+	import { Button } from '@riksarkivet/ui/button';
+	import { GatedAction } from '@riksarkivet/ui/gated-action';
 	import { mediaLinks } from '#lib/api/media.api.ts';
 	import { tableRow, tableRows } from '#lib/api/datasets.api.ts';
 	import { plainPanes } from '#lib/explore/pane-capabilities.ts';
