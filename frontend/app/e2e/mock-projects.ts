@@ -146,6 +146,7 @@ function shapeOf(row: Row): Record<string, unknown> {
 		source: row.source ?? null,
 		status: row.status ?? 'accepted',
 		confidence: row.confidence ?? null,
+		model_version: row.model_version ?? null,
 		attributes,
 	};
 }
@@ -178,7 +179,9 @@ const PAGE_ROWS: Row[] = [
 		label: 'caption',
 		text: 'The harbour at dawn',
 		status: 'prediction',
-		source: 'model:seed',
+		source: 'model:seed-detector',
+		model_version: 'seed.1',
+		confidence: 0.82,
 		uncertainty: 0.4,
 		// Metadata that is not an object: an attribute edit is refused rather than writing over it.
 		metadata: '"scribbled note"',
@@ -564,7 +567,9 @@ function seed(sub: string): World {
 	);
 	// A project a reviewer judges one item at a time: three items in review, each another annotator's, and one already
 	// accepted, for browsing. Every item holds the two boxes of `PAGE_ROWS`, a figure and a caption, but one claimed and
-	// never drawn on (`judging-e`), which a browse of the labeled work leaves out.
+	// never drawn on (`judging-e`), which a browse of the labeled work leaves out. The caption is a model's proposal its
+	// annotator kept, but on `judging-b`, where it is still a proposal (one a reviewer's assist left), which keeps the
+	// item from being accepted until it is kept or removed.
 	projects.set('judging', project('judging', { title: 'Judging', ontology: pagesOntology }));
 	for (const [id, state, key, by] of [
 		['judging-a', 'in_review', 'letter-001/0', 'user:alpha'],
@@ -697,7 +702,14 @@ function seed(sub: string): World {
 		const pages =
 			(t.project_id === 'pages' && t.source.keys[0] === 'letter-001/0') ||
 			(t.project_id === 'judging' && t.state !== 'claimed');
-		const rows = REPLICA_ROWS[t.task_id] ?? (pages ? PAGE_ROWS : []);
+		const kept = t.project_id === 'judging' && t.task_id !== 'judging-b';
+		const rows =
+			REPLICA_ROWS[t.task_id] ??
+			(pages
+				? kept
+					? PAGE_ROWS.map((r) => (r.status === 'prediction' ? { ...r, status: 'accepted' } : r))
+					: PAGE_ROWS
+				: []);
 		// Whole-item tags of the sorting project: a reviewer's item labelled `map`, an item whose `letter` carries a
 		// person's words (what a new label would discard), and one a model proposed `map` for.
 		const tagged: Row[] =
@@ -722,6 +734,7 @@ function seed(sub: string): World {
 						label: 'map',
 						status: 'prediction',
 						source: 'model:vlm',
+						model_version: 'vlm.3',
 						confidence: 0.91,
 					},
 				],
@@ -1025,6 +1038,7 @@ export async function projectsDoor(
 					revision: draft?.revision ?? 0,
 					tags: tags.slice(0, 64),
 					tags_cut: tags.length > 64,
+					proposals: (draft?.rows ?? []).filter((r) => r.status === 'prediction').length,
 				};
 			};
 			const ORDER = [
@@ -1443,6 +1457,23 @@ export async function projectsDoor(
 			return answer({ detail: 'a reviewer may not review their own submission' }, 403);
 		if (['submit', 'skip'].includes(event) && t.assignee !== sub)
 			return answer({ detail: 'another person holds this item', holder: t.assignee }, 403);
+		// A proposal is a model's, and a submission or an acceptance is a person's: each is kept or removed first
+		// (ADR 0019, `machines.SETTLES_PROPOSALS`).
+		const unsettled = (world.drafts.get(id)?.rows ?? []).filter(
+			(r) => r.status === 'prediction',
+		).length;
+		if (['submit', 'accept', 'fix_and_accept'].includes(event) && unsettled > 0) {
+			const doing = event === 'submit' ? 'submitting' : 'accepting';
+			return answer(
+				{
+					detail:
+						unsettled === 1
+							? `1 proposal on this item is neither kept nor removed: keep or remove it before ${doing}`
+							: `${unsettled} proposals on this item are neither kept nor removed: keep or remove each before ${doing}`,
+				},
+				409,
+			);
+		}
 		t.state = edge[0];
 		if (event === 'claim') {
 			t.assignee = sub;

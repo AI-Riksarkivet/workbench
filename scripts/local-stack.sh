@@ -26,6 +26,7 @@
 #   VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT   the services' own ports (8701, 8702, 8703, 8704)
 #   STATE_PORT          the pinned PostgreSQL `make postgres` exports (default 8705), holding the annotator's database
 #                       (`annotator`) and flows' (`flows`), one database per service
+#   MODEL_PORT          the stand-in model endpoint assist asks (default 8706; `annotator.model_endpoint.stand_in`)
 #   STATE_DIR           its data directory (default: the catalog directory's sibling `<catalog>-state`), kept between
 #                       runs, so projects, tasks and flow runs survive a restart of the stack
 #
@@ -58,10 +59,11 @@ VIEWER_PORT="${VIEWER_PORT:-8701}"
 SEARCH_PORT="${SEARCH_PORT:-8702}"
 ANNOTATOR_PORT="${ANNOTATOR_PORT:-8703}"
 FLOWS_PORT="${FLOWS_PORT:-8704}"
+MODEL_PORT="${MODEL_PORT:-8706}"
 APP_CONFIG="$ROOT/frontend/app/dev/config.json"
 PID_FILE="${PID_FILE:-${TMPDIR:-/tmp}/workbench-local-stack.pid}"
 PORTS=("edge:$EDGE_PORT" "app:$((EDGE_PORT + 1000))" "viewer:$VIEWER_PORT" "search:$SEARCH_PORT" \
-  "annotator:$ANNOTATOR_PORT" "flows:$FLOWS_PORT" "state:$STATE_PORT")
+  "annotator:$ANNOTATOR_PORT" "flows:$FLOWS_PORT" "state:$STATE_PORT" "model:$MODEL_PORT")
 
 # The ports something already listens on, each with its name.
 listening() {
@@ -77,7 +79,7 @@ refuse_busy_ports() {
   local busy
   busy="$(listening | paste -sd ' ')"
   if [ -n "$busy" ]; then
-    echo "not starting: something already listens on port $busy. Stop it (\`make local-stop\` stops a local stack), or choose other ports (EDGE_PORT, VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT, STATE_PORT)." >&2
+    echo "not starting: something already listens on port $busy. Stop it (\`make local-stop\` stops a local stack), or choose other ports (EDGE_PORT, VIEWER_PORT, SEARCH_PORT, ANNOTATOR_PORT, FLOWS_PORT, STATE_PORT, MODEL_PORT)." >&2
     exit 1
   fi
 }
@@ -118,15 +120,20 @@ esac
 
 # Development credentials, in files as a deployment mounts them: the viewer's media-URL signing key (32 random bytes,
 # base64), made once per host, and the token flows presents to Serve. A local Serve verifies no token, so the dev one is
-# a placeholder; a deployment mounts a projected ServiceAccount token with audience `serve`.
+# a placeholder; a deployment mounts a projected ServiceAccount token with audience `serve`. The same holds for the
+# token the annotator presents to the stand-in model endpoint, which accepts any.
 DEV_SECRETS="${TMPDIR:-/tmp}/workbench-dev-secrets"
 mkdir -p "$DEV_SECRETS" && chmod 700 "$DEV_SECRETS"
 if [ ! -s "$DEV_SECRETS/media-url-key" ]; then
   (umask 077 && openssl rand -base64 32 > "$DEV_SECRETS/media-url-key")
 fi
 [ -s "$DEV_SECRETS/serve-token" ] || (umask 077 && echo "dev-unverified" > "$DEV_SECRETS/serve-token")
+[ -s "$DEV_SECRETS/model-endpoint-token" ] || (umask 077 && echo "dev-unverified" > "$DEV_SECRETS/model-endpoint-token")
 export VIEWER_MEDIA_URL_KEY_FILE="${VIEWER_MEDIA_URL_KEY_FILE:-$DEV_SECRETS/media-url-key}"
 export WORKBENCH_FLOWS_SERVE_TOKEN_FILE="${WORKBENCH_FLOWS_SERVE_TOKEN_FILE:-$DEV_SECRETS/serve-token}"
+# The model endpoint assist asks: the stand-in this stack runs, unless the environment names another.
+export ANNOTATOR_MODEL_ENDPOINT_URL="${ANNOTATOR_MODEL_ENDPOINT_URL:-http://$LOOPBACK:$MODEL_PORT}"
+export ANNOTATOR_MODEL_ENDPOINT_TOKEN_FILE="${ANNOTATOR_MODEL_ENDPOINT_TOKEN_FILE:-$DEV_SECRETS/model-endpoint-token}"
 
 
 if [ ! -x "$POSTGRES_TREE/bin/postgres" ]; then
@@ -229,6 +236,7 @@ run viewer uv run --no-sync uvicorn viewer.main:app --host "$LOOPBACK" --port "$
 run search uv run --no-sync uvicorn search.main:app --host "$LOOPBACK" --port "$SEARCH_PORT" --no-access-log
 run annotator uv run --no-sync uvicorn annotator.main:app --host "$LOOPBACK" --port "$ANNOTATOR_PORT" --no-access-log
 run flows uv run --no-sync uvicorn flows:app --host "$LOOPBACK" --port "$FLOWS_PORT" --no-access-log
+MODEL_STAND_IN_HOST="$LOOPBACK" MODEL_STAND_IN_PORT="$MODEL_PORT" run model uv run --no-sync python -m annotator.model_endpoint.stand_in
 run edge env -C "$ROOT/frontend/app" PORT="$EDGE_PORT" HOST="$LOOPBACK" WORKBENCH_APP_CONFIG_FILE="$APP_CONFIG" \
   VIEWER_API="http://$LOOPBACK:$VIEWER_PORT" SEARCH_API="http://$LOOPBACK:$SEARCH_PORT" ANNOTATOR_API="http://$LOOPBACK:$ANNOTATOR_PORT" \
   bun edge.ts
@@ -265,7 +273,7 @@ fi
 
 # Loopback only, checked rather than assumed: a listener this stack opened on any other address is refused.
 if command -v ss >/dev/null; then
-  for port in "$EDGE_PORT" "$((EDGE_PORT + 1000))" "$VIEWER_PORT" "$SEARCH_PORT" "$ANNOTATOR_PORT" "$FLOWS_PORT" "$STATE_PORT"; do
+  for port in "$EDGE_PORT" "$((EDGE_PORT + 1000))" "$VIEWER_PORT" "$SEARCH_PORT" "$ANNOTATOR_PORT" "$FLOWS_PORT" "$STATE_PORT" "$MODEL_PORT"; do
     wide=$(ss -ltnH "sport = :$port" | awk '{print $4}' | grep -v "^$LOOPBACK:" || true)
     if [ -n "$wide" ]; then
       echo "port $port listens beyond the loopback ($wide); stopping the local stack" >&2

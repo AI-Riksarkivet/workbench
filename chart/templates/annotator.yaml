@@ -94,6 +94,9 @@ spec:
             - { name: fga-credential, mountPath: /var/run/secrets/workbench/fga, readOnly: true }
             {{- end }}
             {{- end }}
+            {{- if .Values.models.endpoint.url }}
+            - { name: model-endpoint-identity, mountPath: /var/run/secrets/workbench/model-endpoint, readOnly: true }
+            {{- end }}
             {{- include "workbench.otelMount" . | nindent 12 }}
           ports:
             - name: http
@@ -113,12 +116,14 @@ spec:
             - { name: ANNOTATOR_STATE_SSLMODE, value: "verify-full" }
             - { name: ANNOTATOR_STATE_CA_FILE, value: /var/run/secrets/annotator/state-ca/ca.crt }
             - { name: ANNOTATOR_STATE_PASSWORD_FILE, value: /var/run/secrets/annotator/state-password/password }
-            {{- with .Values.serve.discoveryUrl }}
-            - { name: ANNOTATOR_SERVE_DISCOVERY_URL, value: {{ . | quote }} }
-            - { name: ANNOTATOR_SERVE_PROXY_URL, value: {{ $.Values.serve.proxyUrl | default . | quote }} }
+            {{- with .Values.models.endpoint }}
+            {{- if .url }}
+            # The model endpoint assist asks (ADR 0023): called as this pod, on its own ServiceAccount token for the
+            # endpoint's audience, projected by the kubelet and read on every call.
+            - { name: ANNOTATOR_MODEL_ENDPOINT_URL, value: {{ .url | quote }} }
+            - { name: ANNOTATOR_MODEL_ENDPOINT_TOKEN_FILE, value: /var/run/secrets/workbench/model-endpoint/token }
+            - { name: ANNOTATOR_MODEL_ENDPOINT_TIMEOUT_SECONDS, value: {{ .timeoutSeconds | quote }} }
             {{- end }}
-            {{- if .Values.assist.enabled }}
-            - { name: ANNOTATOR_ASSIST_URL, value: {{ printf "http://%s-assist:%v/v1/assist" $r .Values.assist.port | quote }} }
             {{- end }}
             {{- include "workbench.otelEnv" (list . "annotator") | nindent 12 }}
             {{- if .Values.auth.enabled }}
@@ -174,4 +179,13 @@ spec:
           secret:
             secretName: {{ $cluster }}-ca
             items: [{ key: ca.crt, path: ca.crt }]
+        {{- with .Values.models.endpoint }}
+        {{- if .url }}
+        # The pod's own identity at the model endpoint, for that audience alone.
+        - name: model-endpoint-identity
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, audience: {{ required "models.endpoint.audience: the audience the model endpoint verifies a caller's token for" .audience | quote }}, expirationSeconds: {{ .expirationSeconds }} }
+        {{- end }}
+        {{- end }}
         {{- include "workbench.otelVolume" . | nindent 8 }}

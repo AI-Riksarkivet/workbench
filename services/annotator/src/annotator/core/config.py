@@ -16,30 +16,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
+from annotator.model_endpoint.client import ModelEndpoint
 from client_kit.media.config import GovernedMediaSettings
 from client_kit.sources import annotatable
-
-
-class AssistBackend(BaseModel):
-    """One registered assist producer: its endpoint plus its DECLARED contract.
-
-    ``returns``/``inputs`` are what the backend itself claims (shape types out, prompt kinds
-    in) — the registry surface, the panel's contract line and task compatibility all derive
-    from these declarations rather than from a hardcoded family map in code. Empty means
-    undeclared, and every surface must keep saying "unknown" rather than guess.
-    A bare URL string is accepted as well: ``{"sam": "http://sam:9000"}``.
-    """
-
-    url: str
-    returns: list[str] = Field(default_factory=list)
-    inputs: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _from_bare_url(cls, value: object) -> object:
-        return {"url": value} if isinstance(value, str) else value
 
 
 class AnnotatorSettings(GovernedMediaSettings):
@@ -52,23 +33,14 @@ class AnnotatorSettings(GovernedMediaSettings):
     #: the lakehouse gives the name no meaning, so a project's admin creates it, under the run rule if they choose.
     publish_namespace: str = Field(default="published", pattern=r"^[A-Za-z0-9_-]{1,64}$", alias="ANNOTATOR_PUBLISH_NAMESPACE")
 
-    # Interactive AI-assist model endpoint — a Ray Serve deployment (GroundingDINO/SAM). Unset ⇒ a deterministic mock
-    # so the draw/prompt→shapes round-trip is testable in-repo (drop-in for the Ray Serve HTTP endpoint).
-    assist_url: str | None = Field(default=None, alias="ANNOTATOR_ASSIST_URL")
-    # The producer REGISTRY: producer name/prefix → backend, as a JSON object. Routing is longest-prefix, so `"sam": …`
-    # covers `sam-click`/`sam-box`; `assist_url` stays the fallback for anything unmapped. An entry is a bare URL string
-    # or a STRUCTURED declaration: {"vlm": {"url": "http://vllm:8000", "returns": ["bbox"], "inputs": ["prompt"]}}.
-    # `returns`/`inputs` are the backend's DECLARED contract; without them a registered producer renders "returns
-    # unknown" and task compatibility cannot compute.
-    assist_backends: dict[str, AssistBackend] = Field(default_factory=dict, alias="ANNOTATOR_ASSIST_BACKENDS")
-    # Producer DISCOVERY from the Ray Serve control plane: a deployment that carries a `labeling` block in its
-    # user_config is registered by being deployed. The discovery URL is the Ray dashboard base (:8265); the proxy URL is
-    # the Serve HTTP ingress the discovered route_prefixes hang under (:8000). Under KubeRay set BOTH to the CR's stable
-    # Services — discovery at `<rayservice>-head-svc:8265`, proxy at `<rayservice>-serve-svc:8000` — because the
-    # serve-svc load-balances across every worker holding Serve replicas, while the derived fallback (dashboard host +
-    # Serve's http_options port) reaches only the HEAD's proxy. The registry entries above win on a name conflict.
-    serve_discovery_url: str | None = Field(default=None, alias="ANNOTATOR_SERVE_DISCOVERY_URL")
-    serve_proxy_url: str | None = Field(default=None, alias="ANNOTATOR_SERVE_PROXY_URL")
+    #: The model endpoint assist asks, by the workbench's model protocol (`annotator.model_endpoint`, ADR 0023). The
+    #: workbench deploys no model: unset, this deployment has no assist, and says so.
+    model_endpoint_url: str | None = Field(default=None, pattern=r"^https?://[^\s]+$", alias="ANNOTATOR_MODEL_ENDPOINT_URL")
+    #: A credential: the mounted file holding the token the annotator presents to the endpoint as itself (a projected
+    #: ServiceAccount token for the endpoint's audience), read on every call. Required with an endpoint.
+    model_endpoint_token_file: Path | None = Field(default=None, alias="ANNOTATOR_MODEL_ENDPOINT_TOKEN_FILE")
+    #: How long an ask for proposals may take before the person is told the endpoint did not answer.
+    model_endpoint_timeout_seconds: float = Field(default=30.0, gt=0, le=600, alias="ANNOTATOR_MODEL_ENDPOINT_TIMEOUT_SECONDS")
 
     #: The annotator's own Postgres, which holds its projects, tasks, drafts and claims (`annotator.state`). Unset, the
     #: project and task plane answers 503 naming it, and the read plane still serves. Every value here is a name, never
@@ -103,6 +75,18 @@ class AnnotatorSettings(GovernedMediaSettings):
         if self.default_dataset is not None and (reason := annotatable(self.sources.locate(self.default_dataset).source)):
             raise ValueError(f"WORKBENCH_DEFAULT_DATASET {self.default_dataset!r} cannot be the annotator's default: {reason}")
         return self
+
+    @model_validator(mode="after")
+    def _an_endpoint_is_called_as_the_annotator(self) -> Self:
+        """A model endpoint is never called without an identity: naming one names the token presented to it."""
+        if self.model_endpoint_url is not None and self.model_endpoint_token_file is None:
+            raise ValueError("ANNOTATOR_MODEL_ENDPOINT_URL needs ANNOTATOR_MODEL_ENDPOINT_TOKEN_FILE: the token the annotator presents to the endpoint")
+        return self
+
+    @property
+    def model_endpoint(self) -> ModelEndpoint:
+        """The deployment's model endpoint as assist calls it."""
+        return ModelEndpoint(url=self.model_endpoint_url, token_file=self.model_endpoint_token_file, timeout_seconds=self.model_endpoint_timeout_seconds)
 
     @model_validator(mode="after")
     def _validate_state(self) -> Self:

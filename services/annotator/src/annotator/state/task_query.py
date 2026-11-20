@@ -216,18 +216,20 @@ class WorkTag(BaseModel):
 
 class ItemWork(BaseModel):
     """What a bulk label reads of one item's work: the draft's revision (0 before its first save), which a change states as
-    the revision it was built on, and its whole-item tags, at most `MAX_WORK_TAGS` (`tags_cut` when it holds more)."""
+    the revision it was built on, its whole-item tags, at most `MAX_WORK_TAGS` (`tags_cut` when it holds more), and how
+    many proposals of any shape it holds that no person kept or removed (an item holding one cannot be submitted)."""
 
     revision: int
     tags: list[WorkTag]
     tags_cut: bool
+    proposals: int
 
 
-#: Each listed item's draft revision and its first tags, read from the drafts' generated `work_tags` column (`schema.sql`,
-#: `annotator_work_tags`) so a listing never reads a draft's whole document; an item with no draft has no row here.
+#: Each listed item's draft revision, its first tags and its count of proposals, read from the drafts' generated
+#: `work_tags` and `proposals` columns (`schema.sql`, `annotator_work_tags`) so a listing never reads a draft's whole document; an item with no draft has no row here.
 _WORK: Final = (
     "SELECT d.task_id, d.revision, jsonb_path_query_array(d.work_tags, '$[0 to $last]', jsonb_build_object('last', %(cap)s - 1)), "
-    "jsonb_array_length(d.work_tags) "
+    "jsonb_array_length(d.work_tags), d.proposals "
     "FROM drafts d WHERE d.task_id = ANY(%(ids)s)"
 )
 
@@ -236,8 +238,10 @@ async def work_of(conn: Connection, task_ids: list[str]) -> dict[str, ItemWork]:
     """The work of each of ``task_ids`` that has a draft, keyed by task id."""
     rows = await (await conn.execute(_WORK, {"ids": task_ids, "cap": MAX_WORK_TAGS})).fetchall()
     return {
-        str(task_id): ItemWork(revision=int(revision), tags=[WorkTag.model_validate(t) for t in tags], tags_cut=int(count) > MAX_WORK_TAGS)
-        for task_id, revision, tags, count in rows
+        str(task_id): ItemWork(
+            revision=int(revision), tags=[WorkTag.model_validate(t) for t in tags], tags_cut=int(count) > MAX_WORK_TAGS, proposals=int(proposals)
+        )
+        for task_id, revision, tags, count, proposals in rows
     }
 
 

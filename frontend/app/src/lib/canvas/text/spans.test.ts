@@ -16,6 +16,7 @@ const row = (over: Partial<AnnoRow>): AnnoRow => ({
 	text: '',
 	source: 'human',
 	confidence: null,
+	modelVersion: null,
 	uncertainty: null,
 	tStart: null,
 	tEnd: null,

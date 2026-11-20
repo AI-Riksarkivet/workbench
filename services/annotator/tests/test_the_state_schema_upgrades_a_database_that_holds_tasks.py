@@ -170,7 +170,7 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
         ["b-submitted"],
     )
     assert {d["task_id"]: d["work"] for d in whole["details"]} == {
-        "a-untouched": {"revision": 0, "tags": [], "tags_cut": False},
+        "a-untouched": {"revision": 0, "tags": [], "tags_cut": False, "proposals": 0},
         "b-submitted": {
             "revision": 1,
             "tags": [
@@ -178,8 +178,9 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
                 {"id": "t-proposed", "label": "seal", "detailed": False, "prediction": True},
             ],
             "tags_cut": False,
+            "proposals": 1,
         },
-        "c-no-offset": {"revision": 2, "tags": [], "tags_cut": False},
+        "c-no-offset": {"revision": 2, "tags": [], "tags_cut": False, "proposals": 0},
     }, "each draft the earlier release wrote answers its work from the column the upgrade added"
     untouched = next(d for d in whole["details"] if d["task_id"] == "a-untouched")
     assert (len(untouched["source"]["keys"]), len(untouched["source"]["where"])) == (70, 600)

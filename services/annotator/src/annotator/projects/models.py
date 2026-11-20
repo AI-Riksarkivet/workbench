@@ -152,6 +152,14 @@ class ReviewNote(BaseModel):
     shape_ids: list[str] = Field(default_factory=list)
 
 
+#: The status of a proposal: a model's shape no person has kept or removed yet. And how a model's row names its model.
+PROPOSED: Final = "prediction"
+MODEL_SOURCE: Final = "model:"
+#: The statuses of a draft's shape that is not a label: one a person turned down, and a model's proposal nobody settled.
+#: Neither is judged as the item's work at submit, and neither is published.
+NOT_A_LABEL: Final = frozenset({"rejected", PROPOSED})
+
+
 class Shape(BaseModel):
     """One annotation. Carries its own provenance so the payload stays mode-blind."""
 
@@ -232,6 +240,14 @@ class Draft(BaseModel):
     revision: int = 0
     updated_at: datetime | None = None
     origin: DraftOrigin = "human"
+
+
+def labels_of(draft: Draft | None) -> tuple[list[Shape], list[Link]]:
+    """The draft's labels: its shapes a person made or kept, and the links between two of them. What a submit is judged on
+    and a publish writes, so the two cannot disagree about what an item says."""
+    shapes = [s for s in (draft.shapes if draft else []) if s.status not in NOT_A_LABEL]
+    held = {s.shape_id for s in shapes}
+    return shapes, [k for k in (draft.links if draft else []) if k.from_shape in held and k.to_shape in held]
 
 
 class Adjudication(BaseModel):

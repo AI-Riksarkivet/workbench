@@ -7,6 +7,7 @@
 	import { Input } from '@riksarkivet/ui/input';
 	import { STATUS_MEANING, statusVariant, statusWord } from './statusStyle.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
+	import { provenanceOf } from './annotation-rows.ts';
 
 	let { controller }: { controller: AnnotatorController } = $props();
 
@@ -26,19 +27,27 @@
 	const readOnly = $derived(controller.readOnly !== null);
 	const attrSpecs = $derived(row ? controller.attributesFor(row.label) : []);
 	const attrValues = $derived(row ? controller.rowAttributes(row.index) : {});
+	/** A model's row, kept or still proposed: it names the model, its version and its score. */
+	const fromModel = $derived(row !== null && row.source.startsWith('model:'));
 </script>
 
 {#if row}
 	<div class="flex flex-col gap-3 p-3" data-testid="annotation-detail">
 		<div class="flex items-center justify-between gap-2">
 			<span class="text-muted-foreground text-xs font-medium"
-				>{row.shape || 'Annotation'} {controller.queuePos.at > 0
-					? `#${controller.queuePos.at}`
-					: ''}</span
+				>{row.shape || 'Annotation'}
+				{controller.queuePos.at > 0 ? `#${controller.queuePos.at}` : ''}</span
 			>
-			<Badge variant={statusVariant(row.status)} title={STATUS_MEANING}
-				>{statusWord(row.status)}</Badge
-			>
+			<span class="flex items-center gap-1.5">
+				<Badge variant={statusVariant(row.status)} title={STATUS_MEANING}
+					>{statusWord(row.status)}</Badge
+				>
+				{#if row.status === 'rejected'}
+					<span class="text-muted-foreground text-xs" data-testid="not-published"
+						>not published</span
+					>
+				{/if}
+			</span>
 		</div>
 
 		<div class="text-muted-foreground flex items-center justify-between text-xs">
@@ -202,13 +211,30 @@
 			</div>
 		{/if}
 
-		<dl class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-			<dt class="text-muted-foreground">Source</dt>
-			<dd class="truncate text-right" title={row.source}>{row.source || '—'}</dd>
-			<dt class="text-muted-foreground">Confidence</dt>
-			<dd class="text-right tabular-nums">{row.confidence?.toFixed(2) ?? '—'}</dd>
-			<dt class="text-muted-foreground">Uncertainty</dt>
-			<dd class="text-right tabular-nums">{row.uncertainty?.toFixed(2) ?? '—'}</dd>
+		<dl
+			class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs"
+			data-testid="annotation-provenance"
+			title={provenanceOf(row) ?? undefined}
+		>
+			{#if fromModel}
+				<dt class="text-muted-foreground">Model</dt>
+				<dd class="truncate text-right" title={row.source}>{row.source.slice('model:'.length)}</dd>
+				<dt class="text-muted-foreground">Model version</dt>
+				<dd class="truncate text-right font-mono" data-testid="annotation-model-version">
+					{row.modelVersion ?? '—'}
+				</dd>
+			{:else}
+				<dt class="text-muted-foreground">Source</dt>
+				<dd class="truncate text-right" title={row.source}>{row.source || '—'}</dd>
+			{/if}
+			<dt class="text-muted-foreground">Score</dt>
+			<dd class="text-right tabular-nums" data-testid="annotation-score">
+				{row.confidence?.toFixed(2) ?? '—'}
+			</dd>
+			{#if row.uncertainty !== null}
+				<dt class="text-muted-foreground">Uncertainty</dt>
+				<dd class="text-right tabular-nums">{row.uncertainty.toFixed(2)}</dd>
+			{/if}
 		</dl>
 
 		<!-- RELATIONS. Only rendered when the task DECLARES one: a link rail on a task with no
@@ -282,14 +308,19 @@
 			>
 				<X class="size-3.5" /> Reject
 			</Button>
-			<Button
-				variant="ghost"
-				size="icon-sm"
-				title="Reset to prediction"
-				onclick={() => controller.setStatus(row.index, 'prediction')}
-			>
-				<RotateCcw class="size-3.5" />
-			</Button>
+			{#if fromModel && row.status !== 'prediction'}
+				<!-- Only a model's row is a proposal: a person's is never made one. -->
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					title="Make it a proposal again"
+					aria-label="Make it a proposal again"
+					data-testid="reset-to-proposal"
+					onclick={() => controller.setStatus(row.index, 'prediction')}
+				>
+					<RotateCcw class="size-3.5" />
+				</Button>
+			{/if}
 		</div>
 	</div>
 {/if}

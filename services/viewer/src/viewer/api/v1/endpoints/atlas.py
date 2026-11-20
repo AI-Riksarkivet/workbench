@@ -37,6 +37,7 @@ from client_kit.lancekit.predicate import and_, eq, isin, or_
 from client_kit.lancekit.registry import DatasetHandle, table_dataset
 from client_kit.media.cache_bounds import keep_shared
 from client_kit.media.deps import DatasetParam, StateDep
+from client_kit.media.frames import FRAME_INDEX_COLUMN
 from client_kit.media.state import AppState, dataset_handle
 from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
 from service_kit.arrow_rows import arrow_rows_response
@@ -44,7 +45,6 @@ from service_kit.exceptions import NotFoundError, ValidationError
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
-from viewer.api.v1.endpoints.media import FRAME_INDEX_COLUMN
 from viewer.api.v1.endpoints.system import DURATION_COLUMN
 from viewer.core.config import viewer_settings
 from viewer.schemas.atlas import AtlasStatusResponse, ChunkHits, ChunkKeys, ChunkRowIds

@@ -970,10 +970,18 @@ const TOPICS = {
 };
 
 /** Who asked a door to fail or to have nothing built, by person and path. */
-/** What a spec plants on one path for one person: a failure, a dataset not built, a slow answer, or a session that
- *  ended (`unauthorized` on every call, `unauthorized-write` on a write alone). */
-type Fault = 'fail' | 'unbuilt' | 'slow' | 'unauthorized' | 'unauthorized-write';
-const FAULTS: readonly string[] = ['fail', 'unbuilt', 'slow', 'unauthorized', 'unauthorized-write'];
+/** What a spec plants on one path for one person: a failure, a dataset not built, a slow answer, a session that ended
+ *  (`unauthorized` on every call, `unauthorized-write` on a write alone), or, on `/api/assist/models`, a deployment that
+ *  names no model endpoint (`no-endpoint`). */
+type Fault = 'fail' | 'unbuilt' | 'slow' | 'unauthorized' | 'unauthorized-write' | 'no-endpoint';
+const FAULTS: readonly string[] = [
+	'fail',
+	'unbuilt',
+	'slow',
+	'unauthorized',
+	'unauthorized-write',
+	'no-endpoint',
+];
 const faults = new Map<string, Map<string, Fault>>();
 const faultOf = (sub: string, path: string): Fault | undefined => faults.get(sub)?.get(path);
 
@@ -1679,7 +1687,13 @@ Bun.serve({
 			},
 		);
 		if (annotations) return annotations;
-		const assist = await assistDoor(req, url, (projectId) => permissionsOn(who.sub, projectId), ok);
+		const assist = await assistDoor(
+			req,
+			url,
+			(projectId) => permissionsOn(who.sub, projectId),
+			ok,
+			faultOf(who.sub, '/api/assist/models') !== 'no-endpoint',
+		);
 		if (assist) return assist;
 		const projects = await projectsDoor(
 			req,

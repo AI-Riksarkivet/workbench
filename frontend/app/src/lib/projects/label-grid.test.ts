@@ -109,7 +109,7 @@ describe('what a reader may do to an item’s label', () => {
 			state: 'unassigned',
 			source: { kind: 'chunks', keys: ['d/0'], where: 'lake~a$b' },
 			legal_events: [],
-			work: { revision: 0, tags: [], tags_cut: false },
+			work: { revision: 0, tags: [], tags_cut: false, proposals: 0 },
 			...over,
 		}) as TaskDetail;
 	const event = (name: string) => ({ event: name, to: '', permission: '' });
@@ -138,7 +138,10 @@ describe('what a reader may do to an item’s label', () => {
 		],
 		[
 			'an item past the tags read is the canvas’s',
-			item({ legal_events: [event('claim')], work: { revision: 1, tags: [], tags_cut: true } }),
+			item({
+				legal_events: [event('claim')],
+				work: { revision: 1, tags: [], tags_cut: true, proposals: 0 },
+			}),
 			'it holds more tags than a grid reads: open it on the canvas',
 		],
 	])('%s', (_name, task, expected) => {

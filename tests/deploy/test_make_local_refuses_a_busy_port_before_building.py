@@ -45,7 +45,7 @@ def test_make_local_with_a_port_taken_names_it_and_builds_nothing(taken: int, tm
     env = os.environ | {
         "PATH": f"{tools}:{os.environ['PATH']}",
         "EDGE_PORT": str(taken),
-        **{name: str(_free_port()) for name in ("VIEWER_PORT", "SEARCH_PORT", "ANNOTATOR_PORT", "FLOWS_PORT", "STATE_PORT")},
+        **{name: str(_free_port()) for name in ("VIEWER_PORT", "SEARCH_PORT", "ANNOTATOR_PORT", "FLOWS_PORT", "STATE_PORT", "MODEL_PORT")},
         "PID_FILE": str(tmp_path / "stack.pid"),
         "TMPDIR": str(tmp_path),
     }

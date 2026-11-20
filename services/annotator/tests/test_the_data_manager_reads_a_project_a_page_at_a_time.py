@@ -243,6 +243,7 @@ def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_m
         _tag("proposed", "letter", status="prediction", source="model:vlm"),
         _tag("plain", "map"),
         box,
+        box.model_copy(update={"shape_id": "p-box", "status": "prediction", "source": "model:detector"}),
     ]
     for task_id, change in (
         ("w-tags", _work(tagged, [Link(name="shows", from_shape="a-box", to_shape="linked")])),
@@ -257,8 +258,8 @@ def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_m
 
     assert {d["task_id"]: d["work"] for d in body["details"]} == {
         "g-r1": None,
-        "w-many": {"revision": 1, "tags": [_plain(f"t{i:02d}") for i in range(64)], "tags_cut": True},
-        "w-none": {"revision": 0, "tags": [], "tags_cut": False},
+        "w-many": {"revision": 1, "tags": [_plain(f"t{i:02d}") for i in range(64)], "tags_cut": True, "proposals": 0},
+        "w-none": {"revision": 0, "tags": [], "tags_cut": False, "proposals": 0},
         "w-tags": {
             "revision": 1,
             "tags": [
@@ -269,6 +270,7 @@ def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_m
                 _plain("plain", "map"),
             ],
             "tags_cut": False,
+            "proposals": 2,
         },
     }
 

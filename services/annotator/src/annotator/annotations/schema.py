@@ -7,12 +7,12 @@ canvas reads a unit's work in (`annotator.annotations.wire`), built from the tas
 
 from __future__ import annotations
 
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from annotator.projects.models import Link, ShapeType
+from annotator.projects.models import MODEL_SOURCE, PROPOSED, Link, ShapeType
 from annotator.text import MAX_ID, MAX_MASK, MAX_METADATA, MAX_TEXT, Id, Name, Text
 
 
@@ -56,6 +56,11 @@ def _a_range(char_start: int, char_end: int) -> None:
         raise ValueError(f"char_end {char_end} is before char_start {char_start}")
 
 
+#: What a row's status may be: a person's or a kept label (`accepted`), one a reviewer looked at (`reviewed`) or turned
+#: down (`rejected`), or a model's proposal nobody settled (`prediction`). Closed, so the rule that an item holding a
+#: proposal is not submitted cannot be passed by another spelling.
+type RowStatus = Literal["accepted", "reviewed", "rejected", "prediction"]
+
 #: The fields a reviewer may edit — the local-first review overlay flushed on save.
 #: Only these are patched; geometry + provenance columns are carried forward from the
 #: current row, so a partial edit never wipes a shape. ``metadata`` is the per-row
@@ -69,7 +74,7 @@ class AnnotationEdit(BaseModel):
 
     id: RowId
     label: Annotated[Text, Field(max_length=128)] | None = None
-    status: Name | None = None
+    status: RowStatus | None = None
     text: Annotated[Text, Field(max_length=MAX_TEXT)] | None = None
     group: Group | None = None
     reviewer: Name | None = None
@@ -99,7 +104,7 @@ class NewAnnotation(BaseModel):
     t_end: Seconds = 0.0
     text: Annotated[Text, Field(max_length=MAX_TEXT)] = ""
     label: Annotated[Text, Field(max_length=128)] = ""
-    status: Name = "accepted"
+    status: RowStatus = "accepted"
     source: Name = "human"
     group: Group = ""
     mask: Annotated[Text, Field(max_length=MAX_MASK)] = ""
@@ -122,6 +127,21 @@ class NewAnnotation(BaseModel):
     #: one (1.0 "confidence") would let human rows shuffle into the model-ranked half of the queue.
     confidence: float | None = None
     uncertainty: float | None = None
+    #: Which version of the model made the row. A model's row (`source: model:<name>`) names that model's version and
+    #: its score whatever its status, and only a model's row is a proposal (`status: prediction`); a row a person drew
+    #: names no version.
+    model_version: Name | None = None
+
+    @model_validator(mode="after")
+    def _a_proposal_says_what_made_it(self) -> Self:
+        from_model = self.source.startswith(MODEL_SOURCE)
+        if self.status == PROPOSED and not from_model:
+            raise ValueError("a proposal names the model that made it (source model:<name>)")
+        if from_model and not (self.model_version and self.confidence is not None):
+            raise ValueError("a model's row names the model's version and its score")
+        if self.model_version is not None and not from_model:
+            raise ValueError("only a model's row names a model version")
+        return self
 
     @model_validator(mode="after")
     def _a_stretch_ends_after_it_starts(self) -> Self:

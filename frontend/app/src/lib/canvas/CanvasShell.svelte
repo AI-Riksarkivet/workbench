@@ -347,6 +347,20 @@
 		const k = e.key.toLowerCase();
 		// Shift+A, Shift+F and Shift+R judge the whole item (the side panel's review keys, `REVIEW_KEYS`), not one annotation.
 		if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && REVIEW_KEYS[k]) return;
+		// Alt+A and Alt+R keep and remove every proposal of the item, A's and R's own verdict made on all of them at once.
+		// Read from the physical key, so they hold where Alt makes a letter of its own (macOS) and on any layout.
+		if (
+			e.altKey &&
+			!e.shiftKey &&
+			!e.ctrlKey &&
+			!e.metaKey &&
+			(e.code === 'KeyA' || e.code === 'KeyR')
+		) {
+			e.preventDefault();
+			if (e.code === 'KeyA') controller.keepAllProposals();
+			else controller.removeAllProposals();
+			return;
+		}
 		if (e.ctrlKey || e.metaKey) {
 			if (k === 'z') {
 				e.preventDefault();
@@ -710,6 +724,8 @@
 			<dd>Delete the selected annotation</dd>
 			<dt class="font-mono">A · R</dt>
 			<dd>Accept · reject the selected annotation, and go to the next</dd>
+			<dt class="font-mono">Alt+A · Alt+R</dt>
+			<dd>Keep · remove every proposal on the item, as one action</dd>
 			<dt class="font-mono">Shift+A · Shift+F · Shift+R</dt>
 			<dd>Reviewing: accept the item · accept it with your fixes · send it back with a note</dd>
 			<dt class="font-mono">Page Up · Page Down</dt>

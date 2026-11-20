@@ -15,8 +15,7 @@ bypass-selection = true
 
 [tool.uv.workspace]
 # Language-pure directories, so the globs are safe: every directory under packages/ and services/ carries a
-# pyproject.toml. The JS plane is frontend/, a bun workspace of its own. runners/* are not members: a runner is a sealed
-# model environment with its own lock, whose pins (CUDA torch, model SDKs) must never enter the services' resolution.
+# pyproject.toml. The JS plane is frontend/, a bun workspace of its own.
 members = ["packages/*", "services/*"]
 
 [dependency-groups]
@@ -111,7 +110,7 @@ python-version = "3.13"
 extra-paths = ["services/annotator/tests/live"]
 
 [tool.ty.src]
-exclude = ["**/.venv", "**/node_modules", "**/.claude/worktrees", "runners"]
+exclude = ["**/.venv", "**/node_modules", "**/.claude/worktrees"]
 
 [tool.pytest.ini_options]
 # Globbed, so a member's tests/ runs the moment it exists; a new top-level tests/<x>/ is added here by hand.

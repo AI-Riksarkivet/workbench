@@ -22,11 +22,6 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
-from annotator.api.v1.endpoints.assist import _CANONICAL_SHAPE, AssistShape, _task_ontology, _within_contract
-from annotator.core.config import AnnotatorSettings
-from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Task
-from annotator.projects.ontology import LabelOntology
-from annotator.state.store import AnnotatorStore
 from annotator.text import MAX_JSON_DEPTH, MAX_MASK
 
 
@@ -53,14 +48,45 @@ def test_a_prediction_saves_the_scores_the_review_queue_ranks_by(work_client: Te
         "label": "stamp",
         "status": "prediction",
         "source": "model:grounding-dino",
+        "model_version": "2026.11",
         "confidence": 0.7,
         "uncertainty": 0.45,
     }
 
     r = _saved(work_client, inserts=[prediction])["p1"]
 
-    assert r["status"] == "prediction" and r["source"] == "model:grounding-dino"
+    assert (r["status"], r["source"], r["model_version"]) == ("prediction", "model:grounding-dino", "2026.11")
     assert r["confidence"] == pytest.approx(0.7) and r["uncertainty"] == pytest.approx(0.45)
+
+
+_PROPOSAL = {"id": "p1", "shape_type": "bbox", "status": "prediction", "source": "model:detector", "model_version": "v1", "confidence": 0.7}
+
+
+@pytest.mark.parametrize(
+    ("save", "status", "said"),
+    [
+        pytest.param({"inserts": [{**_PROPOSAL, "model_version": None}]}, 422, "a model's row names the model's version and its score", id="no-version"),
+        pytest.param({"inserts": [{**_PROPOSAL, "confidence": None}]}, 422, "a model's row names the model's version and its score", id="no-score"),
+        pytest.param(
+            {"inserts": [{**_PROPOSAL, "status": "predicted"}]},
+            422,
+            "Input should be 'accepted', 'reviewed', 'rejected' or 'prediction'",
+            id="another-spelling",
+        ),
+        pytest.param({"inserts": [{**_PROPOSAL, "source": "human"}]}, 422, "a proposal names the model that made it", id="no-model"),
+        pytest.param({"inserts": [{**_PROPOSAL, "status": "accepted", "source": "human"}]}, 422, "only a model's row names a model version", id="a-persons"),
+        pytest.param({"edits": [{"id": "par", "status": "prediction"}]}, 400, "only a model's shape is a proposal", id="a-persons-made-a-proposal"),
+    ],
+)
+def test_a_save_is_refused_when_a_proposal_does_not_say_what_made_it_or_a_persons_shape_claims_to_be_one(
+    work_client: TestClient, save: dict[str, Any], status: int, said: str
+) -> None:
+    _saved(work_client, inserts=[{"id": "par", "shape_type": "bbox", "label": "paragraph"}])
+
+    refused = work_client.post(UNIT, params=QUERY, json={"base_version": 1, **save})
+
+    assert refused.status_code == status, refused.text
+    assert said in refused.text
 
 
 def test_the_composite_ocr_item_saves_as_one_coherent_revision(work_client: TestClient) -> None:
@@ -106,48 +132,6 @@ def test_per_row_attributes_ride_metadata_through_an_insert_and_an_edit_stamped_
 
     assert json.loads(after["metadata"]) == {"order": "1", "script": "cursive"}
     assert (after["label"], after["reviewer"]) == ("paragraph", "anon")
-
-
-@pytest.mark.asyncio
-async def test_assist_predictions_are_filtered_by_the_composite_ontology(state_settings: AnnotatorSettings) -> None:
-    """The ML-backend interplay for a CUSTOM task: the server checks every producer shape against
-    the task's own taxonomy — the union of per-class tools, read from the task the store holds — before it reaches a
-    human. A mask prediction against a polygon/bbox/text layout task is dropped AND reported, not queued."""
-    ontology = LabelOntology.model_validate(
-        {
-            "kind": "ocr-layout",
-            "classes": [
-                {"name": "header", "tools": ["bbox"]},
-                {"name": "paragraph", "tools": ["polygon", "bbox"]},
-                {"name": "marginalia", "tools": ["polygon"]},
-                {"name": "transcription", "tools": ["text"]},
-            ],
-        }
-    )
-    store = await AnnotatorStore.open(state_settings)
-    try:
-        await store.create_project(AnnotationProject(project_id="p1", tenant="acme", slug="layout", state=ProjectState.LABELING, ontology=ontology))
-        await store.send_tasks(
-            "p1", [Task(task_id="t1", project_id="p1", source=ItemSource(kind="chunks", keys=["d1"]), media=MediaRef(kind="image"), ontology=ontology)]
-        )
-        contract = await _task_ontology(store, "p1", "t1")
-    finally:
-        await store.close()
-
-    def shape(t: str) -> AssistShape:
-        return AssistShape(shape_type=t, x=0, y=0, width=10, height=10)
-
-    # The route normalizes producer dialects BEFORE the filter (assist.py's canonicalization
-    # loop) — mirrored here because `_within_contract` sees only canonical types in production.
-    shapes = [shape("polygon"), shape("rectangle"), shape("mask")]
-    for s in shapes:
-        s.shape_type = _CANONICAL_SHAPE.get(s.shape_type, s.shape_type)
-
-    kept, dropped = _within_contract(shapes, contract)
-
-    # `rectangle` (a producer dialect) normalized to `bbox` and accepted; `mask` refused.
-    assert [s.shape_type for s in kept] == ["polygon", "bbox"]
-    assert len(dropped) == 1 and "mask" in dropped[0]
 
 
 @pytest.mark.parametrize(

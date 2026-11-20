@@ -69,6 +69,8 @@ export interface CheckedRow {
 	label: string;
 	/** The row whose text a text span ranges into; empty for every other row. */
 	parentId?: string;
+	/** The row's status: `prediction` is a model's proposal nobody kept or removed yet. */
+	status?: string;
 }
 
 /** Whether a row marks the item and so takes a class: a region, or a text span (a `text` row naming a parent). A text
@@ -84,27 +86,54 @@ export interface SubmitBlockers {
 	missing: string[];
 	/** The ontology names classes and no row was drawn, which it refuses unless it allows an empty item. */
 	empty: boolean;
+	/** How many proposals nobody kept or removed: a submission is a person's, so each is settled first (ADR 0019),
+	 *  whatever the ontology names. */
+	proposals: number;
 }
 
+/** The transitions an item holding a proposal nobody kept or removed is refused (`machines.SETTLES_PROPOSALS`). */
+export const SETTLES_PROPOSALS: ReadonlySet<string> = new Set([
+	'submit',
+	'accept',
+	'fix_and_accept',
+]);
+
+/** Why an item holding ``count`` proposals nobody kept or removed is not submitted (``event`` `submit`) or accepted
+ *  (`accept`, `fix_and_accept`), in the annotator's own words (`annotator.projects.machines.unsettled_proposals`). */
+export function unsettledProposals(count: number, event: string): string {
+	const doing = event === 'submit' ? 'submitting' : 'accepting';
+	return count === 1
+		? `1 proposal on this item is neither kept nor removed: keep or remove it before ${doing}`
+		: `${count} proposals on this item are neither kept nor removed: keep or remove each before ${doing}`;
+}
+
+/** Whether a row would be published as a label: neither turned down (`rejected`) nor a proposal nobody settled
+ *  (`prediction`), the one rule the annotator's submit and publish share (`projects.publish.NOT_A_LABEL`). */
+const isLabel = (r: CheckedRow): boolean => r.status !== 'rejected' && r.status !== 'prediction';
+
 /** The checks the annotator's submit applies first, read early so the panel can name what to fix
- *  (`annotator.projects.ontology.validate_against_ontology`); the submit still decides. */
+ *  (`annotator.projects.ontology.validate_against_ontology`); the submit still decides. The contract is judged on the
+ *  rows that would be published: a rejected row is left out of every check, and a proposal is counted only as one. */
 export function submitBlockers(
 	classes: readonly ClassDef[],
 	rows: readonly CheckedRow[],
 	allowEmpty: boolean,
 ): SubmitBlockers {
-	if (classes.length === 0) return { unlabelled: [], missing: [], empty: false };
-	const present = new Set(rows.map((r) => r.label).filter(Boolean));
+	const proposals = rows.filter((r) => r.status === 'prediction').length;
+	if (classes.length === 0) return { unlabelled: [], missing: [], empty: false, proposals };
+	const labels = rows.filter(isLabel);
+	const present = new Set(labels.map((r) => r.label).filter(Boolean));
 	return {
-		unlabelled: rows.filter((r) => marks(r) && !r.label).map((r) => r.index),
+		unlabelled: labels.filter((r) => marks(r) && !r.label).map((r) => r.index),
 		missing: classes.filter((c) => c.required && !present.has(c.name)).map((c) => c.name),
-		empty: rows.length === 0 && !allowEmpty,
+		empty: labels.length === 0 && !allowEmpty,
+		proposals,
 	};
 }
 
 /** Whether nothing blocks the submit. */
 export const submittable = (b: SubmitBlockers): boolean =>
-	b.unlabelled.length === 0 && b.missing.length === 0 && !b.empty;
+	b.unlabelled.length === 0 && b.missing.length === 0 && !b.empty && b.proposals === 0;
 
 /** The class a key picks: `1`..`9` the first nine, in order; null for any other key or one past the classes. */
 export function classForKey(classes: readonly ClassDef[], key: string): ClassDef | null {

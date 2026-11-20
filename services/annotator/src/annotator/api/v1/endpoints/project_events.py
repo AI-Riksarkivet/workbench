@@ -528,7 +528,7 @@ async def list_project_tasks(
                 # The work doors' own rule (`tasks.reads_work`), `can_review` read off the facts: a task's relations are
                 # its project's. An item with no draft yet is at revision 0 with no tags.
                 readable = reads_work(task, subject, may_review="can_review" in mine.held)
-                work = page.work.get(task.task_id, ItemWork(revision=0, tags=[], tags_cut=False))
+                work = page.work.get(task.task_id, ItemWork(revision=0, tags=[], tags_cut=False, proposals=0))
                 detail["work"] = work.model_dump(mode="json") if readable else None
             details.append(detail)
         found = {d["task_id"] for d in details}

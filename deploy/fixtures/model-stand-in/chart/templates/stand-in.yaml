@@ -1,0 +1,75 @@
+{{- $selector := dict "app.kubernetes.io/name" "workbench-model-stand-in" "app.kubernetes.io/instance" .Release.Name }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - { name: http, port: {{ .Values.port }}, targetPort: http }
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $selector | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: stand-in
+          image: "{{ .Values.image.repository }}:{{ required "image.tag must be set: the annotator image's tag" .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["python", "-m", "annotator.model_endpoint.stand_in"]
+          env:
+            - { name: MODEL_STAND_IN_HOST, value: "0.0.0.0" }
+            - { name: MODEL_STAND_IN_PORT, value: {{ .Values.port | quote }} }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - { name: http, containerPort: {{ .Values.port }} }
+          # A TCP probe: every door of the protocol asks for the caller's token, and a probe has none.
+          startupProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

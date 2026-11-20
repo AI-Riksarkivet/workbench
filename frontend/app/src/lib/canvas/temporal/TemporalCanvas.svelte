@@ -638,13 +638,14 @@
 		selectedRegion ? (controller.rows.find((r) => r.index === selectedRegion.index) ?? null) : null,
 	);
 
-	/** Start from the document's own segments: each becomes an unlabelled region carrying its text, to correct. */
+	/** Start from the document's own segments: each becomes an unlabelled region carrying its text, to correct. They are
+	 *  the dataset's, not a model's, so none is a proposal: the person classes each before the item is submitted. */
 	function importParts(): void {
 		for (const p of parts)
 			controller.addSegment(p.start, p.end, {
 				text: p.text,
 				label: '',
-				status: 'prediction',
+				status: 'accepted',
 				source: 'dataset',
 			});
 	}

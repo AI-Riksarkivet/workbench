@@ -1,0 +1,8 @@
+apiVersion: v2
+name: workbench-model-stand-in
+description: >-
+  NOT FOR PRODUCTION. A stand-in model endpoint for a development cluster: it speaks the workbench's model protocol
+  (docs/model-protocol.md) and holds no model. A deployment's real model endpoint replaces it (`models.endpoint.url`).
+type: application
+version: 0.1.0
+appVersion: "1"

@@ -52,4 +52,4 @@ export function statusWord(status: string): string {
 
 /** The sentence a status summary's tooltip gives. */
 export const STATUS_MEANING =
-	'Each shape’s own status: kept (drawn by a person, or a proposal someone kept), proposed (a model’s, not yet looked at), rejected. The item’s review is in the panel above.';
+	'Each shape’s own status: kept (drawn by a person, or a proposal someone kept), proposed (a model’s, not yet kept or removed), rejected (turned down: it is not published as a label). The item’s review is in the panel above.';

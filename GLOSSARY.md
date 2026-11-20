@@ -225,18 +225,24 @@ _Lives in_: `annotator.projects.models.Link`; the ontology's relations.
 _Avoid_: relation (the ontology's word for a kind of link), edge
 
 **Proposal**:
-A shape a model made that no person has kept yet: from assist, or attached at send. It is shown as proposed until
-someone keeps or rejects it.
-_Lives in_: a shape with `status: "prediction"` and `source: "model:<name>"`; a task's `prediction` list.
+A shape a model made, in an item's work, that no person has kept yet. It is shown as proposed until someone keeps or
+removes it, names its model, the model's version and its score, and keeps naming them once kept. An item holding one
+cannot be submitted or accepted. Assist makes them. The shapes a sender attaches to an item at send (a task's
+`prediction` list, source `bulk`) are not proposals: they name no model, stay outside the item's work, and reach it
+only when a person takes one in from Compare.
+_Lives in_: a draft's shape with `status: "prediction"`, `source: "model:<name>"`, a `model_version` and a
+`confidence`.
 _Avoid_: prediction (the code's word), suggestion, pre-annotation
 
 **Assist**:
-Asking a model, from the canvas, for proposals on the open item: a detector's text prompt or a segmenter's clicks.
-_Lives in_: `POST /api/assist/<unit>`; `#lib/canvas/AssistPanel.svelte`; `runners/assist`.
+Asking a model, from the canvas, for proposals on the open item, with the prompts that model takes: words, a drawn
+box, clicks.
+_Lives in_: `GET /api/assist/models`, `POST /api/assist/<unit>`; `#lib/canvas/AssistPanel.svelte`.
 _Avoid_: auto-label (that is a batch job, which belongs to flows), AI
 
 **Model endpoint**:
-An address the workbench is given and calls for a model's answer. The workbench deploys no model.
+An address the workbench is given and calls for a model's answer, by the model protocol. The workbench deploys no model.
+_Lives in_: `annotator.model_endpoint`; `docs/model-protocol.md`; the chart's `models.endpoint`.
 _Avoid_: model server (the workbench runs none), backend
 
 **Model version**:

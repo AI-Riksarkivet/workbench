@@ -51,6 +51,7 @@ from annotator.projects.machines import (
     EDIT_PERMISSION,
     FROZEN_PROJECT_STATES,
     PROJECT_SEND_STATES,
+    SETTLES_PROPOSALS,
     IllegalTransition,
     edit_violation,
     identity_violation,
@@ -59,8 +60,10 @@ from annotator.projects.machines import (
     refuse_unreadable_ontology,
     submit_target,
     task_transition,
+    unsettled_proposals,
 )
 from annotator.projects.models import (
+    PROPOSED,
     TERMINAL_TASK_STATES,
     Adjudication,
     AnnotationProject,
@@ -75,6 +78,7 @@ from annotator.projects.models import (
     Task,
     TaskState,
     Transition,
+    labels_of,
     new_id,
 )
 from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, membership_violation, validate_against_ontology
@@ -912,11 +916,22 @@ class AnnotatorStore:
                 # `review_required` would let an annotator self-accept. The draft is the submission, judged against
                 # the ontology the task captured.
                 target = submit_target(task.review_required)
-                draft = await _draft(conn, task_id)
-                shapes = [ShapeLike.model_validate(s.model_dump()) for s in (draft.shapes if draft else [])]
-                links = [LinkLike.model_validate(link.model_dump()) for link in (draft.links if draft else [])]
-                if (contract := validate_against_ontology(task.ontology, shapes, links)) is not None:
-                    raise IllegalTransition("task", task.state, f"submit ({contract})")
+
+            if event in SETTLES_PROPOSALS:
+                # A proposal is a model's, and a submitted or accepted item is a person's: each is kept or removed first
+                # (ADR 0019). Judged on the draft this transaction holds, at the submit and again at each acceptance,
+                # since a reviewer may change the work in review.
+                held = await _draft(conn, task_id)
+                if unsettled := sum(1 for s in (held.shapes if held else []) if s.status == PROPOSED):
+                    raise IllegalTransition("task", task.state, event, message=unsettled_proposals(unsettled, event))
+                if event == "submit":
+                    # The submission is the item's labels, the shapes a publish would write, judged against the
+                    # ontology the task captured: a shape a person turned down neither satisfies a rule nor breaks one.
+                    kept, joined = labels_of(held)
+                    shapes = [ShapeLike.model_validate(s.model_dump()) for s in kept]
+                    links = [LinkLike.model_validate(link.model_dump()) for link in joined]
+                    if (contract := validate_against_ontology(task.ontology, shapes, links)) is not None:
+                        raise IllegalTransition("task", task.state, f"submit ({contract})")
 
             task.transitions.append(Transition(at=now, by=actor, event=event, from_state=task.state, to_state=target))
             leaving_accepted = task.state is TaskState.ACCEPTED

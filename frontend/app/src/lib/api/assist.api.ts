@@ -1,10 +1,13 @@
 /**
  * The task's assist models, as the labeling canvas asks them: the annotator's assist doors, same-origin on the DPoP seam
- * (`client.ts`), with the project on every call. `GET /api/assist/producers` says which models exist, whether each is a
- * real backend or the annotator's own mock, what each returns and whether that fits the task; `POST /api/assist/<unit
- * key>` runs one over the unit and answers its proposals, which the annotator has already held to the task's captured
- * ontology (it reads the task by id, so the browser never sends the rules it is judged by) and reports what it dropped.
- * The model servers themselves are the annotator's to reach; the browser never names one.
+ * (`client.ts`), with the project on every call. `GET /api/assist/models` says whether the deployment names a model
+ * endpoint and, when it does, which models it serves, which prompts each takes, what it returns and whether that fits
+ * the task; `POST /api/assist/<unit key>` asks one of them over the unit and answers its proposals, with the model, its
+ * version and each proposal's score, which the annotator has already held to the task's captured ontology (it reads the
+ * task by id, so the browser never sends the rules it is judged by) and says what it dropped.
+ *
+ * The model endpoint is the annotator's to reach: the browser never names one, and no answer here carries its address.
+ * An endpoint that is slow or fails is a refusal with the annotator's `detail`, never an empty answer.
  */
 import * as v from 'valibot';
 import { readJSON, writeJSON, type ApiResult } from './client.ts';
@@ -12,41 +15,46 @@ import { serviceUrl } from './services.ts';
 
 const UPSTREAM = 'the annotator';
 
-const ProducerSchema = v.object({
+const ModelSchema = v.object({
 	name: v.string(),
-	configured: v.boolean(),
+	version: v.string(),
+	title: v.string(),
+	reads: v.array(v.string()),
+	/** The prompts it takes: `text` (words to find), `box` (a region drawn on the picture), `points` (clicks). */
+	prompts: v.array(v.string()),
 	returns: v.array(v.string()),
-	inputs: v.optional(v.array(v.string()), []),
+	/** Whether what it returns fits the task's classes; null when there is nothing to judge it against. */
 	compatible: v.nullable(v.boolean()),
-	interactive: v.optional(v.boolean(), true),
 });
-export type Producer = v.InferOutput<typeof ProducerSchema>;
+export type AssistModel = v.InferOutput<typeof ModelSchema>;
 
 const ListingSchema = v.object({
-	producers: v.array(ProducerSchema),
-	default_configured: v.boolean(),
+	available: v.boolean(),
+	/** Why assist is unavailable, in words a person reads; empty when it is available. */
+	reason: v.string(),
+	models: v.array(ModelSchema),
 });
-export type ProducerListing = v.InferOutput<typeof ListingSchema>;
+export type AssistListing = v.InferOutput<typeof ListingSchema>;
 
-const ShapeSchema = v.object({
+const ProposalSchema = v.object({
 	shape_type: v.string(),
 	x: v.number(),
 	y: v.number(),
 	width: v.number(),
 	height: v.number(),
-	polygon: v.optional(v.array(v.number()), []),
-	label: v.optional(v.string(), ''),
-	text: v.optional(v.string(), ''),
-	confidence: v.optional(v.number(), 0),
-	uncertainty: v.optional(v.nullable(v.number()), null),
+	polygon: v.array(v.number()),
+	label: v.string(),
+	text: v.string(),
+	score: v.number(),
 });
 
-const ResultSchema = v.object({
-	shapes: v.array(ShapeSchema),
-	source: v.string(),
-	dropped: v.optional(v.array(v.string()), []),
+const AnswerSchema = v.object({
+	model: v.string(),
+	version: v.string(),
+	proposals: v.array(ProposalSchema),
+	dropped: v.array(v.string()),
 });
-export type AssistAnswer = v.InferOutput<typeof ResultSchema>;
+export type AssistAnswer = v.InferOutput<typeof AnswerSchema>;
 
 /** The unit an assist runs over: its project and task, its dataset and its key path. */
 export interface AssistUnit {
@@ -56,29 +64,29 @@ export interface AssistUnit {
 	key: string;
 }
 
-/** One click of an interactive segmenter's session: `positive: false` marks background ("not this"). */
+/** One click of a session: `positive: false` marks background ("not this"). */
 export interface AssistPoint {
 	x: number;
 	y: number;
 	positive: boolean;
 }
 
-/** What to ask a model: its producer, a text prompt, a drawn region, and a segmenter's clicks so far. */
+/** What to ask a model: its name, the words to find, a drawn region, and the session's clicks so far. */
 export interface AssistAsk {
-	producer: string;
+	model: string;
 	prompt: string;
 	region: { x: number; y: number; width: number; height: number } | null;
 	points: AssistPoint[];
 }
 
-/** The models the task can ask, and what each would return for it. */
-export function fetchProducers(unit: AssistUnit): Promise<ApiResult<ProducerListing>> {
+/** Whether a model takes ``prompt``, as the endpoint describes it. */
+export const takes = (model: AssistModel, prompt: 'text' | 'box' | 'points'): boolean =>
+	model.prompts.includes(prompt);
+
+/** The models the task can ask, or why assist is unavailable. */
+export function fetchModels(unit: AssistUnit): Promise<ApiResult<AssistListing>> {
 	const query = new URLSearchParams({ project: unit.project, task_id: unit.task });
-	return readJSON(
-		serviceUrl('annotator', `/api/assist/producers?${query}`),
-		ListingSchema,
-		UPSTREAM,
-	);
+	return readJSON(serviceUrl('annotator', `/api/assist/models?${query}`), ListingSchema, UPSTREAM);
 }
 
 /** Ask a model for proposals on the unit. */
@@ -88,13 +96,13 @@ export function requestAssist(unit: AssistUnit, ask: AssistAsk): Promise<ApiResu
 	return writeJSON(
 		serviceUrl('annotator', `/api/assist/${path}?${query}`),
 		{
-			producer: ask.producer,
-			prompt: ask.prompt,
+			model: ask.model,
+			prompt: ask.prompt === '' ? null : ask.prompt,
 			region: ask.region,
 			points: ask.points,
 			task_id: unit.task,
 		},
-		ResultSchema,
+		AnswerSchema,
 		UPSTREAM,
 	);
 }

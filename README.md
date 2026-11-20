@@ -6,7 +6,7 @@ doors and the credentials its catalog vends, any lance-namespace implementation,
 without rask, and is never part of it.
 
 - **explorer**: the viewer, search, and a dataset's views in the app
-- **annotator**: projects, tasks, the labeling canvas, review and publish, with its assist runner
+- **annotator**: projects, tasks, the labeling canvas, review and publish, with assist asking a model endpoint the deployment names (`docs/model-protocol.md`)
 - **flows**: model pipelines; parked, with no screen and no deployment (`docs/adr/0011`)
 
 The work is tracked as GitHub issues, in the order of the pinned "Workbench map" issue; the decisions are in

@@ -39,6 +39,7 @@ from client_kit.lancekit.keys import validate_doc_key
 from client_kit.lancekit.predicate import eq
 from client_kit.lancekit.registry import DatasetHandle, reason_for, table_dataset
 from client_kit.media.deps import StateDep
+from client_kit.media.frames import frame_row
 from client_kit.media.source_gate import may_read, require_read
 from client_kit.media.state import AppState, dataset_handle
 from client_kit.sources import connect_source
@@ -46,7 +47,7 @@ from service_kit.exceptions import ForbiddenError, NotFoundError
 from service_kit.governed.deps import lakehouse_service_caller
 from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import CallerDep, CheckerDep, CurrentSubject, SettingsDep
-from viewer.api.v1.endpoints.media import ByteRange, RangeVerdict, frame_row, parse_range, served_media_type
+from viewer.api.v1.endpoints.media import ByteRange, RangeVerdict, parse_range, served_media_type
 from viewer.api.v1.endpoints.pages import open_page_table, sniff_media_type
 from viewer.services import signed_media
 from viewer.services.plain_rows import at_version

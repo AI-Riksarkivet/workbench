@@ -1,0 +1,10 @@
+# The annotator's image, which carries the stand-in (`annotator.model_endpoint.stand_in`); `make dev-model-stand-in` names
+# the commit's tag.
+image:
+  repository: localhost:5000/workbench-annotator
+  tag: ""
+  pullPolicy: IfNotPresent
+port: 8120
+resources:
+  requests: { cpu: 10m, memory: 96Mi }
+  limits: { cpu: 500m, memory: 256Mi }

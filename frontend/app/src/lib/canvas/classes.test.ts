@@ -7,6 +7,7 @@ import {
 	regionClasses,
 	submitBlockers,
 	submittable,
+	unsettledProposals,
 	type ClassDef,
 } from './classes.ts';
 
@@ -71,7 +72,12 @@ describe('what blocks a submit', () => {
 			],
 			false,
 		);
-		expect(blockers).toEqual({ unlabelled: [0, 4], missing: ['seal'], empty: false });
+		expect(blockers).toEqual({
+			unlabelled: [0, 4],
+			missing: ['seal'],
+			empty: false,
+			proposals: 0,
+		});
 		expect(submittable(blockers)).toBe(false);
 	});
 
@@ -85,6 +91,56 @@ describe('what blocks a submit', () => {
 			unlabelled: [],
 			missing: [],
 			empty: false,
+			proposals: 0,
 		});
+	});
+
+	it('counts each proposal nobody kept or removed, whether the ontology names classes or none', () => {
+		const rows = [
+			{ index: 0, shape: 'bbox', label: 'seal', status: 'prediction' },
+			{ index: 1, shape: 'bbox', label: 'seal', status: 'accepted' },
+			{ index: 2, shape: 'polygon', label: 'line', status: 'prediction' },
+		];
+		expect(submitBlockers(ONTOLOGY, rows, false).proposals).toBe(2);
+		const none = submitBlockers([], rows, false);
+		expect(none.proposals).toBe(2);
+		expect(submittable(none)).toBe(false);
+	});
+
+	it('judges the contract only on what would be published: a rejected row is left out, a proposal counted only as one', () => {
+		const rows = [
+			// The only `seal` is a rejected proposal, and an unclassed rejected box: neither is a label.
+			{ index: 0, shape: 'bbox', label: 'seal', status: 'rejected' },
+			{ index: 1, shape: 'bbox', label: '', status: 'rejected' },
+			// An unclassed proposal blocks as a proposal, not as a region without a class.
+			{ index: 2, shape: 'bbox', label: '', status: 'prediction' },
+		];
+		expect(submitBlockers(ONTOLOGY, rows, false)).toEqual({
+			unlabelled: [],
+			missing: ['seal'],
+			empty: true,
+			proposals: 1,
+		});
+		expect(submitBlockers(ONTOLOGY, rows, true).empty).toBe(false);
+	});
+
+	it.each([
+		[
+			1,
+			'submit',
+			'1 proposal on this item is neither kept nor removed: keep or remove it before submitting',
+		],
+		[
+			3,
+			'accept',
+			'3 proposals on this item are neither kept nor removed: keep or remove each before accepting',
+		],
+		[
+			1,
+			'fix_and_accept',
+			'1 proposal on this item is neither kept nor removed: keep or remove it before accepting',
+		],
+	] as const)('is said for %i proposal(s) at %s in the annotator’s words', (count, event, said) => {
+		expect(unsettledProposals(count, event)).toBe(said);
 	});
 });

@@ -144,6 +144,15 @@ function annotationCalls(page: Page): Request[] {
 	return seen;
 }
 
+/** The requests the page sends to ``path`` from now on. */
+function calls(page: Page, path: string): Request[] {
+	const seen: Request[] = [];
+	page.on('request', (req) => {
+		if (req.url().includes(path)) seen.push(req);
+	});
+	return seen;
+}
+
 const saved = (page: Page) =>
 	page.waitForRequest(
 		(req) => req.method() === 'POST' && req.url().includes(`/api/annotations/${UNIT}?`),
@@ -472,6 +481,8 @@ test('a submit whose save failed says so, and a later save that lands takes the 
 	await openItem(page);
 	await drawBox(page, { x: 100, y: 20 }, { x: 140, y: 60 });
 	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(3);
+	// The item's one proposal is kept first, so the item is offered for submitting.
+	await page.getByTestId('keep-all-proposals').click();
 
 	await fault(page, who, `/api/annotations/${UNIT}`, 'fail');
 	await page.getByTestId('task-submit').click();
@@ -940,9 +951,17 @@ test('a drawn box opens the class picker at the shape: its keys class it, Escape
 	await expect(page.getByTestId('canvas-notice')).toHaveText('Labeled “figure”');
 
 	await page.getByRole('button', { name: 'Save', exact: true }).click();
-	await expect(panel.getByTestId('task-submit')).toBeEnabled();
 	// The shapes' own status is worded as theirs, under the item's state, which is still "Labeling".
 	await expect(page.getByTestId('shape-status')).toHaveText(/^Shapes\s*2 kept\s*1 proposed$/);
+	// A model's proposal nobody kept or removed keeps the item from being submitted, counted in the annotator's words.
+	await expect(panel.getByTestId('submit-check-proposals')).toHaveText(
+		'1 proposal on this item is neither kept nor removed: keep or remove it before submitting',
+	);
+	await expect(panel.getByTestId('task-submit')).toBeDisabled();
+	await panel.getByTestId('remove-all-proposals').click();
+	await expect(panel.getByTestId('submit-check-proposals')).toHaveCount(0);
+	await panel.getByTestId('task-submit').click();
+	await expect(panel.getByTestId('task-panel-title')).toHaveText('In review');
 });
 
 test('a reviewer opens someone’s submission, reads it as theirs to review, and sends it back with a note', async ({
@@ -1232,12 +1251,8 @@ test('a reviewer compares a consensus item with its other replica’s draft on t
 	await other.close();
 });
 
-test('a model asked from the canvas proposes shapes to keep or reject: a detector by its prompt, a segmenter by clicks that refine one proposal', async ({
-	page,
-	context,
-}) => {
-	await as(context, 'Annotator');
-	await openItem(page);
+/** Every assist call the page sends, as the browser sent it. */
+function assistAsks(page: Page): Request[] {
 	const asked: Request[] = [];
 	page.on('request', (req) => {
 		if (
@@ -1246,44 +1261,73 @@ test('a model asked from the canvas proposes shapes to keep or reject: a detecto
 		)
 			asked.push(req);
 	});
-	await page.getByTestId('assist-open').click();
-	const panel = page.getByTestId('assist-panel');
-	await expect(panel.getByTestId('assist-producer')).toHaveText([/grounding-dino/, /sam/]);
-	await expect(panel).toContainText('stand-in');
-	await panel.getByTestId('assist-prompt').fill('stamp');
-	await panel
-		.getByTestId('assist-producer')
-		.filter({ hasText: 'grounding-dino' })
-		.getByRole('button', { name: 'Find' })
-		.click();
+	return asked;
+}
 
-	await expect(page.getByTestId('canvas-notice')).toContainText('1 proposal from grounding-dino');
+/** Open the Assist panel, reading the endpoint's models. */
+async function openAssist(page: Page): Promise<Locator> {
+	await page.getByTestId('assist-open').click();
+	return page.getByTestId('assist-panel');
+}
+
+const modelRow = (panel: Locator, name: string): Locator =>
+	panel.locator(`[data-testid="assist-model"][data-model="${name}"]`);
+
+test('a model asked from the canvas proposes shapes, each naming its model, version and score, and Keep all and Remove all are one action and one undo each', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await openItem(page);
+	const asked = assistAsks(page);
+	const panel = await openAssist(page);
+	// The endpoint's models by title, and what each is: its name and version. Which prompts each takes is the endpoint's
+	// word: the detector is asked with words, the segmenter armed for a box or clicks.
+	await expect(panel.getByTestId('assist-model')).toHaveCount(4);
+	await expect(modelRow(panel, 'stand-in-detector')).toContainText('Stand-in detector');
+	await expect(modelRow(panel, 'stand-in-detector').getByTestId('assist-model-version')).toHaveText(
+		'stand-in-detector · stand-in.1 · returns bbox',
+	);
+	await expect(modelRow(panel, 'stand-in-segmenter').getByRole('button')).toHaveText([
+		'Box or click',
+	]);
+	await panel.getByTestId('assist-prompt').fill('stamp');
+	await modelRow(panel, 'stand-in-detector').getByRole('button', { name: 'Find' }).click();
+
+	await expect(page.getByTestId('canvas-notice')).toContainText(
+		'1 proposal from stand-in-detector stand-in.1',
+	);
 	expect(asked[0]?.postDataJSON()).toEqual({
-		producer: 'grounding-dino',
+		model: 'stand-in-detector',
 		prompt: 'stamp',
 		region: null,
 		points: [],
 		task_id: 'pages-t1',
 	});
 	expect(new URL(asked[0]?.url() ?? '').pathname).toBe(`/api/annotator/api/assist/${UNIT}`);
+	// Each proposal says what made it: the seeded one and the detector's, beside the person's figure, which says nothing.
 	const list = page.getByTestId('annotation-list');
-	await list.getByRole('button', { name: /^stamp/ }).click();
-	await page.keyboard.press('r');
-	await expect(page.getByTestId('shape-status')).toHaveText(/1 rejected/);
-	// A verdict moves on to the next proposal; Escape leaves it, for the list.
+	await expect(list.getByTestId('annotation-made-by')).toHaveText([
+		'seed-detector · seed.1 · 0.82',
+		'stand-in-detector · stand-in.1 · 0.70',
+	]);
+	await list.getByRole('button', { name: /stand-in-detector/ }).click();
+	const detail = page.getByTestId('annotation-detail');
+	await expect(detail.getByTestId('annotation-model-version')).toHaveText('stand-in.1');
+	await expect(detail.getByTestId('annotation-score')).toHaveText('0.70');
+	// A person's figure is never offered as a proposal.
+	await page.keyboard.press('Escape');
+	await list.getByRole('button', { name: /^figure kept/ }).click();
+	await expect(detail.getByTestId('reset-to-proposal')).toHaveCount(0);
 	await page.keyboard.press('Escape');
 
 	// The segmenter is armed: each click is a point of its session, the − sign marks the next "not this", and each
 	// answer replaces the last, so one proposal stands.
-	await page.getByTestId('assist-open').click();
-	// With no prompt, the segmenter names what it found as it does.
-	await panel.getByTestId('assist-prompt').fill('');
-	await panel
-		.getByTestId('assist-producer')
-		.filter({ hasText: 'sam' })
-		.getByTestId('assist-arm')
-		.click();
-	await expect(page.getByTestId('assist-armed')).toContainText('sam');
+	await openAssist(page);
+	await modelRow(panel, 'stand-in-segmenter').getByTestId('assist-arm').click();
+	await expect(page.getByTestId('assist-armed')).toContainText('Stand-in segmenter');
+	// The panel is put away before the picture takes the clicks.
+	await expect(panel).toBeHidden();
 	// Clicks off the item's shapes, which a press would otherwise select.
 	await clickImage(page, { x: 75, y: 70 });
 	await expect.poll(() => asked.length).toBe(2);
@@ -1295,15 +1339,92 @@ test('a model asked from the canvas proposes shapes to keep or reject: a detecto
 	const points = (third.postDataJSON() as { points: { positive: boolean }[] }).points;
 	expect(points.map((p) => p.positive)).toEqual([true, false]);
 	await expect(page.getByTestId('assist-armed')).toContainText('2 points');
-	await expect(list.getByRole('button', { name: /^object/ })).toHaveCount(1);
+	await expect(list.getByTestId('annotation-made-by')).toHaveText([
+		'seed-detector · seed.1 · 0.82',
+		'stand-in-detector · stand-in.1 · 0.70',
+		'stand-in-segmenter · stand-in.1 · 0.85',
+	]);
 	await page.getByTestId('assist-done').click();
 	await page.getByTestId('assist-disarm').click();
-	await list.getByRole('button', { name: /^object/ }).click();
-	await page.keyboard.press('a');
-	await expect(page.getByTestId('shape-status')).toHaveText(/2 kept\s*1 proposed\s*1 rejected/);
+
+	// Keep all is one action: Alt+A keeps the three, each still naming its model, and one undo gives all three back.
+	const shapes = page.getByTestId('shape-status');
+	await expect(shapes).toHaveText(/1 kept\s*3 proposed/);
+	const panelHead = page.getByTestId('task-panel');
+	await expect(panelHead.getByTestId('keep-all-proposals')).toHaveText(/Keep all \(3\)/);
+	await page.keyboard.press('Alt+a');
+	await expect(shapes).toHaveText(/^Shapes\s*4 kept$/);
+	await expect(list.getByTestId('annotation-made-by')).toHaveCount(3);
+	await expect(panelHead.getByTestId('keep-all-proposals')).toHaveCount(0);
+	await page.keyboard.press('Control+z');
+	await expect(shapes).toHaveText(/1 kept\s*3 proposed/);
+	// Remove all is one action too, and one undo.
+	const count = page.getByTestId('shape-count');
+	await panelHead.getByTestId('remove-all-proposals').click();
+	await expect(count).toHaveText('1');
+	await page.keyboard.press('Control+z');
+	await expect(count).toHaveText('4');
+	await expect(shapes).toHaveText(/1 kept\s*3 proposed/);
+
+	// The proposals the canvas made are saved as proposals that say what made them.
+	const save = saved(page);
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	const body = (await save).postDataJSON() as {
+		inserts: { status: string; source: string; model_version: string; confidence: number }[];
+	};
+	expect(body.inserts.map((i) => [i.status, i.source, i.model_version, i.confidence])).toEqual([
+		['prediction', 'model:stand-in-detector', 'stand-in.1', 0.7],
+		['prediction', 'model:stand-in-segmenter', 'stand-in.1', expect.closeTo(0.85, 5)],
+	]);
+	await expect(page.getByTestId('canvas-notice')).toHaveText('Annotations saved');
+
+	// R turns a proposal down: it is no label, and both the list and its detail say it is not published.
+	await list.getByRole('button', { name: /stand-in-segmenter/ }).click();
+	await page.keyboard.press('r');
+	await page.getByRole('button', { name: 'Back to list' }).click();
+	const rejected = list.getByRole('button', { name: /stand-in-segmenter/ });
+	await expect(rejected.getByTestId('not-published')).toHaveText('rejected · not published');
+	await rejected.click();
+	await expect(detail.getByTestId('not-published')).toHaveText('not published');
 });
 
-test('a reviewer judges three items in one pass by key: accepts one, sends one back, fixes and accepts one on the canvas', async ({
+test('an endpoint that does not answer in time, one that fails, and a deployment with none are each said, never as an empty answer', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await openItem(page);
+	const list = page.getByTestId('annotation-list');
+	await expect(list.getByRole('button')).toHaveCount(2);
+	let panel = await openAssist(page);
+	await panel.getByTestId('assist-prompt').fill('stamp');
+	await modelRow(panel, 'stand-in-slow').getByRole('button', { name: 'Find' }).click();
+	const error = page.getByTestId('assist-error');
+	await expect(error).toHaveText('Assist failed: the model endpoint did not answer within 30 s');
+	await expect(page.getByTestId('canvas-notice')).toHaveText(
+		'Assist failed: the model endpoint did not answer within 30 s',
+	);
+	await expect(list.getByRole('button')).toHaveCount(2);
+
+	panel = await openAssist(page);
+	await modelRow(panel, 'stand-in-failing').getByRole('button', { name: 'Find' }).click();
+	await expect(error).toHaveText(
+		'Assist failed: the model endpoint failed (500): stand-in-failing fails every ask',
+	);
+	await expect(page.getByTestId('canvas-notice')).not.toContainText('proposal');
+	await expect(list.getByRole('button')).toHaveCount(2);
+
+	// A deployment that names no model endpoint offers no model, and says why.
+	await fault(page, who, '/api/assist/models', 'no-endpoint');
+	await openItem(page);
+	panel = await openAssist(page);
+	await expect(panel.getByTestId('assist-unavailable')).toHaveText(
+		'Assist is unavailable: this deployment names no model endpoint.',
+	);
+	await expect(panel.getByTestId('assist-model')).toHaveCount(0);
+});
+
+test('a reviewer judges three items in one pass by key: accepts one, fixes and accepts one only once its proposal is settled, sends one back', async ({
 	page,
 	context,
 }) => {
@@ -1325,32 +1446,42 @@ test('a reviewer judges three items in one pass by key: accepts one, sends one b
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Bert Beta’s work');
 	await expect(walk).toContainText('item 2 / 3');
 
-	await page.keyboard.press('Shift+R');
-	const dialog = page.getByTestId('send-back-dialog');
-	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the seal too.');
-	const sentBack = page.waitForRequest((req) => req.url().includes('/tasks/judging-b/events'));
-	await dialog.getByRole('button', { name: 'Send back' }).click();
-	expect((await sentBack).postDataJSON()).toEqual({
-		event: 'request_changes',
-		message: 'Box the seal too.',
-	});
+	// This item holds a proposal nobody kept or removed: it is counted, and neither verdict that accepts it is offered.
+	const judged = calls(page, '/tasks/judging-b/events');
+	const held =
+		'1 proposal on this item is neither kept nor removed: keep or remove it before accepting';
+	await expect(panel.getByTestId('review-check-proposals')).toHaveText(held);
+	await expect(panel.getByTestId('task-accept')).toBeDisabled();
+	await expect(panel.getByTestId('task-fix_and_accept')).toBeDisabled();
+	await page.keyboard.press('Shift+A');
+	await expect(panel.getByTestId('task-failure')).toHaveText(held);
+	expect(judged).toEqual([]);
+	// Removed, it is the reviewer's fix: saved with the verdict that carries it.
+	const saves = annotationCalls(page);
+	await page.keyboard.press('Alt+r');
+	await expect(panel.getByTestId('review-check-proposals')).toHaveCount(0);
+	const fixed = page.waitForRequest((req) => req.url().includes('/tasks/judging-b/events'));
+	await page.keyboard.press('Shift+F');
+	expect((await fixed).postDataJSON()).toEqual({ event: 'fix_and_accept' });
+	expect(
+		saves
+			.filter((req) => req.method() === 'POST' && req.url().includes('task=judging-b'))
+			.map((req) => (req.postDataJSON() as { deletes: string[] }).deletes),
+	).toEqual([['cap-1']]);
 	await expect(page).toHaveURL(/\/tasks\/judging-c\?of=3&done=2&pass=review/);
 	await ready(page);
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Sam Else’s work');
 	await expect(walk).toContainText('item 3 / 3');
 
-	// The fix is made on the canvas itself and saved before the verdict that carries it.
-	const calls = annotationCalls(page);
-	await drawBox(page, { x: 100, y: 20 }, { x: 140, y: 60 });
-	const fixed = page.waitForRequest((req) => req.url().includes('/tasks/judging-c/events'));
-	await page.keyboard.press('Shift+F');
-	expect((await fixed).postDataJSON()).toEqual({ event: 'fix_and_accept' });
-	const saves = calls.filter(
-		(req) => req.method() === 'POST' && req.url().includes('task=judging-c'),
-	);
-	expect(saves.map((req) => (req.postDataJSON() as { inserts: unknown[] }).inserts.length)).toEqual(
-		[1],
-	);
+	await page.keyboard.press('Shift+R');
+	const dialog = page.getByTestId('send-back-dialog');
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the seal too.');
+	const sentBack = page.waitForRequest((req) => req.url().includes('/tasks/judging-c/events'));
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+	expect((await sentBack).postDataJSON()).toEqual({
+		event: 'request_changes',
+		message: 'Box the seal too.',
+	});
 
 	// Past the last item the pass ends where it started, with nothing left to review.
 	await expect(page).toHaveURL(/\/projects\/judging\?tab=review/);

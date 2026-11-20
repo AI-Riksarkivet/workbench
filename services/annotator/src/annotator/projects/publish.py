@@ -36,7 +36,7 @@ from typing import Any, Final
 import pyarrow as pa
 from pydantic import BaseModel, Field
 
-from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Task, TaskState
+from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Task, TaskState, labels_of
 from client_kit.source_names import SOURCE_SEPARATOR
 from service_kit.naming import CATALOG_DELIMITER, is_safe_project
 
@@ -354,15 +354,16 @@ def build_plan(
         if task.state is TaskState.ACCEPTED:
             attribution = _attribution(task, draft, "accepted")
             plan.attributions.append(attribution)
-            shapes = draft.shapes if draft else []
+            # A label is a shape a person made or kept. One a person turned down (`rejected`) is not a label, and neither
+            # is a proposal nobody settled, which no accepted item holds (ADR 0019) and which is left out here whatever
+            # path a draft took. A link is published only between two shapes that are.
+            shapes, links = labels_of(draft)
             if not shapes:
                 # Accepted with no shapes is a real decision ("nothing to annotate here"), and it is
                 # recorded as one rather than vanishing.
                 plan.rows.append(_row(project, task, attribution, None, publish_id=publish_id, published_at=published_at))
             for shape in shapes:
-                plan.rows.append(
-                    _row(project, task, attribution, shape, publish_id=publish_id, published_at=published_at, links=draft.links if draft else None)
-                )
+                plan.rows.append(_row(project, task, attribution, shape, publish_id=publish_id, published_at=published_at, links=links))
         elif task.state is TaskState.SKIPPED:
             # ONE sentinel row, and NONE of the draft's shapes (§7.1).
             attribution = _attribution(task, draft, "skipped")

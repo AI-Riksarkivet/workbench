@@ -19,6 +19,8 @@ export interface AnnoRow {
 	source: string;
 	confidence: number | null;
 	uncertainty: number | null;
+	/** Which version of the model made the row (`model_version`), null for a row a person drew. */
+	modelVersion: string | null;
 	tStart: number | null;
 	tEnd: number | null;
 	/** The textual facet — set only on a SPAN row (a range into `parentId`'s text). */
@@ -50,6 +52,24 @@ export function effectiveField(
 	const o = overrides.get(`${i}:${field}`);
 	if (o != null) return o;
 	return rawField(t, field, i);
+}
+
+/** The prefix a model's row names its source with (`model:<name>`). */
+const MODEL_SOURCE = 'model:';
+
+/** What made a model's row, as one line: its model, the model's version and its score ("stand-in-detector ·
+ *  stand-in.1 · 0.70"); null for a row no model made. A kept proposal still says it. */
+export function provenanceOf(
+	row: Pick<AnnoRow, 'source' | 'modelVersion' | 'confidence'>,
+): string | null {
+	if (!row.source.startsWith(MODEL_SOURCE)) return null;
+	return [
+		row.source.slice(MODEL_SOURCE.length),
+		row.modelVersion,
+		row.confidence === null ? null : row.confidence.toFixed(2),
+	]
+		.filter((part) => part !== null && part !== '')
+		.join(' · ');
 }
 
 /** The raw numeric cell (null when absent or non-numeric). */
@@ -91,6 +111,7 @@ export function projectRows(
 			source: effectiveField(t, overrides, 'source', i) ?? '',
 			confidence: numField(t, 'confidence', i),
 			uncertainty: numField(t, 'uncertainty', i),
+			modelVersion: rawField(t, 'model_version', i),
 			tStart: numField(t, 't_start', i),
 			tEnd: numField(t, 't_end', i),
 			parentId: rawField(t, 'parent_id', i) ?? '',

@@ -1,18 +1,19 @@
 <script lang="ts">
-	// Assist: ask the task's models for proposals on the item. The annotator answers which models exist, whether each is
-	// a real backend or its own stand-in, what each returns and whether that fits the task; the panel offers the ones a
-	// person can ask from the canvas. A text-prompted detector is asked with its prompt (over the whole picture, or over a
-	// box drawn while it is armed); a segmenter is armed, and each click on the picture is a point of its session ("this",
-	// or with − "not this"), every answer replacing the last until Done. Proposals arrive as `prediction` rows for the
-	// person to keep (A) or reject (R), as any proposal. A picture, or a video's frame, is what they look at: on a text or
-	// a recording the panel says so instead.
+	// Assist: ask the deployment's model endpoint, through the annotator, for proposals on the item. The annotator says
+	// whether the deployment names an endpoint and, when it does, which models it serves (each by its title, name and
+	// version), which prompts each takes and whether what it returns fits the task. What the panel offers comes from
+	// those prompts: a model that takes words is asked with the words to find ("Find", over the whole picture), one that
+	// takes a box or clicks is armed, so a box drawn on the picture or each click is its prompt ("this", or with − "not
+	// this"), every answer of a click session replacing the last until Done. Proposals arrive as `prediction` rows for
+	// the person to keep (A) or reject (R), or all at once (Alt+A, Alt+R), each naming its model, version and score. An
+	// ask that fails is said here in the annotator's words, never as an answer with nothing in it. A picture, or a
+	// video's frame, is what a model looks at: on a text or a recording the panel says so instead.
 	import { Check, Minus, Plus, Sparkles, X } from '@lucide/svelte';
 	import { Badge } from '@riksarkivet/ui/badge';
 	import { Button } from '@riksarkivet/ui/button';
 	import * as Popover from '@riksarkivet/ui/popover';
 	import { Slider } from '@riksarkivet/ui/slider';
-	import { cn } from '@riksarkivet/ui/utils';
-	import { fetchProducers, type Producer } from '#lib/api/assist.api.ts';
+	import { fetchModels, takes, type AssistListing, type AssistModel } from '#lib/api/assist.api.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let {
@@ -21,36 +22,43 @@
 	}: { controller: AnnotatorController; kind: 'image' | 'audio' | 'video' | 'text' } = $props();
 
 	let open = $state(false);
-	let producers = $state.raw<Producer[] | null>(null);
+	let listing = $state.raw<AssistListing | null>(null);
 	let failure = $state<string | null>(null);
 	const visual = $derived(kind === 'image' || kind === 'video');
+	const armed = $derived(controller.assistModel);
 	const SignIcon = $derived(controller.assistPointPositive ? Plus : Minus);
 
 	async function read(): Promise<void> {
 		const unit = controller.unit;
-		if (unit === null || producers !== null) return;
-		const answer = await fetchProducers(unit);
-		if (answer.ok) producers = answer.data.producers.filter((p) => p.interactive !== false);
+		if (unit === null || listing !== null) return;
+		failure = null;
+		const answer = await fetchModels(unit);
+		if (answer.ok) listing = answer.data;
 		else failure = answer.detail;
 	}
 
-	const prompted = (p: Producer): boolean =>
-		p.inputs.includes('prompt') || (p.inputs.length === 0 && p.name.startsWith('grounding-dino'));
-	const clicked = (p: Producer): boolean =>
-		p.inputs.includes('points') || (p.inputs.length === 0 && p.name.startsWith('sam'));
-	const offered = $derived((producers ?? []).filter((p) => prompted(p) || clicked(p)));
-	const mocked = $derived(producers !== null && !producers.some((p) => p.configured));
+	/** The models a person can ask from the canvas: those that take a prompt the canvas gives. */
+	const offered = $derived(
+		(listing?.models ?? []).filter(
+			(m) => takes(m, 'text') || takes(m, 'box') || takes(m, 'points'),
+		),
+	);
+	const anyWords = $derived(offered.some((m) => takes(m, 'text')));
 
-	function ask(p: Producer): void {
-		controller.setAssistProducer(null);
-		void controller.assist({ producer: p.name });
+	function find(m: AssistModel): void {
+		controller.setAssistModel(null);
+		void controller.assist({ model: m });
 		open = false;
 	}
 
-	function arm(p: Producer): void {
-		controller.setAssistProducer(p.name);
+	function arm(m: AssistModel): void {
+		controller.setAssistModel(m);
 		open = false;
 	}
+
+	/** What arming a model asks of the person next, by the prompts it takes. */
+	const armWord = (m: AssistModel): string =>
+		takes(m, 'points') && takes(m, 'box') ? 'Box or click' : takes(m, 'points') ? 'Click' : 'Box';
 </script>
 
 <div class="flex shrink-0 items-center gap-1" data-testid="assist">
@@ -59,7 +67,7 @@
 			{#snippet child({ props })}
 				<Button
 					{...props}
-					variant={controller.assistProducer ? 'secondary' : 'ghost'}
+					variant={armed ? 'secondary' : 'ghost'}
 					size="sm"
 					disabled={controller.readOnly !== null}
 					data-testid="assist-open"
@@ -68,70 +76,80 @@
 				</Button>
 			{/snippet}
 		</Popover.Trigger>
-		<Popover.Content class="flex w-80 flex-col gap-3 p-3" data-testid="assist-panel">
-			<div class="flex items-center justify-between gap-2">
-				<h3 class="text-sm font-medium">Ask a model for proposals</h3>
-				{#if mocked}
-					<Badge
-						variant="outline"
-						title="No model server is configured: the annotator answers with its own stand-in"
-						>stand-in</Badge
-					>
-				{/if}
-			</div>
+		<Popover.Content class="flex w-96 flex-col gap-3 p-3" data-testid="assist-panel">
+			<h3 class="text-sm font-medium">Ask a model for proposals</h3>
 			{#if !visual}
 				<p class="text-muted-foreground text-xs" data-testid="assist-not-here">
-					The task's models propose regions of a picture or a video's frame; this item is {kind ===
-					'text'
+					A model proposes regions of a picture or a video's frame; this item is {kind === 'text'
 						? 'a text'
-						: 'a recording'}, so there is nothing for them to look at here.
+						: 'a recording'}, so there is nothing for it to look at here.
 				</p>
 			{:else if failure}
-				<p class="text-destructive text-xs" role="alert">
+				<p class="text-destructive text-xs" role="alert" data-testid="assist-list-failed">
 					The models could not be listed: {failure}
 				</p>
-			{:else if producers === null}
-				<p class="text-muted-foreground text-xs" role="status">Reading the task's models…</p>
+			{:else if listing === null}
+				<p class="text-muted-foreground text-xs" role="status">Reading the models…</p>
+			{:else if !listing.available}
+				<p class="text-muted-foreground text-xs" data-testid="assist-unavailable">
+					{listing.reason.charAt(0).toUpperCase() + listing.reason.slice(1)}.
+				</p>
 			{:else if offered.length === 0}
-				<p class="text-muted-foreground text-xs">
-					The annotator offers no model to ask from the canvas.
+				<p class="text-muted-foreground text-xs" data-testid="assist-no-models">
+					The model endpoint serves no model that takes words, a box or clicks.
 				</p>
 			{:else}
-				<label class="flex flex-col gap-1 text-xs">
-					<span class="text-muted-foreground">What to find (a detector's prompt)</span>
-					<input
-						class="bg-background h-8 rounded-md border px-2 text-sm"
-						bind:value={controller.assistPrompt}
-						placeholder="e.g. stamp"
-						data-testid="assist-prompt"
-						onkeydown={(e) => e.stopPropagation()}
-					/>
-				</label>
-				<ul class="flex flex-col gap-1.5">
-					{#each offered as p (p.name)}
-						<li class="flex items-center gap-2 text-xs" data-testid="assist-producer">
-							<span
-								class={cn(
-									'size-1.5 shrink-0 rounded-full',
-									p.configured ? 'bg-emerald-500' : 'bg-amber-500',
-								)}
-								title={p.configured ? 'a configured model server' : "the annotator's stand-in"}
-							></span>
-							<span class="min-w-0 flex-1 truncate font-medium">{p.name}</span>
-							<span class="text-muted-foreground">{p.returns.join(', ') || '?'}</span>
-							{#if p.compatible === false}
-								<Badge variant="destructive" class="text-[10px]">not this task's</Badge>
-							{/if}
-							{#if prompted(p)}
-								<Button
-									size="xs"
-									variant="outline"
-									disabled={!controller.assistPrompt.trim() || controller.assistBusy}
-									onclick={() => ask(p)}>Find</Button
+				{#if anyWords}
+					<label class="flex flex-col gap-1 text-xs">
+						<span class="text-muted-foreground">What to find</span>
+						<input
+							class="bg-background h-8 rounded-md border px-2 text-sm"
+							bind:value={controller.assistPrompt}
+							placeholder="e.g. stamp"
+							data-testid="assist-prompt"
+							onkeydown={(e) => e.stopPropagation()}
+						/>
+					</label>
+				{/if}
+				<ul class="flex flex-col gap-2">
+					{#each offered as m (m.name)}
+						<li class="flex flex-col gap-1 text-xs" data-testid="assist-model" data-model={m.name}>
+							<div class="flex items-center gap-2">
+								<span class="min-w-0 flex-1 truncate font-medium" title={m.name}
+									>{m.title || m.name}</span
 								>
-							{/if}
-							<Button size="xs" variant="outline" onclick={() => arm(p)} data-testid="assist-arm"
-								>{clicked(p) ? 'Click' : 'Box'}</Button
+								{#if m.compatible === false}
+									<Badge
+										variant="destructive"
+										class="text-[10px]"
+										title="What it returns ({m.returns.join(
+											', ',
+										)}) is no shape this task's classes take"
+										data-testid="assist-incompatible">does not fit this task</Badge
+									>
+								{/if}
+								{#if takes(m, 'text')}
+									<Button
+										size="xs"
+										variant="outline"
+										disabled={!controller.assistPrompt.trim() || controller.assistBusy}
+										onclick={() => find(m)}>Find</Button
+									>
+								{/if}
+								{#if takes(m, 'box') || takes(m, 'points')}
+									<Button
+										size="xs"
+										variant="outline"
+										disabled={controller.assistBusy}
+										onclick={() => arm(m)}
+										data-testid="assist-arm">{armWord(m)}</Button
+									>
+								{/if}
+							</div>
+							<span
+								class="text-muted-foreground font-mono text-[11px]"
+								data-testid="assist-model-version"
+								>{m.name} · {m.version} · returns {m.returns.join(', ') || 'nothing named'}</span
 							>
 						</li>
 					{/each}
@@ -152,17 +170,17 @@
 			{/if}
 		</Popover.Content>
 	</Popover.Root>
-	{#if controller.assistProducer}
+	{#if armed}
 		<!-- The armed model, its session's sign and its end, on the bar while the canvas takes its clicks. -->
 		<span
 			class="bg-secondary flex items-center gap-1 rounded-md px-2 py-0.5 text-xs"
 			data-testid="assist-armed"
 		>
 			<Sparkles class="size-3" />
-			{controller.assistProducer}{controller.assistPoints.length > 0
+			{armed.title || armed.name}{controller.assistPoints.length > 0
 				? ` · ${controller.assistPoints.length} point${controller.assistPoints.length === 1 ? '' : 's'}`
 				: ''}
-			{#if controller.assistProducer.startsWith('sam')}
+			{#if takes(armed, 'points')}
 				<Button
 					variant="ghost"
 					size="icon-xs"
@@ -187,8 +205,30 @@
 				variant="ghost"
 				size="icon-xs"
 				aria-label="Put the model away"
-				onclick={() => controller.setAssistProducer(null)}
+				onclick={() => controller.setAssistModel(null)}
 				data-testid="assist-disarm"><X class="size-3" /></Button
+			>
+		</span>
+	{/if}
+	{#if controller.assistAsking}
+		<span class="text-muted-foreground text-xs" data-testid="assist-asking"
+			>Asking {controller.assistAsking}…</span
+		>
+	{:else if controller.assistError}
+		<!-- What the last ask met, in the annotator's words: an error, not an answer with nothing in it. The canvas's live
+		     region says it as it happens; this stays until the next ask, or until put away. -->
+		<span
+			class="text-destructive flex max-w-md items-center gap-1 text-xs"
+			data-testid="assist-error"
+		>
+			<span class="min-w-0 truncate" title={controller.assistError}
+				>Assist failed: {controller.assistError}</span
+			>
+			<Button
+				variant="ghost"
+				size="icon-xs"
+				aria-label="Dismiss"
+				onclick={() => (controller.assistError = null)}><X class="size-3" /></Button
 			>
 		</span>
 	{/if}

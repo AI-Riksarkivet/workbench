@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Final
+from typing import Final, Literal
 
 import pyarrow as pa
 
 from annotator.annotations.schema import EMPTY_SCHEMA, NewAnnotation, SaveAnnotations
 from annotator.annotations.unit import Unit
-from annotator.projects.models import Draft, Link, Shape
+from annotator.projects.models import MODEL_SOURCE, PROPOSED, Draft, Link, Shape
 from annotator.text import MAX_METADATA, embedded_json
 from service_kit.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -48,6 +48,10 @@ def _metadata(attributes: dict[str, str]) -> str:
     return json.dumps(attributes, separators=(",", ":"), sort_keys=True)
 
 
+#: What a person does with every proposal of an item at once.
+type SettleAction = Literal["keep", "remove"]
+
+
 def _new_shape(row: NewAnnotation, *, author: str, now: datetime) -> Shape:
     return Shape(
         shape_id=row.id,
@@ -69,6 +73,7 @@ def _new_shape(row: NewAnnotation, *, author: str, now: datetime) -> Shape:
         attributes=attributes_of(row.metadata),
         group=row.group or None,
         source=row.source,
+        model_version=row.model_version,
         confidence=row.confidence,
         uncertainty=row.uncertainty,
         status=row.status,
@@ -105,6 +110,8 @@ def apply_save(draft: Draft | None, body: SaveAnnotations, *, author: str, now: 
     touched: set[str] = set()
     for edit in body.edits:
         shape = shapes[edit.id]
+        if edit.status == PROPOSED and not (shape.source or "").startswith(MODEL_SOURCE):
+            raise ValidationError(f"annotation {edit.id} is a person's: only a model's shape is a proposal")
         for field in ("label", "status", "text", "group"):
             value = getattr(edit, field)
             if value is not None:
@@ -137,6 +144,27 @@ def apply_save(draft: Draft | None, body: SaveAnnotations, *, author: str, now: 
         # A deleted shape's links go with it.
         links = [link for link in links if link.from_shape not in gone and link.to_shape not in gone]
     return list(shapes.values()), links
+
+
+def settle_proposals(draft: Draft | None, action: SettleAction, *, author: str, now: datetime) -> tuple[list[Shape], list[Link], int]:
+    """The draft's shapes and links once every proposal in it is kept or removed, and how many there were.
+
+    Kept, a proposal becomes a label the person stands behind (`accepted`, with them as its reviewer) and still names
+    the model that made it, its version and its score. Removed, it goes with its links.
+    """
+    shapes = [s.model_copy() for s in (draft.shapes if draft else [])]
+    links = list(draft.links) if draft else []
+    proposed = {s.shape_id for s in shapes if s.status == PROPOSED}
+    if action == "remove":
+        return (
+            [s for s in shapes if s.shape_id not in proposed],
+            [k for k in links if k.from_shape not in proposed and k.to_shape not in proposed],
+            len(proposed),
+        )
+    for shape in shapes:
+        if shape.shape_id in proposed:
+            shape.status, shape.reviewer, shape.updated_at = "accepted", author, now
+    return shapes, links, len(proposed)
 
 
 def _id_type(value: str | int) -> pa.DataType:

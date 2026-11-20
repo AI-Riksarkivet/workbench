@@ -20,7 +20,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from lance import blob_array, blob_field
 
-from client_kit.media.frames import chunk_frame_path
 from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
@@ -144,9 +143,8 @@ def test_a_replica_that_never_saw_the_person_serves_the_url_as_itself(tmp_path: 
     "fields",
     [pytest.param(["doc_id", "group_id", "chunk_id"], id="three-fields"), pytest.param(["doc_id", "chunk_id"], id="two-fields")],
 )
-def test_a_chunks_frame_is_served_by_its_door_at_the_path_a_model_server_is_handed_and_by_a_signed_url(tmp_path: Path, fields: list[str]) -> None:
-    """The frame door takes a unit's key path whatever its identity's arity, at the path the annotator hands an assist
-    model server (`client_kit.media.frames.chunk_frame_path`, its dataset named); a signed URL serves the frame it names."""
+def test_a_chunks_frame_is_served_by_its_door_and_by_a_signed_url(tmp_path: Path, fields: list[str]) -> None:
+    """The frame door takes a unit's key path whatever its identity's arity; a signed URL serves the frame it names."""
     descriptor = {"identity": {"key_fields": fields}, "capabilities": {"frames": "frames.frame"}}
     keys = {"group_id": [0, 0], "chunk_id": [1, 1]}
     schema = pa.schema([("doc_id", pa.string()), *((f, pa.int64()) for f in fields[1:]), ("frame_idx", pa.int64()), blob_field("frame")])
@@ -155,11 +153,11 @@ def test_a_chunks_frame_is_served_by_its_door_at_the_path_a_model_server_is_hand
     unit = "/".join(["d1", *(str(keys[f][0]) for f in fields[1:])])
 
     with TestClient(_app(tmp_path)) as client:
-        by_door = client.get(chunk_frame_path(unit, "lake~wh$corpus"))
+        by_door = client.get(f"/api/chunk-frame/{unit}", params={"dataset": "lake~wh$corpus"})
         url = _sign(client, [{"role": "frame", "doc_id": "d1", "keys": [keys[f][0] for f in fields[1:]], "frame_idx": 1}])[0]["url"]
         by_url = client.get(str(url))
 
-    # The door answers the representative frame (0), the one a model server looks at; the signed URL the frame it names.
+    # The door answers the representative frame (0); the signed URL the frame it names.
     assert (by_door.status_code, by_door.content, by_door.headers["x-content-type-options"]) == (200, b"first", "nosniff"), by_door.text
     assert (by_url.status_code, by_url.content, by_url.headers["content-type"]) == (200, _JPEG, "image/jpeg")
 

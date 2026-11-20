@@ -1,0 +1,265 @@
+"""The workbench's model protocol, version 1: what a model endpoint is asked and what it answers (ADR 0023, ADR 0030).
+
+The workbench deploys no model. A deployment gives it the address of a model endpoint, and the workbench calls it by
+this protocol; a backend that speaks another protocol is reached through an adapter that speaks this one. The prose is
+`docs/model-protocol.md`, and `docs/model-protocol-openapi.json` is this module's models as the stand-in serves them
+(`annotator.model_endpoint.stand_in`), so the document, the stand-in and the caller cannot disagree.
+
+Two doors:
+
+- ``GET /v1/models``: the models the endpoint serves and what each can do.
+- ``POST /v1/proposals``: one model's proposals on one item.
+
+Every call presents the caller's own bearer token (``Authorization``). An error is an HTTP status with an RFC 9457
+problem body, never a 200 that says it failed.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+PROTOCOL_VERSION = "1"
+
+MODELS_PATH = "/v1/models"
+PROPOSALS_PATH = "/v1/proposals"
+
+#: The shape vocabulary a proposal is written in: the one a draft, an ontology and a published table speak. An adapter
+#: maps its backend's names onto it; an answer naming another is outside the protocol.
+ProposalShape = Literal["bbox", "polygon", "polyline", "keypoint", "mask", "tag", "text", "segment"]
+#: What a model reads of an item.
+ContentKind = Literal["image", "text"]
+#: What a person may add to the ask: words, a box drawn on a picture, or clicks on it.
+PromptKind = Literal["text", "box", "points"]
+
+#: The most models one endpoint lists, proposals one answer carries and points one polygon names.
+MAX_MODELS = 256
+MAX_PROPOSALS = 2000
+MAX_POLYGON_VALUES = 20_000
+#: The longest prompt, and the most clicks, one ask carries.
+MAX_PROMPT = 2000
+MAX_POINTS = 64
+#: The most classes one ask names.
+MAX_CLASSES = 1000
+#: The largest picture an ask carries, in bytes before base64.
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
+#: The longest text an ask carries, in characters.
+MAX_TEXT = 1_000_000
+#: A picture's media type.
+IMAGE_TYPE_PATTERN = r"^image/[A-Za-z0-9.+-]{1,64}$"
+
+Name = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")]
+
+#: Strict on both sides: a field the protocol does not name is refused, so a caller and an endpoint that drifted apart
+#: fail loudly instead of dropping what the other said.
+STRICT = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class ModelInfo(BaseModel):
+    """One model an endpoint serves, and what it can do."""
+
+    model_config = STRICT
+
+    name: Name
+    #: Which version of the model answers. Every proposal records it, so two versions can be compared.
+    version: Name
+    #: What a person is shown for it; empty shows the name.
+    title: Annotated[str, Field(max_length=200)] = ""
+    #: What it reads of an item. An ask carrying another kind is refused with 422.
+    reads: Annotated[list[ContentKind], Field(min_length=1, max_length=8)]
+    #: The prompts it takes. Empty: it answers from the item alone.
+    prompts: Annotated[list[PromptKind], Field(max_length=8)] = Field(default_factory=list)
+    #: The shape types its proposals carry. Never empty: a model that proposes nothing is not listed.
+    returns: Annotated[list[ProposalShape], Field(min_length=1, max_length=16)]
+
+
+class ModelListing(BaseModel):
+    """The answer of ``GET /v1/models``."""
+
+    model_config = STRICT
+
+    protocol: Literal["1"] = PROTOCOL_VERSION
+    models: Annotated[list[ModelInfo], Field(max_length=MAX_MODELS)]
+
+
+class ImageContent(BaseModel):
+    """A picture, carried in the ask: the endpoint fetches nothing and needs no way back to the workbench."""
+
+    model_config = STRICT
+
+    kind: Literal["image"] = "image"
+    mime: Annotated[str, Field(pattern=IMAGE_TYPE_PATTERN)]
+    #: The picture's bytes, base64 (RFC 4648 §4).
+    data: Annotated[str, Field(min_length=1, max_length=(MAX_IMAGE_BYTES * 4) // 3 + 4)]
+
+
+class TextContent(BaseModel):
+    """A text. Offsets a proposal names into it count code points."""
+
+    model_config = STRICT
+
+    kind: Literal["text"] = "text"
+    text: Annotated[str, Field(max_length=MAX_TEXT)]
+
+
+class Item(BaseModel):
+    """The item proposals are asked on."""
+
+    model_config = STRICT
+
+    #: The caller's own name for the item, opaque to the endpoint: what its logs can be matched by.
+    id: Annotated[str, Field(min_length=1, max_length=1024)]
+    content: Annotated[ImageContent | TextContent, Field(discriminator="kind")]
+
+
+class Box(BaseModel):
+    """A box on a picture, in the picture's own pixels."""
+
+    model_config = STRICT
+
+    x: float
+    y: float
+    width: Annotated[float, Field(ge=0)]
+    height: Annotated[float, Field(ge=0)]
+
+
+class Point(BaseModel):
+    """A click on a picture, in its pixels. ``positive: false`` says "not this"."""
+
+    model_config = STRICT
+
+    x: float
+    y: float
+    positive: bool = True
+
+
+class Prompts(BaseModel):
+    """What the person added to the ask. A model reads the kinds it lists in ``prompts`` and an ask carrying another
+    kind is refused with 422."""
+
+    model_config = STRICT
+
+    text: Annotated[str, Field(max_length=MAX_PROMPT)] | None = None
+    box: Box | None = None
+    #: Every click of the session so far, in order: the ask is the whole session, and the endpoint keeps none.
+    points: Annotated[list[Point], Field(max_length=MAX_POINTS)] = Field(default_factory=list)
+
+    def kinds(self) -> set[PromptKind]:
+        """The prompt kinds this ask carries."""
+        carried: set[PromptKind] = set()
+        if self.text:
+            carried.add("text")
+        if self.box is not None:
+            carried.add("box")
+        if self.points:
+            carried.add("points")
+        return carried
+
+
+class ProposalsRequest(BaseModel):
+    """The body of ``POST /v1/proposals``."""
+
+    model_config = STRICT
+
+    model: Name
+    item: Item
+    prompts: Prompts = Field(default_factory=Prompts)
+    #: The classes the item's task labels with. A model that can label in a given vocabulary uses these names; one that
+    #: cannot ignores them. Empty: the task names none.
+    classes: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(max_length=MAX_CLASSES)] = Field(default_factory=list)
+    #: The person the ask is made for, as the caller names them. For the endpoint's own record; it is not a credential,
+    #: and the bearer token alone says who calls.
+    requested_by: Annotated[str, Field(max_length=512)] = ""
+
+
+class Proposal(BaseModel):
+    """One proposed shape, in the item's own coordinates (a picture's pixels, a text's code points)."""
+
+    model_config = STRICT
+
+    shape_type: ProposalShape
+    x: float = 0.0
+    y: float = 0.0
+    width: Annotated[float, Field(ge=0)] = 0.0
+    height: Annotated[float, Field(ge=0)] = 0.0
+    #: A polygon's or a polyline's points, flat: ``[x0, y0, x1, y1, ...]``.
+    polygon: Annotated[list[float], Field(max_length=MAX_POLYGON_VALUES)] = Field(default_factory=list)
+    #: The class the model proposes, one of the ask's ``classes`` where it labels in them; empty proposes none.
+    label: Annotated[str, Field(max_length=128)] = ""
+    #: A textual answer: a transcription, or a tag's value.
+    text: Annotated[str, Field(max_length=MAX_TEXT)] = ""
+    #: A text span's range, in code points; both absent on any other shape.
+    char_start: Annotated[int, Field(ge=0)] | None = None
+    char_end: Annotated[int, Field(ge=0)] | None = None
+    #: How sure the model is, from 0 to 1. Required: a proposal with no score cannot be ranked or thresholded.
+    score: Annotated[float, Field(ge=0.0, le=1.0)]
+
+    @model_validator(mode="after")
+    def _well_formed(self) -> Proposal:
+        if len(self.polygon) % 2:
+            raise ValueError("a polygon is pairs of x and y")
+        if (self.char_start is None) != (self.char_end is None):
+            raise ValueError("a span names both char_start and char_end")
+        if self.char_start is not None and self.char_end is not None and self.char_end < self.char_start:
+            raise ValueError("char_end is before char_start")
+        return self
+
+
+class ProposalsResponse(BaseModel):
+    """The answer of ``POST /v1/proposals``: the model that answered, at which version, and what it proposes. No
+    proposals is an answer ("nothing found"); a model that could not answer says so by its status."""
+
+    model_config = STRICT
+
+    model: Name
+    version: Name
+    proposals: Annotated[list[Proposal], Field(max_length=MAX_PROPOSALS)]
+
+
+class Problem(BaseModel):
+    """An error's body (RFC 9457, ``application/problem+json``). The status says what happened:
+
+    - 401: no bearer token, or one the endpoint does not accept.
+    - 403: this caller may not ask this model.
+    - 404: the endpoint serves no model of that name.
+    - 413: the item is larger than the model takes.
+    - 422: the ask is outside the protocol, or carries a content or prompt kind the model does not read.
+    - 429, 503: busy or unavailable for now; ``Retry-After`` says when to ask again.
+    - any other 5xx: the model failed.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str = "about:blank"
+    title: str = ""
+    status: int
+    detail: str = ""
+
+
+__all__ = [
+    "IMAGE_TYPE_PATTERN",
+    "MAX_IMAGE_BYTES",
+    "MAX_POINTS",
+    "MAX_PROMPT",
+    "MAX_TEXT",
+    "MODELS_PATH",
+    "PROPOSALS_PATH",
+    "PROTOCOL_VERSION",
+    "Box",
+    "ContentKind",
+    "ImageContent",
+    "Item",
+    "ModelInfo",
+    "ModelListing",
+    "Point",
+    "Problem",
+    "PromptKind",
+    "Prompts",
+    "Proposal",
+    "ProposalShape",
+    "ProposalsRequest",
+    "ProposalsResponse",
+    "TextContent",
+]

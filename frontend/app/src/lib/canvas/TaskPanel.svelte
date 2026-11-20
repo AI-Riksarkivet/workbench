@@ -2,14 +2,15 @@
 	// The head of the canvas's side panel: what the person is doing with this item (labeling it, reviewing someone's
 	// submission, waiting for a review, reading it), what still keeps it from being submitted, and the transitions they
 	// may make now. A submit saves first; a review that sends the item back carries a note, which its annotator reads
-	// here when they open it again.
-	import { Check, CheckCheck, CornerUpLeft, Hand, Send, Undo } from '@lucide/svelte';
+	// here when they open it again. A model's proposals on the item are kept or removed here all at once (Alt+A, Alt+R),
+	// each one action on the canvas's undo stack; while one is left the item is not offered for submitting.
+	import { Check, CheckCheck, CornerUpLeft, Hand, Send, Trash2, Undo } from '@lucide/svelte';
 	import { Button } from '@riksarkivet/ui/button';
 	import { cn } from '@riksarkivet/ui/utils';
 	import { fireTaskEvent } from '#lib/api/projects.api.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
 	import SendBackDialog from '#lib/projects/SendBackDialog.svelte';
-	import { submittable } from './classes.ts';
+	import { SETTLES_PROPOSALS, submittable, unsettledProposals } from './classes.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 	import { panelState, REVIEW_KEYS } from './task-panel.ts';
 	import { keyIsNotTheCanvas } from './walk-keys.ts';
@@ -35,6 +36,9 @@
 	const panel = $derived(panelState(task, permissions, me, { browsing }));
 	const blockers = $derived(controller.blockers);
 	const ready = $derived(submittable(blockers));
+	/** Whether ``event`` is held back by a proposal nobody kept or removed: the annotator refuses it then (ADR 0019). */
+	const heldBack = (event: string): boolean =>
+		blockers.proposals > 0 && SETTLES_PROPOSALS.has(event) && event !== 'submit';
 	const rowNumber = (index: number): string =>
 		`#${controller.reviewQueue.findIndex((r) => r.index === index) + 1}`;
 
@@ -100,6 +104,10 @@
 		const event = REVIEW_KEYS[e.key.toLowerCase()];
 		if (!event || !panel.actions.includes(event) || noteOpen) return;
 		e.preventDefault();
+		if (heldBack(event)) {
+			refuse(unsettledProposals(blockers.proposals, event));
+			return;
+		}
 		if (event === 'request_changes') noteOpen = true;
 		else void fire(event);
 	}
@@ -137,12 +145,17 @@
 		</blockquote>
 	{/if}
 
-	{#if panel.mode === 'annotating' && controller.classDefs.length > 0}
+	{#if panel.mode === 'annotating' && (controller.classDefs.length > 0 || blockers.proposals > 0)}
 		<ul
 			class="flex flex-col gap-0.5 text-xs"
 			data-testid="submit-check"
 			aria-label="Before submitting"
 		>
+			{#if blockers.proposals > 0}
+				<li class="text-destructive" data-testid="submit-check-proposals">
+					{unsettledProposals(blockers.proposals, 'submit')}
+				</li>
+			{/if}
 			{#if blockers.empty}
 				<li class="text-destructive">
 					{task.media.kind === 'text'
@@ -168,7 +181,7 @@
 					Required, not on the item yet: {blockers.missing.join(', ')}
 				</li>
 			{/if}
-			{#if ready}
+			{#if ready && controller.classDefs.length > 0}
 				<li class="text-success">
 					Every region has a class{controller.classDefs.some((c) => c.required)
 						? ' and every required class is here'
@@ -176,6 +189,39 @@
 				</li>
 			{/if}
 		</ul>
+	{/if}
+
+	{#if panel.mode === 'reviewing' && blockers.proposals > 0}
+		<p class="text-destructive text-xs" data-testid="review-check-proposals">
+			{unsettledProposals(blockers.proposals, 'accept')}
+		</p>
+	{/if}
+
+	{#if blockers.proposals > 0 && controller.readOnly === null && !browsing}
+		<div class="flex flex-wrap gap-1.5" role="group" aria-label="The item's proposals">
+			<Button
+				size="sm"
+				variant="outline"
+				class="flex-1"
+				aria-keyshortcuts="Alt+A"
+				title="Keep every proposal on this item as yours (Alt+A)"
+				data-testid="keep-all-proposals"
+				onclick={() => controller.keepAllProposals()}
+			>
+				<Check class="size-3.5" /> Keep all ({blockers.proposals})
+			</Button>
+			<Button
+				size="sm"
+				variant="outline"
+				class="flex-1"
+				aria-keyshortcuts="Alt+R"
+				title="Remove every proposal from this item (Alt+R)"
+				data-testid="remove-all-proposals"
+				onclick={() => controller.removeAllProposals()}
+			>
+				<Trash2 class="size-3.5" /> Remove all ({blockers.proposals})
+			</Button>
+		</div>
 	{/if}
 
 	{#if panel.actions.length > 0}
@@ -187,8 +233,8 @@
 						? 'default'
 						: 'outline'}
 					class={cn(event === 'submit' && 'flex-1')}
-					disabled={busy !== null || (event === 'submit' && !ready)}
-					title={event === 'submit' && !ready
+					disabled={busy !== null || (event === 'submit' && !ready) || heldBack(event)}
+					title={(event === 'submit' && !ready) || heldBack(event)
 						? 'Fix what the list above names first'
 						: REVIEW_HINTS[event]}
 					data-testid={`task-${event}`}

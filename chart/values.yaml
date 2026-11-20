@@ -27,7 +27,7 @@ route:
     - /me
     # a project's annotations, tags and versions (`?project=`)
     - /api/annotations
-    # assist: the models a task may ask, and a model's proposals for one unit (`?project=`)
+    # assist: the models a task may ask, and one model's proposals on a task's unit (`?project=`)
     - /api/assist
     # the project plane: projects, their members, events, adjudications, items and task listing
     - /projects
@@ -241,26 +241,17 @@ auth:
     #     admins: [keycloak~3f1c...]
     #     members: [keycloak~9a02...]
 
-# Assist producer discovery from a Ray Serve control plane (ANNOTATOR_SERVE_DISCOVERY_URL / _PROXY_URL); empty renders
-# none, and assist answers from its registry and its mock.
-serve:
-  discoveryUrl: ""
-  proxyUrl: ""
-
-# The assist runner: the annotator's interactive model server (GroundingDINO-tiny + SAM-ViT-base, CPU, runners/assist).
-# Off, assist answers with its deterministic mock.
-assist:
-  enabled: false
-  image:
-    repository: assist-runner
-    tag: dev
-  port: 8110
-  # The origin the runner fetches frames from (the viewer). Empty derives `http://<release>-viewer:<port>`.
-  frameBase: ""
-  # Two warm torch models: the request-pod default would OOM-kill the runner at load.
-  resources:
-    requests: { cpu: "1", memory: 2Gi }
-    limits: { cpu: "8", memory: 6Gi }
+# The model endpoint assist asks, by the workbench's model protocol (docs/model-protocol.md, ADR 0023 and 0030). The
+# workbench deploys no model: it is given an address and calls it. No `url`: this release has no assist, and says so.
+models:
+  endpoint:
+    url: ""
+    # The audience of the ServiceAccount token the annotator presents to the endpoint as itself (projected by the
+    # kubelet, read on every call): the endpoint verifies it against the cluster's issuer and so knows who calls.
+    audience: workbench-models
+    expirationSeconds: 3600
+    # How long an ask for proposals may take before the person is told the endpoint did not answer.
+    timeoutSeconds: 30
 
 resources:
   requests: { cpu: 100m, memory: 512Mi }

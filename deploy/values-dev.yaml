@@ -45,6 +45,11 @@ sources:
         - dex~a7d3182d-0d75-4ce6-930f-dcb5c0d9f8ad # dave
 demo:
   enabled: true
+# The development stand-in model endpoint (deploy/fixtures/model-stand-in, `make dev-model-stand-in`): it speaks the
+# model protocol and holds no model, so assist is walked here against every way an endpoint behaves.
+models:
+  endpoint:
+    url: http://workbench-model-stand-in:8120
 # The dev estate's OTLP gateway (rask's `observability` fixture, Service `otel-collector` in namespace `observability`),
 # which admits an export only on a cluster ServiceAccount token for its audience `rask-otlp` (its `oidc` extension, read
 # 2026-11-20): each pod presents its own. It routes no scope of the workbench's to a table of its own, so the workbench's

@@ -46,7 +46,13 @@ import {
 } from './classes.ts';
 import { boxAt, newTrackId, tracksFrom, type Track, type TrackRow } from './temporal/tracks.ts';
 import { type CompareShape, type DiffEntry, diffVersions } from './compare/compare.ts';
-import { type AssistPoint, type AssistUnit, requestAssist } from '#lib/api/assist.api.ts';
+import {
+	type AssistModel,
+	type AssistPoint,
+	type AssistUnit,
+	requestAssist,
+	takes,
+} from '#lib/api/assist.api.ts';
 
 type TaskOntology = TaskDetail['ontology'];
 
@@ -486,6 +492,7 @@ export class AnnotatorController implements Zoomable {
 				shape: r.shape,
 				label: r.label,
 				parentId: r.parentId,
+				status: r.status,
 			})),
 			this.allowEmpty,
 		),
@@ -808,16 +815,23 @@ export class AnnotatorController implements Zoomable {
 		im.onCommit = (shape) => {
 			// An armed assist model takes the gesture as its prompt: a click is a segmenter's point, a drawn box the region
 			// it looks in. Nothing is drawn by hand while it is armed.
-			if (this.assistProducer !== null) {
+			const armed = this.assistModel;
+			if (armed !== null) {
 				const click = shape.type !== 'rect' || shape.width * shape.height <= MANUAL_MIN_AREA;
-				if (click && this.assistProducer.startsWith('sam'))
+				if (click && takes(armed, 'points'))
 					this.addAssistPoint(shape.x + shape.width / 2, shape.y + shape.height / 2);
-				else {
+				else if (!click && takes(armed, 'box')) {
 					this.finishAssistSession();
 					void this.assist({
 						region: { x: shape.x, y: shape.y, width: shape.width, height: shape.height },
 					});
-				}
+				} else
+					this.notice = {
+						tone: 'error',
+						text: click
+							? `${armed.title} takes a box: drag one over what it should look at.`
+							: `${armed.title} takes clicks: click on what it should find.`,
+					};
 				return;
 			}
 			// The tools commit every gesture, clicks included; a sub-5×5 rect is an accidental click.
@@ -1424,6 +1438,12 @@ export class AnnotatorController implements Zoomable {
 		});
 	}
 	setStatus(index: number, status: string): void {
+		// A proposal is a model's: a row no model made never becomes one (the annotator refuses the edit).
+		if (
+			status === 'prediction' &&
+			!this.rows.find((r) => r.index === index)?.source.startsWith('model:')
+		)
+			return;
 		// Manual mode = ONE instance of the LabelOp abstraction (human · verdict ·
 		// interactive · one). Routing through apply() proves the annotator isn't
 		// coupled to the review flow — a model/batch producer slots into the same seam.
@@ -2371,33 +2391,38 @@ export class AnnotatorController implements Zoomable {
 
 	/** The unit the canvas labels, which the assist doors name: set by the shell. */
 	unit: AssistUnit | null = null;
-	/** The model armed on the canvas: its next click or box is its prompt rather than a drawn shape. Null when none. */
-	assistProducer = $state<string | null>(null);
-	/** What a text-prompted model is asked to find (a detector's prompt). */
+	/** The model armed on the canvas: its next click (a model that takes points) or box (one that takes a box) is its
+	 *  prompt rather than a drawn shape. Null when none. */
+	assistModel = $state.raw<AssistModel | null>(null);
+	/** What a model that takes words is asked to find. */
 	assistPrompt = $state('');
-	/** An interactive segmenter's session: every click so far, each request carrying them all (the service keeps no
-	 *  session), so one more click refines the same object. */
+	/** A click session: every click so far, each request carrying them all (the endpoint keeps no session), so one more
+	 *  click refines the same object. */
 	assistPoints = $state<AssistPoint[]>([]);
 	/** Whether the next click says "this" (true) or "not this" (false). */
 	assistPointPositive = $state(true);
 	/** Proposals scored below this never reach the item (0 keeps every one); how many it held back is said. */
 	assistMinConfidence = $state(0);
-	/** A request to the model is on its way. */
-	assistBusy = $state(false);
+	/** The model being asked, while its answer is on its way; null when nothing is. */
+	assistAsking = $state<string | null>(null);
+	readonly assistBusy = $derived(this.assistAsking !== null);
+	/** Why the last ask got no proposals: the annotator's own words for an endpoint that was slow, failed or refused it,
+	 *  shown until the next ask. Never an empty answer. */
+	assistError = $state<string | null>(null);
 	/** The rows the session's last answer added, which the next answer replaces. */
 	private _assistSessionRows: { id: string; index: number }[] = [];
 
 	/** Arm a model (its clicks and boxes become its prompts) or, with null, put it away. Changing it ends a session,
 	 *  keeping its last answer. */
-	setAssistProducer(producer: string | null): void {
-		if (producer !== this.assistProducer) this.finishAssistSession();
-		this.assistProducer = producer;
-		if (producer !== null) this.setTool('rect');
+	setAssistModel(model: AssistModel | null): void {
+		if (model?.name !== this.assistModel?.name) this.finishAssistSession();
+		this.assistModel = model;
+		if (model !== null) this.setTool('rect');
 	}
 
 	/** One more click of the session, and the model asked again with every click so far. */
 	addAssistPoint(x: number, y: number): void {
-		if (this.assistProducer === null) return;
+		if (this.assistModel === null) return;
 		this.assistPoints = [...this.assistPoints, { x, y, positive: this.assistPointPositive }];
 		void this.assist({ points: this.assistPoints });
 	}
@@ -2410,42 +2435,47 @@ export class AnnotatorController implements Zoomable {
 	}
 
 	/**
-	 * Ask the armed model (or `producer`) for proposals on the unit. They arrive as `prediction` rows from
-	 * `model:<name>`, on the item's undo stack and saved like any shape, for the person to keep (A) or reject (R). On a
-	 * video they are pinned to the playhead, a box as a new track's first keyframe. A refinement of a session replaces
-	 * the session's previous answer, once the new one is in hand.
+	 * Ask the armed model (or `model`) for proposals on the unit. They arrive as `prediction` rows from
+	 * `model:<name>`, each naming the model's version and its score, on the item's undo stack and saved like any shape,
+	 * for the person to keep (A) or reject (R), or all at once (Alt+A, Alt+R). On a video they are pinned to the
+	 * playhead, a box as a new track's first keyframe. A refinement of a session replaces the session's previous answer,
+	 * once the new one is in hand. An ask the annotator refuses (no endpoint, a slow or failing one, a refused ask) is
+	 * said in its words, as an error.
 	 */
 	async assist(
 		opts: {
-			producer?: string;
+			model?: AssistModel;
 			region?: { x: number; y: number; width: number; height: number };
 			points?: AssistPoint[];
 		} = {},
 	): Promise<void> {
-		const producer = opts.producer ?? this.assistProducer;
+		const model = opts.model ?? this.assistModel;
 		const unit = this.unit;
-		if (producer === null || unit === null || this.readOnly !== null || this.assistBusy) return;
-		this.assistBusy = true;
+		if (model === null || unit === null || this.readOnly !== null || this.assistBusy) return;
+		this.assistAsking = model.title || model.name;
+		this.assistError = null;
 		try {
 			const answer = await requestAssist(unit, {
-				producer,
-				prompt: this.assistPrompt.trim(),
+				model: model.name,
+				prompt: takes(model, 'text') ? this.assistPrompt.trim() : '',
 				region: opts.region ?? null,
 				points: opts.points ?? [],
 			});
 			if (!answer.ok) {
-				this.notice = { tone: 'error', text: `The model did not answer: ${answer.detail}` };
+				this.assistError = answer.detail;
+				this.notice = { tone: 'error', text: `Assist failed: ${answer.detail}` };
 				return;
 			}
-			const { shapes, source, dropped } = answer.data;
-			const kept = shapes.filter(
-				(s) => this.assistMinConfidence <= 0 || s.confidence >= this.assistMinConfidence,
+			const { proposals, dropped } = answer.data;
+			const source = `model:${answer.data.model}`;
+			const kept = proposals.filter(
+				(p) => this.assistMinConfidence <= 0 || p.score >= this.assistMinConfidence,
 			);
 			const refining = (opts.points?.length ?? 0) > 0;
 			const added = this._group(() => {
 				if (refining) this._retractSessionRows();
-				return kept.map((s) => {
-					const shapeType = canonicalShapeType(s.shape_type) ?? s.shape_type;
+				return kept.map((p) => {
+					const shapeType = canonicalShapeType(p.shape_type) ?? p.shape_type;
 					const temporal = !this.trackMode
 						? {}
 						: {
@@ -2456,32 +2486,65 @@ export class AnnotatorController implements Zoomable {
 					const row = makeInsertRow({
 						...temporal,
 						shape_type: shapeType,
-						x: s.x,
-						y: s.y,
-						width: s.width,
-						height: s.height,
-						polygon: s.polygon,
-						label: s.label || this.assistPrompt.trim(),
-						text: s.text,
+						x: p.x,
+						y: p.y,
+						width: p.width,
+						height: p.height,
+						polygon: p.polygon,
+						label: p.label,
+						text: p.text,
 						status: 'prediction',
 						source,
-						confidence: s.confidence,
-						uncertainty: s.uncertainty,
+						model_version: answer.data.version,
+						confidence: p.score,
 					});
 					return { id: row.id, index: this._appendInsert(row) };
 				});
 			});
 			if (refining) this._assistSessionRows = added;
-			const below = shapes.length - kept.length;
+			const below = proposals.length - kept.length;
 			const said = [
-				`${kept.length} proposal${kept.length === 1 ? '' : 's'} from ${producer}: A keeps, R rejects`,
+				`${kept.length} proposal${kept.length === 1 ? '' : 's'} from ${answer.data.model} ${answer.data.version}${kept.length > 0 ? ': A keeps, R rejects, Alt+A keeps all, Alt+R removes all' : ''}`,
 				below > 0 ? `${below} below the ${this.assistMinConfidence.toFixed(2)} threshold` : '',
 				dropped.length > 0 ? `${dropped.length} outside this task's classes (${dropped[0]})` : '',
 			].filter(Boolean);
 			this.notice = { tone: kept.length > 0 ? 'success' : 'error', text: said.join(' · ') };
 		} finally {
-			this.assistBusy = false;
+			this.assistAsking = null;
 		}
+	}
+
+	// ── proposals: a model's shapes nobody kept or removed yet ───────────────────────────────────────────────────────
+
+	/** The item's proposals nobody kept or removed: what keeps it from being submitted (`submitBlockers`), as the
+	 *  annotator counts them (every `prediction` row). */
+	readonly proposals = $derived(this.rows.filter((r) => r.status === 'prediction'));
+
+	/** Keep every proposal of the item (each becomes the person's, still naming the model that made it): one action, one
+	 *  undo. */
+	keepAllProposals(): void {
+		const rows = this.proposals;
+		if (this.readOnly !== null || rows.length === 0) return;
+		this._group(() => {
+			for (const r of rows) this.updateField(r.index, 'status', 'accepted');
+		});
+		this.notice = {
+			tone: 'success',
+			text: `Kept ${rows.length} proposal${rows.length === 1 ? '' : 's'}`,
+		};
+	}
+
+	/** Remove every proposal of the item: one action, one undo. */
+	removeAllProposals(): void {
+		const rows = this.proposals;
+		if (this.readOnly !== null || rows.length === 0) return;
+		this._group(() => {
+			for (const r of rows) this.deleteRow(r.index);
+		});
+		this.notice = {
+			tone: 'success',
+			text: `Removed ${rows.length} proposal${rows.length === 1 ? '' : 's'}`,
+		};
 	}
 
 	/** Take back the rows the session's last answer added, as an undone draw is: never saved, so nothing reaches the
@@ -2601,6 +2664,13 @@ export class AnnotatorController implements Zoomable {
 			typeof row[field] === 'number' ? (row[field] as number) : 0;
 		const polygon =
 			row['polygon'] == null ? [] : Array.from(row['polygon'] as ArrayLike<number>, Number);
+		// A model's row taken from another replica still says which model, at which version and score, made it; one
+		// that cannot say both is taken in as the reader's own, since the annotator refuses a model's row without them.
+		const version = str('model_version');
+		const score = typeof row['confidence'] === 'number' ? row['confidence'] : null;
+		const named = str('source') || 'human';
+		const madeBy = named.startsWith('model:') && version !== '' && score !== null;
+		const source = named.startsWith('model:') && !madeBy ? 'human' : named;
 		let parent = '';
 		if (shape.span !== null) {
 			const words = shape.span.text;
@@ -2635,7 +2705,8 @@ export class AnnotatorController implements Zoomable {
 				char_start: shape.span?.start ?? -1,
 				char_end: shape.span?.end ?? -1,
 				status: 'accepted',
-				source: str('source') || 'human',
+				source,
+				...(madeBy ? { model_version: version, confidence: score } : {}),
 				metadata: str('metadata') || '{}',
 			}),
 		);

@@ -193,6 +193,9 @@ SELECT annotator_declare_function('annotator_work_tags', 'jsonb', 'jsonb', $$bod
      FROM jsonb_array_elements(coalesce($$1 -> 'shapes', '[]'::jsonb)) WITH ORDINALITY AS e(t, n)
      WHERE t ->> 'shape_type' = 'tag'$$body$$);
 SELECT annotator_declare_generated('drafts', 'work_tags', 'jsonb', $$x$${{annotator_work_tags}}(document)$$x$$);
+-- How many proposals the draft holds that no person kept or removed (shapes of any type whose status is `prediction`):
+-- what a listing says of an item, since an item holding one cannot be submitted (ADR 0019).
+SELECT annotator_declare_generated('drafts', 'proposals', 'integer', $$x$$jsonb_array_length(jsonb_path_query_array(document, '$$.shapes[*] ? (@.status == "prediction")'))$$x$$);
 
 -- The functions no column calls any more: the earlier bodies of each.
 SELECT annotator_drop_superseded('annotator_instant');

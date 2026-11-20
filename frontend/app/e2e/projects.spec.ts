@@ -1111,6 +1111,52 @@ test('a label that would replace what another label carries is asked about once,
 	await expect(cellOf(page, 'sorting-20').getByTestId('grid-cell-details')).toBeVisible();
 });
 
+test('the grid keeps and removes an item’s proposals, each one action its undo takes back, and its submit names an item a proposal holds back', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	const proposals = cellOf(page, 'sorting-21').getByTestId('grid-cell-proposals');
+	await expect(proposals).toHaveText('1 proposal to keep or remove');
+	await cellOf(page, 'sorting-21').focus();
+	await expect(page.getByTestId('grid-proposals-count')).toHaveText(
+		'The item in focus holds 1 proposal',
+	);
+
+	// Alt+A keeps it, claiming the item first: the model's `map` is the person's label now.
+	await page.keyboard.press('Alt+a');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Kept the proposals: 1 changed.');
+	await expect(labelsOf(page, 'sorting-21')).toHaveText('map');
+	await expect(proposals).toHaveCount(0);
+	await page.keyboard.press('Control+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Kept the proposals: 1 changed.',
+	);
+	await expect(cellOf(page, 'sorting-21').getByTestId('grid-cell-suggested')).toHaveText('map?');
+	await expect(proposals).toHaveText('1 proposal to keep or remove');
+
+	// Held by the reader now, it is offered for submitting, and the submit names the proposal rather than sending it.
+	await cellOf(page, 'sorting-21').click();
+	await page.getByTestId('grid-bulk-submit').click();
+	await expect(page.getByTestId('grid-refusals')).toContainText(
+		'1 proposal on this item is neither kept nor removed: keep or remove it before submitting (1)',
+	);
+	const events = (await annotatorCalls(page, who)).filter(
+		(c) => c.method === 'POST' && c.path === '/tasks/sorting-21/events',
+	);
+	expect(events.map((c) => c.status)).toEqual([200]);
+
+	// Removed, it is gone, and the item is submitted.
+	await cellOf(page, 'sorting-21').focus();
+	await page.keyboard.press('Alt+r');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Removed the proposals: 1 changed.');
+	await expect(labelsOf(page, 'sorting-21')).toHaveText('no label');
+	await cellOf(page, 'sorting-21').click();
+	await page.getByTestId('grid-bulk-submit').click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Submitted for review: 1 item.');
+});
+
 test('a long run says how far it is and stops when asked, the items in flight finished and the rest untouched', async ({
 	page,
 	context,

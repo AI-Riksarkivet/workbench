@@ -1,0 +1,708 @@
+{
+  "components": {
+    "schemas": {
+      "Box": {
+        "additionalProperties": false,
+        "description": "A box on a picture, in the picture's own pixels.",
+        "properties": {
+          "height": {
+            "minimum": 0.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "width": {
+            "minimum": 0.0,
+            "title": "Width",
+            "type": "number"
+          },
+          "x": {
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "Box",
+        "type": "object"
+      },
+      "ImageContent": {
+        "additionalProperties": false,
+        "description": "A picture, carried in the ask: the endpoint fetches nothing and needs no way back to the workbench.",
+        "properties": {
+          "data": {
+            "maxLength": 22369625,
+            "minLength": 1,
+            "title": "Data",
+            "type": "string"
+          },
+          "kind": {
+            "const": "image",
+            "default": "image",
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime": {
+            "pattern": "^image/[A-Za-z0-9.+-]{1,64}$",
+            "title": "Mime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mime",
+          "data"
+        ],
+        "title": "ImageContent",
+        "type": "object"
+      },
+      "Item": {
+        "additionalProperties": false,
+        "description": "The item proposals are asked on.",
+        "properties": {
+          "content": {
+            "discriminator": {
+              "mapping": {
+                "image": "#/components/schemas/ImageContent",
+                "text": "#/components/schemas/TextContent"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageContent"
+              },
+              {
+                "$ref": "#/components/schemas/TextContent"
+              }
+            ],
+            "title": "Content"
+          },
+          "id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "content"
+        ],
+        "title": "Item",
+        "type": "object"
+      },
+      "ModelInfo": {
+        "additionalProperties": false,
+        "description": "One model an endpoint serves, and what it can do.",
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "prompts": {
+            "items": {
+              "enum": [
+                "text",
+                "box",
+                "points"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Prompts",
+            "type": "array"
+          },
+          "reads": {
+            "items": {
+              "enum": [
+                "image",
+                "text"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Reads",
+            "type": "array"
+          },
+          "returns": {
+            "items": {
+              "enum": [
+                "bbox",
+                "polygon",
+                "polyline",
+                "keypoint",
+                "mask",
+                "tag",
+                "text",
+                "segment"
+              ],
+              "type": "string"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Returns",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "reads",
+          "returns"
+        ],
+        "title": "ModelInfo",
+        "type": "object"
+      },
+      "ModelListing": {
+        "additionalProperties": false,
+        "description": "The answer of ``GET /v1/models``.",
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            },
+            "maxItems": 256,
+            "title": "Models",
+            "type": "array"
+          },
+          "protocol": {
+            "const": "1",
+            "default": "1",
+            "title": "Protocol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "ModelListing",
+        "type": "object"
+      },
+      "Point": {
+        "additionalProperties": false,
+        "description": "A click on a picture, in its pixels. ``positive: false`` says \"not this\".",
+        "properties": {
+          "positive": {
+            "default": true,
+            "title": "Positive",
+            "type": "boolean"
+          },
+          "x": {
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "Point",
+        "type": "object"
+      },
+      "Problem": {
+        "additionalProperties": true,
+        "description": "An error's body (RFC 9457, ``application/problem+json``). The status says what happened:\n\n- 401: no bearer token, or one the endpoint does not accept.\n- 403: this caller may not ask this model.\n- 404: the endpoint serves no model of that name.\n- 413: the item is larger than the model takes.\n- 422: the ask is outside the protocol, or carries a content or prompt kind the model does not read.\n- 429, 503: busy or unavailable for now; ``Retry-After`` says when to ask again.\n- any other 5xx: the model failed.",
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "default": "about:blank",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "Problem",
+        "type": "object"
+      },
+      "Prompts": {
+        "additionalProperties": false,
+        "description": "What the person added to the ask. A model reads the kinds it lists in ``prompts`` and an ask carrying another\nkind is refused with 422.",
+        "properties": {
+          "box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Box"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/Point"
+            },
+            "maxItems": 64,
+            "title": "Points",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "Prompts",
+        "type": "object"
+      },
+      "Proposal": {
+        "additionalProperties": false,
+        "description": "One proposed shape, in the item's own coordinates (a picture's pixels, a text's code points).",
+        "properties": {
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "height": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Label",
+            "type": "string"
+          },
+          "polygon": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 20000,
+            "title": "Polygon",
+            "type": "array"
+          },
+          "score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "shape_type": {
+            "enum": [
+              "bbox",
+              "polygon",
+              "polyline",
+              "keypoint",
+              "mask",
+              "tag",
+              "text",
+              "segment"
+            ],
+            "title": "Shape Type",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          },
+          "width": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Width",
+            "type": "number"
+          },
+          "x": {
+            "default": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "default": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "shape_type",
+          "score"
+        ],
+        "title": "Proposal",
+        "type": "object"
+      },
+      "ProposalsRequest": {
+        "additionalProperties": false,
+        "description": "The body of ``POST /v1/proposals``.",
+        "properties": {
+          "classes": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Classes",
+            "type": "array"
+          },
+          "item": {
+            "$ref": "#/components/schemas/Item"
+          },
+          "model": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Model",
+            "type": "string"
+          },
+          "prompts": {
+            "$ref": "#/components/schemas/Prompts"
+          },
+          "requested_by": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Requested By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "item"
+        ],
+        "title": "ProposalsRequest",
+        "type": "object"
+      },
+      "ProposalsResponse": {
+        "additionalProperties": false,
+        "description": "The answer of ``POST /v1/proposals``: the model that answered, at which version, and what it proposes. No\nproposals is an answer (\"nothing found\"); a model that could not answer says so by its status.",
+        "properties": {
+          "model": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Model",
+            "type": "string"
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/Proposal"
+            },
+            "maxItems": 2000,
+            "title": "Proposals",
+            "type": "array"
+          },
+          "version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "version",
+          "proposals"
+        ],
+        "title": "ProposalsResponse",
+        "type": "object"
+      },
+      "TextContent": {
+        "additionalProperties": false,
+        "description": "A text. Offsets a proposal names into it count code points.",
+        "properties": {
+          "kind": {
+            "const": "text",
+            "default": "text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TextContent",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "The caller's own token. An endpoint verifies whom it names.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Workbench model protocol",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/models": {
+      "get": {
+        "description": "The models this endpoint serves and what each can do.",
+        "operationId": "list_models_v1_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelListing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Models"
+      }
+    },
+    "/v1/proposals": {
+      "post": {
+        "description": "One model's proposals on one item.",
+        "operationId": "propose_v1_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposalsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Propose"
+      }
+    }
+  }
+}

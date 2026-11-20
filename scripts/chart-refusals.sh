@@ -178,6 +178,8 @@ refuses "auth.oidc.client.secret.name: the Secret holding the workbench client's
   "${APIS[@]}" "${BASE[@]}" --set auth.oidc.client.secret.name=
 refuses "auth.fga.apiUrl: the platform's OpenFGA" "${APIS[@]}" "${BASE[@]}" --set auth.fga.apiUrl=
 refuses "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" "${APIS[@]}" "${BASE[@]}" --set otel.endpoint=
+refuses "models.endpoint.audience: the audience the model endpoint verifies a caller's token for" \
+  "${APIS[@]}" "${BASE[@]}" --set models.endpoint.audience=
 
 # The sources: each a name and a kind, no credential, at most one lakehouse. A source added here is `sources[2]`, past
 # the overlay's own two: `--set` on an index the overlay holds merges into that entry rather than replacing it.

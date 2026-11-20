@@ -8,6 +8,9 @@
 	// A label is written to each item on its own, through the canvas's own save door (`label-run.ts`), claimed first where
 	// its `legal_events` offer a claim; a refusal is that item's and is named on it. The last labels are undone and redone
 	// by their inverse, built on the revision each label left, so work someone changed since is refused, not overwritten.
+	// A model's proposals on an item are kept or removed all at once (Alt+A, Alt+R) by the annotator's own door, and an
+	// item holding one is not sent to be submitted or accepted: the grid names it instead, in the annotator's words
+	// (ADR 0019).
 	//
 	// role="grid": the cells are laid out in rows and columns and the keys move in both (arrows, Home/End, Page Up/Down),
 	// with a cell's own link to the canvas inside it, which the grid pattern allows and a listbox's options do not.
@@ -24,9 +27,15 @@
 
 	import { linkWith } from '#lib/project.ts';
 	import { taskCanvasHref } from '#lib/canvas/task-stream.ts';
-	import { classColours } from '#lib/canvas/classes.ts';
+	import { classColours, SETTLES_PROPOSALS, unsettledProposals } from '#lib/canvas/classes.ts';
 	import { keyIsNotTheCanvas } from '#lib/canvas/walk-keys.ts';
-	import { annotationsUrl, heldAsAt, revertSave, saveWork } from '#lib/api/annotations.api.ts';
+	import {
+		annotationsUrl,
+		heldAsAt,
+		revertSave,
+		saveWork,
+		settleProposals,
+	} from '#lib/api/annotations.api.ts';
 	import {
 		allMatching,
 		BULK_CAP,
@@ -72,6 +81,7 @@
 		applyIntent,
 		pooled,
 		revertEach,
+		settleEach,
 		type Control,
 		type Doors,
 		type Outcome,
@@ -401,6 +411,7 @@
 		claim: (task) => fireTaskEvent({ taskId: task.task_id, event: 'claim' }),
 		release: (task) => fireTaskEvent({ taskId: task.task_id, event: 'release' }),
 		save: (task, payload) => saveWork(unitUrl(task), payload),
+		settle: (task, action, revision) => settleProposals(unitUrl(task), action, revision),
 		revert: (task, revision) => revertSave(unitUrl(task), revision),
 		reread: (task) => readItem(projectId, task.task_id),
 		undone: (task, revision) => heldAsAt(unitUrl(task), revision - 1),
@@ -555,6 +566,35 @@
 		});
 	}
 
+	/** Keep or remove every proposal of ``ids`` (the selection, else the focused item), each item on its own, undone by
+	 *  the grid's undo as a label is. */
+	function settleAll(ids: readonly string[], action: 'keep' | 'remove'): void {
+		const what = action === 'keep' ? 'Kept the proposals' : 'Removed the proposals';
+		enqueue(async () => {
+			const targets = current(ids);
+			if (targets.length === 0) return;
+			const results = await settleEach(targets, action, doors, control(what, targets.length));
+			report(what, targets, results);
+			const written: Written[] = [];
+			results.forEach((r, i) => {
+				const task = targets[i];
+				if (task && r.status === 'done') written.push({ task, revision: r.revision });
+			});
+			if (written.length > 0) {
+				undos = [...undos, { what, written }].slice(-UNDO_DEPTH);
+				redos = [];
+			}
+			if (known.size > 0) {
+				const fresh = await allMatching(projectId, filter, { work: true });
+				if (fresh.ok) known = new Map(fresh.data.tasks.map((t) => [t.task_id, t]));
+			}
+			await settle();
+		});
+	}
+	/** How many proposals ``items`` hold. */
+	const proposalsIn = (items: readonly TaskDetail[]): number =>
+		items.reduce((n, t) => n + (t.work?.proposals ?? 0), 0);
+
 	/** Undo the last label (or redo the last undone), each item by the annotator's own undo of the save that wrote it. */
 	function undo(redo = false): void {
 		enqueue(async () => {
@@ -620,6 +660,11 @@
 			const results = await pooled(
 				targets,
 				async (task): Promise<Outcome> => {
+					// A submission or an acceptance is a person's: an item holding a proposal nobody kept or removed is
+					// named, not sent.
+					const left = task.work?.proposals ?? 0;
+					if (SETTLES_PROPOSALS.has(event) && left > 0)
+						return { status: 'refused', reason: unsettledProposals(left, event) };
 					const result = await fireTaskEvent({
 						taskId: task.task_id,
 						event,
@@ -679,6 +724,13 @@
 		if (ctrl && e.key === 'a') {
 			e.preventDefault();
 			selectRange(0, tasks.length - 1);
+			return;
+		}
+		// Alt+A keeps and Alt+R removes every proposal of the selection (or the item in focus), as the canvas's do. Read from
+		// the physical key, so they hold where Alt makes a letter of its own.
+		if (e.altKey && !ctrl && !e.shiftKey && (e.code === 'KeyA' || e.code === 'KeyR')) {
+			e.preventDefault();
+			settleAll(targetIds(), e.code === 'KeyA' ? 'keep' : 'remove');
 			return;
 		}
 		switch (e.key) {
@@ -774,6 +826,7 @@
 			described(task).name,
 			held.length > 0 ? `labelled ${held.join(', ')}` : 'no label',
 			proposed.length > 0 ? `suggested ${proposed.join(', ')}` : null,
+			(task.work?.proposals ?? 0) > 0 ? proposalCount(task.work?.proposals ?? 0) : null,
 			detailedIn(tagsOf(task), gridNames) ? 'its label carries details' : null,
 			outcome?.status === 'refused' ? `refused: ${outcome.text}` : null,
 			outcome?.status === 'not-attempted' ? `not attempted: ${outcome.text}` : null,
@@ -783,6 +836,12 @@
 			.join('; ');
 	}
 	const instructions = 'grid-keys';
+	const proposalCount = (n: number): string =>
+		`${n} proposal${n === 1 ? '' : 's'} to keep or remove`;
+	/** The proposals the next keep or remove acts on: the selection's, or the focused item's. */
+	const acting = $derived(
+		proposalsIn(selection.size > 0 ? selected : tasks.slice(focusAt, focusAt + 1)),
+	);
 </script>
 
 {#snippet keyHint(key: string)}
@@ -907,11 +966,52 @@
 				.join(', ')}.
 		</p>
 	{/if}
+	{#if proposalsIn(tasks) > 0 || proposalsIn(selected) > 0}
+		<div
+			class="flex flex-wrap items-center gap-1.5"
+			role="toolbar"
+			aria-label="Proposals"
+			data-testid="grid-proposals"
+		>
+			<span class="text-muted-foreground text-xs" data-testid="grid-proposals-count"
+				>{selection.size > 0 ? 'The selection' : 'The item in focus'} holds {acting} proposal{acting ===
+				1
+					? ''
+					: 's'}</span
+			>
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={acting === 0}
+				aria-keyshortcuts="Alt+A"
+				data-testid="grid-keep-proposals"
+				onclick={() => {
+					settleAll(targetIds(), 'keep');
+					cells.get(focusAt)?.focus();
+				}}
+			>
+				Keep proposals {@render keyHint('Alt+A')}
+			</Button>
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={acting === 0}
+				aria-keyshortcuts="Alt+R"
+				data-testid="grid-remove-proposals"
+				onclick={() => {
+					settleAll(targetIds(), 'remove');
+					cells.get(focusAt)?.focus();
+				}}
+			>
+				Remove proposals {@render keyHint('Alt+R')}
+			</Button>
+		</div>
+	{/if}
 	<p id={instructions} class="text-muted-foreground text-xs">
 		Arrows move, Shift with an arrow selects, Space picks one, Ctrl+A the page; 1–9 label the
 		selection (or the item in focus, then the next), Alt with a digit adds a label beside the
-		others, Delete clears, Ctrl+Z undoes, Enter opens the item on the canvas, Escape clears the
-		selection.
+		others, Delete clears, Alt+A keeps and Alt+R removes every proposal, Ctrl+Z undoes, Enter opens
+		the item on the canvas, Escape clears the selection.
 	</p>
 
 	{#if selection.size > 0}
@@ -1185,6 +1285,15 @@
 											data-testid="grid-cell-details"
 										>
 											has details
+										</span>
+									{/if}
+									{#if (task.work?.proposals ?? 0) > 0}
+										<span
+											class="bg-warning/15 text-foreground px-1.5 text-[11px]"
+											title="a model's proposals nobody kept or removed: the item is not submitted until each is"
+											data-testid="grid-cell-proposals"
+										>
+											{proposalCount(task.work?.proposals ?? 0)}
 										</span>
 									{/if}
 									{#if note}

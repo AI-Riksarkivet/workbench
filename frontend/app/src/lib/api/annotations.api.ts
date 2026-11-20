@@ -132,6 +132,24 @@ export function revertSave(
 	return writeJSON(extend(url, '/revert', {}), { revision }, SaveResultSchema, UPSTREAM);
 }
 
+const SettledSchema = v.object({ settled: v.number(), version: v.number() });
+
+/** Keep or remove every proposal of a task's work at once (`POST /annotations/<unit>/proposals`), as one revision built
+ *  on ``base`` (a 409 when the work moved): kept, each is the caller's and still names its model; removed, it goes with
+ *  its links. Answers how many were settled and the revision written, which the revert door undoes like any save. */
+export function settleProposals(
+	url: string,
+	action: 'keep' | 'remove',
+	base: number,
+): Promise<ApiResult<{ settled: number; version: number }>> {
+	return writeJSON(
+		extend(url, '/proposals', {}),
+		{ action, base_version: base },
+		SettledSchema,
+		UPSTREAM,
+	);
+}
+
 /** The revision the unit's work is at now when its rows are those it held at ``before`` (0: before its first save, no
  *  rows), compared by id and each row's own fields (`signaturesOf`), else null; null too when either read fails. */
 export async function heldAsAt(url: string, before: number): Promise<number | null> {

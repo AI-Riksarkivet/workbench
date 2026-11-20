@@ -226,6 +226,7 @@ def test_a_save_reverted_on_the_server_brings_back_what_it_replaced_whole_and_re
                 "text": "a cat on the stamp",
                 "metadata": '{"pose":"sitting"}',
                 "source": "model:vlm",
+                "model_version": "vlm.1",
                 "status": "prediction",
                 "confidence": 0.91,
             },

@@ -1,6 +1,6 @@
-.PHONY: help install sync local local-stop test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model chart-check \
-	deploy-dev undeploy-dev dev-clean-tree dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback \
-	dev-undeploy-grants dev-undeploy-release dev-undeploy-openfga dev-undeploy-dex-client dev-undeploy-namespace
+.PHONY: help install sync local local-stop test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model model-protocol chart-check \
+	deploy-dev undeploy-dev dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-dex-client dev-release dev-grants dev-readback \
+	dev-undeploy-grants dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-dex-client dev-undeploy-namespace
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
@@ -130,6 +130,10 @@ CHART_NO_LAKEHOUSE = --set auth.oidc.issuer=https://id.example --set auth.oidc.i
 	--set 'sources[1].storage.aws_web_identity_token_file=/var/run/secrets/workbench/store/token' --set storeIdentity.audience=sts.amazonaws.com \
 	--set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media \
 	--set 'route.parentRefs[0].name=gw'
+# The model protocol's OpenAPI document, written from the stand-in endpoint that speaks it (docs/model-protocol.md).
+model-protocol:
+	uv run python -m annotator.model_endpoint.stand_in --openapi > docs/model-protocol-openapi.json
+
 chart-check:
 	uv run python -m client_kit.source_keys | diff - chart/files/source-keys.json
 	helm lint chart -f deploy/values-dev.yaml
@@ -145,6 +149,8 @@ chart-check:
 		test "$$(seed IfNotPresent)" != "$$(seed Always)" || { echo "the demo seed Job keeps its name when its pod template changes" >&2; exit 1; }
 	bash scripts/chart-refusals.sh
 	helm lint deploy/fixtures/openfga/chart
+	helm lint deploy/fixtures/model-stand-in/chart --set image.tag=dev
+	helm template workbench-model-stand-in deploy/fixtures/model-stand-in/chart -n workbench --set image.tag=dev >/dev/null
 	helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) >/dev/null
 
 # ── The development cluster (docs/DEPLOY.md) ──────────────────────────────────────────────────────────────────────────
@@ -154,6 +160,7 @@ chart-check:
 DEV_NAMESPACE ?= workbench
 DEV_RELEASE ?= workbench
 DEV_OPENFGA_RELEASE ?= workbench-openfga
+DEV_MODEL_STAND_IN_RELEASE ?= workbench-model-stand-in
 DEV_REGISTRY_PUSH ?= 172.17.0.1:5000
 DEV_ENGINE ?= docker-container://dagger-engine-rask
 DEV_TAG = $(shell git rev-parse --short=12 HEAD)
@@ -168,7 +175,7 @@ DEV_HELM = helm --namespace $(DEV_NAMESPACE)
 DEV_GRANTS = uv run python scripts/lakehouse_grants.py --values deploy/values-dev.yaml --reads acme --admin $(DEV_ADMIN) \
 	$(if $(DEV_ADMIN_PASSWORD_FILE),--password-file $(DEV_ADMIN_PASSWORD_FILE))
 
-deploy-dev: dev-clean-tree dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback
+deploy-dev: dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-dex-client dev-release dev-grants dev-readback
 
 # Images are named by the commit they are built from, so the tree must be that commit.
 dev-clean-tree:
@@ -185,6 +192,12 @@ dev-images: dev-clean-tree
 dev-openfga:
 	$(DEV_HELM) upgrade --install $(DEV_OPENFGA_RELEASE) deploy/fixtures/openfga/chart --create-namespace --reset-values \
 		--description "workbench fixture: not for production" --wait --timeout 10m
+
+# The stand-in model endpoint (deploy/fixtures/model-stand-in), from the annotator's image at this commit: what the
+# release's `models.endpoint.url` names in development.
+dev-model-stand-in:
+	$(DEV_HELM) upgrade --install $(DEV_MODEL_STAND_IN_RELEASE) deploy/fixtures/model-stand-in/chart --create-namespace --reset-values \
+		--set-string image.tag=$(DEV_TAG) --description "workbench fixture: not for production" --wait --timeout 5m
 
 # The workbench's clients at rask's development Dex, through rask's own fixture script: it installs Dex again with rask's
 # values, the issuer rask passes it and this file, so a second run changes nothing, and Dex restarts only when its
@@ -209,7 +222,7 @@ dev-readback:
 		curl -fsS -H 'Host: $(DEV_GATEWAY_HOST)' "http://$$gateway/config.json" >/dev/null \
 		&& echo "the workbench answers at http://$(DEV_GATEWAY_HOST):8080 (through the port-forward to the Gateway)"
 
-undeploy-dev: dev-undeploy-grants dev-undeploy-release dev-undeploy-openfga dev-undeploy-namespace dev-undeploy-dex-client
+undeploy-dev: dev-undeploy-grants dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-namespace dev-undeploy-dex-client
 	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry"
 
 dev-undeploy-grants:
@@ -217,6 +230,9 @@ dev-undeploy-grants:
 
 dev-undeploy-release:
 	$(DEV_HELM) uninstall $(DEV_RELEASE) --ignore-not-found --wait
+
+dev-undeploy-model-stand-in:
+	$(DEV_HELM) uninstall $(DEV_MODEL_STAND_IN_RELEASE) --ignore-not-found --wait
 
 dev-undeploy-openfga:
 	$(DEV_HELM) uninstall $(DEV_OPENFGA_RELEASE) --ignore-not-found --wait

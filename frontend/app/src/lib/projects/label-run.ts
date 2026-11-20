@@ -12,6 +12,10 @@
  * it was: a refusal is that item's, named, and the others go on. An item someone else took meanwhile, or whose claim
  * lapsed, is refused by its door and shown, never overwritten.
  *
+ * KEEPING OR REMOVING AN ITEM'S PROPOSALS is one call per item too (`POST /api/annotations/<unit>/proposals`,
+ * `settleEach`): the grid holds none of an item's shapes, so the annotator settles every proposal of its work at once, on
+ * the revision the grid read, as one save of its own; claimed first and released again on a refusal as a label is.
+ *
  * AN UNDO IS THE SERVER'S. The annotator keeps what undoes each save (`draft_history`), so a label is undone by naming the
  * revision its save wrote (`revertSave`): what it removed comes back whole, with its text, attributes, provenance, scores
  * and links, never rebuilt from what the grid read. Undoing that undo redoes the label the same way.
@@ -49,6 +53,12 @@ export interface Doors {
 	claim(task: TaskDetail): Promise<ApiResult<unknown>>;
 	release(task: TaskDetail): Promise<ApiResult<unknown>>;
 	save(task: TaskDetail, payload: SavePayload): Promise<ApiResult<{ version: number }>>;
+	/** Keep or remove every proposal of the item's work, built on ``revision``. */
+	settle(
+		task: TaskDetail,
+		action: 'keep' | 'remove',
+		revision: number,
+	): Promise<ApiResult<{ settled: number; version: number }>>;
 	revert(task: TaskDetail, revision: number): Promise<ApiResult<{ version: number }>>;
 	/** The item as the annotator answers it now, with its work, or null when it cannot be read. */
 	reread(task: TaskDetail): Promise<TaskDetail | null>;
@@ -154,6 +164,49 @@ export function applyIntent(
 				reason: released.ok
 					? `not labelled, and released again: ${saved.detail}`
 					: `not labelled: ${saved.detail}; it stays claimed by you (${released.detail})`,
+			};
+		},
+		control,
+		{ status: 'not-attempted', reason: STOPPED },
+	);
+}
+
+/** Keep or remove every proposal of each of ``targets``; each item's outcome, in order. An item holding none is
+ *  already so. */
+export function settleEach(
+	targets: readonly TaskDetail[],
+	action: 'keep' | 'remove',
+	doors: Doors,
+	control: Control,
+): Promise<Outcome[]> {
+	return pooled(
+		targets,
+		async (task): Promise<Outcome> => {
+			const may = labelable(task);
+			if (may.kind === 'no') return { status: 'refused', reason: may.reason };
+			const work = task.work;
+			if (!work || work.proposals === 0) return { status: 'unchanged' };
+			if (may.kind === 'claim-first') {
+				const claimed = await doors.claim(task);
+				if (!claimed.ok) return { status: 'refused', reason: `not claimed: ${claimed.detail}` };
+			}
+			const settled = await doors.settle(task, action, work.revision);
+			if (settled.ok)
+				return settled.data.settled === 0
+					? { status: 'unchanged' }
+					: { status: 'done', revision: settled.data.version };
+			if (mayHaveLanded(settled.status)) {
+				// Reported by what the item holds now: no proposal left is what was asked (this call landed, or another did).
+				const fresh = await doors.reread(task);
+				if (fresh?.work && fresh.work.proposals === 0) return { status: 'unchanged' };
+			}
+			if (may.kind !== 'claim-first') return { status: 'refused', reason: settled.detail };
+			const released = await doors.release(task);
+			return {
+				status: 'refused',
+				reason: released.ok
+					? `not changed, and released again: ${settled.detail}`
+					: `not changed: ${settled.detail}; it stays claimed by you (${released.detail})`,
 			};
 		},
 		control,

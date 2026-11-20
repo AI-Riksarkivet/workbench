@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from annotator.projects.models import AnnotationProject, Draft, Shape, Task, TaskState
+from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Task, TaskState
 from annotator.projects.ontology import LabelClass, LabelOntology
 from annotator.projects.publish import (
     NO_SHAPE,
@@ -95,6 +95,18 @@ def test_a_skipped_task_contributes_a_sentinel_row_and_none_of_its_shapes() -> N
     assert row["annotation_id"] == ""
     assert plan.shape_count == 0, "a sentinel was counted as a label"
     assert plan.skipped_count == 1
+
+
+def test_a_shape_a_person_turned_down_is_not_published_and_neither_is_a_link_to_it() -> None:
+    draft = _draft("t0", 2)
+    kept, turned_down = draft.shapes
+    turned_down.status, turned_down.source, turned_down.model_version, turned_down.confidence = "rejected", "model:detector", "v1", 0.4
+    draft.links = [Link(name="beside", from_shape=kept.shape_id, to_shape=turned_down.shape_id)]
+
+    plan = _plan([(_task("t0", TaskState.ACCEPTED), draft)])
+
+    assert [(row["annotation_id"], row["links"]) for row in plan.rows] == [(kept.shape_id, "[]")]
+    assert plan.shape_count == 1
 
 
 def test_shape_count_excludes_sentinels_so_a_dataset_is_not_overstated() -> None:

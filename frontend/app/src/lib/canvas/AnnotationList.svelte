@@ -7,6 +7,7 @@
 	import { DataTableTextFilter } from '@riksarkivet/ui/data-table';
 	import { cn } from '@riksarkivet/ui/utils';
 	import { statusDot, statusWord } from './statusStyle.ts';
+	import { provenanceOf } from './annotation-rows.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let { controller }: { controller: AnnotatorController } = $props();
@@ -47,6 +48,7 @@
 			{@const range = track
 				? trackLine(track.keyframes.length, track.from, track.to)
 				: timeRange(r.tStart, r.tEnd)}
+			{@const made = provenanceOf(r)}
 			<li>
 				<button
 					class={cn(
@@ -93,6 +95,14 @@
 								class={cn('size-2 shrink-0 rounded-full', statusDot(r.status))}
 								title={statusWord(r.status)}
 							></span>
+							{#if r.status === 'rejected'}
+								<!-- Turned down: said in words, since it is left out of what is published. -->
+								<span
+									class="text-muted-foreground shrink-0 text-xs"
+									title={statusWord(r.status)}
+									data-testid="not-published">rejected · not published</span
+								>
+							{/if}
 							{#if r.uncertainty != null}
 								<span
 									class="text-muted-foreground shrink-0 text-xs tabular-nums"
@@ -113,6 +123,14 @@
 						{/if}
 						{#if r.text}
 							<span class="text-muted-foreground block truncate text-xs">{r.text}</span>
+						{/if}
+						{#if made}
+							<!-- Which model made it, at which version and score: shown kept or still proposed. -->
+							<span
+								class="text-muted-foreground block truncate font-mono text-xs tabular-nums"
+								title="made by a model: its name, version and score"
+								data-testid="annotation-made-by">{made}</span
+							>
 						{/if}
 					</span>
 				</button>

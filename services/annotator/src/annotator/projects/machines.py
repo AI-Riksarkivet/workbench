@@ -23,6 +23,19 @@ from annotator.projects.models import ProjectState, Task, TaskState, Transition
 from service_kit.exceptions import ConflictError
 
 
+#: The events an item holding a proposal nobody kept or removed is refused (ADR 0019): the one that hands it to review,
+#: and each that accepts it.
+SETTLES_PROPOSALS: Final = frozenset({"submit", "accept", "fix_and_accept"})
+
+
+def unsettled_proposals(count: int, event: str) -> str:
+    """Why an item holding ``count`` proposals nobody kept or removed is not submitted or accepted, as a person reads it."""
+    doing = "submitting" if event == "submit" else "accepting"
+    if count == 1:
+        return f"1 proposal on this item is neither kept nor removed: keep or remove it before {doing}"
+    return f"{count} proposals on this item are neither kept nor removed: keep or remove each before {doing}"
+
+
 class IllegalTransition(ConflictError):
     """Raised for an edge absent from the table — the closed-world guarantee of §5 — and for a transition whose
     preconditions the task's or project's own rows refuse. A 409 wherever it is raised, with no route translating it;

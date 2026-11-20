@@ -23,7 +23,6 @@ import pytest
 import pytest_asyncio
 from psycopg.types.json import Jsonb
 
-from annotator.api.v1.endpoints.assist import _task_ontology
 from annotator.core.config import AnnotatorSettings
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Task
 from annotator.state.store import AnnotatorStore
@@ -81,12 +80,3 @@ async def test_the_task_seam_names_the_task_and_the_reason(store: AnnotatorStore
     detail = str(caught.value)
     assert "ontology" in detail and "t-77" in detail, detail
     assert caught.value.extensions.get("fields") == ["ontology.required_labels"]
-
-
-@pytest.mark.asyncio
-async def test_assist_does_not_swallow_the_refusal_as_a_fetch_failure(store: AnnotatorStore) -> None:
-    """`_task_ontology` degrades to "no contract" when the task cannot be FETCHED — and must not here. A store that did
-    not answer says nothing about the rules; a stored ontology that will not parse says the rules exist and this build
-    cannot read them, and treating it as the first is how an unenforced prediction reaches a canvas looking enforced."""
-    with pytest.raises(DomainError):
-        await _task_ontology(store, "p-charters", "t-77")
