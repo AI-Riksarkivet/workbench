@@ -224,6 +224,31 @@ export function digitOf(code: string): number | null {
 
 // ── what a cell shows ────────────────────────────────────────────────────────────────────────
 
+/** What an item is now, as far as a marker left on its cell is concerned: its state, who holds it, its work's revision
+ *  and its notes. A marker recorded at one moment is shown only while the item is still at it: once the item moved on
+ *  (released, submitted, labelled elsewhere), what the grid said about it no longer stands. */
+export function itemMoment(task: TaskDetail): string {
+	return [
+		task.state,
+		task.assignee ?? '',
+		task.work?.revision ?? '',
+		task.review_notes.length,
+		task.submitted_at ?? '',
+	].join('|');
+}
+
+/** The note a reviewer sent the item back with, when it is waiting for its annotator's changes: the latest. */
+export function sentBackNote(task: TaskDetail): { by: string; message: string } | null {
+	if (task.state !== 'changes_requested') return null;
+	const note = task.review_notes.findLast((n) => n.action === 'request_changes' && n.message);
+	return note ? { by: note.by, message: note.message } : null;
+}
+
+/** The question asked before a label replaces what other labels carry: "1 of 1 item carries", "2 of 3 items carry". */
+export function carryCount(count: number, total: number): string {
+	return `${count} of ${total} item${total === 1 ? '' : 's'} ${count === 1 ? 'carries' : 'carry'}`;
+}
+
 /** The longest excerpt of an item's text a cell shows. */
 const EXCERPT = 160;
 

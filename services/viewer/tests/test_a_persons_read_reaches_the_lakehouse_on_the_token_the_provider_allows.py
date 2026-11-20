@@ -222,6 +222,8 @@ def test_a_passed_on_read_presents_the_persons_latest_token_and_none_past_its_ex
         dex.close()
 
     assert (on_first.status_code, on_renewed.status_code, on_expired.status_code) == (200, 200, 401), on_expired.text
+    # The person's session to renew, challenged as the door challenges it, so the app asks them to sign in again.
+    assert 'error_description="the session must be renewed"' in on_expired.headers.get("www-authenticate", "")
     renewed_bearers = {bearer for _op, bearer, _trace in catalog.calls[before_renewal:after_renewal]}
     assert renewed_bearers == {f"Bearer {renewed}"}
     assert len(catalog.calls) == after_renewal

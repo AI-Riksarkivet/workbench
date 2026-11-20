@@ -12,6 +12,14 @@ export function setServices(next: Services): void {
 	services = next;
 }
 
+/** The service whose public base `url` (absolute, on this origin) is under, or null. */
+export function serviceOf(url: string): ServiceName | null {
+	if (services === null) return null;
+	const path = new URL(url, 'http://local').pathname;
+	const named = Object.entries(services) as [ServiceName, string][];
+	return named.find(([, base]) => path === base || path.startsWith(`${base}/`))?.[0] ?? null;
+}
+
 /** `path` (the service's own, with a leading slash) on `name`'s public base. */
 export function serviceUrl(name: ServiceName, path: string): string {
 	if (services === null) throw new Error('the services are read from /config.json before any call');

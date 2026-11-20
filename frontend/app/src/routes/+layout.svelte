@@ -6,7 +6,9 @@
 	import { APPEARANCE } from '#lib/appearance-options.ts';
 	import type { Snippet } from 'svelte';
 	import { AppShell, type NavUser } from '#lib/shell/index.ts';
-	import { auth, RENEW_MARGIN_SECONDS, renewOrSignIn } from '#lib/auth.svelte.ts';
+	import SessionPrompt from '#lib/shell/session-prompt.svelte';
+	import { auth, RENEW_MARGIN_SECONDS, renewSession } from '#lib/auth.svelte.ts';
+	import { sessionEnded } from '#lib/reauth.svelte.ts';
 	import { activity } from '#lib/activity.svelte.ts';
 	import { track } from '#lib/view-transition.svelte.ts';
 	import { appSidebar, PAGE_NAMES } from '#lib/nav.ts';
@@ -42,17 +44,25 @@
 		return null;
 	});
 
-	// The session ends when its token does: it is renewed in place where the provider gave a refresh token,
-	// and otherwise the browser goes back to the issuer and returns here.
+	// The session ends when its token does: it is renewed in place where the provider gave a refresh token, and
+	// otherwise the person is asked to sign in again (the shell's one prompt), never sent away with their work on screen.
+	async function renewOrAsk(): Promise<void> {
+		if (!(await renewSession())) sessionEnded();
+	}
 	$effect(() => {
 		const session = auth.session;
 		if (!session || session.expiresAt === 0) return;
 		const wait = Math.max((session.expiresAt - RENEW_MARGIN_SECONDS) * 1000 - Date.now(), 0);
-		const timer = setTimeout(() => {
-			void renewOrSignIn(page.url.pathname + page.url.search);
-		}, wait);
+		const timer = setTimeout(() => void renewOrAsk(), wait);
 		return () => clearTimeout(timer);
 	});
+	// A tab the browser held in the background may come back past its expiry before the timer runs (timers there are
+	// clamped): it asks at once, on its return.
+	function returned(): void {
+		const session = auth.session;
+		if (document.visibilityState !== 'visible' || !session || session.expiresAt === 0) return;
+		if (session.expiresAt - RENEW_MARGIN_SECONDS <= Date.now() / 1000) void renewOrAsk();
+	}
 
 	// The bell: the outcome of every write this app sent for the reader, kept in their browser.
 	const activityFeed = $derived({
@@ -83,6 +93,8 @@
 	});
 </script>
 
+<svelte:document onvisibilitychange={returned} />
+
 <!-- The sign-in round trip is no page of the app: it shows no sidebar or breadcrumb, only its own line. -->
 {#if page.route.id?.startsWith('/auth/')}
 	{@render children()}
@@ -98,6 +110,7 @@
 		activity={activityFeed}
 		{link}
 	>
+		<SessionPrompt />
 		{@render children()}
 	</AppShell>
 {/if}

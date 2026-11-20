@@ -497,7 +497,7 @@ test('a save refused because the session ended keeps the edits through signing i
 	const notice = page.getByTestId('canvas-notice');
 	await expect(notice).toContainText('Your session ended, so nothing was saved');
 	await fault(page, who, `/api/annotations/${UNIT}`, 'clear');
-	await notice.getByRole('button', { name: 'Sign in again' }).click();
+	await page.getByTestId('session-prompt').getByRole('button', { name: 'Sign in again' }).click();
 
 	await expect(page).toHaveURL(/\/tasks\/pages-t1\?project=pages$/);
 	await expect(notice).toHaveText('Your unsaved edits are back. Save to keep them.');
@@ -508,7 +508,7 @@ test('a save refused because the session ended keeps the edits through signing i
 	expect(body.inserts).toHaveLength(1);
 });
 
-test('a session the issuer cannot renew is said once, without sending the person round in a loop', async ({
+test('a service that refuses the session the person just signed in again for is said, without sending them round in a loop', async ({
 	page,
 	context,
 }) => {
@@ -520,11 +520,15 @@ test('a session the issuer cannot renew is said once, without sending the person
 	});
 
 	await page.goto('/projects/pages/tasks/pages-t1?project=pages');
+	await expect(page.getByTestId('task-signin')).toBeVisible();
+	await page.getByTestId('session-prompt').getByRole('button', { name: 'Sign in again' }).click();
 
-	await expect(page.getByTestId('task-signin')).toHaveText(
-		'We could not sign you in: reload the page to try again.',
+	await expect(page.getByTestId('session-failed')).toContainText(
+		'You signed in again, and the annotator still refuses your sign-in.',
 	);
-	// The app's own sign-in and the one round trip after the 401.
+	await expect(page.getByTestId('session-prompt')).toHaveCount(0);
+	await expect(page).toHaveURL(/\/tasks\/pages-t1\?project=pages$/);
+	// The app's own sign-in and the one the person asked for: none after.
 	expect(authorizations).toHaveLength(2);
 });
 
@@ -626,6 +630,12 @@ test('the item’s choices toggle as tag rows, which ride the save', async ({ pa
 	await letter.click();
 	await expect(letter).toHaveAttribute('aria-pressed', 'true');
 	await expect(page.getByTestId('annotation-list').getByRole('button')).toHaveCount(3);
+	// The tag's inspector names its class among the item's tag classes, and offers no conversion of a geometry it has not.
+	await page.getByTestId('annotation-list').getByRole('button', { name: 'letter kept' }).click();
+	await expect(
+		page.getByTestId('class-chips').getByRole('button', { name: /letter/, pressed: true }),
+	).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Convert to polygon' })).toBeDisabled();
 
 	const save = saved(page);
 	await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -950,6 +960,15 @@ test('a reviewer opens someone’s submission, reads it as theirs to review, and
 	await panel.getByTestId('task-request_changes').click();
 	const dialog = page.getByTestId('send-back-dialog');
 	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the legend too.');
+	// A note typed is not lost by Escape: the form asks, and keeping it goes back to writing.
+	await page.keyboard.press('Escape');
+	await dialog
+		.getByTestId('send-back-discard')
+		.getByRole('button', { name: 'Keep writing' })
+		.click();
+	await expect(dialog.getByRole('textbox', { name: 'What should change' })).toHaveValue(
+		'Box the legend too.',
+	);
 	await dialog.getByRole('button', { name: 'Send back' }).click();
 	expect((await fired).postDataJSON()).toEqual({
 		event: 'request_changes',

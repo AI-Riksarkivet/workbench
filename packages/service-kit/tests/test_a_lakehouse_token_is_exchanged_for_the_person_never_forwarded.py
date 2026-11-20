@@ -81,10 +81,12 @@ def test_a_refused_exchange_is_the_persons_401_and_the_service_takes_its_own_tok
     remember_verified(tokens, "keycloak~gina", oidc_provider.mint("gina"))
     oidc_provider.refuse_exchange = True
 
-    with pytest.raises(UnauthorizedError, match="refused to exchange"):
+    with pytest.raises(UnauthorizedError, match="refused to exchange") as refused:
         tokens.for_person("keycloak~gina")
     own = jwt.decode(tokens.for_service(), options={"verify_signature": False})
 
+    # The person's session to renew, challenged as the door challenges it, so the app asks them to sign in again.
+    assert 'error_description="the session must be renewed"' in (refused.value.headers or {}).get("WWW-Authenticate", "")
     assert (own["sub"], own["aud"]) == (f"service-account-{CLIENT_ID}", LAKEHOUSE_AUDIENCE)
     assert [r["grant_type"] for r in oidc_provider.requests] == ["urn:ietf:params:oauth:grant-type:token-exchange", "client_credentials"]
 

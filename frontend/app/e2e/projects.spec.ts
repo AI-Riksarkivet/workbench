@@ -2,6 +2,8 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { callsOf, person, signIn, watchCsp, type Call } from './session';
 import { EDGE } from './ports';
 import type { MockIdentity } from './mock-oidc';
+import { SENT_BACK_NOTE } from './mock-projects';
+import { FIRST_KEY } from './dpop';
 
 // The project plane on the built app: the projects of the reader's organisations, one project's queue, review,
 // settings, members and publish, and sending a search's rows to a project. A person's role on the seeded projects is
@@ -181,19 +183,34 @@ test('an annotator is offered no review of others’ work', async ({ page, conte
 	).toHaveCount(0);
 });
 
-test('a reviewer requests changes with a note, and the note travels with the item', async ({
+test('a reviewer requests changes with a note, and the note is read on the item’s row by whom, whole on demand', async ({
 	page,
 	context,
 }) => {
 	await as(context, 'Reviewer');
 	await letters(page);
 
+	const form = page.getByTestId('items-send-back');
 	await row(page, 'letter-002/0').getByRole('button', { name: 'Request changes' }).click();
-	await page.getByRole('dialog').getByRole('textbox').fill('The stamp is unlabelled.');
-	await page.getByRole('dialog').getByRole('button', { name: 'Request changes' }).click();
+	await form.getByRole('textbox').fill('A first thought.');
+	// A typed note is not lost by a click outside or by Cancel: the form asks; discarding empties it.
+	await page.mouse.click(5, 5);
+	await expect(form.getByTestId('send-back-discard')).toBeVisible();
+	await form.getByRole('button', { name: 'Keep writing' }).click();
+	await form.getByRole('button', { name: 'Cancel' }).click();
+	await form.getByRole('button', { name: 'Discard' }).click();
+	await expect(form).toHaveCount(0);
+	await row(page, 'letter-002/0').getByRole('button', { name: 'Request changes' }).click();
+	await expect(form.getByRole('textbox')).toHaveValue('');
+	await form.getByRole('textbox').fill(SENT_BACK_NOTE);
+	await form.getByRole('button', { name: 'Send back' }).click();
 
 	await expect(row(page, 'letter-002/0')).toContainText('changes requested');
-	await expect(row(page, 'letter-002/0')).toContainText('1 note');
+	const note = row(page, 'letter-002/0').getByTestId('row-review-note');
+	// By the reviewer's name, as they signed in.
+	await expect(note.locator('summary')).toContainText('Reviewer: Check the class');
+	await note.locator('summary').click();
+	await expect(note.getByRole('listitem')).toContainText(SENT_BACK_NOTE);
 });
 
 test('a viewer is offered no transition of the project, no publish, and not who holds it', async ({
@@ -664,11 +681,16 @@ test('a session that ended on the project page signs the person in again, never 
 	await page.route('**/api/annotator/projects/letters', (route) => {
 		if (refused) return route.fallback();
 		refused = true;
-		return route.fulfill({ status: 401, json: { detail: 'the token expired' } });
+		return route.fulfill({
+			status: 401,
+			json: { detail: 'the token expired' },
+			headers: { 'www-authenticate': 'DPoP error="invalid_token"' },
+		});
 	});
-	const issuer = page.waitForRequest((req) => new URL(req.url()).pathname === '/oidc/auth');
-
 	await page.getByRole('link', { name: /Letters/ }).click();
+	await expect(page.getByTestId('project-signin')).toBeVisible();
+	const issuer = page.waitForRequest((req) => new URL(req.url()).pathname === '/oidc/auth');
+	await page.getByTestId('session-prompt').getByRole('button', { name: 'Sign in again' }).click();
 	await issuer;
 
 	await expect(page.getByRole('heading', { level: 1, name: /Letters/ })).toBeVisible();
@@ -909,6 +931,10 @@ test('the grid labels items by keyboard alone, each claimed and saved on its own
 	await page.reload();
 	await expect(cellOf(page, 'sorting-05')).toHaveAttribute('tabindex', '0');
 	await expect(labelsOf(page, 'sorting-05')).toHaveText('letter');
+	// An address naming an item no longer listed falls back to the first listed item, and says so in the address.
+	await page.goto('/projects/sorting?tab=label&at=sorting-theirs');
+	await expect(cellOf(page, 'sorting-00')).toHaveAttribute('tabindex', '0');
+	await expect(page).toHaveURL(/[?&]at=sorting-00/);
 });
 
 test('the grid undoes and redoes its last label, and clears one, each on the revision the item was left at', async ({
@@ -965,7 +991,19 @@ test('a label over a selection one item of which was released meanwhile labels t
 	await expect(labelsOf(page, 'sorting-22')).toHaveText('map');
 	await expect(labelsOf(page, 'sorting-23')).toHaveText('map');
 	await expect(labelsOf(page, 'sorting-mine')).toHaveText('no label');
-	await expect(cellOf(page, 'sorting-mine').getByTestId('grid-cell-refused')).toBeVisible();
+	const refused = cellOf(page, 'sorting-mine').getByTestId('grid-cell-refused');
+	await expect(refused).toBeVisible();
+	// A refusal longer than the cell's two lines is read whole on the cell in focus.
+	await cellOf(page, 'sorting-mine').focus();
+	expect(await refused.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+	// The item moves on in the other tab (claimed again there): the refusal said of it no longer stands.
+	await other.goto('/projects/sorting?tab=label');
+	await other.locator('[data-testid="grid-cell"][data-task="sorting-mine"]').click();
+	await other.getByTestId('grid-bulk-claim').click();
+	await expect(other.getByTestId('grid-notice')).toHaveText('Claimed: 1 item.');
+	await page.getByRole('button', { name: 'Refresh' }).click();
+	await expect(cellOf(page, 'sorting-mine').getByText('claimed', { exact: true })).toBeVisible();
+	await expect(refused).toHaveCount(0);
 });
 
 test('the labelled items are submitted together, each answered, and the items tab counts them', async ({
@@ -984,8 +1022,13 @@ test('the labelled items are submitted together, each answered, and the items ta
 	// Submit is offered for the items the reader holds: the three just labelled (and claimed) and their own claim.
 	await page.getByTestId('grid-bulk-submit').click();
 
-	await expect(page.getByTestId('grid-notice')).toHaveText('Submit for review: 4 done.');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Submitted for review: 4 items.');
 	await expect(grid(page).getByRole('gridcell')).toHaveCount(21);
+	// The item in focus (the third) left the list: the focus stays at its place, on the item now there, and the address
+	// names that one, so a person working by keyboard goes on where they were rather than from the top.
+	const third = grid(page).getByRole('gridcell').nth(2);
+	await expect(third).toHaveAttribute('tabindex', '0');
+	await expect(page).toHaveURL(new RegExp(`[?&]at=${await third.getAttribute('data-task')}`));
 	await page.getByTestId('tab-items').click();
 	await expect(page.getByTestId('state-in_review')).toHaveText(/in review\s*6$/);
 });
@@ -1000,10 +1043,23 @@ test('a reviewer accepts many and sends some back with one note, from the grid',
 	await expect(labelsOf(page, 'sorting-review-b')).toHaveText('map');
 
 	await cellOf(page, 'sorting-review-a').click();
+	const form = page.getByTestId('grid-send-back');
+	// An empty form closes at once on Escape.
 	await page.getByTestId('grid-bulk-request_changes').click();
-	await page.getByRole('textbox', { name: 'What should change' }).fill('Which page is this?');
-	await page.getByTestId('grid-send-back').getByRole('button', { name: 'Send back' }).click();
+	await page.keyboard.press('Escape');
+	await expect(form).toHaveCount(0);
+	// A typed note is not lost by Escape: the form asks, and a second Escape goes back to writing.
+	await page.getByTestId('grid-bulk-request_changes').click();
+	const note = page.getByRole('textbox', { name: 'What should change' });
+	await note.fill('Which page is this?');
+	await page.keyboard.press('Escape');
+	await expect(form.getByTestId('send-back-discard')).toHaveText(/Discard the note you wrote\?/);
+	await page.keyboard.press('Escape');
+	await expect(form.getByTestId('send-back-discard')).toHaveCount(0);
+	await expect(note).toHaveValue('Which page is this?');
+	await form.getByRole('button', { name: 'Send back' }).click();
 	await expect(grid(page).getByRole('gridcell')).toHaveCount(1);
+	await expect(page.getByTestId('grid-notice')).toHaveText('Sent back: 1 item.');
 
 	await cellOf(page, 'sorting-review-b').click();
 	await page.getByTestId('grid-bulk-accept').click();
@@ -1026,8 +1082,12 @@ test('a label that would replace what another label carries is asked about once,
 	await page.keyboard.press('Shift+ArrowRight');
 
 	await page.keyboard.press('2');
-	// Only the item whose `letter` carries words is asked about: setting `map` where a model proposed it confirms it.
-	await expect(page.getByTestId('grid-ask-count')).toContainText('1 of 3 items carry');
+	// Only the item whose `letter` carries words is asked about: setting `map` where a model proposed it confirms it. The
+	// question names what is asked, before anything is labelled.
+	await expect(page.getByTestId('grid-ask').getByRole('heading')).toHaveText(
+		'Label map: replace what other labels carry?',
+	);
+	await expect(page.getByTestId('grid-ask-count')).toContainText('1 of 3 items carries');
 	// Skipping is the default: the question opens on it, and Enter takes it.
 	await expect(page.getByTestId('grid-ask-skip')).toBeFocused();
 	await page.keyboard.press('Enter');
@@ -1066,15 +1126,20 @@ test('a long run says how far it is and stops when asked, the items in flight fi
 
 	await page.keyboard.press('1');
 	// The model's `map` proposal on one item is asked about first; it is kept.
-	await expect(page.getByTestId('grid-ask-count')).toContainText('1 of 25 items carry');
+	await expect(page.getByTestId('grid-ask-count')).toContainText('1 of 25 items carries');
 	await expect(page.getByTestId('grid-ask-skip')).toBeFocused();
 	await page.keyboard.press('Enter');
 	await expect(page.getByTestId('grid-progress')).toContainText('Labelled letter: 0 of 25');
 	await page.getByTestId('grid-stop').click();
 
+	// Only the four in flight when Stop was pressed finish, and a stop is no failure.
 	await expect(page.getByTestId('grid-notice')).toContainText(
-		'Labelled letter: 4 changed, 21 not attempted.',
+		'Labelled letter: stopped at 0 of 25; 4 changed, 21 not attempted.',
 		{ timeout: 10_000 },
+	);
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveAttribute(
+		'data-tone',
+		'stopped',
 	);
 	await expect(page.getByTestId('grid-skipped')).toContainText(
 		'Not attempted, stopped before it was started (21)',
@@ -1139,3 +1204,276 @@ test('a label or an undo whose answer was lost is judged by what the item now ho
 	await expect(page.getByTestId('grid-notice')).toHaveText('Undone: Labelled letter: 1 changed.');
 	await expect(labelsOf(page, 'sorting-01')).toHaveText('no label');
 });
+
+test('select all matching keeps the keyboard in the grid, so the next digit labels every item that matches', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/batch?tab=label&size=25');
+	await cellOf(page, 'batch-00').focus();
+	await page.keyboard.press('Control+a');
+
+	await page.getByTestId('grid-select-all-matching').click();
+
+	await expect(page.getByTestId('grid-bulk-bar')).toContainText('31 selected');
+	await expect(cellOf(page, 'batch-00')).toBeFocused();
+	await page.keyboard.press('1');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Labelled letter: 31 changed.', {
+		timeout: 15_000,
+	});
+});
+
+test('a reviewer’s note is read on the sent-back item’s grid cell, by whom, whole on the cell in focus', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/batch?tab=label&size=50');
+	const onCell = cellOf(page, 'batch-sent-back').getByTestId('grid-cell-note');
+	await expect(onCell).toContainText('Alma Alpha: Check the class');
+	// Bounded on the cell, whole on the cell in focus.
+	expect(await onCell.evaluate((el) => el.scrollHeight > el.clientHeight + 1)).toBe(true);
+	await cellOf(page, 'batch-sent-back').focus();
+	expect(await onCell.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+});
+
+for (const [width, height, theme, mode] of [
+	[1440, 900, 'ink', 'dark'],
+	[390, 844, 'ink', 'dark'],
+	[1440, 900, 'paper', 'light'],
+	[390, 844, 'paper', 'light'],
+] as const)
+	test(`every row action of the items table is in reach at ${width}×${height} in ${theme} ${mode}, with no page scrolled sideways`, async ({
+		page,
+		context,
+	}) => {
+		await as(context, 'Manager');
+		// The person's look, as the account menu keeps it (`#lib/appearance-options.ts`).
+		await page.addInitScript(
+			([theme, mode]) =>
+				localStorage.setItem(
+					'workbench-appearance',
+					JSON.stringify({ v: 2, theme, mode, accent: null }),
+				),
+			[theme, mode] as const,
+		);
+		await page.setViewportSize({ width, height });
+		await letters(page);
+		await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+		// The row's actions: its last cell's buttons and links.
+		const actions = row(page, 'letter-002/0').getByRole('cell').last().locator('a, button');
+		await expect(actions.first()).toBeVisible();
+		// The row brought into view with its table scrolled to its start, as a person arriving finds it.
+		await row(page, 'letter-002/0')
+			.getByRole('cell')
+			.first()
+			.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'start' }));
+
+		// Read once the page has settled (a page transition covers it while it runs): each action within the window and
+		// the topmost thing at its centre, and the page not wider than the window.
+		await expect
+			.poll(async () => [
+				...(await actions.evaluateAll((elements) =>
+					elements.map((el) => {
+						const box = el.getBoundingClientRect();
+						const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+						return box.right <= window.innerWidth && box.left >= 0 && !!hit && el.contains(hit);
+					}),
+				)),
+				await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+			])
+			.toEqual(Array.from({ length: (await actions.count()) + 1 }, () => true));
+	});
+
+test('a grid cell’s focus ring is drawn on all four sides, at the row’s first column and its last', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	const first = cellOf(page, 'sorting-00');
+	await first.focus();
+
+	// The ring is drawn outside the cell; the row it sits in clips what it paints past its own box.
+	const room = async (): Promise<boolean[]> =>
+		page.evaluate(() => {
+			const el = document.activeElement as HTMLElement;
+			const ring = parseFloat(
+				getComputedStyle(el)
+					.getPropertyValue('--tw-ring-shadow')
+					.match(/(\d+(\.\d+)?)px/)?.[1] ?? '0',
+			);
+			const box = el.getBoundingClientRect();
+			const row = (el.parentElement as HTMLElement).getBoundingClientRect();
+			return [
+				ring > 0,
+				box.top - row.top >= ring,
+				row.bottom - box.bottom >= ring,
+				box.left - row.left >= ring,
+				row.right - box.right >= ring,
+			];
+		});
+	await page.keyboard.press('ArrowRight');
+	await page.keyboard.press('ArrowLeft');
+	const atFirst = await room();
+	await page.keyboard.press('End');
+	await expect(first).not.toBeFocused();
+	const atLast = await room();
+
+	expect([atFirst, atLast]).toEqual([Array(5).fill(true), Array(5).fill(true)]);
+});
+
+test('the app’s navigation and the grid’s pager are two landmarks of their own names', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/batch?tab=label&size=25');
+	await expect(grid(page)).toBeVisible();
+
+	await expect(page.getByRole('navigation', { name: 'Pages', exact: true })).toHaveCount(1);
+	await expect(page.getByRole('navigation', { name: 'Pages of items' })).toHaveCount(1);
+});
+
+/** A service's own refusal of the session: a 401 that challenges the credential. This is the one a viewer read answers
+ *  when the person's session to the lakehouse must be renewed (`token_exchange.SESSION_TO_RENEW`: no unexpired token of
+ *  theirs to pass on, or the exchange of it refused), and the door's own carries the same challenge. */
+const CHALLENGE = {
+	'www-authenticate':
+		'Bearer, DPoP error="invalid_token", error_description="the session must be renewed", algs="ES256"',
+};
+
+test('only a service’s own refusal of the session asks to sign in again, and a later answer from that door takes the prompt away', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	let answer: 'as-is' | 'forbidden' | 'relayed' | 'challenged' = 'forbidden';
+	await page.route('**/api/viewer/api/**', (route) => {
+		if (answer === 'as-is') return route.fallback();
+		if (answer === 'forbidden')
+			return route.fulfill({ status: 403, json: { detail: 'not yours' } });
+		// A lakehouse refusing the person's read, relayed: a 401 with no challenge of the viewer's own.
+		if (answer === 'relayed')
+			return route.fulfill({
+				status: 401,
+				json: { detail: 'the catalog did not accept the credential' },
+			});
+		return route.fulfill({
+			status: 401,
+			json: { detail: 'Invalid or expired token' },
+			headers: CHALLENGE,
+		});
+	});
+	await page.goto('/projects/sorting?tab=label');
+	await expect(grid(page)).toBeVisible();
+	answer = 'relayed';
+	await page.getByTestId('tab-items').click();
+	await expect(page.getByRole('row').nth(1)).toBeVisible();
+	await page.getByTestId('tab-label').click();
+	await expect(grid(page)).toBeVisible();
+	await expect(page.getByTestId('session-prompt')).toHaveCount(0);
+
+	answer = 'challenged';
+	await page.reload();
+	await expect(page.getByTestId('session-prompt')).toContainText('refused by the viewer');
+	answer = 'as-is';
+	// A read settled within a second is reused (`reads.svelte.ts`, FRESH_MS); past it, coming back to the tab reads again.
+	await page.waitForTimeout(1100);
+	await page.getByTestId('tab-items').click();
+	await expect(page.getByRole('row').nth(1)).toBeVisible();
+	await page.getByTestId('tab-label').click();
+
+	await expect(page.getByTestId('session-prompt')).toHaveCount(0);
+});
+
+test('an issuer that restarted with a new key asks once to sign in again, and the page read with the new key is let in by a service that could not read the key yet, with no second prompt', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	const sub = encodeURIComponent(who.sub);
+	const address = '/projects/sorting?tab=label&at=sorting-03';
+	await page.goto(address);
+	await expect(cellOf(page, 'sorting-03')).toHaveAttribute('tabindex', '0');
+
+	// The issuer restarts with a new key and none of its old ones; the annotator's refresher reads it at once, the
+	// viewer's not yet, so the annotator refuses the session's token while the viewer still takes it.
+	await page.request.post(`${EDGE}/oidc/__rotate?sub=${sub}&kid=after-restart`);
+	await page.request.post(`${EDGE}/api/viewer/__reread?sub=${sub}&service=annotator`);
+	// A read settled within a second is reused (`reads.svelte.ts`, FRESH_MS); past it, coming back to the tab reads again.
+	await page.waitForTimeout(1100);
+	await page.getByTestId('tab-items').click();
+	await page.getByTestId('tab-label').click();
+	const prompt = page.getByTestId('session-prompt');
+	await expect(prompt).toContainText('refused by the annotator');
+	await expect(page.getByRole('alert').filter({ hasText: 'Sign in again' })).toHaveCount(1);
+	await expect(page).toHaveURL(/tab=label/);
+	const asked = page.url();
+	// The issuer is still coming up: the viewer's forced read of the new key fails once.
+	await page.request.post(`${EDGE}/oidc/__keys-fail?sub=${sub}&times=1`);
+	const issuer = page.waitForRequest((req) => new URL(req.url()).pathname === '/oidc/auth');
+	await prompt.getByRole('button', { name: 'Sign in again' }).click();
+	await issuer;
+
+	await expect(grid(page)).toBeVisible();
+	await expect(page.getByTestId('grid-cell').first()).toBeVisible();
+	expect(page.url()).toBe(asked);
+	// The page's parallel reads (its atlas and its descriptor), signed by the new key, met the viewer together: one
+	// forced read of the issuer, which failed, so each was told to come back (503) rather than refused; each was sent
+	// again and let in once the viewer had read the key, and nothing asked the person to sign in once more. The one
+	// refusal the restart owes is the annotator's, of the key the issuer no longer publishes.
+	const settled = async (): Promise<[number | undefined, boolean, string[], Call[]]> => {
+		const keySets = (await (
+			await page.request.get(`${EDGE}/api/viewer/__keysets?sub=${sub}`)
+		).json()) as Record<string, { forced: number; waited: number; unavailable: number }>;
+		const calls = await callsOf(page, who);
+		const comeBack = calls.filter((call) => call.status === 503);
+		const unanswered = comeBack
+			.filter(
+				(told) =>
+					!calls
+						.slice(calls.indexOf(told))
+						.some(
+							(later) =>
+								later.status === 200 && later.service === told.service && later.path === told.path,
+						),
+			)
+			.map((told) => `${told.service} ${told.path}`);
+		const otherRefusals = calls.filter(
+			(call) =>
+				call.status === 401 &&
+				!(call.service === 'annotator' && call.refused?.endsWith(`(${FIRST_KEY})`)),
+		);
+		return [
+			keySets.viewer?.forced,
+			(keySets.viewer?.waited ?? 0) > 1 && comeBack.length > 1,
+			unanswered,
+			otherRefusals,
+		];
+	};
+	await expect.poll(settled, { timeout: 15_000 }).toEqual([1, true, [], []]);
+	await expect(page.getByTestId('session-prompt')).toHaveCount(0);
+});
+
+for (const trigger of ['a request', 'the tab coming back'] as const)
+	test(`a session past its expiry that was not renewed asks to sign in again, on ${trigger}`, async ({
+		page,
+		context,
+	}) => {
+		await as(context, 'Annotator');
+		await page.clock.install();
+		await page.clock.resume();
+		// The tab's return is read on a page that reads nothing again on its own when the tab comes back.
+		await page.goto(trigger === 'a request' ? '/projects/sorting?tab=label' : '/datasets');
+		await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+		await expect(page.getByTestId('session-prompt')).toHaveCount(0);
+
+		// A tab the browser held in the background: its clock moved on, its expiry timer did not run.
+		await page.clock.setSystemTime(Date.now() + 2 * 3600_000);
+		if (trigger === 'a request') await page.getByTestId('tab-items').click();
+		else await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+		await expect(page.getByTestId('session-prompt')).toBeVisible();
+	});

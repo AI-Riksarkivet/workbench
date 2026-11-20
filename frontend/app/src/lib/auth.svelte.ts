@@ -30,7 +30,7 @@ import { InMemoryWebStorage, User, UserManager, WebStorageStateStore } from 'oid
 import type { DPoPState, OidcMetadata, UserManagerSettings } from 'oidc-client-ts';
 import * as v from 'valibot';
 import { readConfig } from './config.ts';
-import { setSigner, type Signer } from './api/client.ts';
+import { ENDED, setSigner, type Signer } from './api/client.ts';
 import { setServices } from './api/services.ts';
 import { setCanvasSettings } from './canvas/settings.ts';
 import { sameOriginPath } from './return-path.ts';
@@ -142,8 +142,10 @@ async function discover(
 
 /** The signer of `held()`'s requests. A session bound by DPoP presents its token with a fresh proof for each `htu` and
  *  `method`, signed by `oidc` with the key it holds for the client; a bearer session presents its token alone. A
- *  session within `RENEW_MARGIN_SECONDS` of its expiry is renewed first where `renew` can, and nobody held, or a
- *  session that has expired, sends the request without credentials. */
+ *  session within `RENEW_MARGIN_SECONDS` of its expiry is renewed first where `renew` can. Nobody held sends the
+ *  request without credentials; a session that has expired and was not renewed (a tab left in the background, whose
+ *  expiry timer the browser held back) sends it without them as an ENDED session, which asks the person to sign in
+ *  again (`#lib/reauth.svelte.ts`). */
 export function sessionSigner(
 	oidc: UserManager,
 	held: () => User | null,
@@ -152,7 +154,8 @@ export function sessionSigner(
 	return async (htu, method) => {
 		let current = held();
 		if (current && due(current) && current.refresh_token) current = (await renew()) ?? current;
-		if (!current || current.expired) return null;
+		if (!current) return null;
+		if (current.expired) return ENDED;
 		if (current.token_type.toLowerCase() !== 'dpop')
 			return { token: current.access_token, proof: null };
 		const proof = await oidc.dpopProof(htu, current, method);
@@ -336,11 +339,10 @@ async function clientUnknown(oidc: UserManager): Promise<string | null> {
 	return `the identity provider does not know this app's client "${oidc.settings.client_id}": register it there (a development estate: \`make dev-dex-client\`)`;
 }
 
-/** The session has ended: renew it in place where it can be, or send the person to sign in again and come back to
- *  `returnTo`. */
-export async function renewOrSignIn(returnTo: string): Promise<void> {
-	if (await renew()) return;
-	await login(returnTo);
+/** The session is ending: renew it in place where it can be; false when it could not be, and the person is then asked to
+ *  sign in again (`#lib/reauth.svelte.ts`), never sent away on their own. */
+export async function renewSession(): Promise<boolean> {
+	return (await renew()) !== null;
 }
 
 /** Finish the redirect: exchange the code (with the PKCE verifier, and a DPoP proof where the session is bound) and

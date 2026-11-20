@@ -32,6 +32,9 @@ an unreachable IdP as fatal, and today none of them do.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+
 import httpx
 import pytest
 
@@ -46,6 +49,17 @@ def _ok_document(issuer: str) -> dict[str, object]:
     return {"issuer": issuer, "jwks_uri": f"{issuer}/jwks", "id_token_signing_alg_values_supported": ["RS256"]}
 
 
+def _answer_reads(monkeypatch: pytest.MonkeyPatch, answer: Callable[[str], httpx.Response]) -> None:
+    """Every read of an issuer's document (each is streamed, its body read raw) answered by ``answer`` for its URL."""
+
+    @contextmanager
+    def _stream(self: httpx.Client, method: str, url: str, **_kw: object) -> Generator[httpx.Response]:
+        answered = answer(url)
+        yield httpx.Response(answered.status_code, stream=httpx.ByteStream(answered.content), request=answered.request)
+
+    monkeypatch.setattr(httpx.Client, "stream", _stream)
+
+
 def test_warm_tries_EVERY_configured_issuer(monkeypatch: pytest.MonkeyPatch) -> None:
     """A multi-issuer deployment is exactly where one misconfigured entry hides: the other issuer's
     traffic works, so nothing looks wrong until a user from the broken tenant signs in."""
@@ -54,36 +68,47 @@ def test_warm_tries_EVERY_configured_issuer(monkeypatch: pytest.MonkeyPatch) -> 
     # THE BROKEN ONE IS FIRST, deliberately. With the healthy issuer first, a `warm` that stopped at
     # the first failure would still try both and this test would pass against it — measured: that
     # mutation survived the original ordering.
-    def _second_only(self: httpx.Client, url: str, **_kw: object) -> httpx.Response:
+    def _second_only(url: str) -> httpx.Response:
         seen.append(url)
         if url.startswith(SECOND):
             return httpx.Response(200, json=_ok_document(SECOND), request=httpx.Request("GET", url))
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(httpx.Client, "get", _second_only)
+    _answer_reads(monkeypatch, _second_only)
 
-    failures = oidc.OIDCVerifier([ISSUER, SECOND], "rask", 300).warm()
+    verifier = oidc.OIDCVerifier([ISSUER, SECOND], "rask", 300)
+    try:
+        failures = dict(verifier.warm())
+    finally:
+        verifier.close()
 
-    assert [issuer for issuer, _reason in failures] == [ISSUER]
-    assert len(seen) == 2, f"warm stopped at the first failure and never tried the rest: {seen}"
+    # The first issuer's discovery failed; the second's was read, and its key set (a discovery document, no key in it)
+    # was tried after it.
+    assert (failures[ISSUER].startswith("The OIDC issuer could not be reached"), "key set" in failures[SECOND]) == (True, True)
+    assert seen == [f"{ISSUER}/.well-known/openid-configuration", f"{SECOND}/.well-known/openid-configuration", f"{SECOND}/jwks"], (
+        f"warm stopped at the first failure and never tried the rest: {seen}"
+    )
 
 
 def test_a_warmed_verifier_does_not_refetch_on_the_first_verify(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The second reason to warm. `_resolve` caches per issuer for `cache_ttl`, so warming moves the
-    discovery round-trip off the first user request — a latency spike that lands on whoever happens
-    to sign in after a rollout."""
+    """The second reason to warm. Warming makes the refresher's first read before any request, so no
+    request pays the discovery round-trip — a latency spike that lands on whoever happens to sign in
+    after a rollout."""
     calls: list[str] = []
 
-    def _count(self: httpx.Client, url: str, **_kw: object) -> httpx.Response:
+    def _count(url: str) -> httpx.Response:
         calls.append(url)
         return httpx.Response(200, json=_ok_document(ISSUER), request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(httpx.Client, "get", _count)
+    _answer_reads(monkeypatch, _count)
     verifier = oidc.OIDCVerifier(ISSUER, "rask", 300)
-    verifier.warm()
-    before = len(calls)
+    try:
+        verifier.warm()
+        before = len(calls)
 
-    with pytest.raises(Exception):  # noqa: B017 — the token is junk; only the FETCH COUNT is under test
-        verifier.verify("not-a-token")
+        with pytest.raises(Exception):  # noqa: B017 — the token is junk; only the FETCH COUNT is under test
+            verifier.verify("not-a-token")
+    finally:
+        verifier.close()
 
-    assert len(calls) == before, f"discovery was re-fetched after warming: {calls[before:]}"
+    assert (before > 0, len(calls)) == (True, before), f"discovery was re-fetched after warming: {calls[before:]}"

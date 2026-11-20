@@ -303,8 +303,10 @@
 				size="icon-sm"
 				aria-label="Convert to polygon"
 				aria-keyshortcuts="P"
-				title="Convert to polygon (P)"
-				disabled={controller.selectedIndex == null}
+				title={controller.convertible
+					? 'Convert to polygon (P)'
+					: 'Convert to polygon (P): select a box first'}
+				disabled={!controller.convertible}
 				onclick={() => controller.convertToPolygon()}
 			>
 				<Spline class="size-4" />

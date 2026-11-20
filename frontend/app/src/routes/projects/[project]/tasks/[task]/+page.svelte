@@ -45,7 +45,6 @@
 	import { gpuUnsupportedReason } from '#lib/gpu/gpu-support.ts';
 	import { rowKeyFor } from '#lib/projects/corpus-rows.ts';
 	import { ANNOTATOR_HINT } from '#lib/projects/presentation.ts';
-	import { signInAgainOnce, signedInAt } from '#lib/reauth.ts';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import CanvasShell from '#lib/canvas/CanvasShell.svelte';
 	import { readOnlyReason } from '#lib/canvas/editability.ts';
@@ -283,16 +282,6 @@
 			(t) => t.task_id !== task?.task_id,
 		),
 	);
-
-	// A 401 is a session that ended: the reader signs in again and comes back here, once. Refused again right after,
-	// the page says so rather than sending them round in a loop.
-	const returnTo = $derived(page.url.pathname + page.url.search);
-	let signInFailed = $state(false);
-	$effect(() => {
-		if (!answer) return;
-		if (answer.ok) signedInAt(returnTo);
-		else if (answer.status === 401) signInFailed = !signInAgainOnce(returnTo);
-	});
 </script>
 
 <!-- The tab names the item once it is read, never by its ids: a screen reader announces the title on arrival. -->
@@ -355,10 +344,9 @@
 {:else if answer === undefined || gpuReason === undefined}
 	<p class="text-muted-foreground p-6 text-sm" role="status">Reading the item…</p>
 {:else if !answer.ok && answer.status === 401}
+	<!-- A 401 is a session that ended: the shell's one prompt asks to sign in again. -->
 	<p class="text-muted-foreground p-6 text-sm" role="status" data-testid="task-signin">
-		{signInFailed
-			? 'We could not sign you in: reload the page to try again.'
-			: 'Your session ended: signing you in again…'}
+		Your session ended: sign in again to read the item.
 	</p>
 {:else if !answer.ok && (answer.status === 403 || answer.status === 404)}
 	<div class="flex flex-col gap-1 p-6 text-sm" data-testid="task-unseen">

@@ -25,7 +25,7 @@ from lance_namespace import UnauthenticatedError
 
 from service_kit.exceptions import ServiceUnavailableError, UnauthorizedError
 from service_kit.governed.audit import AuditAction, AuditOutcome, audit
-from service_kit.governed.dpop import ALGORITHMS, DpopVerifier, InvalidProofError
+from service_kit.governed.dpop import DpopVerifier, InvalidProofError, challenge
 from service_kit.governed.fga import Authorizer, Grant
 from service_kit.governed.identity import Caller, PersonVerifier
 from service_kit.governed.oidc import ProviderUnavailableError
@@ -36,22 +36,10 @@ from service_kit.governed.token_exchange import Delegation, LakehouseCaller, Lak
 #: The subject when authentication is off. Named so a grep for who can act without a token finds one place.
 ANONYMOUS_SUBJECT: Final = "anon"
 
-_ALGS: Final = " ".join(sorted(ALGORITHMS))
-
-
-def _challenge(error: str | None, *, on: str, bearer: bool) -> dict[str, str]:
-    """The `WWW-Authenticate` a 401 carries: the DPoP scheme and the algorithms a proof may use (RFC 9449 § 7.1), and,
-    where a bearer is accepted too, the Bearer scheme first (RFC 6750 § 3); the error rides the scheme ``on`` names."""
-    dpop = ([f'error="{error}"'] if error and on == "dpop" else []) + [f'algs="{_ALGS}"']
-    challenges = [f"DPoP {', '.join(dpop)}"]
-    if bearer:
-        challenges.insert(0, f'Bearer error="{error}"' if error and on == "bearer" else "Bearer")
-    return {"WWW-Authenticate": ", ".join(challenges)}
-
 
 def _refuse(reason: str, detail: str, *, error: str | None, on: str, bearer: bool) -> UnauthorizedError:
     audit(AuditAction.AUTHN, AuditOutcome.FAILURE, reason=reason)
-    return UnauthorizedError(detail, headers=_challenge(error, on=on, bearer=bearer))
+    return UnauthorizedError(detail, headers=challenge(error, on=on, bearer=bearer))
 
 
 class FgaChecker(Protocol):

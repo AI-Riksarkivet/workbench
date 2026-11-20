@@ -36,15 +36,32 @@ export interface Credentials {
 	proof: string | null;
 }
 
+/** A session that has ended and could not be renewed: the request goes without credentials, and is reported to the
+ *  watcher as the session refused, whatever the service answers. */
+export const ENDED = 'ended' as const;
+
 /** Signs one request: `htu` is already stripped of query and fragment. Null when nobody is signed in
  *  (or the stack signs nobody in): the request then goes without credentials. */
-export type Signer = (htu: string, method: string) => Promise<Credentials | null>;
+export type Signer = (htu: string, method: string) => Promise<Credentials | typeof ENDED | null>;
 
 let signer: Signer = async () => null;
 
 /** Install the source of credentials (the app's in-memory OIDC session, and its DPoP key where it has one). */
 export function setSigner(next: Signer): void {
 	signer = next;
+}
+
+/** Told the status of every answer to a request that carried this tab's credentials, the `htu` it was signed for, and
+ *  whether the answer challenged the credential (`WWW-Authenticate`, RFC 6750 § 3, RFC 9449 § 7.1): how the app learns,
+ *  whichever service answered, that the session it presents is refused (`#lib/reauth.svelte.ts`). A service's own door
+ *  challenges what it refuses; a 401 it only relays (a lakehouse refusing the person's read) carries no challenge and
+ *  says nothing about the session. A request sent with no credentials is never reported. */
+export type CredentialWatcher = (status: number, htu: string, challenged: boolean) => void;
+
+let watcher: CredentialWatcher = () => {};
+
+export function setCredentialWatcher(next: CredentialWatcher): void {
+	watcher = next;
 }
 
 function origin(): string | null {
@@ -73,16 +90,24 @@ export async function authorizedFetch(input: string, init: RequestInit = {}): Pr
 	const headers = new Headers(init.headers);
 	const method = (init.method ?? 'GET').toUpperCase();
 	const htu = htuOf(input);
+	let signed = false;
+	let ended = false;
 	if (htu !== null && !headers.has('authorization')) {
 		const credentials = await signer(htu, method);
-		if (credentials?.proof) {
+		if (credentials === ENDED) ended = true;
+		else if (credentials?.proof) {
 			headers.set('authorization', `DPoP ${credentials.token}`);
 			headers.set('dpop', credentials.proof);
 		} else if (credentials) {
 			headers.set('authorization', `Bearer ${credentials.token}`);
 		}
+		signed = credentials !== null && !ended;
 	}
-	return fetch(input, { ...init, method, headers });
+	// A session that ended is reported before the request goes, so the person is asked even if the answer never comes.
+	if (ended && htu !== null) watcher(401, htu, true);
+	const res = await fetch(input, { ...init, method, headers });
+	if (signed && htu !== null) watcher(res.status, htu, res.headers.has('www-authenticate'));
+	return res;
 }
 
 // AbortSignal.timeout needs Safari 16+/Chrome 103+; vite transpiles syntax, not APIs.
@@ -93,15 +118,68 @@ function timeoutSignal(ms: number = FETCH_TIMEOUT_MS): AbortSignal {
 	return controller.signal;
 }
 
+/** How many times a read is sent again after a 503 that says when to come back, and how long it waits for that in all.
+ *  A service answers so while it cannot yet judge the session's token (`service_kit.governed.oidc`: its issuer's key
+ *  set is being read, or is read again within its pace, at most 30 s away), never to say the session is refused; so a
+ *  read right after the person signed in again at a restarted issuer finds the new key by itself rather than failing.
+ *  A 503 without `Retry-After`, or one asking for longer than is left, is the read's answer. Reads alone: a write goes
+ *  once (`writeJSON`). */
+const READ_RETRIES = 3;
+const READ_RETRY_BUDGET_MS = 30_000;
+
+/** The wait a 503 asks for (`Retry-After` in seconds, RFC 9110 § 10.2.3), or null for any other answer. */
+function retryAfterMs(res: Response): number | null {
+	if (res.status !== 503) return null;
+	const raw = res.headers.get('retry-after')?.trim() ?? '';
+	return /^\d+$/.test(raw) ? Number(raw) * 1000 : null;
+}
+
+function pause(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			reject(signal?.reason);
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener('abort', onAbort, { once: true });
+	});
+}
+
+/** A read through {@link authorizedFetch}, each send given its own `signal()`, sent again as {@link READ_RETRIES} says. */
+async function readFetch(
+	input: string,
+	init: RequestInit,
+	signal: () => AbortSignal,
+): Promise<Response> {
+	let waited = 0;
+	for (let attempt = 0; ; attempt++) {
+		const res = await authorizedFetch(input, { ...init, signal: signal() });
+		const wait = retryAfterMs(res);
+		if (wait === null || attempt >= READ_RETRIES || waited + wait > READ_RETRY_BUDGET_MS)
+			return res;
+		await res.body?.cancel().catch(() => {});
+		await pause(wait, init.signal);
+		waited += wait;
+	}
+}
+
 /** {@link authorizedFetch} given up after a read's timeout: the fetch the explorer's client calls
  *  through (`@workbench/explorer-api`'s transport), so none of its reads can hang a panel. A request
  *  with a body is a read that uploads, given {@link UPLOAD_TIMEOUT_MS}. */
 export function timedFetch(input: string, init: RequestInit = {}): Promise<Response> {
 	const uploads = init.body !== undefined && init.body !== null;
-	return authorizedFetch(input, {
-		...init,
-		signal: init.signal ?? timeoutSignal(uploads ? UPLOAD_TIMEOUT_MS : FETCH_TIMEOUT_MS),
-	});
+	return readFetch(
+		input,
+		init,
+		() => init.signal ?? timeoutSignal(uploads ? UPLOAD_TIMEOUT_MS : FETCH_TIMEOUT_MS),
+	);
 }
 
 /** A fetch outcome that keeps the HTTP status — `status: 0` is UNREACHABLE (no answer came), `n` is an
@@ -136,7 +214,7 @@ export async function readJSON<T>(
 ): Promise<ApiResult<T>> {
 	let res: Response;
 	try {
-		res = await authorizedFetch(url, { ...init, signal: timeoutSignal() });
+		res = await readFetch(url, init, () => timeoutSignal());
 	} catch (err) {
 		return { ok: false, status: 0, detail: `${upstream} is unreachable (${String(err)})` };
 	}
@@ -182,7 +260,7 @@ export async function readBytes(
 ): Promise<ApiResult<{ bytes: Uint8Array; etag: string | null; headers: Headers }>> {
 	let res: Response;
 	try {
-		res = await authorizedFetch(url, { ...init, signal: timeoutSignal() });
+		res = await readFetch(url, init, () => timeoutSignal());
 	} catch (err) {
 		return { ok: false, status: 0, detail: `${upstream} is unreachable (${String(err)})` };
 	}

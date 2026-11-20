@@ -178,8 +178,12 @@ class PersonVerifier:
         self._naming = {issuer: person_naming(provider) for issuer, provider in self._providers.items()}
 
     def warm(self) -> list[tuple[str, str]]:
-        """Resolve every issuer now and report what failed; see `OIDCVerifier.warm`."""
+        """Start reading every issuer and report what failed; see `OIDCVerifier.warm`."""
         return self._verifier.warm()
+
+    def close(self) -> None:
+        """Stop reading the issuers; see `OIDCVerifier.close`."""
+        self._verifier.close()
 
     def verify(self, token: str) -> Caller:
         """The person ``token`` proves.

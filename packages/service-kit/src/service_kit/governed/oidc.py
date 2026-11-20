@@ -1,11 +1,11 @@
 """OIDC ID-token verification wired directly on **PyJWT** (no python-jose / wrapper lib).
 
-The cryptography is PyJWT's, not ours: ``PyJWKClient`` fetches + caches the provider's JWKS and
-``jwt.decode`` does the signature / issuer / audience / expiry math. What we add is the thin OIDC
-plumbing PyJWT does not: discover the provider's ``.well-known/openid-configuration`` for the issuer +
-JWKS URI, and enforce a *local* signing-algorithm allowlist before handing the token to ``jwt.decode``
-(below). Provider-agnostic — works with Keycloak, Dex, Okta, Auth0, Entra, or Google by setting the
-issuer + audience. (We do NOT hand-roll JWT crypto — see the don't-reinvent audit.)
+The cryptography is PyJWT's, not ours: ``PyJWKSet`` parses the provider's JWKS and ``jwt.decode`` does the
+signature / issuer / audience / expiry math. What we add is the thin OIDC plumbing PyJWT does not: read the
+provider's ``.well-known/openid-configuration`` for the issuer + JWKS URI and the key set itself, each by one bounded
+read (`_read_document`: httpx, a total deadline, a byte cap, no redirect followed), and enforce a *local*
+signing-algorithm allowlist before handing the token to ``jwt.decode`` (below). Provider-agnostic — works with
+Keycloak, Dex, Okta, Auth0, Entra, or Google by setting the issuer + audience. (We do NOT hand-roll JWT crypto — see the don't-reinvent audit.)
 
 Security posture (see CHANGELOG in the task notes):
 
@@ -35,6 +35,11 @@ Security posture (see CHANGELOG in the task notes):
   2026-10-02: `--anonymous-auth=false` answers 401, the default trust store fails TLS). ``fetch_token_file``
   names a projected token re-read on every fetch, because the kubelet rotates it under the process;
   ``ca_file`` names the CA both fetches trust. ([[LH-220]])
+* **One rule for how long a key is trusted, in every service, kept off the request path.** One background refresher
+  per verifier reads each issuer's key set every `KEY_SET_MAX_AGE_SECONDS`; a request never fetches and never waits on
+  another, and judges its token on the set read last while that is younger than `KEY_SET_STALE_LIMIT_SECONDS`, else
+  answers 503 at once. The whole rule, and its one bounded exception (a `kid` the set does not hold), is
+  `OIDCVerifier`'s docstring.
 * **Opaque failures, charged to their author.** A failure the presented token causes is a
   generic ``UnauthenticatedError``; one the provider or this deployment's configuration of it
   causes (discovery, the key set, a non-HTTPS URL, no algorithm in common) is a
@@ -43,8 +48,11 @@ Security posture (see CHANGELOG in the task notes):
 
 from __future__ import annotations
 
-import http.client
+import contextlib
+import json
 import logging
+import math
+import socket
 import ssl
 import threading
 import time
@@ -63,15 +71,37 @@ from service_kit.exceptions import ServiceUnavailableError
 
 _DISCOVERY_SUFFIX = "/.well-known/openid-configuration"
 
-#: Wall-clock ceiling on EVERY outbound fetch this module makes — discovery AND JWKS.
-#:
-#: One constant because the two were asymmetric, and the unstated half was the one that matters more
-#: (SKG-12). Discovery is fetched once per issuer per `cache_ttl`; the JWKS client refetches when a token
-#: presents an unknown `kid`, at most once per `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS` — on the REQUEST
-#: path, at exactly the moment an IdP is mid-rotation and least healthy. `PyJWKClient` is not unbounded (PyJWT defaults it to 30s), but it was left to a
-#: library default twice this module's own budget and free to drift on an upgrade, so a hung IdP held a
-#: request worker for twice as long as the deployment ever decided it should.
-HTTP_FETCH_TIMEOUT_SECONDS = 15.0
+#: The longest any one socket operation of a read of discovery or of the key set may block (connect, each read), the
+#: same for both so neither is left to a library default free to drift on an upgrade (SKG-12), and never longer than
+#: what is left of the read's deadline when it starts. A per-operation timeout alone does not bound a whole read (headers
+#: or a body that drip a byte at a time): `_read_document`'s watchdog shuts the connection down at
+#: `FETCH_DEADLINE_SECONDS`, whatever the read is blocked in.
+HTTP_FETCH_TIMEOUT_SECONDS = 5.0
+
+#: The longest one refresher attempt (discovery where due, then the key set) may take in all, after which it is
+#: abandoned and counted failed. 5 s: both documents are a few kilobytes from an issuer on the cluster network, answered
+#: in milliseconds when it is up, so an answer not come in 5 s is an issuer in trouble. It is also the longest a request
+#: ever waits: one waiting for a forced refresh, or one sent to a verifier before its first attempt ended. The read
+#: itself is cut at it from outside (`_read_document`'s watchdog shuts its connection down), so the thread of an
+#: abandoned attempt ends within about a second of it when it was in the TLS handshake, the headers or the body. The
+#: connect is bounded per address the name resolves to: at most what was left of the deadline for each, so a name with n
+#: addresses that all stall can hold the thread up to n times that. A name lookup the resolver never answers is bounded
+#: by nothing here; `ABANDONED_READS` caps the threads either leaves.
+FETCH_DEADLINE_SECONDS = 5.0
+
+#: The most bytes a discovery document or a key set may be: a read past it is cut and the connection closed. 1 MiB: an
+#: issuer's documents are a few kilobytes (a key set of ten RSA-4096 keys is about 8 KiB), so a body past it is an issuer
+#: in trouble or a hostile one, and it stays far below what a service's memory would notice.
+MAX_DOCUMENT_BYTES: Final = 1 << 20
+
+#: How many abandoned attempts per issuer may still be running before the refresher starts no other: an abandoned attempt
+#: does not block the next one, so an issuer that hangs one connection is read again on a new one at the next attempt,
+#: and an issuer that hangs every connection holds at most this many threads.
+ABANDONED_READS: Final = 2
+
+#: How often the refresher looks at whether an issuer is due, on a wall clock (ages are read on the verifier's clock):
+#: what a forced refresh or `close` adds to a wait is at most this, since both wake it at once.
+REFRESHER_TICK_SECONDS = 0.5
 
 #: The least time between two key-set refetches forced by a token naming a `kid` the cached set does not hold, per
 #: issuer. The `kid` is the caller's own text, unverified, so without a pace every anonymous request naming a novel one
@@ -80,6 +110,36 @@ HTTP_FETCH_TIMEOUT_SECONDS = 15.0
 #: and an honest rotation's first token is found by the first refetch that begins once the interval has passed. The same
 #: interval as `lineage_kit.keys.KEY_REFRESH_INTERVAL_SECONDS`, which paces the same refetch for signed lineage events.
 UNKNOWN_KID_REFRESH_INTERVAL_SECONDS: Final = 30.0
+
+#: How many requests per issuer may wait at once for a forced refresh in flight (`OIDCVerifier._forced`). 8: a page's
+#: parallel reads right after a person signed in again at a restarted issuer (the app fires a handful at once: a
+#: descriptor, a page of rows, the signed media of a page, an atlas; measured, at most three reach one service at once)
+#: fit, so all of them meet the read that finds the new key; and a flood of forged `kid`s parks at most 8 threads (of the
+#: 40 a service's threadpool runs) for at most one deadline per `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`. One past the cap
+#: is told to come back (503), never refused.
+FORCED_WAITERS: Final = 8
+
+#: How long a key set the issuer served is believed before it is asked for again, counted from its fetch, the same for
+#: every service. A key the issuer stops publishing (Dex on memory storage makes new keys at every restart; a key
+#: withdrawn after a compromise) is refused by every service within this long after it left the set, plus one attempt:
+#: the refresher reads the set again at this age, off the request path, while the issuer answers.
+#: An honest rotation never meets it, since an issuer keeps a retired key published while tokens it signed are live.
+#: Measured 2026-11-20 on the verifier this replaced: each process kept PyJWT's set for 300 s from its own last fetch,
+#: so after Dex restarted the viewer refused a token the annotator kept accepting for minutes. The cost is one key-set
+#: fetch a minute per issuer per process while requests arrive.
+KEY_SET_MAX_AGE_SECONDS: Final = 60.0
+
+#: How long past its fetch the last key set the issuer served is still used while the issuer cannot be reached (or
+#: serves no usable set): a rolling restart of the issuer is not an outage of every service. Past it every token is
+#: refused 503. It is the lifetime the replaced cache gave every set, so no key is trusted longer than it was; and a
+#: token whose key is not in the set held is never accepted, whatever the issuer's state.
+KEY_SET_STALE_LIMIT_SECONDS: Final = 300.0
+
+#: How long after a failed attempt at an issuer's key set or discovery document the refresher tries again, per issuer
+#: and process: an issuer that is down costs one read per interval whatever arrives, since requests read nothing.
+#: Short enough that a pod which started while its issuer was briefly unreachable signs people in within 5 s of the
+#: issuer answering again; `/readyz` and `/livez` read no token, so the pod stays ready meanwhile.
+FETCH_RETRY_SECONDS: Final = 5.0
 
 #: Asymmetric signing algorithms we are willing to accept. Symmetric (``HS*``) and
 #: ``none`` are deliberately excluded — accepting them with a public verification key
@@ -129,21 +189,21 @@ class _Discovery(BaseModel):
     """The subset of the provider's discovery document we rely on (boundary-validated)."""
 
     issuer: str
-    # Checked here, where a bad value is the document's fault: `_require_https` and `PyJWKClient` parse it
-    # outside any mapping, and raise `ValueError` / `PyJWKClientError` for one that does not parse or is not HTTP.
+    # Checked here, where a bad value is the document's fault: `_require_https` and the key-set read parse it
+    # outside any mapping, and raise `ValueError` / an httpx error for one that does not parse or is not HTTP.
     jwks_uri: Annotated[str, AfterValidator(_fetchable_url)]
     id_token_signing_alg_values_supported: list[str] = []
 
 
 class _Provider(NamedTuple):
-    """A resolved provider: its discovery doc, JWKS client, and the safe algorithm set.
+    """A resolved provider: its discovery doc, where its key set is read from, and the safe algorithm set.
 
     An internal value bundle (not boundary input), so a ``NamedTuple`` is the right
     container — no per-construction validation, just an immutable typed triple.
     """
 
     spec: _Discovery
-    jwk_client: jwt.PyJWKClient
+    jwks_uri: str
     algorithms: list[str]
 
 
@@ -173,21 +233,108 @@ class _FetchCredential:
         return self.ssl_context if self.ssl_context is not None else True
 
 
-class _CredentialedJWKClient(jwt.PyJWKClient):
-    """PyJWT's key-set client, carrying the fetch credential read afresh on each fetch.
+class _ReadCut(OSError):
+    """A read of an issuer's document stopped by this side: past its deadline, or past `MAX_DOCUMENT_BYTES`. An
+    ``OSError``, so it is charged to the provider wherever a read that could not complete is."""
 
-    `PyJWKClient.fetch_data` sends the ``headers`` it was built with; refreshing them first keeps the rest of
-    its contract as shipped, including caching only a set that arrived. A token that cannot be read is an
-    ``OSError``, which `OIDCVerifier._key_set` already charges to the provider.
+
+class _Watchdog:
+    """Shuts down every connection a read opened once its deadline passes, from outside the read.
+
+    A timeout per socket operation cannot bound a peer that sends one header line, one TLS record or one body byte at a
+    time, each inside it; so the deadline is enforced by this timer rather than by anything the peer does. Each
+    connection is reported by httpcore's ``trace`` extension as soon as its TCP connect completes, before any TLS or
+    HTTP byte is exchanged; the watchdog keeps a duplicate of its socket (`socket.dup`: the same connection, a file
+    descriptor of its own, so it stays usable after TLS takes the original socket object over) and, at the deadline,
+    shuts the connection down (``SHUT_RDWR``), which wakes a read blocked in the TLS handshake, the status line, the
+    headers or the body with an error in the reading thread. A connection that completes after the deadline is shut
+    down at once. The connect itself is bounded by its timeout (at most what is left of the deadline, per address the
+    name resolves to); a name lookup is bounded by nothing here (`ABANDONED_READS`).
     """
 
-    def __init__(self, uri: str, credential: _FetchCredential, *, max_cached_keys: int, timeout: float) -> None:
-        super().__init__(uri, cache_jwk_set=True, max_cached_keys=max_cached_keys, timeout=timeout, ssl_context=credential.ssl_context)
-        self._credential = credential
+    def __init__(self, deadline: float) -> None:
+        self._lock = threading.Lock()
+        self._sockets: list[socket.socket] = []
+        self.cut = False
+        self._timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._cut)
+        self._timer.daemon = True
 
-    def fetch_data(self) -> Any:
-        self.headers = self._credential.headers()
-        return super().fetch_data()
+    def __enter__(self) -> _Watchdog:
+        self._timer.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._timer.cancel()
+        with self._lock:
+            for sock in self._sockets:
+                sock.close()
+            self._sockets.clear()
+
+    def trace(self, event: str, info: dict[str, Any]) -> None:
+        """httpcore's trace callback: keeps each connection the moment it is made."""
+        if not event.endswith(".connect_tcp.complete"):
+            return
+        raw = info["return_value"].get_extra_info("socket")
+        if not isinstance(raw, socket.socket):
+            return
+        held = raw.dup()
+        with self._lock:
+            self._sockets.append(held)
+            if self.cut:
+                self._shut(held)
+
+    def _cut(self) -> None:
+        with self._lock:
+            self.cut = True
+            for sock in self._sockets:
+                self._shut(sock)
+
+    @staticmethod
+    def _shut(sock: socket.socket) -> None:
+        # A connection already closed by its reader has nothing left to wake.
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+
+
+def _read_document(url: str, credential: _FetchCredential, deadline: float) -> bytes:
+    """The body ``url`` answers with a 2xx, read whole by ``deadline`` (`time.monotonic`) and within
+    `MAX_DOCUMENT_BYTES`, or an error; on either cut the connection is closed.
+
+    The deadline is enforced from outside the read (`_Watchdog`), so nothing the peer does extends it: a thread reading
+    ends within about a second of the deadline in the TLS handshake, the status line and headers, and the body. The
+    connect is bounded per address the name resolves to (at most what was left of the deadline for each), and a name
+    lookup by nothing here. Streamed raw, so the cap is checked as each chunk arrives and is counted on the bytes the peer
+    sent: ``Accept-Encoding: identity`` is asked, and a body sent compressed anyway is never inflated (it then fails to
+    parse, the provider's fault). Each socket operation is given at most what is left of the deadline (capped at
+    `HTTP_FETCH_TIMEOUT_SECONDS`). TLS is verified as the credential says (its CA, else the default trust store), and
+    proxies are taken from the environment as httpx does; no redirect is followed, so the document is read from the URL
+    the configuration or the discovery document named and from nowhere else (a 3xx is an error). The fetch credential
+    is read afresh on every call: the kubelet rotates a projected token under the process.
+    """
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _ReadCut(f"no time was left to read {url}")
+    timeout = min(HTTP_FETCH_TIMEOUT_SECONDS, left)
+    headers = credential.headers() | {"Accept-Encoding": "identity"}
+    with _Watchdog(deadline) as watchdog:
+        try:
+            with (
+                httpx.Client(timeout=timeout, verify=credential.verify(), follow_redirects=False) as client,
+                client.stream("GET", url, headers=headers, extensions={"trace": watchdog.trace}) as response,
+            ):
+                response.raise_for_status()
+                body = bytearray()
+                for chunk in response.iter_raw():
+                    body += chunk
+                    if len(body) > MAX_DOCUMENT_BYTES:
+                        raise _ReadCut(f"{url} answered more than {MAX_DOCUMENT_BYTES} bytes")
+                    if time.monotonic() > deadline:
+                        raise _ReadCut(f"{url} did not finish answering within its deadline")
+                return bytes(body)
+        except httpx.HTTPError as exc:
+            if watchdog.cut:
+                raise _ReadCut(f"{url} did not finish answering within its deadline") from exc
+            raise
 
 
 class _RefreshPace:
@@ -211,6 +358,50 @@ class _RefreshPace:
                 return False
             self._began = now
             return True
+
+    def left(self) -> float:
+        """How long until the pace admits another refetch: 0 when it would now."""
+        with self._lock:
+            return 0.0 if self._began is None else max(0.0, self._began + UNKNOWN_KID_REFRESH_INTERVAL_SECONDS - self._clock())
+
+
+class _Keys(NamedTuple):
+    """A key set an issuer served: where from, its signing keys, and when its fetch ENDED. Immutable, replaced whole."""
+
+    uri: str
+    keys: tuple[jwt.PyJWK, ...]
+    fetched_at: float
+
+
+class _Issuer:
+    """What the refresher knows of one configured issuer, read and replaced under the verifier's lock.
+
+    The discovery document read last and when; the key set read last (`_Keys`); why the last attempt failed and the
+    moment before which the refresher does not try again; a forced refresh asked for by a token naming a `kid` the set
+    does not hold (``forced_asked`` counts the asks, ``forced_started`` the asks the last attempt to START covered,
+    recorded under the lock as it starts, ``forced_served`` the asks an ended attempt answered, ``forced_published`` the
+    asks an ended attempt answered with a key set it read, and ``forced_unread`` says the last forced ask got none, so
+    the refresher asks again at the retry pace); how many requests wait for it; how many attempts
+    have ended; and the fetch threads of abandoned attempts that still run. Not a model: mutable state behind a lock,
+    never boundary input.
+    """
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self.provider: _Provider | None = None
+        self.discovered_at = 0.0
+        self.discovery_retry_at = 0.0
+        self.keys: _Keys | None = None
+        self.failure = "The OIDC issuer has not been read yet"
+        self.retry_at = 0.0
+        self.forced_asked = 0
+        self.forced_started = 0
+        self.forced_served = 0
+        self.forced_published = 0
+        self.forced_unread = False
+        self.forced_waiters = 0
+        self.attempts = 0
+        self.abandoned: list[threading.Thread] = []
+        self.pace = _RefreshPace(clock)
 
 
 class ProviderUnavailableError(ServiceUnavailableError):
@@ -240,10 +431,36 @@ def _require_https(url: str, *, label: str, allow_insecure: bool) -> None:
 
 
 class OIDCVerifier:
-    """Verify ID tokens against one or more providers, caching discovery + JWKS per issuer.
+    """Verify ID tokens against one or more providers, whose documents ONE background refresher keeps.
 
-    The verifier is constructed once at app startup and shared across requests. Each
-    configured issuer is discovered lazily and cached for ``cache_ttl`` seconds.
+    THE WHOLE RULE. A request never fetches and never waits on another request:
+
+    * The refresher (one daemon thread per verifier, started by `warm` at the app's startup, stopped by `close`, which
+      it heeds between issuers and while it waits for an attempt, and started again by the next request if it is not
+      running) reads each issuer's discovery document every ``cache_ttl`` and its key set every
+      `KEY_SET_MAX_AGE_SECONDS`, tries a failed read again after `FETCH_RETRY_SECONDS`, gives each attempt
+      `FETCH_DEADLINE_SECONDS` in all (each read is cut at it from outside, `_read_document`'s watchdog, and at
+      `MAX_DOCUMENT_BYTES`, so an abandoned attempt's thread ends within about a second of it in the TLS handshake, the
+      headers or the body; the connect is bounded per address the name resolves to, at most what was left of the
+      deadline for each, and a name lookup by nothing here; an attempt past it is abandoned and counted failed, and the
+      next one starts on a new connection, with at most `ABANDONED_READS` abandoned ones running per issuer), outlives
+      anything an attempt raises, and publishes a good key set by replacing one immutable snapshot (`_Keys`), its age
+      counted from the fetch's END. An abandoned attempt's outcome is never read.
+    * A request reads the snapshot: one younger than `KEY_SET_STALE_LIMIT_SECONDS` is the set its token is judged on;
+      none, or an older one, is a 503 at once with ``Retry-After``. So every service drops a key the issuer stopped
+      publishing within one refresh (60 s), and trusts none past 300 s from its fetch while the issuer is away.
+    * One bounded exception: a token naming a `kid` the snapshot does not hold (a rotation the refresher has not read
+      yet) asks for ONE forced refresh, at most one per issuer per `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`; it and every
+      such request arriving while that refresh is in flight, up to `FORCED_WAITERS` per issuer, wait for its outcome
+      for at most one deadline, and is let in when the set that refresh read holds its `kid`. The token is refused 401
+      only when a read of the issuer that STARTED after it asked read a key set that does not hold its `kid` (an attempt
+      records the asks it covers as it starts, `forced_started`): a read that began before the request asked may have
+      read the set as it was before the key was published. Every other outcome is the provider's, a 503 with
+      ``Retry-After`` (`_come_back`): the forced read failed or ran out (it is asked again at `FETCH_RETRY_SECONDS`), the
+      cap was reached (one deadline), the read it waited for began before it asked and lacks its `kid`, or the pace is
+      spent with no read in flight (until the pace or the periodic read allows one). So a forged `kid` ends nobody's
+      session, and an honest new key is let in once the issuer is read. A request to a verifier no refresh
+      has ended for yet (one never warmed) waits for that first attempt likewise, bounded the same way.
     """
 
     def __init__(
@@ -272,9 +489,15 @@ class OIDCVerifier:
         self._audience = audience
         self._ttl = cache_ttl
         self._clock = clock
-        # Keyed by configured issuer, so a pace outlives the provider `_resolve` rebuilds every `cache_ttl`, and is
-        # bounded by the configuration rather than by anything a token says.
-        self._refresh_paces = {iss: _RefreshPace(clock) for iss in self._issuers}
+        # Keyed by configured issuer, so the state is bounded by the configuration rather than by anything a token says.
+        self._state = {iss: _Issuer(clock) for iss in self._issuers}
+        # Guards every `_Issuer`, held only to read or replace its fields, never across a fetch; `_changed` tells a
+        # request waiting for an attempt (the bounded exception) that one ended.
+        self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._refresher: threading.Thread | None = None
         self._leeway = leeway
         self._allow_insecure = allow_insecure
         self._insecure_issuers = frozenset(iss.rstrip("/") for iss in insecure_issuers)
@@ -284,8 +507,6 @@ class OIDCVerifier:
         self._allowed = list(dict.fromkeys(alg.upper() for alg in allowed_algorithms))
         if not self._allowed:
             raise ValueError("OIDCVerifier requires a non-empty algorithm allowlist")
-        # Per-issuer cache: configured_issuer -> (fetched_at, _Provider).
-        self._cache: dict[str, tuple[float, _Provider]] = {}
 
     def _safe_algorithms(self, advertised: list[str]) -> list[str]:
         """Intersect the provider's advertised algorithms with our local allowlist.
@@ -302,13 +523,12 @@ class OIDCVerifier:
             return list(self._allowed)
         return [alg for alg in self._allowed if alg in advertised_upper]
 
-    def _resolve(self, configured_issuer: str) -> _Provider:
-        """Return the cached provider for ``configured_issuer``, refreshing past the TTL."""
-        now = self._clock()
-        cached = self._cache.get(configured_issuer)
-        if cached is not None and (now - cached[0]) < self._ttl:
-            return cached[1]
+    def _discover(self, configured_issuer: str, deadline: float) -> _Provider:
+        """Read ``configured_issuer``'s discovery document now; the refresher's to call, never a request's.
 
+        Raises ``ProviderUnavailableError`` naming what failed: the URL that could not be read, or how the document
+        disagrees with this deployment's configuration.
+        """
         # Split-horizon: fetch discovery from the override when one is configured for this
         # issuer; the issuer STRING (and every token check against it) is unchanged.
         override = self._discovery_overrides.get(configured_issuer)
@@ -319,18 +539,14 @@ class OIDCVerifier:
             allow_insecure=self._allow_insecure or configured_issuer in self._insecure_issuers,
         )
         # OURS, NOT THE CALLER'S. Everything from here to the mismatch check below is a statement
-        # about this deployment's configuration and the issuer it points at — the presented token is
-        # not read and plays no part. These errors are raised from `_provider_for`, before `verify`
-        # reaches its try block, so they are mapped here, to `ProviderUnavailableError`: a 503, as
-        # `deps.py` answers for a verifier it does not have, because it is the same fact arriving later.
+        # about this deployment's configuration and the issuer it points at — no token is read and none
+        # plays a part. They are `ProviderUnavailableError`s: what a request meets while they stand is a
+        # 503, as `deps.py` answers for a verifier it does not have, because it is the same fact.
         try:
-            with httpx.Client(timeout=HTTP_FETCH_TIMEOUT_SECONDS, verify=self._credential.verify()) as client:
-                response = client.get(f"{discovery_base}{_DISCOVERY_SUFFIX}", headers=self._credential.headers())
-                response.raise_for_status()
-                # Parsed by the model rather than by `response.json()`: a body that is not JSON at all (a
-                # proxy's sign-in page) then lands in the same `ValidationError` as one of the wrong shape,
-                # instead of a `json.JSONDecodeError` that no branch below classifies.
-                spec = _Discovery.model_validate_json(response.content)
+            # Parsed by the model rather than by `json.loads`: a body that is not JSON at all (a proxy's sign-in
+            # page) then lands in the same `ValidationError` as one of the wrong shape, instead of a
+            # `json.JSONDecodeError` that no branch below classifies.
+            spec = _Discovery.model_validate_json(_read_document(f"{discovery_base}{_DISCOVERY_SUFFIX}", self._credential, deadline))
         except (httpx.HTTPError, OSError) as exc:
             # OSError is the fetch credential failing to read: still this deployment's fault, never the token's.
             # The message names the LOCATION rather than the exception: an operator reading a 503
@@ -367,17 +583,153 @@ class OIDCVerifier:
             log.warning("oidc_no_common_algorithm", extra={"advertised": spec.id_token_signing_alg_values_supported, "allowed": self._allowed})
             raise ProviderUnavailableError("No mutually-supported OIDC signing algorithm")
 
-        jwk_client = _CredentialedJWKClient(jwks_uri, self._credential, max_cached_keys=16, timeout=HTTP_FETCH_TIMEOUT_SECONDS)
-        provider = _Provider(spec=spec, jwk_client=jwk_client, algorithms=algorithms)
-        self._cache[configured_issuer] = (now, provider)
-        return provider
+        return _Provider(spec=spec, jwks_uri=jwks_uri, algorithms=algorithms)
+
+    # ── the refresher ──────────────────────────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Start the refresher, or start it again when it is not running (an unforeseen error ended it)."""
+        with self._lock:
+            if self._stop.is_set() or (self._refresher is not None and self._refresher.is_alive()):
+                return
+            self._refresher = threading.Thread(target=self._run, name="oidc-refresher", daemon=True)
+            self._refresher.start()
+
+    def close(self) -> None:
+        """Stop the refresher and wait for it, at most one deadline: what an app's shutdown calls."""
+        self._stop.set()
+        self._wake.set()
+        refresher = self._refresher
+        if refresher is not None:
+            refresher.join(FETCH_DEADLINE_SECONDS + 1)
+
+    def _run(self) -> None:
+        """Each tick, refresh every issuer that is due. Nothing an attempt raises ends the loop but a process exit."""
+        while not self._stop.is_set():
+            try:
+                for configured in self._issuers:
+                    # Heeded between issuers, so `close` is not held by the issuers still due after one that hung.
+                    if self._stop.is_set():
+                        break
+                    if self._due(configured):
+                        self._refresh(configured)
+            except SystemExit:
+                raise
+            # The refresher must outlive anything a refresh raises, BaseException-derived ones included: a refresher
+            # that died would leave every request on a set that only ages.
+            except BaseException as exc:
+                log.error("oidc_refresher_error", extra={"error": repr(exc)})
+            self._wake.wait(REFRESHER_TICK_SECONDS)
+            self._wake.clear()
+
+    def _due(self, configured: str) -> bool:
+        """Whether ``configured`` needs an attempt now: a forced refresh asked for, or a document past its age and no
+        failed attempt within `FETCH_RETRY_SECONDS`."""
+        with self._lock:
+            state = self._state[configured]
+            if state.forced_asked > state.forced_served:
+                return True
+            now = self._clock()
+            if now < state.retry_at:
+                return False
+            # A forced ask the last attempt could not answer with a key set is asked again at the retry pace, so a
+            # request told to come back finds the key that a read of the issuer would hold.
+            if state.forced_unread:
+                return True
+            discovery_due = state.provider is None or (now - state.discovered_at >= self._ttl and now >= state.discovery_retry_at)
+            return discovery_due or state.keys is None or now - state.keys.fetched_at >= KEY_SET_MAX_AGE_SECONDS
+
+    def _refresh(self, configured: str) -> None:
+        """One attempt for ``configured``: its discovery document where due, then its key set, in a thread of its own
+        given `FETCH_DEADLINE_SECONDS` in all, its reads bounded by the same deadline (`_read_document`). An attempt past
+        it, or one `close` interrupts, is abandoned and counted failed; it does not block the next attempt, which reads
+        on a new connection, unless `ABANDONED_READS` of this issuer's still run. Each attempt has an outcome list of its
+        own, read only here and only for the attempt waited for: whatever an abandoned one appends later is never read."""
+        with self._lock:
+            state = self._state[configured]
+            forced = state.forced_asked
+            # The generation this attempt starts for, recorded as it starts: a request that asks after this joins a
+            # read that began before it, and may not take what it finds as evidence against its `kid` (`_forced`).
+            state.forced_started = forced
+            state.abandoned = [thread for thread in state.abandoned if thread.is_alive()]
+            crowded = len(state.abandoned) >= ABANDONED_READS
+            provider = state.provider
+            now = self._clock()
+            rediscover = provider is None or (now - state.discovered_at >= self._ttl and now >= state.discovery_retry_at)
+            # The key set is read when it is due (or forced, or never read); an attempt for discovery alone keeps it.
+            keys_due = state.keys is None or forced > state.forced_served or state.forced_unread or now - state.keys.fetched_at >= KEY_SET_MAX_AGE_SECONDS
+            held = None if keys_due or state.keys is None else state.keys.uri
+        outcome: list[tuple[_Provider | None, list[jwt.PyJWK] | None, str | None]] = []
+        if crowded:
+            failure: str | None = f"The OIDC issuer's last {ABANDONED_READS} reads have not ended"
+        else:
+            deadline = time.monotonic() + FETCH_DEADLINE_SECONDS
+            worker = threading.Thread(target=self._attempt, args=(configured, provider, rediscover, held, deadline, outcome), name="oidc-fetch", daemon=True)
+            worker.start()
+            # Waited for in ticks, so `close` is heeded while an attempt runs rather than once its deadline passes.
+            while worker.is_alive() and not self._stop.is_set() and (left := deadline - time.monotonic()) > 0:
+                worker.join(min(left, REFRESHER_TICK_SECONDS))
+            if worker.is_alive():
+                with self._lock:
+                    state.abandoned.append(worker)
+            failure = None if outcome else f"The OIDC issuer did not answer within {FETCH_DEADLINE_SECONDS:g} s"
+        # Read once, now: an abandoned attempt may still append, and that is never looked at.
+        found, keys, failed = outcome[0] if outcome else (None, None, failure)
+        with self._lock:
+            now = self._clock()
+            if found is not None and found is not provider:
+                state.provider, state.discovered_at, state.discovery_retry_at = found, now, 0.0
+            elif rediscover and provider is not None:
+                # A re-read of discovery that failed keeps the documents read before, tried again at the pace.
+                state.discovery_retry_at = now + FETCH_RETRY_SECONDS
+            if keys is not None and found is not None:
+                state.keys = _Keys(uri=found.jwks_uri, keys=tuple(keys), fetched_at=now)
+                state.failure, state.retry_at = "", 0.0
+                state.forced_published, state.forced_unread = max(state.forced_published, forced), False
+            elif outcome and failed is None:
+                # Discovery alone was due and was read; the key set held stands.
+                state.failure, state.retry_at = "", 0.0
+            else:
+                state.failure, state.retry_at = failed or "The OIDC key set could not be read", now + FETCH_RETRY_SECONDS
+                state.forced_unread = state.forced_unread or forced > state.forced_served
+            state.forced_served = max(state.forced_served, forced)
+            state.attempts += 1
+            self._changed.notify_all()
+
+    def _attempt(
+        self,
+        configured: str,
+        provider: _Provider | None,
+        rediscover: bool,
+        held: str | None,
+        deadline: float,
+        outcome: list[tuple[_Provider | None, list[jwt.PyJWK] | None, str | None]],
+    ) -> None:
+        """The reads of one attempt, in the fetch thread, both by ``deadline``: its result, or why there is none, put in
+        ``outcome``. The key set is read unless one is ``held`` (not due) from the location the discovery document still
+        names."""
+        try:
+            if rediscover or provider is None:
+                try:
+                    provider = self._discover(configured, deadline)
+                except ProviderUnavailableError:
+                    # A re-read that fails keeps the documents read before; with none read, it is the attempt's answer.
+                    if provider is None:
+                        raise
+            keys = None if held == provider.jwks_uri else self._fetch_keys(provider, deadline)
+            outcome.append((provider, keys, None))
+        except ProviderUnavailableError as exc:
+            outcome.append((provider, None, str(exc)))
+        # Whatever else an attempt raises (BaseException-derived ones too) is a failed attempt, never a dead refresher.
+        except BaseException as exc:
+            log.error("oidc_refresh_error", extra={"issuer": configured, "error": repr(exc)})
+            outcome.append((provider, None, "The OIDC issuer could not be read"))
 
     def warm(self) -> list[tuple[str, str]]:
-        """Resolve every configured issuer NOW, and report the ones that failed.
+        """Start the refresher, wait for its first attempt at every configured issuer, and report the ones that failed.
 
         THE CONSTRUCTOR PERFORMS NO I/O, so a verifier that was merely built proves nothing about the
-        IdP it points at. Discovery happens lazily in :meth:`_resolve` on the first request carrying a
-        bearer, so without this call a wrong issuer, a wrong split-horizon override or an unreachable
+        IdP it points at. Without this call a wrong issuer, a wrong split-horizon override or an unreachable
         IdP surfaces as failed user traffic, long after the pod has reported healthy.
 
         IT REPORTS, IT DOES NOT DECIDE, and that is the load-bearing half. Returning the failures
@@ -390,98 +742,174 @@ class OIDCVerifier:
         deployment fetches from an override, so the URL that failed is not the one an operator set as
         the issuer — and that override is the setting most likely to be the wrong one.
 
-        Warming also moves the discovery round-trip off the first user request: `_resolve` caches per
-        issuer for ``cache_ttl``, so whoever signs in first after a rollout no longer pays for it.
+        An issuer that is down at start leaves the pod ready (`/readyz` reads no token); its tokens are refused 503
+        until the refresher's first success, with no request having fetched anything.
         """
+        self.start()
         failures: list[tuple[str, str]] = []
         for configured in self._issuers:
-            try:
-                self._resolve(configured)
-            # Every failure is reported and none is raised — see this method docstring.
-            except Exception as exc:
-                failures.append((configured, str(exc)))
+            with self._lock:
+                state = self._state[configured]
+                self._changed.wait_for(lambda state=state: state.attempts > 0, timeout=FETCH_DEADLINE_SECONDS + 1)
+                if state.keys is None:
+                    failures.append((configured, state.failure))
         return failures
 
-    def _provider_for(self, token: str) -> _Provider:
-        """Select the configured provider whose issuer matches the token's ``iss`` claim.
-
-        The (still unverified) ``iss`` picks the provider, then verification proves it. A token naming
-        no configured issuer is refused here, with one issuer as with several, so another issuer's token
-        is a 401 that costs no fetch and never waits on a provider it does not belong to.
-        """
+    def _issuer_of(self, token: str) -> str:
+        """The configured issuer the token's (still unverified) ``iss`` names; verification then proves it. A token
+        naming no configured issuer is refused here, with one issuer as with several."""
         try:
             claimed = jwt.decode(token, options={"verify_signature": False}).get("iss")
         except jwt.PyJWTError as exc:
             raise UnauthenticatedError("Invalid or expired token") from exc
         for configured in self._issuers:
             if isinstance(claimed, str) and claimed.rstrip("/") == configured:
-                return self._resolve(configured)
+                return configured
         raise UnauthenticatedError("Unrecognized token issuer")
 
-    @staticmethod
-    def _key_set(provider: _Provider, *, refresh: bool) -> list[jwt.PyJWK]:
-        """The provider's signing keys; every failure to produce them is the PROVIDER's, never the token's.
+    def _fetch_keys(self, provider: _Provider, deadline: float) -> list[jwt.PyJWK]:
+        """The provider's signing keys as it serves them now; every failure to produce them is the PROVIDER's, never the token's.
 
-        The failures are classified by AUTHOR, not by type: the try body is one third-party call whose every
-        input is the provider's response, so whatever it raises is the provider's. Two kinds:
+        The failures are classified by AUTHOR, not by type: every input below is the provider's response, so whatever
+        is raised is the provider's. Two kinds:
 
-        * the set could not be fetched — `PyJWKClientConnectionError`, or the `OSError` /
-          `http.client.HTTPException` raised once the request is sent (a connection closed before the status
-          line or reset mid-body, a body cut short), which `fetch_data` does not wrap;
+        * the set could not be read — an httpx error (a connection closed before the status line or reset mid-body, a
+          body cut short, a non-2xx answer) or an ``OSError`` (`_ReadCut`: past the deadline or the byte cap; the fetch
+          credential failing to read);
         * anything else: the set arrived and holds no usable signing key. Measured on pyjwt 2.13.0 that is
           `PyJWTError`, `ValueError`, `AttributeError`, `TypeError` and `RecursionError`, but it is caught
           whole: PyJWK hands provider values to `cryptography`, whose exceptions are not all `ValueError`s
           (`UnsupportedAlgorithm` subclasses `Exception` alone), and a type left out of a named tuple would
           answer 500 and be audited `invalid_token` against the caller.
 
-        A set the cache served that fails is read once more with ``refresh=True``: `fetch_data` caches a body
-        before it is parsed, so without that read an unusable set outlives the provider's fix by the cache's
-        lifespan (300 s). A set fetched in this call is not asked for again — it is already the provider's
-        current answer, and against a slow IdP a second fetch doubles the time a request is held. Nor is one
-        that never arrived.
+        The keys kept are PyJWT's signing keys (`PyJWKClient.get_signing_keys`' filter): ``use`` is ``sig`` or unset,
+        and a ``kid`` is named. Called by the refresher alone. An unusable set is never published (only what this
+        returns is), so the provider's fix is believed at the refresher's next attempt.
         """
-        uri = provider.jwk_client.uri
-        cache = provider.jwk_client.jwk_set_cache
-        # The same test `get_jwk_set` applies before deciding to fetch.
-        served_from_cache = not refresh and cache is not None and cache.get() is not None
+        uri = provider.jwks_uri
         try:
-            return provider.jwk_client.get_signing_keys(refresh=refresh)
-        except (jwt.PyJWKClientConnectionError, OSError, http.client.HTTPException) as exc:
+            body = _read_document(uri, self._credential, deadline)
+        except (httpx.HTTPError, OSError) as exc:
             log.warning("oidc_jwks_unreachable", extra={"jwks_uri": uri, "error": str(exc)})
             raise ProviderUnavailableError(f"The OIDC key set could not be reached at {uri}") from exc
+        try:
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                raise TypeError("the key set is not a JSON object")
+            keys = [key for key in jwt.PyJWKSet.from_dict(data).keys if key.public_key_use in ("sig", None) and key.key_id]
+            if not keys:
+                raise ValueError("the key set holds no signing key")
+            return keys
         # Classified by author, not by type — see this docstring.
         except Exception as exc:
-            if served_from_cache:
-                return OIDCVerifier._key_set(provider, refresh=True)
             log.warning("oidc_jwks_malformed", extra={"jwks_uri": uri, "error": str(exc)})
             raise ProviderUnavailableError(f"The OIDC key set at {uri} holds no usable signing key") from exc
 
-    def _signing_key_for(self, provider: _Provider, token: str) -> jwt.PyJWK:
-        """The key the token's ``kid`` selects, with each failure charged to its one possible author.
+    # ── a request ──────────────────────────────────────────────────────────────────────────────────
 
-        `PyJWKClient.get_signing_key_from_jwt` does the same lookup but raises one `PyJWKClientError` for
-        "the set could not be fetched" and "the set holds no such kid" alike. Composed from its public parts
-        instead, so the header (the caller's) and the key set (the provider's) are read in separate steps.
+    def _snapshot(self, configured: str) -> tuple[_Provider | None, _Keys | None, str]:
+        """What a token of ``configured`` is judged on: the documents the refresher read last, the key set if it is
+        younger than `KEY_SET_STALE_LIMIT_SECONDS` from its fetch (else None), and why there is none.
+
+        Before the refresher has ended any attempt (a verifier nobody warmed), the request waits for that first one,
+        at most one deadline: there is nothing else to judge it on.
         """
+        self.start()
+        with self._lock:
+            state = self._state[configured]
+            if state.attempts == 0:
+                self._changed.wait_for(lambda: state.attempts > 0, timeout=FETCH_DEADLINE_SECONDS + 1)
+            provider, keys = state.provider, state.keys
+            if keys is not None and (provider is None or keys.uri != provider.jwks_uri or self._clock() - keys.fetched_at >= KEY_SET_STALE_LIMIT_SECONDS):
+                keys = None
+            return provider, keys, state.failure or "The OIDC key set is older than this deployment trusts"
+
+    @staticmethod
+    def _unavailable(failure: str, retry_after: float = FETCH_RETRY_SECONDS) -> ProviderUnavailableError:
+        """The 503 a request meets at once while the issuer's documents are not usable: it says when to come back, in
+        whole seconds and never less than one."""
+        return ProviderUnavailableError(failure, headers={"Retry-After": str(max(1, math.ceil(retry_after)))})
+
+    def _come_back(self, state: _Issuer) -> float:
+        """When a token whose `kid` the set does not hold may next meet a read of the issuer, with the pace spent and
+        none in flight: the soonest of the pace admitting a forced one, the refresher's periodic read, and, while a
+        forced ask went unanswered, the refresher asking it again (`FETCH_RETRY_SECONDS` after it failed); never past
+        one interval (`UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`)."""
+        now = self._clock()
+        soonest = min(state.pace.left(), KEY_SET_MAX_AGE_SECONDS if state.keys is None else state.keys.fetched_at + KEY_SET_MAX_AGE_SECONDS - now)
+        if state.forced_unread:
+            soonest = min(soonest, state.retry_at - now)
+        return min(UNKNOWN_KID_REFRESH_INTERVAL_SECONDS, max(0.0, soonest))
+
+    def _forced(self, configured: str, kid: str) -> jwt.PyJWK:
+        """The key a `kid` the snapshot does not hold selects after ONE forced refresh: refused 401 only when a read of
+        the issuer that STARTED after this request asked read a key set without it, else the provider's 503 saying when
+        to come back.
+
+        A forced refresh is asked at most once per `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS` per issuer: the `kid` is the
+        caller's unverified text, so a flood of novel ones costs the issuer one read per interval. While that refresh is
+        in flight, every request whose `kid` the snapshot does not hold waits for ITS outcome, at most one deadline, up to
+        `FORCED_WAITERS` requests per issuer at once: so a page's parallel reads right after the person signed in again
+        at a restarted issuer all find the new key, and a flood parks at most that many threads for at most one deadline
+        per interval. A refusal says the token is bad, and the app asks the person to sign in again on it, so it is given
+        only on that evidence. A read that had already started when this request asked may have read the set as it was
+        before the key this token names was published, so finding the `kid` in what it read lets the token in, and not
+        finding it says nothing (503). Whether a read has started for the ask a request joins is `forced_started`,
+        recorded under the lock as each attempt starts: a request asking before that is covered by the read, one asking
+        after is not. Past the cap, with the pace spent and no refresh in flight, or when the forced read failed or ran
+        out, nothing is known of this `kid` either, and the issuer's state is the answer.
+        """
+        state = self._state[configured]
+        with self._lock:
+            if state.forced_asked == state.forced_served:
+                if not state.pace.admit():
+                    raise self._unavailable("The OIDC key set is not read again yet", self._come_back(state))
+                state.forced_asked += 1
+                self._wake.set()
+            elif state.forced_waiters >= FORCED_WAITERS:
+                raise self._unavailable("The OIDC key set is being read", FETCH_DEADLINE_SECONDS)
+            asked = state.forced_asked
+            # No attempt has started for this ask yet, so the one that answers it starts after this request asked.
+            evidence = state.forced_started < asked
+            state.forced_waiters += 1
+        self.start()
+        try:
+            with self._lock:
+                self._changed.wait_for(lambda: state.forced_served >= asked, timeout=FETCH_DEADLINE_SECONDS + 1)
+                published, keys, failure = state.forced_published >= asked, state.keys, state.failure
+        finally:
+            with self._lock:
+                state.forced_waiters -= 1
+        if not published or keys is None:
+            raise self._unavailable(failure or "The OIDC key set could not be read")
+        key = next((key for key in keys.keys if key.key_id == kid), None)
+        if key is not None:
+            return key
+        if not evidence:
+            with self._lock:
+                come_back = self._come_back(state)
+            raise self._unavailable("The OIDC key set read began before this token was presented", come_back)
+        raise UnauthenticatedError("Invalid or expired token")
+
+    def _signing_key_for(self, configured: str, token: str) -> tuple[_Provider, jwt.PyJWK]:
+        """The documents and the key the token's ``kid`` selects, with each failure charged to its one possible author:
+        the header is the caller's, the key set the provider's."""
         try:
             kid = jwt.get_unverified_header(token).get("kid")
         except jwt.PyJWTError as exc:
             raise UnauthenticatedError("Invalid or expired token") from exc
+        provider, keys, failure = self._snapshot(configured)
+        # The documents first: an issuer this service cannot use is its own 503, whatever the token says.
+        if provider is None:
+            raise self._unavailable(failure)
         # A token naming no key selects none: `get_signing_keys` keeps only keys that carry a `kid`, so no
-        # fetch could answer it. (A non-string `kid` never gets here — the header read above refuses it.)
+        # read could answer it. (A non-string `kid` never gets here — the header read above refuses it.)
         if not isinstance(kid, str):
             raise UnauthenticatedError("Invalid or expired token")
-        key = provider.jwk_client.match_kid(self._key_set(provider, refresh=False), kid)
-        if key is not None:
-            return key
-        # An unknown kid may be a key the provider rotated in after the cached set, so it earns one refetch, as
-        # `PyJWKClient.get_signing_key` grants — but only at the pace `_RefreshPace` admits, because the kid is the
-        # caller's unverified text. Declined, the token is judged on the set already held.
-        if self._refresh_paces[provider.spec.issuer.rstrip("/")].admit():
-            key = provider.jwk_client.match_kid(self._key_set(provider, refresh=True), kid)
-            if key is not None:
-                return key
-        raise UnauthenticatedError("Invalid or expired token")
+        if keys is None:
+            raise self._unavailable(failure)
+        key = next((key for key in keys.keys if key.key_id == kid), None)
+        return provider, key if key is not None else self._forced(configured, kid)
 
     def verify(self, token: str) -> IDToken:
         """Verify a bearer token and return its parsed claims.
@@ -490,8 +918,7 @@ class OIDCVerifier:
         provider's documents are — the two refusals the governed doors map. Pinned by
         `packages/service-kit/tests/test_every_verifier_failure_is_a_401_or_a_503.py`.
         """
-        provider = self._provider_for(token)
-        signing_key = self._signing_key_for(provider, token)
+        provider, signing_key = self._signing_key_for(self._issuer_of(token), token)
         try:
             payload = jwt.decode(
                 token,

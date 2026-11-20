@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from collections.abc import Iterator
 
 import pytest
@@ -66,3 +67,12 @@ def oidc_provider() -> Iterator[Provider]:
     running = Provider()
     yield running
     running.close()
+
+
+@pytest.fixture(autouse=True)
+def no_refresher_outlives_its_test() -> Iterator[None]:
+    """Every OIDC verifier a test started is closed by its end (an app's shutdown does it, `OIDCVerifier.close`): a
+    refresher left running would go on reading an issuer the next test does not know of."""
+    yield
+    left = [thread for thread in threading.enumerate() if thread.name == "oidc-refresher" and thread.is_alive()]
+    assert left == [], f"{len(left)} OIDC refresher thread(s) left running"

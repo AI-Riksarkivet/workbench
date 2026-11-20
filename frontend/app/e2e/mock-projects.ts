@@ -256,6 +256,10 @@ const SEEDED_NAMES: Record<string, string> = {
 	'user:other-annotator': 'Otto Other',
 };
 
+/** A reviewer's note longer than a grid cell or a table row shows whole. */
+export const SENT_BACK_NOTE =
+	'Check the class: these pages are ledgers, not letters, and the stamp in the lower corner needs a box of its own before this goes back for review.';
+
 const worlds = new Map<string, World>();
 /** A lease an hour from the seed, as a claim takes one. */
 const later = (): string => new Date(Date.now() + 3600_000).toISOString();
@@ -641,6 +645,35 @@ function seed(sub: string): World {
 				ontology: sortingOntology,
 			}),
 		);
+	// A grid longer than its smallest page (25): 30 items nobody holds, and one Alma Alpha sent back to the reader with a
+	// note longer than a cell shows.
+	projects.set('batch', project('batch', { title: 'Batch', ontology: sortingOntology }));
+	for (let i = 0; i < 30; i++) {
+		const id = `batch-${String(i).padStart(2, '0')}`;
+		tasks.set(
+			id,
+			task('batch', id, 'unassigned', sortingKeys[i % 4] ?? '', { ontology: sortingOntology }),
+		);
+	}
+	tasks.set(
+		'batch-sent-back',
+		task('batch', 'batch-sent-back', 'changes_requested', 'letter-002/0', {
+			assignee: sub,
+			holders: [sub],
+			submitted_by: sub,
+			reviewed_by: 'user:alpha',
+			review_action: 'request_changes',
+			review_notes: [
+				{
+					by: 'user:alpha',
+					at: '2026-11-20T09:00:00Z',
+					action: 'request_changes',
+					message: SENT_BACK_NOTE,
+				},
+			],
+			ontology: sortingOntology,
+		}),
+	);
 	// A project past what one bulk selection holds (`BULK_CAP`, 1,000): 1,050 items nobody has claimed, the first 50 sent
 	// on the first of the month and the rest on the tenth, for the date range.
 	projects.set('heap', project('heap', { title: 'Heap' }));

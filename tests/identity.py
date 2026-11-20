@@ -141,6 +141,12 @@ class Provider:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
+    def rotate(self) -> None:
+        """Sign with a new key and publish only it, as Dex on memory storage does at every restart: a token signed
+        before is signed by a key the provider no longer publishes."""
+        self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self._kid = uuid.uuid4().hex[:8]
+
     def mint(self, sub: str, *, audience: str | list[str] = WORKBENCH_AUDIENCE, jkt: str | None = None, lifetime: int = 300, **claims: Any) -> str:
         """A token this provider signs for ``sub`` at ``audience``, bound to ``jkt`` when given."""
         now = int(time.time())

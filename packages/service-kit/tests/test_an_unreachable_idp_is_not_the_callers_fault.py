@@ -37,6 +37,8 @@ condition is that this service cannot currently trust its own issuer. `_provider
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import httpx
 import pytest
 
@@ -46,8 +48,20 @@ from service_kit.governed import oidc
 ISSUER = "https://idp.example.test"
 
 
+#: The verifiers a test built, closed when it ends, as an app's shutdown closes its own.
+_made: list[oidc.OIDCVerifier] = []
+
+
+@pytest.fixture(autouse=True)
+def _closed() -> Iterator[None]:
+    yield
+    while _made:
+        _made.pop().close()
+
+
 def _verifier(issuer: str | list[str] = ISSUER, *, allow_insecure: bool = False) -> oidc.OIDCVerifier:
-    return oidc.OIDCVerifier(issuer=issuer, audience="rask", cache_ttl=300, allow_insecure=allow_insecure)
+    _made.append(oidc.OIDCVerifier(issuer=issuer, audience="rask", cache_ttl=300, allow_insecure=allow_insecure))
+    return _made[-1]
 
 
 def _unverified_token() -> str:

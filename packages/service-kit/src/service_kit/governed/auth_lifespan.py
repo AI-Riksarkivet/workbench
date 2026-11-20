@@ -200,6 +200,11 @@ def _lakehouse_clients(settings: object, providers: list[OidcProvider], people: 
 async def dispose(app: object) -> None:
     """Close what `attach_auth` opened. Suppressed: a shutdown that raises hides whatever came after it."""
     state = getattr(app, "state", None)
+    # The verifier's refresher thread, which reads the issuers' documents in the background.
+    verifier = getattr(state, "oidc", None)
+    if verifier is not None:
+        with suppress(Exception):
+            await run_in_threadpool(verifier.close)
     resolving: asyncio.Task[None] | None = getattr(state, "authz_resolving", None)
     if resolving is not None:
         resolving.cancel()

@@ -24,7 +24,7 @@
 	import { Dialog } from '@riksarkivet/ui/dialog';
 	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
 	import { cn } from '@riksarkivet/ui/utils';
-	import { login } from '#lib/auth.svelte.ts';
+	import { beforeSigningInAgain } from '#lib/reauth.svelte.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
 	import { viewTransitions } from '#lib/view-transition.svelte.ts';
 	import { AnnotatorController } from './controller.svelte.ts';
@@ -159,12 +159,14 @@
 		}
 	}
 
-	function signInAgain(): void {
-		keepPendingEdits(person, keptUnder, controller.pendingEdits());
-		// The edits are kept for after the sign-in, so leaving for the issuer asks nothing.
-		leaving = true;
-		void login(page.url.pathname + page.url.search);
-	}
+	// Signing in again (the shell's one prompt, `#lib/reauth.svelte.ts`) keeps the unsaved edits for after the round
+	// trip, so leaving for the issuer asks nothing.
+	$effect(() =>
+		beforeSigningInAgain(() => {
+			keepPendingEdits(person, keptUnder, controller.pendingEdits());
+			leaving = true;
+		}),
+	);
 
 	// Leaving the item saves it first, and a save that fails keeps the person here with the reason on screen. A tab
 	// closing (`leave`) cannot wait for a save, so the browser asks instead.
@@ -660,9 +662,6 @@
 			<span data-testid="canvas-read-only">{controller.readOnly}</span>
 		{:else}
 			{controller.notice?.text ?? ''}
-		{/if}
-		{#if controller.signedOut}
-			<Button variant="outline" size="xs" onclick={signInAgain}>Sign in again</Button>
 		{/if}
 	</div>
 </div>

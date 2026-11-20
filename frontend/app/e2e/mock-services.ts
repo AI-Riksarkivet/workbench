@@ -19,6 +19,16 @@
 // makes one door fail (`fail`), answer that nothing is built there yet (`unbuilt`) or answer 2.5 s late
 // (`slow`), for that person only;
 // `clear` puts it back.
+//
+// EACH SERVICE HOLDS ITS OWN COPY OF THE ISSUER'S KEY SET, kept per person as the mock issuer keys them (`mock-oidc.ts`),
+// and treats a token naming a key it does not hold as `service_kit.governed.oidc.OIDCVerifier` does: one forced read
+// of the issuer, at most one per `KEY_PACE_MS`, which every such request arriving while it is in flight waits for, up
+// to `FORCED_WAITERS` at once. It is refused 401 only when that read found a set without its key; past the cap, with
+// the pace spent and no read in flight, or when the read failed (the refresher then asks again after `KEY_RETRY_MS`),
+// it is a 503 with `Retry-After`, recorded with status 503.
+// `POST /api/viewer/__reread?sub=&service=` is that service's background refresher reading the issuer now, and
+// `GET /api/viewer/__keysets?sub=` answers, per service, how many forced reads it made, how many requests waited and
+// how many it told to come back.
 import { readFileSync } from 'node:fs';
 import {
 	Dictionary,
@@ -32,7 +42,7 @@ import {
 	tableToIPC,
 	vectorFromArray,
 } from 'apache-arrow';
-import { athOf, readToken, verifyProof, type TokenClaims } from './dpop';
+import { FIRST_KEY, athOf, readToken, verifyProof, type TokenClaims } from './dpop';
 import { lakehouseCallsOf, readAsPerson } from './mock-lakehouse';
 import { SHAPES, shapeOf } from './providers';
 import { annotationsDoor, assistDoor } from './mock-annotations';
@@ -45,7 +55,7 @@ import {
 	taskOf,
 	writeDraft,
 } from './mock-projects';
-import { MOCK_ANNOTATOR_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
+import { MOCK_ANNOTATOR_PORT, MOCK_OIDC_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
 /** One call as a service saw it. */
 export interface Call {
@@ -69,6 +79,109 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 		status,
 		headers: { 'content-type': 'application/json', ...headers },
 	});
+
+/** `service_kit.governed.oidc`'s `FORCED_WAITERS` and `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`. */
+const FORCED_WAITERS = 8;
+const KEY_PACE_MS = 30_000;
+/** How long the issuer takes to answer a forced read: long enough that a page's parallel reads all meet it in flight. */
+const ISSUER_READ_MS = 300;
+/** How soon the refresher asks again for a forced read that failed: the verifier's `FETCH_RETRY_SECONDS` (5 s),
+ *  shortened so a spec does not wait it out. It is also the `Retry-After` such a request is answered with. */
+const KEY_RETRY_MS = 1000;
+
+/** One service's copy of one person's key set, its forced read (whether it read a set), and what it answered. */
+interface KeySet {
+	held: Set<string>;
+	reading: Promise<boolean> | null;
+	askedAt: number;
+	/** When the refresher asks again for a forced read that failed; 0 when none is pending. */
+	retryAt: number;
+	waiting: number;
+	forced: number;
+	waited: number;
+	unavailable: number;
+}
+const keySets = new Map<string, KeySet>();
+function keySetOf(service: string, sub: string): KeySet {
+	const key = `${service} ${sub}`;
+	const found = keySets.get(key);
+	if (found) return found;
+	const made: KeySet = {
+		held: new Set([FIRST_KEY]),
+		reading: null,
+		askedAt: -Infinity,
+		retryAt: 0,
+		waiting: 0,
+		forced: 0,
+		waited: 0,
+		unavailable: 0,
+	};
+	keySets.set(key, made);
+	return made;
+}
+
+async function issuerKeys(sub: string): Promise<Set<string>> {
+	const res = await fetch(`http://localhost:${MOCK_OIDC_PORT}/keys?sub=${encodeURIComponent(sub)}`);
+	if (!res.ok) throw new Error(`the issuer answered ${res.status}`);
+	const body = (await res.json()) as { keys: { kid: string }[] };
+	return new Set(body.keys.map((key) => key.kid));
+}
+
+/** The refresher asking the issuer again, `KEY_RETRY_MS` after a forced read failed, until it reads a set. */
+function askAgain(set: KeySet, sub: string): void {
+	set.retryAt = Date.now() + KEY_RETRY_MS;
+	setTimeout(() => {
+		issuerKeys(sub).then(
+			(held) => {
+				set.held = held;
+				set.retryAt = 0;
+			},
+			() => askAgain(set, sub),
+		);
+	}, KEY_RETRY_MS);
+}
+
+/** What `service` makes of the key `claims` names: held; refused, only once a forced read that ended after this
+ *  request asked read a set without it; or, every other way, come back in `retryAfter` ms. */
+async function keyVerdict(
+	service: string,
+	claims: TokenClaims,
+): Promise<'held' | 'refused' | { retryAfter: number }> {
+	const kid = claims.kid ?? FIRST_KEY;
+	const set = keySetOf(service, claims.sub);
+	if (set.held.has(kid)) return 'held';
+	let reading = set.reading;
+	if (reading === null) {
+		const now = Date.now();
+		const paced = set.askedAt + KEY_PACE_MS - now;
+		if (paced > 0)
+			return { retryAfter: set.retryAt > 0 ? Math.min(paced, set.retryAt - now) : paced };
+		set.askedAt = now;
+		set.forced += 1;
+		reading = (async () => {
+			await Bun.sleep(ISSUER_READ_MS);
+			try {
+				set.held = await issuerKeys(claims.sub);
+				set.retryAt = 0;
+				return true;
+			} catch {
+				askAgain(set, claims.sub);
+				return false;
+			}
+		})().finally(() => {
+			set.reading = null;
+		});
+		set.reading = reading;
+	} else if (set.waiting >= FORCED_WAITERS) return { retryAfter: ISSUER_READ_MS };
+	set.waiting += 1;
+	set.waited += 1;
+	try {
+		if (!(await reading)) return { retryAfter: KEY_RETRY_MS };
+	} finally {
+		set.waiting -= 1;
+	}
+	return set.held.has(kid) ? 'held' : 'refused';
+}
 
 /** The person a call's token proves, and the token itself, with its DPoP proof where one is due; or the 401 that
  *  refuses it. */
@@ -95,6 +208,24 @@ async function authenticate(
 		return json({ detail: reason }, 401, { 'www-authenticate': 'DPoP error="invalid_token"' });
 	};
 	if (!claims) return refuse('no token, or not one this issuer minted');
+	const verdict = await keyVerdict(service, claims);
+	if (verdict === 'refused')
+		return refuse(
+			`the token is signed by a key the service does not hold (${claims.kid ?? FIRST_KEY})`,
+		);
+	if (verdict !== 'held') {
+		keySetOf(service, claims.sub).unavailable += 1;
+		record(claims.sub, {
+			service,
+			method: req.method,
+			path: url.pathname,
+			status: 503,
+			refused: 'the issuer key set is being read',
+		});
+		return json({ detail: 'The OIDC key set is being read' }, 503, {
+			'retry-after': String(Math.max(1, Math.ceil(verdict.retryAfter / 1000))),
+		});
+	}
 	const shape = SHAPES[shapeOf(claims.iss)];
 	if (!claims.aud.includes(shape.workbenchAudience))
 		return refuse('the token is not addressed to the workbench');
@@ -862,6 +993,22 @@ Bun.serve({
 			else held.set(path, kind !== null && FAULTS.includes(kind) ? (kind as Fault) : 'fail');
 			faults.set(sub, held);
 			return json({ ok: true });
+		}
+		if (url.pathname === '/__reread' && req.method === 'POST') {
+			const sub = url.searchParams.get('sub') ?? '';
+			keySetOf(url.searchParams.get('service') ?? '', sub).held = await issuerKeys(sub);
+			return json({ ok: true });
+		}
+		if (url.pathname === '/__keysets') {
+			const sub = url.searchParams.get('sub') ?? '';
+			return json(
+				Object.fromEntries(
+					['viewer', 'search', 'annotator'].map((service) => {
+						const { forced, waited, unavailable } = keySetOf(service, sub);
+						return [service, { forced, waited, unavailable }];
+					}),
+				),
+			);
 		}
 		if (url.pathname === '/__lakehouse')
 			return json(lakehouseCallsOf(url.searchParams.get('sub') ?? ''));

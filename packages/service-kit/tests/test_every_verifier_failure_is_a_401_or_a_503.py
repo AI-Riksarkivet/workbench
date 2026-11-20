@@ -44,8 +44,9 @@ import socket
 import struct
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Annotated, Any, cast
@@ -55,15 +56,25 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from service_kit.exceptions import register_handlers
 from service_kit.governed import dpop as dpop_mod
+from service_kit.governed import oidc as oidc_mod
 from service_kit.governed.audit import AUDIT_LOGGER
 from service_kit.governed.deps import make_auth_deps
 from service_kit.governed.dpop import ALGORITHMS, DpopVerifier
 from service_kit.governed.identity import PersonVerifier
-from service_kit.governed.oidc import UNKNOWN_KID_REFRESH_INTERVAL_SECONDS, OIDCVerifier
+from service_kit.governed.oidc import (
+    ABANDONED_READS,
+    FETCH_RETRY_SECONDS,
+    FORCED_WAITERS,
+    KEY_SET_MAX_AGE_SECONDS,
+    KEY_SET_STALE_LIMIT_SECONDS,
+    MAX_DOCUMENT_BYTES,
+    UNKNOWN_KID_REFRESH_INTERVAL_SECONDS,
+    OIDCVerifier,
+)
 from service_kit.governed.settings import ClientMarker, OidcProvider
 from service_kit.governed.token_exchange import LakehouseCaller
 from service_kit.ns_errors import install_problem_handlers
@@ -78,6 +89,13 @@ DISCOVERY_PATH = "/.well-known/openid-configuration"
 JWKS_PATH = "/jwks"
 
 SLOW_ANSWER_SECONDS = 0.3
+DRIP_SECONDS = 0.02
+#: How long a held answer, or a wait for the refresher, may last before the test is failed as hung: a safety bound on a
+#: starved host, never what a test measures.
+HELD_SECONDS = 30.0
+#: The attempt deadline of a test whose issuer stalls one read: wide enough that the loopback reads the test needs to
+#: succeed do so on a starved host, and still far below `HELD_SECONDS`, so the stalled read is ended by its deadline.
+CUT_DEADLINE_SECONDS = 2.0
 
 #: What a reverse proxy in front of an IdP answers when its session is gone: a 200 whose body is a page.
 SIGN_IN_PAGE = b"<!doctype html><title>Sign in</title>"
@@ -119,12 +137,27 @@ class _Fault(StrEnum):
 class _IdP(BaseModel):
     """What the loopback IdP serves, by path; a case overwrites one document, or faults one path, to break it."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     issuer: str
     documents: dict[str, bytes]
     faults: dict[str, _Fault] = {}
     #: Paths answered after `SLOW_ANSWER_SECONDS`: long enough that every request in a concurrent burst reaches the
     #: verifier while the first one's fetch is still in flight.
     slow: set[str] = set()
+    #: Paths whose NEXT request is answered a byte every `DRIP_SECONDS`, without end, while every later one is answered
+    #: as usual: an issuer that holds one connection open and serves new ones.
+    drip: set[str] = set()
+    #: Paths whose next n requests are answered a status line and then one header line every `DRIP_SECONDS`, without
+    #: end: no per-operation timeout ever trips, and the response never begins.
+    drip_headers: dict[str, int] = {}
+    #: Paths answered 302 to another path.
+    redirects: dict[str, str] = {}
+    #: Paths answered only once the test sets `release` (at the latest `HELD_SECONDS`, which bounds a hung test alone).
+    held: set[str] = set()
+    release: threading.Event = Field(default_factory=threading.Event)
+    #: Connections a dripping path was writing to when its reader shut them down, by path.
+    cuts: dict[str, int] = {}
     #: Requests served, by path.
     fetches: dict[str, int] = {}
 
@@ -162,12 +195,47 @@ def stranger_key() -> rsa.RSAPrivateKey:
 def idp(rsa_key: rsa.RSAPrivateKey) -> Iterator[_IdP]:
     #: Connections whose close must be a reset rather than an orderly FIN.
     resets: set[socket.socket] = set()
+    stopped = threading.Event()
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             served.fetches[self.path] = served.fetches.get(self.path, 0) + 1
             fault = served.faults.get(self.path)
             body = served.documents.get(self.path)
+            if served.drip_headers.get(self.path, 0) > 0:
+                served.drip_headers[self.path] -= 1
+                try:
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+                    while not stopped.is_set():
+                        self.wfile.write(b"X-Drip: 1\r\n")
+                        self.wfile.flush()
+                        time.sleep(DRIP_SECONDS)
+                except OSError:
+                    served.cuts[self.path] = served.cuts.get(self.path, 0) + 1
+                self.close_connection = True
+                return
+            if self.path in served.redirects:
+                self.send_response(302)
+                self.send_header("Location", f"{served.issuer}{served.redirects[self.path]}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.path in served.drip:
+                served.drip.discard(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", str(1 << 30))
+                self.end_headers()
+                try:
+                    while not stopped.is_set():
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                        time.sleep(DRIP_SECONDS)
+                except OSError:
+                    served.cuts[self.path] = served.cuts.get(self.path, 0) + 1
+                self.close_connection = True
+                return
+            if self.path in served.held:
+                served.release.wait(HELD_SECONDS)
             if self.path in served.slow:
                 time.sleep(SLOW_ANSWER_SECONDS)
             if fault is _Fault.CLOSED_BEFORE_ANSWERING:
@@ -210,6 +278,8 @@ def idp(rsa_key: rsa.RSAPrivateKey) -> Iterator[_IdP]:
     try:
         yield served
     finally:
+        stopped.set()
+        served.release.set()
         server.shutdown()
         server.server_close()
 
@@ -236,16 +306,48 @@ class _Clock:
         return self.now
 
 
-def _client(idp: _IdP, *, clock: Callable[[], float] = time.monotonic, further: OidcProvider | None = None, **naming: Any) -> TestClient:
+#: The verifiers this module's apps hold, closed when each test ends, as an app's shutdown closes its own.
+_verifiers: list[OIDCVerifier] = []
+
+
+@pytest.fixture(autouse=True)
+def _refresher_at_test_pace(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """The refresher looks at whether an issuer is due every 20 ms rather than every half second, so a test that moves
+    its clock past an age sees the refresh at once; and every verifier a test built is closed when it ends."""
+    monkeypatch.setattr(oidc_mod, "REFRESHER_TICK_SECONDS", 0.02)
+    yield
+    while _verifiers:
+        _verifiers.pop().close()
+
+
+def _until(done: Callable[[], bool], timeout: float = HELD_SECONDS) -> None:
+    """Wait for the refresher's work, which runs on a thread of its own, until ``done``: polled, with ``timeout`` only
+    bounding a test that hangs (it is no measure of how soon the work is done, which a starved host stretches)."""
+    deadline = time.monotonic() + timeout
+    while not done():
+        assert time.monotonic() < deadline, "the refresher did not get there in time"
+        time.sleep(0.01)
+
+
+def _until_held_at(idp: _IdP, at: float) -> None:
+    """Wait until the newest verifier holds a key set of ``idp`` its refresher read at clock time ``at``: the read
+    served AND recorded, so a request after it is judged on that set."""
+    state = _verifiers[-1]._state[idp.issuer]
+    _until(lambda: state.keys is not None and state.keys.fetched_at == at)
+
+
+def _client(
+    idp: _IdP, *, clock: Callable[[], float] = time.monotonic, further: OidcProvider | None = None, discovery_ttl: int = 300, **naming: Any
+) -> TestClient:
     """A governed app wired as every governed service wires one: BOTH handler installers, one verifier, its issuer's
     people named by `naming`'s rule (`OidcProvider`'s fields), the idp id `corp` by default, and a `further` issuer."""
     app = FastAPI()
     register_handlers(app)
     install_problem_handlers(app, logging.getLogger(__name__))
     providers = [OidcProvider(issuer=idp.issuer, idp_id="corp", **naming), *([further] if further else [])]
-    app.state.oidc = PersonVerifier(
-        OIDCVerifier([provider.issuer for provider in providers], AUDIENCE, cache_ttl=300, allow_insecure=True, clock=clock), providers
-    )
+    verifier = OIDCVerifier([provider.issuer for provider in providers], AUDIENCE, cache_ttl=discovery_ttl, allow_insecure=True, clock=clock)
+    _verifiers.append(verifier)
+    app.state.oidc = PersonVerifier(verifier, providers)
     app.state.dpop = DpopVerifier()
 
     @app.get("/gated")
@@ -313,21 +415,73 @@ def test_a_token_names_its_person_as_the_lakehouse_does_and_a_clients_names_none
 
 @pytest.mark.parametrize("door", ["/gated"])
 def test_a_burst_of_novel_kids_costs_one_key_set_fetch(door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
-    """A `kid` is the caller's to write, unverified. Each novel one earns a refetch only while no other began within the
-    interval, so a flood of them, anonymous and concurrent, costs the IdP one fetch rather than one per request, and the
-    requests behind it are refused at once rather than each holding a worker for the fetch budget ([[LH-431]]). The IdP
-    answers slowly so that the whole burst meets the verifier while the first refetch is in flight: a pace claimed only
-    once its fetch returns lets every request in the burst through."""
+    """A `kid` is the caller's to write, unverified. A flood of novel ones, anonymous and concurrent, costs the IdP one
+    forced refresh rather than one per request ([[LH-431]]); at most `FORCED_WAITERS` of them wait for it and are
+    refused once the set it read is found without their `kid`, and the rest are told at once to come back (503) rather
+    than each holding a worker for the fetch budget. The IdP answers slowly so that the whole burst meets the verifier
+    while the refresh is in flight."""
     client = _client(idp)
     assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
     idp.slow.add(JWKS_PATH)
-    tokens = [_token(idp, rsa_key, "RS256", kid=f"forged-{n}") for n in range(8)]
+    tokens = [_token(idp, rsa_key, "RS256", kid=f"forged-{n}") for n in range(FORCED_WAITERS + 4)]
+
+    answers = _timed_burst(idp, door, tokens, client)
+
+    refused = [took for status, took in answers if status == 401]
+    others = {status for status, _ in answers if status != 401}
+    assert (len(refused) <= FORCED_WAITERS, others, idp.fetches[JWKS_PATH]) == (True, {503}, 2)
+
+
+def _timed_burst(idp: _IdP, door: str, tokens: list[str], client: TestClient) -> list[tuple[int, float]]:
+    """Each of ``tokens`` presented at once: each one's status and how long it took."""
+
+    def timed(token: str) -> tuple[int, float]:
+        began = time.monotonic()
+        return _call(idp, door, token, client=client)[0], time.monotonic() - began
 
     with ThreadPoolExecutor(max_workers=len(tokens)) as pool:
-        statuses = list(pool.map(lambda token: _call(idp, door, token, client=client)[0], tokens))
+        return list(pool.map(timed, tokens))
 
-    assert statuses == [401] * len(tokens)
-    assert idp.fetches[JWKS_PATH] == 2
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_page_of_requests_signed_by_a_key_rotated_in_all_wait_for_one_refresh_and_are_accepted(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """The issuer restarts with a new key and the person signs in again: their page's reads arrive together, each naming
+    a key the set held does not. One forced refresh is read, every one of them waits for it, and every one is let in,
+    rather than all but the first being refused and the person asked to sign in once more."""
+    client = _client(idp)
+    assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
+    idp.documents[JWKS_PATH] = _key_set(stranger_key, "after-restart")
+    idp.slow.add(JWKS_PATH)
+    tokens = [_token(idp, stranger_key, "RS256", kid="after-restart") for _ in range(6)]
+
+    answers = _timed_burst(idp, door, tokens, client)
+
+    assert ([status for status, _ in answers], idp.fetches[JWKS_PATH]) == ([200] * 6, 2)
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_the_requests_waiting_for_a_forced_refresh_that_hangs_are_answered_within_its_deadline(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forced refresh the issuer does not answer is abandoned at its deadline, and every request waiting for it is
+    answered then, not held for the issuer's own time: told to come back (503), since no key set was read that could
+    say the token is bad. The issuer holds its answer until the test has every request's: the requests were answered,
+    and the attempt ended, while the issuer had still not answered."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", CUT_DEADLINE_SECONDS)
+    monkeypatch.setattr(oidc_mod, "HTTP_FETCH_TIMEOUT_SECONDS", 60.0)
+    client = _client(idp)
+    assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
+    verifier = _verifiers[-1]
+    idp.held.add(JWKS_PATH)
+    tokens = [_token(idp, rsa_key, "RS256", kid="not-yet-read") for _ in range(FORCED_WAITERS)]
+
+    answers = _timed_burst(idp, door, tokens, client)
+    ended_unanswered = (verifier._state[idp.issuer].attempts, idp.release.is_set())
+    idp.release.set()
+
+    assert ([status for status, _ in answers], ended_unanswered) == ([503] * FORCED_WAITERS, (2, False))
 
 
 @pytest.mark.parametrize("door", ["/gated"])
@@ -335,20 +489,479 @@ def test_a_key_rotated_in_during_a_flood_is_found_once_the_interval_passes(
     door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
 ) -> None:
     """A key the provider rotates in after the cached set is found by a refetch, which a forged kid met first may delay by
-    at most one interval and never lock out: refusing a rotated token from the cache would lock every caller out for
-    the cache lifetime after each rotation. Three fetches in all: the first request's, the forged kid's, and the
-    rotated token's once the interval has passed."""
+    at most one interval and never lock out: within it the rotated token is told when to come back (503 with the time
+    left of the interval), never refused, so the person's session is not ended by someone else's forgery. Three fetches
+    in all: the first request's, the forged kid's, and the rotated token's once the interval has passed."""
     clock = _Clock()
     client = _client(idp, clock=clock)
     assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
     assert _call(idp, door, _token(idp, rsa_key, "RS256", kid="forged"), client=client)[0] == 401
     idp.documents[JWKS_PATH] = _key_set(stranger_key, "signing-2")
+    rotated = _token(idp, stranger_key, "RS256", kid="signing-2")
+    clock.now += UNKNOWN_KID_REFRESH_INTERVAL_SECONDS / 3
+    within = client.get(door, headers={"Authorization": f"DPoP {rotated}", "DPoP": BROWSER.proof("GET", URL, rotated)})
+    clock.now += UNKNOWN_KID_REFRESH_INTERVAL_SECONDS * 2 / 3
+
+    status, body = _call(idp, door, rotated, client=client)
+
+    assert (within.status_code, within.headers.get("retry-after"), status, idp.fetches[JWKS_PATH]) == (
+        503,
+        str(int(UNKNOWN_KID_REFRESH_INTERVAL_SECONDS * 2 / 3)),
+        200,
+        3,
+    ), body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_rotated_in_whose_forced_read_fails_is_told_to_come_back_and_is_let_in_once_the_issuer_answers(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """The person signs in again at an issuer that restarted, and the forced read their new key asks for fails: no set
+    was read that could say the token is bad, so it is a 503 saying when to come back, not a 401 that would end their
+    session; the refresher asks again at the retry pace, and the token is let in once the issuer answers."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
+    idp.documents[JWKS_PATH] = _key_set(stranger_key, "after-restart")
+    idp.faults[JWKS_PATH] = _Fault.CLOSED_BEFORE_ANSWERING
+    token = _token(idp, stranger_key, "RS256", kid="after-restart")
+
+    first, then = (client.get(door, headers={"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", URL, token)}) for _ in range(2))
+    del idp.faults[JWKS_PATH]
+    clock.now += FETCH_RETRY_SECONDS
+    _until_held_at(idp, clock.now)
+    status, body = _call(idp, door, token, client=client)
+
+    retry = str(int(FETCH_RETRY_SECONDS))
+    assert [(answer.status_code, answer.headers.get("retry-after")) for answer in (first, then)] + [status] == [(503, retry), (503, retry), 200], body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_the_issuer_stops_publishing_is_refused_once_the_set_held_is_a_minute_old(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """An issuer that restarts with new keys (Dex on memory storage) leaves every token it signed before unverifiable. The
+    refresher reads the set again at `KEY_SET_MAX_AGE_SECONDS` from its fetch, so every service drops the key within one
+    refresh of the issuer dropping it, whenever each of them last read it."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    idp.documents[JWKS_PATH] = _key_set(stranger_key, "after-restart")
+    clock.now += KEY_SET_MAX_AGE_SECONDS - 1
+    assert _call(idp, door, token, client=client)[0] == 200
+
+    clock.now += 1
+    _until_held_at(idp, clock.now)
+    status, body = _call(idp, door, token, client=client)
+
+    assert status == 401, body
+
+
+def _burst(idp: _IdP, door: str, token: str, client: TestClient, n: int = 8) -> tuple[list[int], float]:
+    """``n`` requests at once, their statuses and the longest any took."""
+
+    def timed(_: int) -> tuple[int, float]:
+        began = time.monotonic()
+        return _call(idp, door, token, client=client)[0], time.monotonic() - began
+
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        answers = list(pool.map(timed, range(n)))
+    return [status for status, _ in answers], max(took for _, took in answers)
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_during_an_outage_requests_answer_at_once_from_the_set_held_and_past_its_stale_limit_503_at_once(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restarting issuer is not an outage of every service. While the refresher's read hangs, every request is judged
+    at once on the last set the issuer served, and none fetches or waits; past `KEY_SET_STALE_LIMIT_SECONDS` from that
+    set's fetch, every one is a 503 at once that says when to come back. The issuer holds the read's answer until the
+    test has every request's, and the attempt is given longer than that: every request was answered while the read was
+    still unanswered and its attempt still running."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", HELD_SECONDS)
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    verifier = _verifiers[-1]
+    idp.held.add(JWKS_PATH)
+    clock.now = KEY_SET_MAX_AGE_SECONDS
+    _until(lambda: idp.fetches[JWKS_PATH] == 2)
+
+    during, _ = _burst(idp, door, token, client)
+    clock.now = KEY_SET_STALE_LIMIT_SECONDS
+    past, _ = _burst(idp, door, token, client)
+    retry_after = client.get(door, headers={"Authorization": f"DPoP {token}", "DPoP": BROWSER.proof("GET", URL, token)}).headers.get("retry-after")
+    while_held = (verifier._state[idp.issuer].attempts, idp.fetches[JWKS_PATH], idp.release.is_set())
+    idp.release.set()
+
+    assert (during, past, retry_after, while_held) == ([200] * 8, [503] * 8, str(int(FETCH_RETRY_SECONDS)), (1, 2, False))
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_the_refresher_reads_each_document_once_per_interval_however_many_requests_arrive(door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """Requests read nothing: past the key set's age, twenty at once cost the issuer one read of it and none of the
+    discovery document, which is not due; past the discovery document's age, one read of it and none of the key set."""
+    clock = _Clock()
+    client = _client(idp, clock=clock, discovery_ttl=int(KEY_SET_MAX_AGE_SECONDS) + 30)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    idp.slow.update({JWKS_PATH, DISCOVERY_PATH})
+
+    reads = []
+    for at in (KEY_SET_MAX_AGE_SECONDS, KEY_SET_MAX_AGE_SECONDS + 30):
+        clock.now = at
+        statuses, _ = _burst(idp, door, token, client, n=20)
+        _until(lambda: idp.fetches[JWKS_PATH] + idp.fetches[DISCOVERY_PATH] == 2 + len(reads) + 1)
+        _burst(idp, door, token, client, n=20)
+        reads.append((statuses, idp.fetches[DISCOVERY_PATH], idp.fetches[JWKS_PATH]))
+
+    assert reads == [([200] * 20, 1, 2), ([200] * 20, 2, 2)]
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_discovery_document_that_cannot_be_read_again_is_kept_and_asked_for_again_at_the_pace(door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """Discovery is read again every `cache_ttl`; an issuer that cannot answer then keeps the documents read before,
+    so its outage is judged by the key set's rule alone rather than refusing every caller at the renewal, and is asked
+    again after `FETCH_RETRY_SECONDS`."""
+    clock = _Clock()
+    client = _client(idp, clock=clock, discovery_ttl=10)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    idp.faults[DISCOVERY_PATH] = _Fault.CLOSED_BEFORE_ANSWERING
+
+    statuses = []
+    for at in (11, 12):
+        clock.now = at
+        _until(lambda: idp.fetches[DISCOVERY_PATH] == 2)
+        statuses.append(_call(idp, door, token, client=client)[0])
+    time.sleep(0.1)
+
+    assert (statuses, idp.fetches[DISCOVERY_PATH]) == ([200, 200], 2)
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_set_that_drips_on_one_connection_is_cut_at_the_deadline_and_the_next_read_finds_the_issuer(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An issuer that drips a byte at a time on one connection, each byte inside any per-operation timeout (60 s here,
+    so nothing but the attempt's deadline can end the read), while it answers new connections as usual: the read is
+    cut at the deadline, which the issuer sees as its connection shut down while it still drips, and the reading thread
+    ends; the next attempt, on a new connection, reads the issuer, so the set held never ages to its stale limit."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", CUT_DEADLINE_SECONDS)
+    monkeypatch.setattr(oidc_mod, "HTTP_FETCH_TIMEOUT_SECONDS", 60.0)
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    verifier = _verifiers[-1]
+    idp.drip.add(JWKS_PATH)
+    clock.now = KEY_SET_MAX_AGE_SECONDS
+
+    _until(lambda: idp.cuts.get(JWKS_PATH, 0) == 1)
+    _until(lambda: verifier._state[idp.issuer].attempts == 2 and _fetch_threads() == 0)
+    clock.now += FETCH_RETRY_SECONDS
+    _until_held_at(idp, clock.now)
+    clock.now = KEY_SET_STALE_LIMIT_SECONDS + 1
+
+    status, body = _call(idp, door, token, client=client)
+
+    assert (verifier._state[idp.issuer].attempts >= 3, idp.fetches[JWKS_PATH] >= 3, status) == (True, True, 200), body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_set_past_the_byte_cap_is_cut_and_never_believed(door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """A body past `MAX_DOCUMENT_BYTES` is cut where it passes the cap, whatever it holds: here a sound key set padded
+    with whitespace a JSON parser would skip."""
+    idp.documents[JWKS_PATH] = _key_set(rsa_key, KID) + b" " * MAX_DOCUMENT_BYTES
+
+    status, body = _call(idp, door, _token(idp, rsa_key, "RS256"))
+
+    assert (status, "could not be reached" in json.loads(body)["detail"]) == (503, True), body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_set_answered_with_a_redirect_is_not_followed(door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
+    """The key set is read from the URL the discovery document named and from nowhere else: a 302 to a sound set on the
+    same issuer is an error, and the place it names is never asked."""
+    idp.documents["/moved"] = idp.documents[JWKS_PATH]
+    idp.redirects[JWKS_PATH] = "/moved"
+
+    status, body = _call(idp, door, _token(idp, rsa_key, "RS256"))
+
+    assert (status, idp.fetches.get("/moved", 0)) == (503, 0), body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_headers_that_drip_on_two_connections_are_cut_at_the_deadline_and_the_third_attempt_reads_the_issuer(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An issuer that answers a status line and then one header line at a time, each well inside any per-operation
+    timeout (60 s here, so nothing but the attempt's deadline, enforced from outside the read, can end it), so the
+    response never begins: on each of two such connections the issuer sees its connection shut down while it still
+    drips, and the reading thread ends, so neither holds a place among `ABANDONED_READS`, and the third attempt reads
+    the issuer."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", CUT_DEADLINE_SECONDS)
+    monkeypatch.setattr(oidc_mod, "HTTP_FETCH_TIMEOUT_SECONDS", 60.0)
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    verifier = _verifiers[-1]
+    idp.drip_headers[JWKS_PATH] = 2
+
+    clock.now = KEY_SET_MAX_AGE_SECONDS
+    for cut in (1, 2):
+        _until(lambda cut=cut: idp.cuts.get(JWKS_PATH, 0) == cut)
+        _until(lambda cut=cut: verifier._state[idp.issuer].attempts == cut + 1 and _fetch_threads() == 0)
+        clock.now += FETCH_RETRY_SECONDS
+    _until_held_at(idp, clock.now)
+    status, body = _call(idp, door, token, client=client)
+
+    assert (idp.fetches[JWKS_PATH], status) == (4, 200), body
+
+
+def test_a_tls_handshake_that_drips_ends_at_its_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A peer that answers the TLS handshake with a record header announcing 16 KiB and then one byte of it at a time,
+    each inside any per-operation timeout (60 s here): the read is cut at the attempt's deadline (the handshake's own
+    timeout is what was left of it, and the watchdog shuts the connection down there), which the peer sees as its
+    connection shut while it still drips, and the reading thread ends."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", CUT_DEADLINE_SECONDS)
+    monkeypatch.setattr(oidc_mod, "HTTP_FETCH_TIMEOUT_SECONDS", 60.0)
+    peer = socket.create_server(("127.0.0.1", 0))
+    stopped = threading.Event()
+    cut = threading.Event()
+    accepted: list[socket.socket] = []
+
+    def drip_handshake() -> None:
+        conn = peer.accept()[0]
+        accepted.append(conn)
+        try:
+            conn.recv(4096)
+            conn.sendall(b"\x16\x03\x03\x40\x00")
+            while not stopped.is_set():
+                conn.sendall(b"\x00")
+                time.sleep(DRIP_SECONDS)
+        except OSError:
+            cut.set()
+
+    threading.Thread(target=drip_handshake, daemon=True).start()
+    verifier = OIDCVerifier(f"https://127.0.0.1:{peer.getsockname()[1]}", AUDIENCE, cache_ttl=300)
+    _verifiers.append(verifier)
+    try:
+        verifier.start()
+        seen = cut.wait(HELD_SECONDS)
+        _until(lambda: verifier._state[verifier._issuers[0]].attempts == 1 and _fetch_threads() == 0)
+        held = verifier._state[verifier._issuers[0]].keys
+    finally:
+        stopped.set()
+        for conn in accepted:
+            conn.close()
+        peer.close()
+
+    assert (len(accepted), seen, held) == (1, True, None)
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_key_rotated_in_while_a_forced_read_that_began_before_it_is_in_flight_is_never_refused(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey
+) -> None:
+    """A forged `kid` starts a forced read that the issuer answers slowly, with the set it held when the read began; the
+    issuer then rotates a new key in, and a token signed by it joins that read. What the read finds says nothing of a
+    key published after it began: the token is told to come back (503), never refused, and is let in by the next read.
+    (A token alone whose `kid` a read that started after it asked does not find is refused:
+    `test_a_kid_the_key_set_does_not_hold_is_the_callers`.)"""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    assert _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)[0] == 200
+    idp.slow.add(JWKS_PATH)
+    forged = threading.Thread(target=_call, args=(idp, door, _token(idp, rsa_key, "RS256", kid="forged")), kwargs={"client": client})
+    forged.start()
+    _until(lambda: idp.fetches[JWKS_PATH] == 2)
+    idp.documents[JWKS_PATH] = _key_set(stranger_key, "rotated-in")
+    rotated = _token(idp, stranger_key, "RS256", kid="rotated-in")
+
+    joined = client.get(door, headers={"Authorization": f"DPoP {rotated}", "DPoP": BROWSER.proof("GET", URL, rotated)})
+    forged.join()
+    idp.slow.clear()
     clock.now += UNKNOWN_KID_REFRESH_INTERVAL_SECONDS
+    status, body = _call(idp, door, rotated, client=client)
 
-    status, body = _call(idp, door, _token(idp, stranger_key, "RS256", kid="signing-2"), client=client)
+    assert (joined.status_code, joined.headers.get("retry-after") is not None, status) == (503, True, 200), body
 
-    assert status == 200, body
-    assert idp.fetches[JWKS_PATH] == 3
+
+@contextmanager
+def _lookups_held(monkeypatch: pytest.MonkeyPatch, hosts: set[str], *, first_only: bool = False) -> Generator[threading.Event]:
+    """Name lookups of ``hosts`` that the resolver does not answer until the event yielded is set (at the latest, when
+    the block ends): the one wait no socket timeout bounds. With ``first_only``, only each host's first lookup is held,
+    and later ones resolve to loopback. Other names resolve as usual."""
+    resolve = socket.getaddrinfo
+    release = threading.Event()
+    held: set[str] = set()
+
+    def lookup(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host in hosts:
+            if not (first_only and host in held):
+                held.add(host)
+                release.wait()
+            return resolve("127.0.0.1", *args, **kwargs)
+        return resolve(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    try:
+        yield release
+    finally:
+        release.set()
+
+
+def _fetch_threads() -> int:
+    return sum(1 for t in threading.enumerate() if t.name == "oidc-fetch" and t.is_alive())
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_an_attempt_a_hung_lookup_holds_does_not_block_the_next_and_the_threads_it_leaves_are_capped(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name lookup the resolver never answers outlives every socket timeout, so its attempt is abandoned at the
+    deadline with its thread still running. The next attempt does not wait for it: when only that lookup hangs, the
+    next one reads the issuer. When every lookup hangs, at most `ABANDONED_READS` such threads run for the issuer
+    however many attempts are due."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", CUT_DEADLINE_SECONDS)
+    port = idp.issuer.rsplit(":", 1)[1]
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    verifier = _verifiers[-1]
+
+    with _lookups_held(monkeypatch, {"keys-once.test"}, first_only=True):
+        idp.documents[DISCOVERY_PATH] = json.dumps({"issuer": idp.issuer, "jwks_uri": f"http://keys-once.test:{port}{JWKS_PATH}"}).encode()
+        clock.now = 400
+        _until(lambda: _fetch_threads() == 1 and verifier._state[idp.issuer].attempts >= 2)
+        clock.now += FETCH_RETRY_SECONDS
+        _until_held_at(idp, clock.now)
+        recovered, body = _call(idp, door, token, client=client)
+        held_while_recovering = _fetch_threads()
+    _until(lambda: _fetch_threads() == 0)
+
+    with _lookups_held(monkeypatch, {"keys-never.test"}):
+        idp.documents[DISCOVERY_PATH] = json.dumps({"issuer": idp.issuer, "jwks_uri": f"http://keys-never.test:{port}{JWKS_PATH}"}).encode()
+        most = 0
+        for _ in range(6):
+            attempts = verifier._state[idp.issuer].attempts
+            clock.now += 300 + FETCH_RETRY_SECONDS
+            _until(lambda attempts=attempts: verifier._state[idp.issuer].attempts > attempts)
+            most = max(most, _fetch_threads())
+
+    assert (recovered, held_while_recovering, most) == (200, 1, ABANDONED_READS), body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_an_abandoned_attempt_that_answers_late_never_replaces_the_set_a_later_attempt_read(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An attempt abandoned at its deadline (its name lookup held, until the test releases it, past it) whose read then
+    goes on, once the lookup is answered, to an issuer that now serves another set: the set a later attempt read stays
+    the one held, so a late answer cannot bring back a key the issuer had dropped. Two things hold it: the late read is
+    cut at its deadline, and an abandoned attempt's outcome is never read."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", CUT_DEADLINE_SECONDS)
+    port = idp.issuer.rsplit(":", 1)[1]
+    idp.documents[DISCOVERY_PATH] = json.dumps({"issuer": idp.issuer, "jwks_uri": f"http://keys-late.test:{port}{JWKS_PATH}"}).encode()
+    clock = _Clock()
+    with _lookups_held(monkeypatch, {"keys-late.test"}, first_only=True) as release:
+        client = _client(idp, clock=clock)
+        verifier = _verifiers[-1]
+        verifier.start()
+        _until(lambda: verifier._state[idp.issuer].attempts == 1)
+        clock.now += FETCH_RETRY_SECONDS
+        _until_held_at(idp, clock.now)
+        idp.documents[JWKS_PATH] = _key_set(stranger_key, "late")
+        release.set()
+        _until(lambda: _fetch_threads() == 0)
+
+    held = verifier._state[idp.issuer].keys
+    status, body = _call(idp, door, _token(idp, rsa_key, "RS256"), client=client)
+
+    assert (held is not None and [key.key_id for key in held.keys], status) == ([KID], 200), body
+
+
+def test_closing_a_verifier_whose_issuers_all_hang_returns_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two issuers whose every read hangs (a lookup no timeout bounds), each attempt given the full deadline (5 s, so
+    waiting both out is 10 s, past the 6 s `close` waits for the refresher): closing stops the refresher while it waits
+    on the first, so when `close` returns the refresher has ended, with both lookups still held."""
+    issuers = ["http://stuck-one.test", "http://stuck-two.test"]
+    with _lookups_held(monkeypatch, {"stuck-one.test", "stuck-two.test"}):
+        verifier = OIDCVerifier(issuers, AUDIENCE, cache_ttl=300, allow_insecure=True)
+        verifier.start()
+        _until(lambda: _fetch_threads() == 1)
+        verifier.close()
+        alive = any(t.name == "oidc-refresher" and t.is_alive() for t in threading.enumerate())
+
+    assert alive is False
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_refresher_an_error_ended_is_started_again_by_the_next_request_and_recovers(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, stranger_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing an attempt raises ends the refresher; should it end anyway (here, made to exit), the next request starts
+    it again, and it goes on reading: a key the issuer then drops is refused."""
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    assert _call(idp, door, token, client=client)[0] == 200
+    verifier = _verifiers[-1]
+    due = verifier._due
+
+    def exit_once(configured: str) -> bool:
+        monkeypatch.setattr(verifier, "_due", due)
+        raise SystemExit
+
+    monkeypatch.setattr(verifier, "_due", exit_once)
+    _until(lambda: not any(t.name == "oidc-refresher" and t.is_alive() for t in threading.enumerate()))
+    assert _call(idp, door, token, client=client)[0] == 200
+    idp.documents[JWKS_PATH] = _key_set(stranger_key, "after-restart")
+    clock.now = KEY_SET_MAX_AGE_SECONDS
+    _until_held_at(idp, clock.now)
+
+    status, body = _call(idp, door, token, client=client)
+
+    assert status == 401, body
+
+
+@pytest.mark.parametrize("door", ["/gated"])
+def test_a_pod_that_starts_while_its_issuer_is_down_answers_503_at_once_and_recovers_with_no_request_reading(
+    door: str, idp: _IdP, rsa_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first request waits for the refresher's first attempt; the requests after it are refused at once and read
+    nothing; the refresher's next attempt, once the issuer answers, lets them in. The deadline is `HELD_SECONDS`, so a
+    request that waited for an attempt would take longer than half of it, whatever the host's load."""
+    monkeypatch.setattr(oidc_mod, "FETCH_DEADLINE_SECONDS", HELD_SECONDS)
+    clock = _Clock()
+    client = _client(idp, clock=clock)
+    token = _token(idp, rsa_key, "RS256")
+    idp.faults[JWKS_PATH] = _Fault.CLOSED_BEFORE_ANSWERING
+    first = _call(idp, door, token, client=client)[0]
+    statuses, took = _burst(idp, door, token, client)
+    fetched = idp.fetches[JWKS_PATH]
+    del idp.faults[JWKS_PATH]
+    clock.now += FETCH_RETRY_SECONDS
+    _until_held_at(idp, clock.now)
+
+    status, body = _call(idp, door, token, client=client)
+
+    assert (first, statuses, took < HELD_SECONDS / 2, fetched, status) == (503, [503] * 8, True, 1, 200), body
+
+
+def test_closing_a_verifier_stops_its_refresher(idp: _IdP) -> None:
+    verifier = OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True)
+    verifier.warm()
+    assert any(t.name == "oidc-refresher" and t.is_alive() for t in threading.enumerate())
+
+    verifier.close()
+
+    assert not any(t.name == "oidc-refresher" and t.is_alive() for t in threading.enumerate())
 
 
 # ── the caller's fault ──────────────────────────────────────────────────────────────────────────────
@@ -484,43 +1097,6 @@ def test_a_key_set_with_no_usable_key_is_ours(door: str, key_set: bytes, idp: _I
     assert status == 503, body
     assert "holds no usable signing key" in json.loads(body)["detail"]
     assert _audited_reasons(audit_trail) == ["verifier_unavailable"]
-
-
-@pytest.mark.parametrize("key_set", [UNUSABLE_KEY_SETS["not-json"], UNUSABLE_KEY_SETS["no-keys"]], ids=["not-json", "no-keys"])
-@pytest.mark.parametrize("door", ["/gated"])
-def test_a_key_set_the_idp_has_since_fixed_is_believed_at_once(door: str, key_set: bytes, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
-    """`PyJWKClient` caches a body before parsing it, so an unusable set it cached would otherwise be served for the
-    cache's whole lifespan (300 s) after the provider replaced it — every caller refused for an outage that is over."""
-    client = _client(idp)
-    token = _token(idp, rsa_key, "RS256")
-    usable = idp.documents[JWKS_PATH]
-    idp.documents[JWKS_PATH] = key_set
-    assert _call(idp, door, token, client=client)[0] == 503
-
-    idp.documents[JWKS_PATH] = usable
-    status, body = _call(idp, door, token, client=client)
-
-    assert status == 200, body
-    # Two fetches in all: the first request's, and the second request's, which finds the fixed set. That second is a
-    # refetch for a body the cache kept, and a first read for one never cached (not JSON, or nested past the parser's depth).
-    assert idp.fetches[JWKS_PATH] == 2
-
-
-@pytest.mark.parametrize("key_set", [UNUSABLE_KEY_SETS["not-json"], UNUSABLE_KEY_SETS["no-keys"]], ids=["not-json", "no-keys"])
-@pytest.mark.parametrize("door", ["/gated"])
-def test_a_key_set_that_arrived_unusable_is_fetched_once_per_request(door: str, key_set: bytes, idp: _IdP, rsa_key: rsa.RSAPrivateKey) -> None:
-    """The refetch is for a set the CACHE served. One fetched in this request is already fresh, and asking again only
-    doubles the load on an IdP serving garbage and the time each request is held."""
-    idp.documents[JWKS_PATH] = key_set
-    client = _client(idp)
-    token = _token(idp, rsa_key, "RS256")
-
-    fetched = []
-    for _ in range(2):
-        assert _call(idp, door, token, client=client)[0] == 503
-        fetched.append(idp.fetches[JWKS_PATH])
-
-    assert fetched == [1, 2]
 
 
 @pytest.mark.parametrize("door", ["/gated"])
@@ -664,7 +1240,8 @@ def test_a_principal_that_reads_as_a_machine_is_never_a_person_whatever_the_issu
     """Settings refuse a machine's idp id for people; the door holds the line too, for a rule built around them."""
     app_client = _client(idp)
     unchecked = OidcProvider.model_construct(issuer=idp.issuer, idp_id="corp-client", connectors={}, subject_claims=None, client_marker=None)
-    cast(FastAPI, app_client.app).state.oidc = PersonVerifier(OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True), [unchecked])
+    _verifiers.append(OIDCVerifier(idp.issuer, AUDIENCE, cache_ttl=300, allow_insecure=True))
+    cast(FastAPI, app_client.app).state.oidc = PersonVerifier(_verifiers[-1], [unchecked])
 
     status, _body = _call(idp, "/gated", _token(idp, rsa_key, "RS256"), client=app_client)
 

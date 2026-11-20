@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	carryCount,
 	changeFor,
 	digitOf,
 	excerpt,
@@ -230,6 +231,16 @@ describe('a text cell’s excerpt', () => {
 		expect([excerpt('  a  short\ntext '), excerpt('word '.repeat(10), 22)]).toEqual([
 			'a short text',
 			'word word word word…',
+		]);
+	});
+});
+
+describe('the question asked before a label replaces what others carry', () => {
+	it('agrees with how many items it names, singular and plural', () => {
+		expect([carryCount(1, 1), carryCount(1, 3), carryCount(2, 3)]).toEqual([
+			'1 of 1 item carries',
+			'1 of 3 items carries',
+			'2 of 3 items carry',
 		]);
 	});
 });

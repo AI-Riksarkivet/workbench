@@ -30,7 +30,6 @@
 	import { Input } from '@riksarkivet/ui/input';
 	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
 	import { Select } from '@riksarkivet/ui/select';
-	import { Textarea } from '@riksarkivet/ui/textarea';
 	import { ExternalLink, Eye, LayoutGrid, Rows3, Trash2 } from '@lucide/svelte';
 
 	import { linkWith } from '#lib/project.ts';
@@ -54,6 +53,7 @@
 	import TaskGrid from './TaskGrid.svelte';
 	import { parseView, QUEUE_VIEW_KEY, type QueueView } from './queue-view.ts';
 	import QuickView from './QuickView.svelte';
+	import SendBackDialog from './SendBackDialog.svelte';
 	import { afterVerdict } from './quick-view.ts';
 	import LeaseChip from './LeaseChip.svelte';
 	import PersonName from './PersonName.svelte';
@@ -217,7 +217,7 @@
 	let busy = $state<string | null>(null);
 	let notice = $state<{ ok: boolean; text: string } | null>(null);
 	let changesFor = $state<TaskDetail | null>(null);
-	let changesMessage = $state('');
+	let changesOpen = $state(false);
 
 	async function fire(
 		task: TaskDetail,
@@ -464,7 +464,12 @@
 			header: '',
 			enableSorting: false,
 			cell: ({ row }) => renderSnippet(actionsCell, row.original),
-			meta: { cellClass: 'text-right' },
+			// Pinned to the table's right edge: a table wider than its card scrolls inside it, and a row's actions stay in
+			// reach at any width without scrolling to them.
+			meta: {
+				cellClass: 'bg-card sticky right-0 border-l text-right',
+				headerClass: 'bg-card sticky right-0 border-l',
+			},
 		},
 	];
 
@@ -581,20 +586,32 @@
 
 {#snippet reviewedCell(task: TaskDetail)}
 	{#if task.reviewed_by}
+		{@const notes = task.review_notes.filter((n) => n.message)}
+		{@const latest = notes.at(-1)}
 		<span class="text-xs whitespace-nowrap">
 			{VERDICTS[task.review_action ?? ''] ?? task.review_action} by
 			<PersonName principal={task.reviewed_by} {people} />
-			{#if task.review_notes.length > 0}
-				<span
-					class="text-muted-foreground"
-					title={task.review_notes
-						.map((n) => `${personName(n.by, people)}: ${n.message}`)
-						.join('\n')}
-				>
-					· {task.review_notes.length} note{task.review_notes.length === 1 ? '' : 's'}
-				</span>
-			{/if}
 		</span>
+		{#if latest}
+			<!-- The notes themselves, by whom, where the item is listed: the latest cut to a line, every note on demand. -->
+			<details class="group mt-0.5 w-56 text-xs" data-testid="row-review-note">
+				<summary
+					class="text-foreground cursor-pointer truncate group-open:whitespace-normal"
+					title={notes.map((n) => `${personName(n.by, people)}: ${n.message}`).join('\n')}
+				>
+					<span class="font-medium">{personName(latest.by, people)}:</span>
+					{latest.message}{notes.length > 1 ? ` (${notes.length} notes)` : ''}
+				</summary>
+				<ul class="mt-1 flex flex-col gap-1 whitespace-normal">
+					{#each notes as n, i (i)}
+						<li class="border-warning border-l-2 pl-1.5 break-words">
+							<span class="font-medium">{personName(n.by, people)}:</span>
+							{n.message}
+						</li>
+					{/each}
+				</ul>
+			</details>
+		{/if}
 	{/if}
 {/snippet}
 
@@ -615,7 +632,8 @@
 {/snippet}
 
 {#snippet actionsCell(task: TaskDetail)}
-	<div class="flex items-center justify-end gap-1 whitespace-nowrap">
+	<!-- Wraps on a narrow screen rather than widening the pinned column past it. -->
+	<div class="ml-auto flex max-w-[min(26rem,60vw)] flex-wrap items-center justify-end gap-1">
 		{#if droppable}
 			<Button
 				variant="ghost"
@@ -674,7 +692,7 @@
 					disabled={busy !== null}
 					onclick={() => {
 						changesFor = task;
-						changesMessage = '';
+						changesOpen = true;
 					}}
 				>
 					{EVENT_LABELS[event] ?? event}
@@ -1020,34 +1038,15 @@
 	</Dialog.Content>
 </Dialog.Root>
 
-<Dialog.Root
-	open={changesFor !== null}
-	onOpenChange={(open) => (changesFor = open ? changesFor : null)}
->
-	<Dialog.Content class="sm:max-w-md">
-		<Dialog.Title>Request changes</Dialog.Title>
-		<Dialog.Description
-			>The note travels with the item to its annotator: say what should change.</Dialog.Description
-		>
-		<form
-			class="flex flex-col gap-3"
-			onsubmit={(e) => {
-				e.preventDefault();
-				const task = changesFor;
-				changesFor = null;
-				if (task) void fire(task, 'request_changes', { message: changesMessage });
-			}}
-		>
-			<Textarea
-				bind:value={changesMessage}
-				rows={4}
-				aria-label="What should change"
-				placeholder="The stamp in the corner is unlabelled…"
-			/>
-			<div class="flex justify-end gap-2">
-				<Button type="button" variant="outline" onclick={() => (changesFor = null)}>Cancel</Button>
-				<Button type="submit" disabled={!changesMessage.trim()}>Request changes</Button>
-			</div>
-		</form>
-	</Dialog.Content>
-</Dialog.Root>
+<SendBackDialog
+	bind:open={changesOpen}
+	title="Send the item back"
+	description="The note travels with the item to its annotator: say what should change."
+	placeholder="The stamp in the corner is unlabelled…"
+	testid="items-send-back"
+	onsend={(message) => {
+		const task = changesFor;
+		changesFor = null;
+		if (task) void fire(task, 'request_changes', { message });
+	}}
+/>

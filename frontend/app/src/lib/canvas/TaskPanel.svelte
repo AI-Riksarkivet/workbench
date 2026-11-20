@@ -5,11 +5,10 @@
 	// here when they open it again.
 	import { Check, CheckCheck, CornerUpLeft, Hand, Send, Undo } from '@lucide/svelte';
 	import { Button } from '@riksarkivet/ui/button';
-	import { Dialog } from '@riksarkivet/ui/dialog';
-	import { Textarea } from '@riksarkivet/ui/textarea';
 	import { cn } from '@riksarkivet/ui/utils';
 	import { fireTaskEvent } from '#lib/api/projects.api.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
+	import SendBackDialog from '#lib/projects/SendBackDialog.svelte';
 	import { submittable } from './classes.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 	import { panelState, REVIEW_KEYS } from './task-panel.ts';
@@ -50,10 +49,10 @@
 		refused = { text, savedAt: controller.lastSavedAt };
 	};
 	let noteOpen = $state(false);
-	let note = $state('');
 
-	async function fire(event: string, message?: string): Promise<void> {
-		if (busy) return;
+	/** Fire ``event``; true when the door took it. */
+	async function fire(event: string, message?: string): Promise<boolean> {
+		if (busy) return false;
 		busy = event;
 		refused = null;
 		if (event === 'submit' || event === 'fix_and_accept') {
@@ -65,7 +64,7 @@
 				refuse(
 					`Not ${event === 'submit' ? 'submitted' : 'accepted'}: ${controller.saveError ?? 'the edits were not saved'}.`,
 				);
-				return;
+				return false;
 			}
 		}
 		const result = await fireTaskEvent({
@@ -74,11 +73,9 @@
 			...(message ? { message } : {}),
 		});
 		busy = null;
-		if (result.ok) {
-			noteOpen = false;
-			note = '';
-			onchanged(result.data);
-		} else refuse(result.detail);
+		if (result.ok) onchanged(result.data);
+		else refuse(result.detail);
+		return result.ok;
 	}
 
 	const REVIEW_HINTS: Record<string, string> = {
@@ -213,29 +210,12 @@
 	{/if}
 </section>
 
-<Dialog.Root bind:open={noteOpen}>
-	<Dialog.Content class="sm:max-w-md" data-testid="send-back-dialog">
-		<Dialog.Title>Send the item back</Dialog.Title>
-		<Dialog.Description
-			>Say what should change: the note goes to its annotator with the item.</Dialog.Description
-		>
-		<form
-			class="flex flex-col gap-3"
-			onsubmit={(e) => {
-				e.preventDefault();
-				if (note.trim()) void fire('request_changes', note.trim());
-			}}
-		>
-			<Textarea
-				bind:value={note}
-				rows={4}
-				aria-label="What should change"
-				placeholder="The second box cuts off the signature."
-			/>
-			<div class="flex justify-end gap-2">
-				<Button type="button" variant="outline" onclick={() => (noteOpen = false)}>Cancel</Button>
-				<Button type="submit" disabled={!note.trim() || busy !== null}>Send back</Button>
-			</div>
-		</form>
-	</Dialog.Content>
-</Dialog.Root>
+<SendBackDialog
+	bind:open={noteOpen}
+	title="Send the item back"
+	description="Say what should change: the note goes to its annotator with the item."
+	placeholder="The second box cuts off the signature."
+	busy={busy !== null}
+	testid="send-back-dialog"
+	onsend={(message) => fire('request_changes', message)}
+/>

@@ -22,8 +22,13 @@
 // The services' own calls (`mock-lakehouse.ts`) reach `/token` as the workbench's confidential client: an RFC 8693
 // exchange of a person's token (Keycloak-shaped only; Dex refuses one of its own tokens) and the client-credentials
 // grant. `GET /__grants?sub=` answers the grants issued for one person, in order.
+//
+// THE SIGNING KEY IS PER PERSON, so a spec can restart the issuer under one person alone: a person's tokens name the key
+// `/keys?sub=` publishes for them (`FIRST_KEY` until a spec says otherwise), and `POST /__rotate?sub=&kid=` replaces it,
+// as an issuer that restarted with a new key and none of its old ones. `POST /__keys-fail?sub=&times=n` makes the next
+// n reads of that person's `/keys` answer 503, as an issuer still coming up does.
 
-import { mintToken, readToken, verifyProof, type TokenClaims } from './dpop';
+import { FIRST_KEY, mintToken, readToken, verifyProof, type TokenClaims } from './dpop';
 import { MOCK_OIDC_PORT } from './ports';
 import {
 	APP_CLIENT,
@@ -85,6 +90,10 @@ const s256 = (verifier: string): string =>
 const refused = (error: string, description: string): Response =>
 	json({ error, error_description: description }, 400);
 
+const published = new Map<string, string>();
+const keyOf = (sub: string): string => published.get(sub) ?? FIRST_KEY;
+const keysFailing = new Map<string, number>();
+
 const grants = new Map<string, string[]>();
 function issued(sub: string, grant: string): void {
 	grants.set(sub, [...(grants.get(sub) ?? []), grant]);
@@ -112,6 +121,7 @@ function tokensFor(shape: Shape, issuer: string, grant: Grant): Response {
 		sub: who.sub,
 		name: who.name,
 		email: who.email,
+		kid: keyOf(who.sub),
 		exp: now + grant.lifetime,
 		...(grant.jkt ? { cnf: { jkt: grant.jkt } } : {}),
 		...(shape === 'dex' && aud.length > 1 ? { azp: grant.clientId } : {}),
@@ -214,6 +224,17 @@ Bun.serve({
 		const url = new URL(req.url);
 		if (url.pathname === '/__grants')
 			return json(grants.get(url.searchParams.get('sub') ?? '') ?? []);
+		if (url.pathname === '/__rotate' && req.method === 'POST') {
+			published.set(url.searchParams.get('sub') ?? '', url.searchParams.get('kid') ?? '');
+			return json({ ok: true });
+		}
+		if (url.pathname === '/__keys-fail' && req.method === 'POST') {
+			keysFailing.set(
+				url.searchParams.get('sub') ?? '',
+				Number(url.searchParams.get('times') ?? 1),
+			);
+			return json({ ok: true });
+		}
 		const origin = `http://${req.headers.get('x-forwarded-host') ?? req.headers.get('host')}`;
 		const shape: Shape =
 			req.headers.get('x-forwarded-prefix') === SHAPES.dex.prefix ? 'dex' : 'keycloak';
@@ -241,7 +262,15 @@ Bun.serve({
 				code_challenge_methods_supported: ['S256'],
 			});
 		}
-		if (url.pathname === '/keys') return json({ keys: [] });
+		if (url.pathname === '/keys') {
+			const sub = url.searchParams.get('sub');
+			const failing = sub === null ? 0 : (keysFailing.get(sub) ?? 0);
+			if (sub !== null && failing > 0) {
+				keysFailing.set(sub, failing - 1);
+				return json({ error: 'the issuer is starting' }, 503);
+			}
+			return json({ keys: sub === null ? [] : [{ kid: keyOf(sub) }] });
+		}
 
 		if (url.pathname === '/auth') {
 			const params = url.searchParams;

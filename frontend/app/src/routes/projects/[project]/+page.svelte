@@ -11,7 +11,6 @@
 	 * reader's role does not allow is not offered, and the door refuses it regardless.
 	 */
 	import { page } from '$app/state';
-	import { signInAgainOnce, signedInAt } from '#lib/reauth.ts';
 	import { linkWith } from '#lib/project.ts';
 	import { Badge } from '@riksarkivet/ui/badge';
 	import { Button } from '@riksarkivet/ui/button';
@@ -153,16 +152,6 @@
 	});
 	// Back keeps this project as the reader's (`?project=`), as every in-app link does.
 	const back = $derived(linkWith(projectId)('/projects'));
-
-	// A 401 is a session that ended, not a project that is hidden: the reader signs in again and comes back here, once.
-	// Refused again right after, the page says so rather than sending them round in a loop (`#lib/reauth.ts`).
-	const returnTo = $derived(page.url.pathname + page.url.search);
-	let signInFailed = $state(false);
-	$effect(() => {
-		if (!answer) return;
-		if (answer.ok) signedInAt(returnTo);
-		else if (answer.status === 401) signInFailed = !signInAgainOnce(returnTo);
-	});
 </script>
 
 <svelte:window onfocus={returned} />
@@ -177,10 +166,9 @@
 		<p class="text-muted-foreground p-6 text-sm" role="status">Reading the project…</p>
 	{:else if !answer.ok && answer.status === 401}
 		<h1 class="sr-only">{projectId}</h1>
+		<!-- A 401 is a session that ended, not a project that is hidden: the shell's one prompt asks to sign in again. -->
 		<p class="text-muted-foreground p-6 text-sm" role="status" data-testid="project-signin">
-			{signInFailed
-				? 'We could not sign you in: reload the page to try again.'
-				: 'Your session ended: signing you in again…'}
+			Your session ended: sign in again to read the project.
 		</p>
 	{:else if !answer.ok && (answer.status === 403 || answer.status === 404)}
 		<!-- A 403 and a 404 read the same: the annotator keeps a project's existence to those who may view it. -->

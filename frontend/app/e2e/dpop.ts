@@ -117,6 +117,9 @@ export async function verifyProof(
 	};
 }
 
+/** The key an issuer that never restarted signs with. */
+export const FIRST_KEY = 'k1';
+
 /** What a mock access token carries. Unsigned: only the mocks read it, and what they check is its issuer, its
  *  audiences and, for a bound token, the binding to the proof's key, which a token cannot fake. */
 export interface TokenClaims {
@@ -131,6 +134,8 @@ export interface TokenClaims {
 	azp?: string;
 	/** Dex's claims for the `federated:id` scope: the connector and the user id it reports. */
 	federated_claims?: { connector_id: string; user_id: string };
+	/** The issuer's signing key that a real token's header names; absent, the issuer's first key (`mock-oidc.ts`). */
+	kid?: string;
 	exp: number;
 }
 

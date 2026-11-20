@@ -38,6 +38,28 @@ table a publish wrote in the lakehouse, which is its owner's to drop at the cata
 Rask's own `make k3s-up` installs its Dex with rask's values alone, so it drops the workbench's clients: run
 `make dev-dex-client` again after it.
 
+The development Dex keeps its state in memory, so every restart signs with new keys and every token signed before is
+unverifiable. Each service's background refresher reads the issuer's key set every 60 s (`KEY_SET_MAX_AGE_SECONDS`,
+`service_kit.governed.oidc`), so the viewer, search and the annotator all refuse such a token within about a minute of
+the restart; a person sees one prompt to sign in again over the page they are on, and comes back to it (the canvas
+keeps its unsaved edits). Requests never read the issuer themselves: while it cannot be reached, a service goes on with
+the last key set it read for up to 300 s from that read (`KEY_SET_STALE_LIMIT_SECONDS`) and then answers 503 at once;
+the refresher tries again every 5 s (`FETCH_RETRY_SECONDS`), each attempt given 5 s in all (`FETCH_DEADLINE_SECONDS`;
+a read that drips or does not end, in its TLS handshake, its headers or its body, is cut there by a watchdog that
+shuts its connection down (the connect itself is bounded per address the issuer's name resolves to, at most what was
+left of the deadline for each), and one past 1 MiB, `MAX_DOCUMENT_BYTES`, is cut at the cap; an
+issuer that holds one connection open is read on a new one at the next attempt, with at most 2 abandoned reads,
+`ABANDONED_READS`, running per issuer). A pod that starts while the issuer is down becomes ready (`/livez` and
+`/readyz` read no token), answers 503 for tokens until the refresher's first good read, and recovers on its own. A
+person who signs in again right after the restart holds tokens signed by the new key, which a service whose refresher
+has not read it yet does not hold: the first such request asks the issuer once (at most once per 30 s,
+`UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`), and every such request arriving while that read is in flight, up to 8 per
+service (`FORCED_WAITERS`), waits for it at most 5 s and is let in. If that read fails (the issuer still coming up),
+the pace was spent by another token, or the read it joined began before the key was published, the request is answered
+503 with `Retry-After`, never 401: the app sends the read again after it, and the refresher asks the issuer again after
+5 s, so the page recovers without a second prompt. A token is refused 401 for its key only when a read of the issuer
+that started after it asked found no such key.
+
 ### The demo source
 
 Beside rask's tables, the development release reads demo data of its own, so the cluster shows something whatever the

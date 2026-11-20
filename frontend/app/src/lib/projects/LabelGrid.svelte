@@ -13,13 +13,13 @@
 	// with a cell's own link to the canvas inside it, which the grid pattern allows and a listbox's options do not.
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
+	import { untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import type { Attachment } from 'svelte/attachments';
 	import { Badge } from '@riksarkivet/ui/badge';
 	import { Button } from '@riksarkivet/ui/button';
 	import { Dialog } from '@riksarkivet/ui/dialog';
 	import { Select } from '@riksarkivet/ui/select';
-	import { Textarea } from '@riksarkivet/ui/textarea';
 	import { AudioLines, ExternalLink, Redo2, Undo2 } from '@lucide/svelte';
 
 	import { linkWith } from '#lib/project.ts';
@@ -44,8 +44,12 @@
 	import MediaThumb from './MediaThumb.svelte';
 	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant } from './presentation.ts';
 	import { taskImageUrl } from './task-media.ts';
+	import { reauth } from '#lib/reauth.svelte.ts';
+	import { personName } from './people.ts';
+	import SendBackDialog from './SendBackDialog.svelte';
 	import {
 		between,
+		carryCount,
 		changeFor,
 		detailedIn,
 		digitOf,
@@ -54,9 +58,11 @@
 		gridClasses,
 		gridDoorParams,
 		gridLabelsOf,
+		itemMoment,
 		labelable,
 		moved,
 		readGridQuery,
+		sentBackNote,
 		writeGridQuery,
 		GRID_SIZES,
 		type GridQuery,
@@ -234,6 +240,25 @@
 		replaceState(`?${address}`, page.state);
 	}
 
+	// The address names an item the grid lists. One the focus or the address named that is gone (released, submitted, or
+	// another's now) gives way to the item at the focus's place: the first listed on arrival, the one now where the focus
+	// was during a session, so a person working by keyboard goes on where they were. In place, with no navigation.
+	const addressed = $derived(focusId ?? query.at);
+	const goneAt = $derived(
+		listing && addressed !== null && !tasks.some((t) => t.task_id === addressed) ? addressed : null,
+	);
+	$effect(() => {
+		if (goneAt === null) return;
+		const at = tasks[focusAt]?.task_id ?? null;
+		// Written outside what the effect tracks: the history entry it replaces is no state of the grid's.
+		untrack(() => {
+			focusId = at;
+			const address = writeGridQuery({ ...query, at }, asked ?? page.url.searchParams);
+			// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the same path, its query changed
+			replaceState(`?${address}`, page.state);
+		});
+	});
+
 	function clearSelection(): void {
 		selection.clear();
 		known = new Map();
@@ -267,15 +292,18 @@
 		const result = await allMatching(projectId, filter, { work: true });
 		selectingAll = false;
 		if (!result.ok) {
-			notice = { ok: false, text: result.detail, refused: [], skipped: [] };
+			notice = { tone: 'error', text: result.detail, refused: [], skipped: [] };
 			return;
 		}
 		known = new Map(result.data.tasks.map((t) => [t.task_id, t]));
 		selection.clear();
 		for (const t of result.data.tasks) selection.add(t.task_id);
+		// The offer goes once all are selected, and the focus with it: it comes back to the grid, so the next key (a
+		// digit) labels what was just selected.
+		cells.get(focusAt)?.focus();
 		if (result.data.capped)
 			notice = {
-				ok: false,
+				tone: 'error',
 				text: `${matched.toLocaleString()} items match: the first ${BULK_CAP.toLocaleString()} are selected. Narrow the filter to label the rest.`,
 				refused: [],
 				skipped: [],
@@ -285,13 +313,34 @@
 	// WRITES, one at a time in the order asked: a key pressed while a label is being written waits its turn, and each
 	// runs on the items as the listing read them after the one before. A run says how far it is ("n of N") and may be
 	// stopped: the items in flight finish, and the rest are left untouched and named as not attempted.
-	const outcomes = new SvelteMap<string, { status: Outcome['status']; text: string }>();
+	// Each item's last outcome, with the moment the item was at once the action settled (`itemMoment`): shown on its
+	// cell only while the item is still there, so a refusal never outlives the item moving on. Null until the re-read.
+	const outcomes = new SvelteMap<
+		string,
+		{ status: Outcome['status']; text: string; moment: string | null }
+	>();
+	const outcomeOf = (task: TaskDetail) => {
+		const outcome = outcomes.get(task.task_id);
+		return outcome && (outcome.moment === null || outcome.moment === itemMoment(task))
+			? outcome
+			: undefined;
+	};
+	/** Stamp the outcomes the last action left with the moment each item is at now that the listing is read again. */
+	function stampOutcomes(): void {
+		for (const [id, outcome] of outcomes) {
+			if (outcome.moment !== null) continue;
+			const task = tasks.find((t) => t.task_id === id) ?? known.get(id);
+			if (task) outcomes.set(id, { ...outcome, moment: itemMoment(task) });
+		}
+	}
 	interface Group {
 		reason: string;
 		names: string[];
 	}
+	/** How a summary reads: all as asked, stopped by the person (nothing failed), or something refused or not tried. */
+	type Tone = 'ok' | 'stopped' | 'error';
 	let notice = $state<{
-		ok: boolean;
+		tone: Tone;
 		text: string;
 		refused: Group[];
 		skipped: Group[];
@@ -299,29 +348,37 @@
 	let pending = $state(0);
 	let run = $state<{ what: string; done: number; total: number } | null>(null);
 	let stopAsked = $state(false);
+	/** How many items had settled when the person pressed Stop: the summary says the run stopped there. */
+	let stoppedAt = $state<number | null>(null);
 	let chain: Promise<void> = Promise.resolve();
 	function enqueue(work: () => Promise<void>): void {
 		pending += 1;
 		chain = chain
 			.then(work)
 			.catch((err: unknown) => {
-				notice = { ok: false, text: `NOT CONFIRMED: ${String(err)}`, refused: [], skipped: [] };
+				notice = { tone: 'error', text: `NOT CONFIRMED: ${String(err)}`, refused: [], skipped: [] };
 			})
 			.finally(() => {
 				pending -= 1;
 				run = null;
 			});
 	}
-	/** The control of one run: its progress shown as it settles, and the person's stop read before each item starts. */
+	/** The control of one run: its progress shown as it settles, and the person's stop read before each item starts. A
+	 *  session a service refused stops it too: the items not yet started are left as they were, for after signing in. */
 	function control(what: string, total: number): Control {
 		stopAsked = false;
+		stoppedAt = null;
 		run = { what, done: 0, total };
 		return {
 			progress: (done) => {
 				if (run) run.done = done;
 			},
-			stopped: () => stopAsked,
+			stopped: () => stopAsked || reauth.refused.length > 0,
 		};
+	}
+	function stop(): void {
+		stopAsked = true;
+		stoppedAt = run?.done ?? null;
 	}
 
 	interface Entry {
@@ -382,7 +439,7 @@
 			switch (result.status) {
 				case 'done':
 					done += 1;
-					outcomes.set(task.task_id, { status: 'done', text: what });
+					outcomes.set(task.task_id, { status: 'done', text: what, moment: null });
 					return;
 				case 'unchanged':
 					unchanged += 1;
@@ -390,22 +447,32 @@
 					return;
 				case 'refused':
 					refused.push({ reason: result.reason, name });
-					outcomes.set(task.task_id, { status: 'refused', text: result.reason });
+					outcomes.set(task.task_id, { status: 'refused', text: result.reason, moment: null });
 					return;
 				case 'not-attempted':
 					skipped.push({ reason: result.reason, name });
-					outcomes.set(task.task_id, { status: 'not-attempted', text: result.reason });
+					outcomes.set(task.task_id, {
+						status: 'not-attempted',
+						text: result.reason,
+						moment: null,
+					});
 			}
 		});
 		const parts = [
-			`${done} ${transition ? 'done' : 'changed'}`,
+			transition ? `${done} item${done === 1 ? '' : 's'}` : `${done} changed`,
 			unchanged > 0 ? `${unchanged} already so` : null,
 			refused.length > 0 ? `${refused.length} refused` : null,
 			skipped.length > 0 ? `${skipped.length} not attempted` : null,
 		].filter(Boolean);
+		// A run the person stopped says where it stopped, and is no failure: what was not started is as it was. Nor are
+		// the items they chose to keep as they are.
+		const stopped = stoppedAt !== null && skipped.length > 0;
+		const unchosen = skipped.some((s) => !stopped && !s.reason.startsWith('kept'));
 		notice = {
-			ok: refused.length === 0 && skipped.length === 0,
-			text: `${what}: ${parts.join(', ')}.`,
+			tone: refused.length > 0 || unchosen ? 'error' : stopped ? 'stopped' : 'ok',
+			text: stopped
+				? `${what}: stopped at ${stoppedAt} of ${targets.length}; ${parts.join(', ')}.`
+				: `${what}: ${parts.join(', ')}.`,
 			refused: grouped(refused),
 			skipped: grouped(skipped),
 		};
@@ -413,6 +480,7 @@
 
 	async function settle(): Promise<void> {
 		await read.refresh().catch(() => {});
+		stampOutcomes();
 		onchanged();
 	}
 
@@ -439,6 +507,13 @@
 				: intent.kind === 'set'
 					? `Labelled ${intent.label}`
 					: `Toggled ${intent.label}`;
+		// The question is asked before anything is written, so it names what is asked, not what was done.
+		const asked =
+			intent.kind === 'clear'
+				? 'Clear the labels'
+				: intent.kind === 'set'
+					? `Label ${intent.label}`
+					: `Add ${intent.label}`;
 		enqueue(async () => {
 			const targets = current(ids);
 			if (targets.length === 0) return;
@@ -449,7 +524,7 @@
 			);
 			let keep = new Set<string>();
 			if (risky.length > 0) {
-				const choice = await ask(risky.length, targets.length, what);
+				const choice = await ask(risky.length, targets.length, asked);
 				if (choice === 'cancel') return;
 				if (choice === 'skip') keep = new Set(risky.map((t) => t.task_id));
 			}
@@ -528,9 +603,18 @@
 	const returnable = $derived(
 		selected.filter((t) => t.legal_events.some((e) => e.event === 'request_changes')),
 	);
+	/** What a transition did, as its summary says it: the grid's own words for its buttons, in the past. */
+	const DONE: Record<string, string> = {
+		claim: 'Claimed',
+		release: 'Released',
+		submit: 'Submitted for review',
+		accept: 'Accepted',
+		fix_and_accept: 'Accepted with fixes',
+		request_changes: 'Sent back',
+	};
 	function fireAll(event: string, message?: string): void {
 		const ids = targetsFor(selected, [...selection], event).map((t) => t.task_id);
-		const what = (EVENT_LABELS[event] ?? event).replace('…', '');
+		const what = DONE[event] ?? (EVENT_LABELS[event] ?? event).replace('…', '');
 		enqueue(async () => {
 			const targets = current(ids);
 			const results = await pooled(
@@ -556,7 +640,6 @@
 		});
 	}
 	let sendBackOpen = $state(false);
-	let sendBackNote = $state('');
 
 	// KEYS, while the focus is in the grid and not on a field, a menu or a dialog (`walk-keys.ts`).
 	function onkeydown(e: KeyboardEvent): void {
@@ -685,7 +768,8 @@
 	function cellName(task: TaskDetail): string {
 		const held = gridLabelsOf(tagsOf(task), labels).map((c) => c.name);
 		const proposed = gridLabelsOf(tagsOf(task), labels, true).map((c) => c.name);
-		const outcome = outcomes.get(task.task_id);
+		const outcome = outcomeOf(task);
+		const note = sentBackNote(task);
 		return [
 			described(task).name,
 			held.length > 0 ? `labelled ${held.join(', ')}` : 'no label',
@@ -693,6 +777,7 @@
 			detailedIn(tagsOf(task), gridNames) ? 'its label carries details' : null,
 			outcome?.status === 'refused' ? `refused: ${outcome.text}` : null,
 			outcome?.status === 'not-attempted' ? `not attempted: ${outcome.text}` : null,
+			note ? `sent back by ${personName(note.by, listing?.people)}: ${note.message}` : null,
 		]
 			.filter(Boolean)
 			.join('; ');
@@ -852,10 +937,7 @@
 						variant="outline"
 						size="sm"
 						data-testid="grid-bulk-request_changes"
-						onclick={() => {
-							sendBackNote = '';
-							sendBackOpen = true;
-						}}
+						onclick={() => (sendBackOpen = true)}
 					>
 						Send back {returnable.length}
 					</Button>
@@ -898,7 +980,7 @@
 						size="xs"
 						data-testid="grid-stop"
 						disabled={stopAsked}
-						onclick={() => (stopAsked = true)}
+						onclick={stop}
 					>
 						Stop
 					</Button>
@@ -907,7 +989,16 @@
 		{:else if pending > 0}
 			<p class="text-muted-foreground">Writing…</p>
 		{:else if notice}
-			<p class={notice.ok ? 'text-success' : 'text-destructive'}>{notice.text}</p>
+			<p
+				class={notice.tone === 'ok'
+					? 'text-success'
+					: notice.tone === 'stopped'
+						? 'text-foreground'
+						: 'text-destructive'}
+				data-tone={notice.tone}
+			>
+				{notice.text}
+			</p>
 			{#if notice.refused.length > 0}
 				<ul class="text-destructive mt-1 list-disc pl-5 text-xs" data-testid="grid-refusals">
 					{#each notice.refused as g (g.reason)}
@@ -964,16 +1055,19 @@
 			{onkeydown}
 		>
 			{#each rows as row, r (r)}
+				<!-- `p-1` is the room a cell's focus ring is drawn in: the row's paint containment (`content-visibility`) clips
+				     whatever it paints past its own box. -->
 				<div
 					role="row"
 					aria-rowindex={r + 1}
-					class="grid gap-3 [contain-intrinsic-block-size:auto_15rem] [content-visibility:auto]"
+					class="grid gap-3 p-1 [contain-intrinsic-block-size:auto_15.5rem] [content-visibility:auto]"
 					style:grid-template-columns="repeat({columns}, minmax(0, 1fr))"
 				>
 					{#each row as { task, index }, c (task.task_id)}
 						{@const about = described(task)}
 						{@const held = gridLabelsOf(tagsOf(task), labels)}
-						{@const outcome = outcomes.get(task.task_id)}
+						{@const outcome = outcomeOf(task)}
+						{@const note = sentBackNote(task)}
 						{@const picked = selection.has(task.task_id)}
 						<!-- The grid takes every key for its cells (`onkeydown` on the grid): a click here is the mouse's way to the same. -->
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -987,7 +1081,7 @@
 							data-task={task.task_id}
 							data-selected={picked}
 							class={[
-								'bg-card flex min-w-0 cursor-pointer flex-col overflow-hidden border outline-none select-none motion-safe:transition-colors',
+								'group bg-card flex min-w-0 cursor-pointer flex-col overflow-hidden border outline-none select-none motion-safe:transition-colors',
 								'focus-visible:ring-ring focus-visible:ring-3',
 								picked ? 'border-primary ring-primary/50 ring-2' : 'hover:border-primary/60',
 							]}
@@ -1093,9 +1187,19 @@
 											has details
 										</span>
 									{/if}
+									{#if note}
+										<p
+											class="text-foreground border-warning line-clamp-2 min-w-0 border-l-2 pl-1.5 text-[11px] break-words group-focus:line-clamp-none"
+											title={`${personName(note.by, listing?.people)}: ${note.message}`}
+											data-testid="grid-cell-note"
+										>
+											<span class="font-medium">{personName(note.by, listing?.people)}:</span>
+											{note.message}
+										</p>
+									{/if}
 									{#if outcome?.status === 'refused'}
 										<span
-											class="text-destructive line-clamp-2 min-w-0 text-[11px]"
+											class="text-destructive line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
 											title={outcome.text}
 											data-testid="grid-cell-refused"
 										>
@@ -1103,7 +1207,7 @@
 										</span>
 									{:else if outcome?.status === 'not-attempted'}
 										<span
-											class="text-muted-foreground line-clamp-2 min-w-0 text-[11px]"
+											class="text-muted-foreground line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
 											title={outcome.text}
 											data-testid="grid-cell-skipped"
 										>
@@ -1118,7 +1222,7 @@
 			{/each}
 		</div>
 		{#if matched > query.size}
-			<nav class="flex items-center justify-end gap-2 text-xs" aria-label="Pages">
+			<nav class="flex items-center justify-end gap-2 text-xs" aria-label="Pages of items">
 				<Select
 					value={String(query.size)}
 					ariaLabel="Items a page"
@@ -1168,8 +1272,8 @@
 	>
 		<Dialog.Title>{asking?.what}: replace what other labels carry?</Dialog.Title>
 		<Dialog.Description data-testid="grid-ask-count">
-			{asking?.count} of {asking?.total} items carry text, attributes, links or a model's proposal on
-			a label that this one replaces. Skipping keeps those items as they are and labels the rest.
+			{carryCount(asking?.count ?? 0, asking?.total ?? 0)} text, attributes, links or a model's proposal
+			on a label that this one replaces. Skipping keeps those items as they are and labels the rest.
 		</Dialog.Description>
 		<form
 			class="flex justify-end gap-2"
@@ -1191,29 +1295,10 @@
 	</Dialog.Content>
 </Dialog.Root>
 
-<Dialog.Root open={sendBackOpen} onOpenChange={(open) => (sendBackOpen = open)}>
-	<Dialog.Content class="sm:max-w-md" data-testid="grid-send-back">
-		<Dialog.Title
-			>Send back {returnable.length} item{returnable.length === 1 ? '' : 's'}</Dialog.Title
-		>
-		<Dialog.Description>
-			The note travels with each item to its annotator: say what should change on all of them.
-		</Dialog.Description>
-		<form
-			class="flex flex-col gap-3"
-			onsubmit={(e) => {
-				e.preventDefault();
-				sendBackOpen = false;
-				fireAll('request_changes', sendBackNote.trim());
-			}}
-		>
-			<Textarea bind:value={sendBackNote} rows={4} aria-label="What should change" />
-			<div class="flex justify-end gap-2">
-				<Button type="button" variant="outline" onclick={() => (sendBackOpen = false)}
-					>Cancel</Button
-				>
-				<Button type="submit" disabled={!sendBackNote.trim()}>Send back</Button>
-			</div>
-		</form>
-	</Dialog.Content>
-</Dialog.Root>
+<SendBackDialog
+	bind:open={sendBackOpen}
+	title="Send back {returnable.length} item{returnable.length === 1 ? '' : 's'}"
+	description="The note travels with each item to its annotator: say what should change on all of them."
+	testid="grid-send-back"
+	onsend={(note) => fireAll('request_changes', note)}
+/>

@@ -495,10 +495,11 @@ export class AnnotatorController implements Zoomable {
 	 *  none. */
 	classesForRow(index: number): ClassDef[] {
 		const shape = this.rows.find((r) => r.index === index)?.shape ?? '';
-		// A text span takes the classes that may be drawn as text; a region those that may mark it.
+		// A text span takes the classes that may be drawn as text, a whole-item tag those that may be drawn as a tag, and
+		// a region those that may mark it.
 		if (this.classDefs.length > 0)
-			return shape === 'text'
-				? classesFor(this.classDefs, 'text')
+			return shape === 'text' || shape === 'tag'
+				? classesFor(this.classDefs, shape)
 				: classesFor(regionClasses(this.classDefs), shape);
 		return this.labelClasses.map((name) => ({ name, colour: null, tools: [], required: false }));
 	}
@@ -1255,8 +1256,13 @@ export class AnnotatorController implements Zoomable {
 			mask: shape.mask ?? '',
 		});
 	}
+	/** Whether the selection is a box a polygon can be made of: a tag, a span, a stretch of time or a point has no
+	 *  outline to convert, and is offered none. */
+	get convertible(): boolean {
+		return this.readOnly === null && this.selected?.shape === 'bbox';
+	}
 	convertToPolygon(): void {
-		if (this.readOnly !== null) return;
+		if (!this.convertible) return;
 		if (this.ctx?.plugins.interaction.convertToPolygon()) this._geoDirty = true;
 	}
 
@@ -1790,9 +1796,6 @@ export class AnnotatorController implements Zoomable {
 	/** Called after a save lands. */
 	onSaved: (() => void) | null = null;
 
-	/** True when a save was refused because the session ended: the edits stay, and the page offers to sign in again. */
-	signedOut = $state(false);
-
 	async save(opts: { auto?: boolean } = {}): Promise<void> {
 		const t = this.table;
 		const url = this._saveUrl;
@@ -1820,7 +1823,7 @@ export class AnnotatorController implements Zoomable {
 		try {
 			const status = await saveAnnotations(url, payload);
 			if (status === 'signed-out') {
-				this.signedOut = true;
+				// The shell's one prompt offers to sign in again, and the canvas keeps these edits through it.
 				this.saveError = 'Your session ended, so nothing was saved. Your edits are still here.';
 				this.notice = { tone: 'error', text: this.saveError };
 				return;

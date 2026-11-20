@@ -40,9 +40,25 @@
 	const uid = $props.id();
 	const noteId = (group: number, reason: number) => `${uid}-refusal-${group}-${reason}`;
 
+	/** The row whose tooltip is held back, and where the pointer pressed it: the one just picked, until the pointer
+	 *  MOVES away from that point. The rail stays mounted across the navigation a pick causes, and the page transition
+	 *  that navigation runs covers the rail for a moment: the row sees the pointer leave and come back without it
+	 *  moving, and its tooltip (a hover's, opened on a delay) would open over the new page under a pointer resting where
+	 *  it clicked. Neither a leave nor the focus (which the navigation moves too) says the person moved on; the pointer
+	 *  moving does. */
+	let quiet = $state<{ title: string; x: number; y: number } | null>(null);
+	/** How far the pointer moves before a picked row's tooltip may open again, in CSS pixels. */
+	const MOVED = 4;
+
+	function held(leaf: PageNavLeaf, e: PointerEvent): void {
+		quiet = { title: leaf.title, x: e.clientX, y: e.clientY };
+	}
 	/** The mobile sheet closes once the reader picks a page in it. */
 	function picked(): void {
 		if (sidebar.isMobile) sidebar.setOpenMobile(false);
+	}
+	function moved(e: PointerEvent): void {
+		if (quiet && Math.hypot(e.clientX - quiet.x, e.clientY - quiet.y) > MOVED) quiet = null;
 	}
 
 	/** Active if the leaf matches, or any of its children do (so a parent highlights and expands
@@ -74,7 +90,14 @@
 			<span>{leaf.title}</span>
 		</span>
 	{:else}
-		<a href={leaf.href} {...mergeProps(props, { onclick: picked })}>
+		<a
+			href={leaf.href}
+			{...mergeProps(props, {
+				// Held back from the press on, while the tooltip is still open: once it starts to close it takes no props.
+				onpointerdown: (e: PointerEvent) => held(leaf, e),
+				onclick: picked,
+			})}
+		>
 			{#if leaf.icon}
 				<leaf.icon />
 			{/if}
@@ -93,6 +116,7 @@
 			<Sidebar.MenuItem>
 				<Sidebar.MenuButton
 					tooltipContent={leaf.unavailable ? `${leaf.title}: ${leaf.unavailable}` : leaf.title}
+					tooltipContentProps={quiet?.title === leaf.title ? { class: 'hidden' } : {}}
 					isActive={isActive(leaf, pathname)}
 				>
 					{#snippet child({ props })}
@@ -132,6 +156,8 @@
 		</p>
 	{/each}
 {/snippet}
+
+<svelte:window onpointermove={moved} />
 
 {#if nav}
 	{#each nav.groups as group, index (group.label ?? `rows-${index}`)}

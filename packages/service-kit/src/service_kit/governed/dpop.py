@@ -44,6 +44,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 #: The asymmetric algorithms a proof may use; `none` and the symmetric `HS*` are never among them (§ 4.3 rule 5).
 ALGORITHMS: Final = frozenset({"ES256", "ES384", "ES512", "PS256", "PS384", "PS512", "RS256", "RS384", "RS512", "EdDSA"})
+
+_ALGS: Final = " ".join(sorted(ALGORITHMS))
+
+
+def challenge(error: str | None, *, on: str, bearer: bool, description: str | None = None) -> dict[str, str]:
+    """The `WWW-Authenticate` a 401 for the presented session carries: the DPoP scheme and the algorithms a proof may use
+    (RFC 9449 § 7.1), and, where a bearer is accepted too, the Bearer scheme first (RFC 6750 § 3); the error, and its
+    description where one is given, ride the scheme ``on`` names. Every 401 that asks the person to sign in again carries
+    one; a 401 a service only relays (a catalog refusing a read) carries none, and the app tells them apart by it."""
+    said = [f'error="{error}"'] + ([f'error_description="{description}"'] if description else []) if error else []
+    dpop = (said if on == "dpop" else []) + [f'algs="{_ALGS}"']
+    challenges = [f"DPoP {', '.join(dpop)}"]
+    if bearer:
+        challenges.insert(0, f"Bearer {', '.join(said)}" if said and on == "bearer" else "Bearer")
+    return {"WWW-Authenticate": ", ".join(challenges)}
+
+
 #: How far a proof's `iat` may lie from now, either way.
 DEFAULT_WINDOW_SECONDS: Final = 60
 #: The most proofs the replay store remembers per person, and the most people it remembers; past either, the oldest is

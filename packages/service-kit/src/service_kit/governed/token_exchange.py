@@ -44,6 +44,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from service_kit.exceptions import ServiceUnavailableError, UnauthorizedError
+from service_kit.governed.dpop import challenge
 from service_kit.governed.settings import LakehouseDelegation
 
 
@@ -53,6 +54,9 @@ TOKEN_EXCHANGE_GRANT: Final = "urn:ietf:params:oauth:grant-type:token-exchange" 
 ACCESS_TOKEN_TYPE: Final = "urn:ietf:params:oauth:token-type:access_token"  # noqa: S105 - a token type URN, not a secret
 #: How long before its expiry a cached token stops being handed out, so a call never starts on a token about to lapse.
 EXPIRY_MARGIN_SECONDS: Final = 30.0
+#: The challenge a refusal of the person's own session carries (no unexpired token of theirs, an exchange of it
+#: refused): the session must be renewed, which the app asks the person to do, as for the door's own refusal.
+SESSION_TO_RENEW: Final = challenge("invalid_token", on="dpop", bearer=True, description="the session must be renewed")
 #: The most people whose exchanged token one process keeps; past it the least recently used is dropped first.
 CACHE_CAPACITY: Final = 1024
 HTTP_TIMEOUT_SECONDS: Final = 10.0
@@ -147,7 +151,7 @@ class PersonTokens:
                 del self._held[subject]
                 held = None
         if held is None or held.issuer != issuer.rstrip("/"):
-            raise UnauthorizedError("no unexpired token of this person's to present to the lakehouse")
+            raise UnauthorizedError("no unexpired token of this person's to present to the lakehouse", headers=SESSION_TO_RENEW)
         return held
 
 
@@ -287,7 +291,7 @@ class LakehouseTokens:
             # (expired, revoked, not exchangeable): the person signs in again. Its description is never logged, as it may
             # echo the token.
             log.warning("token_exchange_refused", extra={"status": answer.status_code, "error": error})
-            raise UnauthorizedError("the identity provider refused to exchange the caller's token")
+            raise UnauthorizedError("the identity provider refused to exchange the caller's token", headers=SESSION_TO_RENEW)
         if answer.status_code != 200:
             # Every other refusal (`invalid_client`, `unauthorized_client`, `unsupported_grant_type`, `invalid_request`,
             # `invalid_scope`, RFC 8693's `invalid_target`, a 401) is this service's client or its configuration: an
