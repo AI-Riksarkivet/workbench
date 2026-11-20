@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import threading
 from collections.abc import AsyncIterator, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +59,11 @@ def gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[_Gateway]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    # The gateway is the only exporter configuration these tests run under. `dagger call test` sets a per-signal
+    # endpoint and protocol in every container for its own telemetry (measured 2026-11-20: OTEL_EXPORTER_OTLP_TRACES_,
+    # _METRICS_ and _LOGS_ENDPOINT and _PROTOCOL), and the SDK reads a per-signal variable before the general one.
+    for name in [name for name in os.environ if name.startswith("OTEL_EXPORTER_OTLP_")]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://127.0.0.1:{server.server_address[1]}")
     yield _Gateway
     _Gateway.released.set()

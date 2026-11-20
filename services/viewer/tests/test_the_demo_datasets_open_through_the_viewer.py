@@ -117,6 +117,24 @@ def test_the_plain_tables_answer_the_set_ups_the_browser_suite_draws_as_its_reco
 
     assert {node: (rows == total, first) for node, (rows, total, first) in listed.items()} == dict.fromkeys(listed, (True, True))
     assert listed["s:Lübeck"] == (12, 12, True)
-    assert {key: {"json": body} for key, body in answers.items()} == {key: a for key, a in recorded().items() if "json" in a}, (
-        "the recording is not what the viewer answers: uv run python -m scripts.record_derived_answers"
-    )
+    said = {key: answer["json"] for key, answer in recorded().items() if "json" in answer}
+    stale = "the recording is not what the viewer answers: uv run python -m scripts.record_derived_answers"
+    assert {key: _beside_its_waveform(body) for key, body in answers.items()} == {key: _beside_its_waveform(body) for key, body in said.items()}, stale
+    # A waveform is the levels a decoder heard. A film's sound is a lossy codec's, whose decoded samples differ in the
+    # last step between processor architectures (measured 2026-11-20: the film's levels recorded on aarch64 are not
+    # byte-equal on x86-64), so its levels are held to one step of 127 and its length exactly.
+    for key in said:
+        heard, kept = _levels(answers[key]), _levels(said[key])
+        assert len(heard) == len(kept), f"{key}: {stale}"
+        assert max((abs(a - b) for a, b in zip(heard, kept, strict=True)), default=0) <= 1, f"{key}: {stale}"
+
+
+def _beside_its_waveform(body: object) -> object:
+    """An answer without its waveform's levels, which :func:`_levels` reads."""
+    return {name: value for name, value in body.items() if name != "peaks"} if isinstance(body, dict) and "peaks" in body else body
+
+
+def _levels(body: object) -> list[int]:
+    """The signed levels of an answer's waveform, none where the answer carries no waveform."""
+    packed = body.get("peaks") if isinstance(body, dict) else None
+    return [level - 256 if level > 127 else level for level in base64.b64decode(packed)] if isinstance(packed, str) else []
