@@ -1,6 +1,7 @@
 # 0030. The workbench states its own model protocol (2026-11-20)
 
-**Status:** accepted. Source: the owner, 2026-11-20, in the grilling session, asked whether to speak X-AnyLabeling's
+**Status:** accepted; its adapter part (the second and third points of the decision, and the named first backend) is
+replaced by ADR 0032. The protocol and the rule that the workbench states it stand. Source: the owner, 2026-11-20, in the grilling session, asked whether to speak X-AnyLabeling's
 server protocol or define the workbench's own with an adapter per backend: "Our own protocol".
 
 ## Context

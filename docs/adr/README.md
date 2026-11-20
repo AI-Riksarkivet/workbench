@@ -56,5 +56,6 @@ in issues #1, #7, #9 and #10, their comments, and the commit messages named in e
 | [0027](0027-sampling-orders-a-queue-and-selects-items-by-a-projects-strategy.md) | Sampling orders a queue and selects items, by a project's strategy | 2026-11-20 | accepted |
 | [0028](0028-the-learning-loop-trains-outside-the-workbench.md) | The learning loop trains outside the workbench | 2026-11-20 | accepted |
 | [0029](0029-a-first-model-slice-comes-before-the-loop-on-the-lakehouse.md) | A first model slice comes before the loop on the lakehouse | 2026-11-20 | accepted |
-| [0030](0030-the-workbench-states-its-own-model-protocol.md) | The workbench states its own model protocol | 2026-11-20 | accepted |
+| [0030](0030-the-workbench-states-its-own-model-protocol.md) | The workbench states its own model protocol | 2026-11-20 | accepted; its adapter part replaced by 0032 |
 | [0031](0031-a-project-may-accept-confident-proposals-with-a-sample-checked-by-a-person.md) | A project may accept confident proposals, with a sample checked by a person | 2026-11-20 | accepted; amends 0019 |
+| [0032](0032-a-model-backend-is-a-ray-serve-deployment-that-speaks-the-protocol.md) | A model backend is a Ray Serve deployment that speaks the protocol | 2026-11-20 | accepted; replaces the adapter part of 0030 |
