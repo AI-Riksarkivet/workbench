@@ -235,6 +235,30 @@ Asking a model, from the canvas, for proposals on the open item: a detector's te
 _Lives in_: `POST /api/assist/<unit>`; `#lib/canvas/AssistPanel.svelte`; `runners/assist`.
 _Avoid_: auto-label (that is a batch job, which belongs to flows), AI
 
+**Model endpoint**:
+An address the workbench is given and calls for a model's answer. The workbench deploys no model.
+_Avoid_: model server (the workbench runs none), backend
+
+**Model version**:
+Which model, at which version, made a proposal. Every proposal carries it, so two versions can be compared.
+_Avoid_: checkpoint, run
+
+**Judge**:
+A model that assesses labels people made on an item and flags the ones it disagrees with, for a reviewer. It decides
+nothing: a reviewer accepts or sends back.
+_Avoid_: AI reviewer, auto-review, validator
+
+**Sampling**:
+Choosing which items are labelled next, or which items enter a project at all, by a strategy a project sets: the items
+a model is least sure about, the items least like those already labelled, or a mix. A person can always override it.
+_Avoid_: active learning (the training side is not the workbench's), smart queue
+
+**Learning loop**:
+People's kept, changed and removed proposals become published labels; a pipeline outside the workbench trains a model
+on them; the new model version answers at the model endpoint. The workbench publishes and shows versions; it trains
+nothing.
+_Avoid_: reinforcement learning (no policy or reward is involved), retraining (the workbench does none)
+
 ### Screens
 
 **Canvas**:
