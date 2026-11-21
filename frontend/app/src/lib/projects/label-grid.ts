@@ -9,8 +9,9 @@
  * class with no tools named may be drawn with anything, and is a region class to the canvas, so it is too. A tag class
  * whose attribute is required cannot be satisfied by a tag that answers none, so it is labelled on the canvas as well.
  */
+import type { AssistAnswer, AssistModel } from '#lib/api/assist.api.ts';
 import type { ClassDef } from '#lib/canvas/classes.ts';
-import type { TaskDetail } from './types.ts';
+import { ontologyTools, type TaskDetail } from './types.ts';
 
 /** One of the project's classes as the grid offers it: a grid label, or one to label on the canvas and why. */
 export interface GridClass extends ClassDef {
@@ -155,6 +156,36 @@ export function gridLabelsOf(
 	const kept = new Set(tags.filter((t) => !t.prediction).map((t) => t.label));
 	const held = new Set(tags.filter((t) => t.prediction && !kept.has(t.label)).map((t) => t.label));
 	return grid.filter((c) => (proposed ? held : kept).has(c.name));
+}
+
+// ── asking a model ───────────────────────────────────────────────────────────────────────────
+
+/** How the grid asks ``model`` about many items at once: with the item alone (it takes no prompt), with one prompt of
+ *  words for the whole selection, or not at all, since a model that takes only a drawn box or clicks is asked on the
+ *  canvas, one item at a time. */
+export function gridAsk(model: Pick<AssistModel, 'prompts'>): 'item' | 'words' | null {
+	if (model.prompts.length === 0) return 'item';
+	return model.prompts.includes('text') ? 'words' : null;
+}
+
+/** Whether ``task``'s classes take a shape ``model`` returns, as the annotator judges a model against a task
+ *  (`assist.models`' `compatible`, from `LabelOntology.tools`): an item whose classes constrain no shape takes any. */
+export function fits(
+	model: Pick<AssistModel, 'returns'>,
+	task: Pick<TaskDetail, 'ontology'>,
+): boolean {
+	const allowed = ontologyTools(task.ontology);
+	return allowed.length === 0 || model.returns.some((shape) => allowed.includes(shape));
+}
+
+/** What a model's answer proposed on an item, as its cell says it: the model and its version, then each proposal's
+ *  class (its shape where it is not a tag) and score. */
+export function proposedText(answer: AssistAnswer): string {
+	const each = answer.proposals.map(
+		(p) =>
+			`${p.label || 'no class'}${p.shape_type === 'tag' ? '' : ` (${p.shape_type})`} ${p.score.toFixed(2)}`,
+	);
+	return `${answer.model} ${answer.version}: ${each.join(', ')}`;
 }
 
 // ── focus and selection ──────────────────────────────────────────────────────────────────────

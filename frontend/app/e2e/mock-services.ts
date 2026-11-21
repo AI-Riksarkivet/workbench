@@ -971,9 +971,21 @@ const TOPICS = {
 
 /** Who asked a door to fail or to have nothing built, by person and path. */
 /** What a spec plants on one path for one person: a failure, a dataset not built, a slow answer, a session that ended
- *  (`unauthorized` on every call, `unauthorized-write` on a write alone), or, on `/api/assist/models`, a deployment that
- *  names no model endpoint (`no-endpoint`). */
-type Fault = 'fail' | 'unbuilt' | 'slow' | 'unauthorized' | 'unauthorized-write' | 'no-endpoint';
+ *  (`unauthorized` on every call, `unauthorized-write` on a write alone), on `/api/assist/models` a deployment that
+ *  names no model endpoint (`no-endpoint`), or on one unit's `/api/assist/<unit>` an endpoint busy for it (`busy`) or
+ *  a model that answers it a shape its classes may not take, beside what it found (`mixed`) or in its place
+ *  (`polygon`). */
+type Fault =
+	| 'fail'
+	| 'unbuilt'
+	| 'slow'
+	| 'unauthorized'
+	| 'unauthorized-write'
+	| 'no-endpoint'
+	| 'busy'
+	| 'mixed'
+	| 'polygon'
+	| 'moved-after';
 const FAULTS: readonly string[] = [
 	'fail',
 	'unbuilt',
@@ -981,6 +993,10 @@ const FAULTS: readonly string[] = [
 	'unauthorized',
 	'unauthorized-write',
 	'no-endpoint',
+	'busy',
+	'mixed',
+	'polygon',
+	'moved-after',
 ];
 const faults = new Map<string, Map<string, Fault>>();
 const faultOf = (sub: string, path: string): Fault | undefined => faults.get(sub)?.get(path);
@@ -1663,8 +1679,10 @@ Bun.serve({
 			req,
 			url,
 			(projectId) => permissionsOn(who.sub, projectId),
+			(taskId) => taskOf(who.sub, taskId),
 			ok,
 			faultOf(who.sub, '/api/assist/models') !== 'no-endpoint',
+			fault,
 		);
 		if (assist) return assist;
 		const projects = await projectsDoor(

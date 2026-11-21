@@ -4,6 +4,7 @@ import {
 	changeFor,
 	digitOf,
 	excerpt,
+	fits,
 	gridClasses,
 	gridDoorParams,
 	discards,
@@ -245,5 +246,33 @@ describe('the question asked before a label replaces what others carry', () => {
 			'1 of 3 items carries',
 			'2 of 3 items carry',
 		]);
+	});
+});
+
+describe('whether an item takes what a model returns', () => {
+	const classes = (...tools: string[][]) => ({
+		ontology: {
+			kind: '',
+			modality: 'image',
+			classes: tools.map((t, i) => ({
+				name: `c${i}`,
+				tools: t,
+				required: false,
+				transcribe: false,
+				attributes: [],
+			})),
+			relations: [],
+			allow_empty: false,
+		},
+	});
+	it('takes a model when one of its classes takes a shape the model returns', () => {
+		expect(fits({ returns: ['bbox', 'polygon'] }, classes(['tag'], ['bbox']))).toBe(true);
+	});
+	it('takes no model whose every shape no class takes', () => {
+		expect(fits({ returns: ['polygon'] }, classes(['tag'], ['bbox']))).toBe(false);
+	});
+	it('takes any model where a class names no tool, or no class is declared', () => {
+		expect(fits({ returns: ['polygon'] }, classes(['tag'], []))).toBe(true);
+		expect(fits({ returns: ['polygon'] }, { ontology: undefined })).toBe(true);
 	});
 });

@@ -392,6 +392,17 @@ export async function annotationsDoor(
 			},
 		].slice(-50),
 	});
+	// A spec's `moved-after` on this unit: another save lands on top of this one before its answer is read.
+	if (fault === 'moved-after')
+		work.write(taskId, {
+			rows,
+			links,
+			revision: next + 1,
+			history: [
+				...(work.read(taskId)?.history ?? []),
+				{ version: next + 1, timestamp: new Date().toISOString(), author: 'someone', rows, links },
+			].slice(-50),
+		});
 	return answer({ saved: b.inserts.length + b.edits.length + gone.size, version: next });
 }
 
@@ -460,9 +471,8 @@ const ASK_FIELDS = new Set(['model', 'prompt', 'region', 'points', 'task_id']);
 /** The stand-in's answer, proposal for proposal: the detector's box where the person drew one (else a fixed box), the
  *  segmenter's diamond over its positive clicks' box padded by half a 120-pixel patch (or over the drawn box), its score
  *  rising with each click, the tagger's one tag from the item alone; each labelled with the task's first class (`pages`'
- *  `figure`). */
-function proposals(body: AssistBody): Record<string, unknown>[] {
-	const label = 'figure';
+ *  `figure`, `sorting`'s `letter`). */
+function proposals(body: AssistBody, label: string): Record<string, unknown>[] {
 	if (body.model === 'stand-in-tagger')
 		return [
 			{
@@ -517,16 +527,74 @@ const problem = (type: string, title: string, status: number, detail: string) =>
 	detail,
 });
 
+/** A polygon the stand-in answers where a spec asks for a shape the item's classes may not take. */
+const SEGMENT = {
+	shape_type: 'polygon',
+	x: 10,
+	y: 10,
+	width: 20,
+	height: 20,
+	polygon: [10, 10, 30, 10, 30, 30],
+	label: '',
+	text: '',
+	score: 0.5,
+};
+
+/** The task's classes as its captured ontology names them. */
+const classesOf = (task: Task): { name: string; tools: string[] }[] =>
+	((task.ontology?.classes ?? []) as { name: string; tools?: string[] }[]).map((c) => ({
+		name: c.name,
+		tools: c.tools ?? [],
+	}));
+
+/** The proposals the task's classes can take, and what was refused of the rest, as the annotator settles them
+ *  (`assist._within_the_task`): a shape of a type no class takes is refused and said, and a label that is none of the
+ *  task's classes is not carried. */
+function withinTheTask(
+	found: Record<string, unknown>[],
+	task: Task,
+): { proposals: Record<string, unknown>[]; dropped: string[] } {
+	const classes = classesOf(task);
+	// Unconstrained when a class names no tool (`LabelOntology.tools`).
+	const allowed = classes.some((c) => c.tools.length === 0)
+		? new Set<string>()
+		: new Set(classes.flatMap((c) => c.tools));
+	const names = new Set(classes.map((c) => c.name));
+	const refused = new Map<string, number>();
+	const kept: Record<string, unknown>[] = [];
+	for (const p of found) {
+		const shape = String(p.shape_type);
+		if (allowed.size > 0 && !allowed.has(shape)) {
+			refused.set(shape, (refused.get(shape) ?? 0) + 1);
+			continue;
+		}
+		kept.push({ ...p, label: names.size === 0 || names.has(String(p.label)) ? p.label : '' });
+	}
+	const takes = [...allowed].sort().join(', ');
+	return {
+		proposals: kept,
+		dropped: [...refused]
+			.sort()
+			.map(([shape, n]) => `${n} ${shape} proposal(s): this item's classes take ${takes}`),
+	};
+}
+
 /** Answer one call to `/api/assist/…`, or null when the path is not that door. Its gate is the service's: the
- *  annotating role on the project the request names (`assist.require_assist`). ``endpoint`` false is a deployment that
- *  names no model endpoint (the spec's `no-endpoint` fault on `/api/assist/models`). The slow model is the annotator's
- *  timeout and the failing one its 502, answered at once: what the canvas meets, without the wait. */
+ *  annotating role on the project the request names (`assist.require_assist`), the task the ask names read in that
+ *  project and the unit its own (`access.require_task_units`), and a picture to show (`assist.assist`). ``endpoint``
+ *  false is a deployment that names no model endpoint (the spec's `no-endpoint` fault on `/api/assist/models`). The slow
+ *  model is the annotator's timeout and the failing one its 502, answered at once: what the canvas meets, without the
+ *  wait. A spec's fault on one unit's path makes the endpoint so for that unit alone: `slow` its timeout, `busy` its
+ *  503 with `Retry-After`, `fail` its failure, `no-endpoint` unavailable; and `mixed` has the model answer a polygon
+ *  beside what it found, `polygon` a polygon in its place (a shape `sorting`'s classes do not take). */
 export async function assistDoor(
 	req: Request,
 	url: URL,
 	perms: (projectId: string) => string[],
+	taskOf: (taskId: string) => Task | undefined,
 	record: (status: number) => void,
 	endpoint: boolean,
+	fault: string | undefined,
 ): Promise<Response | null> {
 	if (!url.pathname.startsWith('/api/assist/')) return null;
 	const answer = (body: unknown, status = 200): Response => {
@@ -558,9 +626,51 @@ export async function assistDoor(
 			),
 			422,
 		);
-	if (!endpoint)
+	const task = taskOf(body.task_id);
+	if (!task || task.project_id !== project)
+		return answer(
+			problem('not-found', 'Not Found', 404, `No task ${body.task_id} that you can see`),
+			404,
+		);
+	const key = decodeURIComponent(url.pathname.slice('/api/assist/'.length));
+	const dataset = url.searchParams.get('dataset') ?? '';
+	if (task.source.where !== dataset || task.source.keys[0] !== key)
+		return answer(
+			problem(
+				'not-found',
+				'Not Found',
+				404,
+				`unit ${key} of dataset ${dataset} is not this item's`,
+			),
+			404,
+		);
+	if (!endpoint || fault === 'no-endpoint')
 		return answer(problem('no-model-endpoint', 'Service Unavailable', 503, NO_ENDPOINT), 503);
-	if (body.model === 'stand-in-slow')
+	if (task.media.kind !== 'image')
+		return answer(
+			problem(
+				'model-refused-ask',
+				'Unprocessable Content',
+				422,
+				`assist shows a model a picture, and this item is ${task.media.kind}`,
+			),
+			422,
+		);
+	if (fault === 'busy') {
+		record(503);
+		return new Response(
+			JSON.stringify(
+				problem(
+					'model-endpoint-busy',
+					'Service Unavailable',
+					503,
+					'the model endpoint is busy or unavailable for now',
+				),
+			),
+			{ status: 503, headers: { 'content-type': 'application/problem+json', 'retry-after': '5' } },
+		);
+	}
+	if (body.model === 'stand-in-slow' || fault === 'slow')
 		return answer(
 			problem(
 				'model-endpoint-timeout',
@@ -570,13 +680,15 @@ export async function assistDoor(
 			),
 			504,
 		);
-	if (body.model === 'stand-in-failing')
+	if (body.model === 'stand-in-failing' || fault === 'fail')
 		return answer(
 			problem(
 				'model-endpoint-failed',
 				'Bad Gateway',
 				502,
-				'the model endpoint failed (500): stand-in-failing fails every ask',
+				body.model === 'stand-in-failing'
+					? 'the model endpoint failed (500): stand-in-failing fails every ask'
+					: 'the model endpoint failed (500)',
 			),
 			502,
 		);
@@ -585,5 +697,13 @@ export async function assistDoor(
 			problem('not-found', 'Not Found', 404, 'the model endpoint serves no such model'),
 			404,
 		);
-	return answer({ model: body.model, version: VERSION, proposals: proposals(body), dropped: [] });
+	const first = classesOf(task)[0]?.name ?? '';
+	const outline = { ...SEGMENT, label: first };
+	const found =
+		fault === 'polygon'
+			? [outline]
+			: fault === 'mixed'
+				? [...proposals(body, first), outline]
+				: proposals(body, first);
+	return answer({ model: body.model, version: VERSION, ...withinTheTask(found, task) });
 }

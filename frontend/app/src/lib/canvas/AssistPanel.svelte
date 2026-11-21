@@ -33,7 +33,7 @@
 		const unit = controller.unit;
 		if (unit === null || listing !== null) return;
 		failure = null;
-		const answer = await fetchModels(unit);
+		const answer = await fetchModels(unit.project, unit.task);
 		if (answer.ok) listing = answer.data;
 		else failure = answer.detail;
 	}

@@ -150,6 +150,15 @@ export function settleProposals(
 	);
 }
 
+/** The revision the unit's work is at now when it holds every row of ``ids`` (a save that wrote them landed), else null;
+ *  null too when the read fails. */
+export async function holdsRows(url: string, ids: readonly string[]): Promise<number | null> {
+	const now = await loadAnnotations(url);
+	if (!now.ok) return null;
+	const held = signaturesOf(now.data.table);
+	return ids.every((id) => held.has(id)) ? now.data.version : null;
+}
+
 /** The revision the unit's work is at now when its rows are those it held at ``before`` (0: before its first save, no
  *  rows), compared by id and each row's own fields (`signaturesOf`), else null; null too when either read fails. */
 export async function heldAsAt(url: string, before: number): Promise<number | null> {

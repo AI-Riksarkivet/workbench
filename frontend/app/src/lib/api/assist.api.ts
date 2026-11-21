@@ -55,6 +55,7 @@ const AnswerSchema = v.object({
 	dropped: v.array(v.string()),
 });
 export type AssistAnswer = v.InferOutput<typeof AnswerSchema>;
+export type AssistProposal = v.InferOutput<typeof ProposalSchema>;
 
 /** The unit an assist runs over: its project and task, its dataset and its key path. */
 export interface AssistUnit {
@@ -83,14 +84,19 @@ export interface AssistAsk {
 export const takes = (model: AssistModel, prompt: 'text' | 'box' | 'points'): boolean =>
 	model.prompts.includes(prompt);
 
-/** The models the task can ask, or why assist is unavailable. */
-export function fetchModels(unit: AssistUnit): Promise<ApiResult<AssistListing>> {
-	const query = new URLSearchParams({ project: unit.project, task_id: unit.task });
+/** The models the project can ask, each judged against the classes of its task ``task`` where one is named, or why
+ *  assist is unavailable. */
+export function fetchModels(project: string, task?: string): Promise<ApiResult<AssistListing>> {
+	const query = new URLSearchParams(task === undefined ? { project } : { project, task_id: task });
 	return readJSON(serviceUrl('annotator', `/api/assist/models?${query}`), ListingSchema, UPSTREAM);
 }
 
-/** Ask a model for proposals on the unit. */
-export function requestAssist(unit: AssistUnit, ask: AssistAsk): Promise<ApiResult<AssistAnswer>> {
+/** Ask a model for proposals on the unit; ``signal`` gives the ask up (the person stopped it, or left the page). */
+export function requestAssist(
+	unit: AssistUnit,
+	ask: AssistAsk,
+	signal?: AbortSignal,
+): Promise<ApiResult<AssistAnswer>> {
 	const path = unit.key.split('/').map(encodeURIComponent).join('/');
 	const query = new URLSearchParams({ project: unit.project, dataset: unit.dataset });
 	return writeJSON(
@@ -104,5 +110,6 @@ export function requestAssist(unit: AssistUnit, ask: AssistAsk): Promise<ApiResu
 		},
 		AnswerSchema,
 		UPSTREAM,
+		signal ? { signal } : {},
 	);
 }

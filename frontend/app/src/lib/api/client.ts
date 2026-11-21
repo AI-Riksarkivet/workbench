@@ -188,7 +188,7 @@ export function timedFetch(input: string, init: RequestInit = {}): Promise<Respo
  *  (`#lib/reauth.svelte.ts`), never a 401 a service only relays. */
 export type ApiResult<T> =
 	| { ok: true; data: T }
-	| { ok: false; status: number; detail: string; sessionRefused?: true };
+	| { ok: false; status: number; detail: string; type?: string; sessionRefused?: true };
 
 /** Lift `detail` out of an error body (FastAPI's `{detail}` and problem+json's `detail` alike). */
 function detailFrom(body: unknown, fallback: string): string {
@@ -199,12 +199,22 @@ function detailFrom(body: unknown, fallback: string): string {
 	return fallback;
 }
 
+/** The problem's own name (RFC 9457 `type`, the fragment of an `about:blank#<name>`), which says what failed where the
+ *  detail says it in the words of one item. */
+function problemType(body: unknown): string | undefined {
+	if (body === null || typeof body !== 'object' || !('type' in body)) return undefined;
+	const type = (body as { type: unknown }).type;
+	return typeof type === 'string' ? type.slice(type.indexOf('#') + 1) : undefined;
+}
+
 async function failure(res: Response, upstream: string): Promise<ApiResult<never>> {
 	const body: unknown = await res.json().catch(() => ({}));
 	const detail = detailFrom(body, `${upstream} answered ${res.status}`);
+	const type = problemType(body);
+	const refused = { ok: false as const, status: res.status, detail, ...(type ? { type } : {}) };
 	return res.status === 401 && res.headers.has('www-authenticate')
-		? { ok: false, status: res.status, detail, sessionRefused: true }
-		: { ok: false, status: res.status, detail };
+		? { ...refused, sessionRefused: true }
+		: refused;
 }
 
 /** A read of JSON, given up after {@link FETCH_TIMEOUT_MS}, parsed against `schema`. Never throws. */
@@ -287,7 +297,7 @@ export async function writeJSON<T>(
 	body: unknown,
 	schema: v.GenericSchema<unknown, T>,
 	upstream: string,
-	options: { method?: string; key?: WriteKey } = {},
+	options: { method?: string; key?: WriteKey; signal?: AbortSignal } = {},
 ): Promise<ApiResult<T>> {
 	const text = JSON.stringify(body);
 	const result = await sendWrite(
@@ -297,6 +307,7 @@ export async function writeJSON<T>(
 		upstream,
 		options.method ?? 'POST',
 		options.key?.take(text),
+		options.signal,
 	);
 	options.key?.settle(result);
 	return result;
@@ -309,6 +320,7 @@ async function sendWrite<T>(
 	upstream: string,
 	method: string,
 	idempotencyKey: string | undefined,
+	stop: AbortSignal | undefined,
 ): Promise<ApiResult<T>> {
 	let res: Response;
 	try {
@@ -319,7 +331,9 @@ async function sendWrite<T>(
 				...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
 			},
 			body: text,
-			signal: timeoutSignal(WRITE_TIMEOUT_MS),
+			signal: stop
+				? AbortSignal.any([timeoutSignal(WRITE_TIMEOUT_MS), stop])
+				: timeoutSignal(WRITE_TIMEOUT_MS),
 		});
 	} catch (err) {
 		return {

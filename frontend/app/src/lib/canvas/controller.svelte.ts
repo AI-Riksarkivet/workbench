@@ -24,6 +24,7 @@ import { PRODUCERS } from '@workbench/labeling/producers';
 import type { Zoomable } from '#lib/media/image/zoom.ts';
 import { rowSignature } from '@workbench/labeling/history';
 import { remapSpans } from './span-remap.ts';
+import { proposalFields } from './proposal-rows.ts';
 import { pointLength, pointSlice } from './text/codepoints.ts';
 import {
 	type InsertRow,
@@ -2478,7 +2479,6 @@ export class AnnotatorController implements Zoomable {
 				return;
 			}
 			const { proposals, dropped } = answer.data;
-			const source = `model:${answer.data.model}`;
 			const kept = proposals.filter(
 				(p) => this.assistMinConfidence <= 0 || p.score >= this.assistMinConfidence,
 			);
@@ -2486,29 +2486,15 @@ export class AnnotatorController implements Zoomable {
 			const added = this._group(() => {
 				if (refining) this._retractSessionRows();
 				return kept.map((p) => {
-					const shapeType = canonicalShapeType(p.shape_type) ?? p.shape_type;
+					const fields = proposalFields(answer.data, p);
 					const temporal = !this.trackMode
 						? {}
 						: {
 								t_start: this.timeCursor,
 								t_end: this.timeCursor,
-								...(shapeType === 'bbox' ? { group: newTrackId() } : {}),
+								...(fields.shape_type === 'bbox' ? { group: newTrackId() } : {}),
 							};
-					const row = makeInsertRow({
-						...temporal,
-						shape_type: shapeType,
-						x: p.x,
-						y: p.y,
-						width: p.width,
-						height: p.height,
-						polygon: p.polygon,
-						label: p.label,
-						text: p.text,
-						status: 'prediction',
-						source,
-						model_version: answer.data.version,
-						confidence: p.score,
-					});
+					const row = makeInsertRow({ ...temporal, ...fields });
 					return { id: row.id, index: this._appendInsert(row) };
 				});
 			});

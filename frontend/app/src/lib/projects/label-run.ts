@@ -16,17 +16,28 @@
  * `settleEach`): the grid holds none of an item's shapes, so the annotator settles every proposal of its work at once, on
  * the revision the grid read, as one save of its own; claimed first and released again on a refusal as a label is.
  *
+ * ASKING A MODEL about each item is the canvas's own ask (`POST /api/assist/<unit>`, `askEach`), the item claimed first
+ * as a label is, and its answer saved to it as `prediction` rows (`proposal-rows.ts`) on the revision the grid read, as
+ * one save of its own: so work that moved since is refused by its door, never overwritten, and the proposals wait for a
+ * person to keep or remove them. An ask the model did not answer (too slow, busy, failed), or whose every proposal is a
+ * shape the item's classes do not take, is that item's refusal in the annotator's words, and a claim taken for it goes
+ * back. The run's signal gives up the asks in flight when the person stops it or leaves the page.
+ *
  * AN UNDO IS THE SERVER'S. The annotator keeps what undoes each save (`draft_history`), so a label is undone by naming the
  * revision its save wrote (`revertSave`): what it removed comes back whole, with its text, attributes, provenance, scores
  * and links, never rebuilt from what the grid read. Undoing that undo redoes the label the same way.
  */
 import { makeInsertRow, type SavePayload } from '@workbench/labeling/annotations-client';
 import type { ApiResult } from '#lib/api/client.ts';
+import type { AssistAnswer, AssistAsk, AssistModel } from '#lib/api/assist.api.ts';
+import { proposalFields } from '#lib/canvas/proposal-rows.ts';
 import {
 	changeFor,
+	fits,
 	isEmpty,
 	itemTakes,
 	labelable,
+	proposedText,
 	type Change,
 	type Intent,
 } from './label-grid.ts';
@@ -35,11 +46,20 @@ import type { TaskDetail } from './types.ts';
 /** How many items are written at once: enough to hide a round trip, few enough to leave the annotator's pool to others. */
 const IN_FLIGHT = 4;
 
-/** What happened to one item. */
+/** Why an item, or a part of what was asked for it, was refused: in the item's own words (``reason``, its cell's), and
+ *  in those a summary groups it by (``group``; the reason itself when absent), which say what failed and never which
+ *  item it failed for. */
+export interface Refusal {
+	reason: string;
+	group?: string;
+}
+
+/** What happened to one item: for an ask, ``proposed`` says what the model's answer put on it and ``left`` what of it
+ *  was not kept. */
 export type Outcome =
-	| { status: 'done'; revision: number }
+	| { status: 'done'; revision: number | null; proposed?: string; left?: Refusal }
 	| { status: 'unchanged' }
-	| { status: 'refused'; reason: string }
+	| ({ status: 'refused' } & Refusal)
 	| { status: 'not-attempted'; reason: string };
 
 /** One item's label written, as an undo needs it: the revision its save wrote. */
@@ -60,6 +80,11 @@ export interface Doors {
 		revision: number,
 	): Promise<ApiResult<{ settled: number; version: number }>>;
 	revert(task: TaskDetail, revision: number): Promise<ApiResult<{ version: number }>>;
+	/** Ask a model about the item's unit, given up when ``signal`` aborts. */
+	assist(task: TaskDetail, ask: AssistAsk, signal: AbortSignal): Promise<ApiResult<AssistAnswer>>;
+	/** The revision the item's work is at now when it holds every row of ``ids`` (the save that wrote them landed), else
+	 *  null. */
+	holds(task: TaskDetail, ids: readonly string[]): Promise<number | null>;
 	/** The item as the annotator answers it now, with its work, or null when it cannot be read. */
 	reread(task: TaskDetail): Promise<TaskDetail | null>;
 	/** The revision the item's work is at now when it holds what it held before the save that wrote ``revision`` (that
@@ -72,13 +97,61 @@ export interface Doors {
 const mayHaveLanded = (status: number): boolean => status === 0 || status === 409;
 
 /** How a run tells its progress and is stopped: ``progress`` after each item settles, ``stopped`` read before each item
- *  is started (the items in flight finish). */
+ *  is started (the items in flight finish), and ``signal``, aborted on a stop and when the page is left, for a call a
+ *  run gives up rather than waits for (an ask of a model). */
 export interface Control {
 	progress(done: number): void;
 	stopped(): boolean;
+	signal: AbortSignal;
 }
 
 const STOPPED = 'stopped before it was started';
+
+/** What ``verb`` and ``why`` say of ``task`` once a claim the grid took only for this call (``claimed``) is given back,
+ *  and the same in the words a summary groups it by (``grouped``, else ``why``). */
+async function letGo(
+	task: TaskDetail,
+	claimed: boolean,
+	doors: Doors,
+	verb: string,
+	why: string,
+	grouped: string = why,
+): Promise<Required<Refusal>> {
+	const tail = (words: string): string => (words ? `: ${words}` : '');
+	if (!claimed) return { reason: `${verb}${tail(why)}`, group: `${verb}${tail(grouped)}` };
+	const released = await doors.release(task);
+	return released.ok
+		? {
+				reason: `${verb}, and released again${tail(why)}`,
+				group: `${verb}, and released again${tail(grouped)}`,
+			}
+		: {
+				reason: `${verb}${tail(why)}; it stays claimed by you (${released.detail})`,
+				group: `${verb}${tail(grouped)}; it stays claimed by you`,
+			};
+}
+
+/** The outcome of a write to ``task`` refused with ``failed``: when it may have landed (`mayHaveLanded`), what
+ *  ``landed`` finds the item holds now (null: it did not land); else that refusal, in ``verb``'s words where the grid
+ *  claimed the item only for this write (``claimed``), since a claim it cannot use goes back. */
+async function refusedOr(
+	task: TaskDetail,
+	failed: { status: number; detail: string },
+	claimed: boolean,
+	doors: Doors,
+	verb: string,
+	landed: () => Promise<Outcome | null>,
+): Promise<Outcome> {
+	if (mayHaveLanded(failed.status)) {
+		const now = await landed();
+		if (now) return now;
+	}
+	if (!claimed) return { status: 'refused', reason: failed.detail };
+	return {
+		status: 'refused',
+		reason: (await letGo(task, true, doors, verb, failed.detail)).reason,
+	};
+}
 
 /** The save body of ``change`` built on ``revision``: a confirmed proposal is an edit of its status, as the canvas keeps
  *  a proposal. */
@@ -150,21 +223,13 @@ export function applyIntent(
 			}
 			const saved = await doors.save(task, payloadOf(change, work.revision));
 			if (saved.ok) return { status: 'done', revision: saved.data.version };
-			if (mayHaveLanded(saved.status)) {
-				// Reported by what the item holds now: labelled as asked (this write landed, or another one did), or refused.
+			// Reported by what the item holds now: labelled as asked (this write landed, or another one did), or refused.
+			return refusedOr(task, saved, may.kind === 'claim-first', doors, 'not labelled', async () => {
 				const fresh = await doors.reread(task);
-				if (fresh?.work && isEmpty(changeFor(fresh.work.tags, intent, grid, mint)))
-					return { status: 'unchanged' };
-			}
-			if (may.kind !== 'claim-first') return { status: 'refused', reason: saved.detail };
-			// The grid claimed it only to label it: a claim it cannot use goes back.
-			const released = await doors.release(task);
-			return {
-				status: 'refused',
-				reason: released.ok
-					? `not labelled, and released again: ${saved.detail}`
-					: `not labelled: ${saved.detail}; it stays claimed by you (${released.detail})`,
-			};
+				return fresh?.work && isEmpty(changeFor(fresh.work.tags, intent, grid, mint))
+					? { status: 'unchanged' }
+					: null;
+			});
 		},
 		control,
 		{ status: 'not-attempted', reason: STOPPED },
@@ -195,19 +260,137 @@ export function settleEach(
 				return settled.data.settled === 0
 					? { status: 'unchanged' }
 					: { status: 'done', revision: settled.data.version };
-			if (mayHaveLanded(settled.status)) {
-				// Reported by what the item holds now: no proposal left is what was asked (this call landed, or another did).
-				const fresh = await doors.reread(task);
-				if (fresh?.work && fresh.work.proposals === 0) return { status: 'unchanged' };
+			// Reported by what the item holds now: no proposal left is what was asked (this call landed, or another did).
+			return refusedOr(
+				task,
+				settled,
+				may.kind === 'claim-first',
+				doors,
+				'not changed',
+				async () => {
+					const fresh = await doors.reread(task);
+					return fresh?.work && fresh.work.proposals === 0 ? { status: 'unchanged' } : null;
+				},
+			);
+		},
+		control,
+		{ status: 'not-attempted', reason: STOPPED },
+	);
+}
+
+/** How a summary groups an ask the model did not answer: by what failed (the problem's `type`), never by the words the
+ *  endpoint answered for one item, which its cell keeps. */
+const UNANSWERED: Readonly<Record<string, string>> = {
+	'model-endpoint-timeout': 'the model did not answer in time',
+	'model-endpoint-busy': 'the model endpoint was busy',
+	'model-endpoint-failed': 'the model endpoint failed',
+	'no-model-endpoint': 'the model endpoint is unavailable',
+	'model-refused-ask': 'the model refused the ask',
+};
+/** How a summary groups a proposal the item's classes cannot hold (the annotator's `dropped`). */
+const NO_FIT = "a shape this item's classes do not take";
+
+/** Ask ``model`` (as ``ask`` names it) about each of ``targets`` and save its answer to the item as proposals; each
+ *  item's outcome, in order. An item whose classes take no shape the model returns is not asked. */
+export function askEach(
+	targets: readonly TaskDetail[],
+	model: Pick<AssistModel, 'returns'>,
+	ask: AssistAsk,
+	doors: Doors,
+	control: Control,
+): Promise<Outcome[]> {
+	return pooled(
+		targets,
+		async (task): Promise<Outcome> => {
+			if (control.signal.aborted) return { status: 'not-attempted', reason: STOPPED };
+			const may = labelable(task);
+			if (may.kind === 'no') return { status: 'refused', reason: may.reason };
+			const kind = task.media?.kind ?? 'image';
+			if (kind !== 'image')
+				return {
+					status: 'refused',
+					reason: `a model is shown a picture, and this item is ${kind}`,
+				};
+			if (!fits(model, task))
+				return {
+					status: 'refused',
+					reason: `it returns ${model.returns.join(', ') || 'nothing named'}, no shape this item's classes take`,
+					group: NO_FIT,
+				};
+			const claimed = may.kind === 'claim-first';
+			if (claimed) {
+				const took = await doors.claim(task);
+				if (!took.ok) return { status: 'refused', reason: `not claimed: ${took.detail}` };
 			}
-			if (may.kind !== 'claim-first') return { status: 'refused', reason: settled.detail };
-			const released = await doors.release(task);
-			return {
-				status: 'refused',
-				reason: released.ok
-					? `not changed, and released again: ${settled.detail}`
-					: `not changed: ${settled.detail}; it stays claimed by you (${released.detail})`,
-			};
+			const answered = await doors.assist(task, ask, control.signal);
+			if (control.signal.aborted)
+				return {
+					status: 'not-attempted',
+					reason: (await letGo(task, claimed, doors, 'stopped while it was asked', '')).reason,
+				};
+			if (!answered.ok) {
+				const what =
+					(answered.type && UNANSWERED[answered.type]) ||
+					(answered.status === 0 ? 'no answer came' : answered.detail);
+				return {
+					status: 'refused',
+					...(await letGo(task, claimed, doors, 'not answered', answered.detail, what)),
+				};
+			}
+			const { proposals, dropped } = answered.data;
+			if (proposals.length === 0 && dropped.length > 0)
+				return {
+					status: 'refused',
+					...(await letGo(
+						task,
+						claimed,
+						doors,
+						'nothing it proposed fits',
+						dropped.join('; '),
+						NO_FIT,
+					)),
+				};
+			if (proposals.length === 0) {
+				if (!claimed) return { status: 'unchanged' };
+				const released = await doors.release(task);
+				return released.ok
+					? { status: 'unchanged' }
+					: {
+							status: 'refused',
+							reason: `it found nothing; it stays claimed by you (${released.detail})`,
+						};
+			}
+			const base = (task.work ?? { revision: 0 }).revision;
+			const inserts = proposals.map((p) => makeInsertRow(proposalFields(answered.data, p)));
+			const saved = await doors.save(task, {
+				edits: [],
+				inserts,
+				geometry: [],
+				temporal: [],
+				spans: [],
+				deletes: [],
+				base_version: base,
+			});
+			// What of the answer the item's classes could not hold is named on it beside what it kept.
+			const left =
+				dropped.length > 0 ? { left: { reason: dropped.join('; '), group: NO_FIT } } : {};
+			const done = (revision: number | null): Outcome => ({
+				status: 'done',
+				revision,
+				proposed: proposedText(answered.data),
+				...left,
+			});
+			if (saved.ok) return done(saved.data.version);
+			// Reported by what the item holds now: the rows this save wrote (it landed), or refused.
+			return refusedOr(task, saved, claimed, doors, 'not saved', async () => {
+				const at = await doors.holds(
+					task,
+					inserts.map((r) => r.id),
+				);
+				// The save from `base` wrote `base + 1`: at a later revision another save landed on top, and an undo
+				// naming that one would take it back, so the item is reported saved with no undo of its own.
+				return at === null ? null : done(at === base + 1 ? at : null);
+			});
 		},
 		control,
 		{ status: 'not-attempted', reason: STOPPED },
