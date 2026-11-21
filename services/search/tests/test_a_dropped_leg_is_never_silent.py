@@ -1,6 +1,6 @@
-"""A leg of a search that did not run must say so — no `except Exception: pass` (VS-07).
+"""A leg of a search that did not run must say so — no `except Exception: pass`.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-07. Two wholly silent swallows survived the VS-06 pass, both in the search
+Two wholly silent swallows remained, both in the search
 plane, both turning a genuine failure into a normal-looking 200:
 
   * ``service._search_all``'s FTS leg — ``rankings.append(qb.to_list())`` under a bare
@@ -17,7 +17,7 @@ plane, both turning a genuine failure into a normal-looking 200:
 The split applied here is the one `frames.py` and `vector.py` already carry
 (:mod:`search.services.query_errors`): a failure the REQUEST caused — the marker phrase
 ``Invalid user input``, or a domain :class:`ValidationError` a leg's own classifier already
-raised — drops that leg from the fusion and is LOGGED; anything else is the estate's fault and
+raised — drops that leg from the fusion and is LOGGED; anything else is the workbench's fault and
 propagates, so an outage is answered as an outage. Dropping every attempted leg is not "no hits"
 either: with nothing left to fuse, ``all`` answers 400 rather than an empty 200.
 
@@ -33,12 +33,12 @@ from typing import Any
 
 import pytest
 
-from client_kit.lancekit.descriptor import FtsBinding, VectorBinding
 from search.services import service
 from search.services.postprocess import attach_captions
 from search.services.spec import SearchSpec
 from search.services.target import SearchTarget
-from service_kit.exceptions import ValidationError
+from workbench.exceptions import ValidationError
+from workbench.lancekit.descriptor import FtsBinding, VectorBinding
 
 
 #: What Lance raises for a malformed caller predicate, verbatim in shape (see `query_errors`).
@@ -162,7 +162,7 @@ class TestTheFtsLegOfAll:
 class TestTheVectorLegsOfAll:
     def test_an_outage_is_not_swallowed(self) -> None:
         """The same rule, so the two legs of one function agree: `vector_search` re-raises an outage
-        untouched (VS-06) and `_search_all` must not re-swallow it."""
+        untouched and `_search_all` must not re-swallow it."""
         ctx = _ctx(_target(_Table(vec_exc=OUTAGE), fts=None, vectors={"semantic": _SEMANTIC}))
 
         with pytest.raises(OSError, match="connection reset"):

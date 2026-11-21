@@ -1,4 +1,4 @@
-"""ANN-11 — a task document's append-only history is bounded, and what falls off is counted.
+"""a task document's append-only history is bounded, and what falls off is counted.
 
 `Task.transitions` and `Task.review_notes` are appended on every transition, and the store rewrites the whole
 document on every write, so an unbounded trail would make the cost of an event grow with how many came before it.

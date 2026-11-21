@@ -4,7 +4,6 @@ import { datasetFacts } from '#lib/api/datasets.api.ts';
 import { datasetView } from '#lib/api/explore.api.ts';
 import { plain } from '#lib/plain/plain.svelte.ts';
 import { explore } from '#lib/explore/explore.svelte.ts';
-import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
 import { failureText } from '#lib/failure.ts';
 import type { LayoutLoad } from './$types';
 
@@ -12,7 +11,7 @@ import type { LayoutLoad } from './$types';
  * The dataset every page under `/datasets/[id]` reads, made the explorer client's active view before any
  * of them renders: every renderer reads rows through it. Panels and maps read the dataset from
  * `explore`, since a popped-out panel lives outside the page's component tree; it is opened here on
- * every navigation to another dataset, with its voice tables' probe. A descriptor the reader cannot read
+ * every navigation to another dataset. A descriptor the reader cannot read
  * is the layout's own "no such dataset" state, not an error page: the sidebar and the way back stay. A viewer
  * that could not be reached (no answer, or a gateway's 502, 503 or 504) is told apart from that, since the
  * dataset may well exist: `unreachable`, with a way to try again.
@@ -56,6 +55,5 @@ export const load: LayoutLoad = async ({ params, url, parent }) => {
 	if (explore.dataset !== params.id)
 		return { id: params.id, failure: null, unreachable: false, view: null, facts };
 	setActiveView(view);
-	voiceSearch.probe();
 	return { id: params.id, failure: null, unreachable: false, view, facts };
 };

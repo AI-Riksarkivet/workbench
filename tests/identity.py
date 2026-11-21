@@ -6,7 +6,7 @@ token client reach it over HTTP as they reach a real provider, in one of two sha
 - `keycloak`: it advertises DPoP, and its token endpoint holds the RFC 8693 request to the rules a provider applies: the
   grant type, a subject token it issued and can verify, its type, the audience asked for, and the confidential client's
   authentication; a client-credentials request is answered for the client itself.
-- `dex`: as Dex v2.46.1 behaves (rask's ADR 0181, its dev Dex's discovery read 2026-11-16): no DPoP in discovery, the
+- `dex`: as Dex v2.46.1 behaves (the development cluster's Dex, its discovery read 2026-11-16): no DPoP in discovery, the
   token-exchange grant advertised but refused for one of its own tokens (Dex exchanges only an upstream connector's), a
   client-credentials token issued for an audience only to a client asking for `audience:server:client_id:<audience>`,
   with `aud: [<audience>, <client>]`, `azp` the client and `sub` Dex's encoding of the client id.
@@ -36,7 +36,7 @@ from joserfc import jws
 from joserfc.jwk import ECKey
 from jwt.algorithms import RSAAlgorithm
 
-from service_kit.governed.token_exchange import LakehouseTokens
+from workbench.governed.token_exchange import LakehouseTokens
 
 
 TOKEN_EXCHANGE: Final = "urn:ietf:params:oauth:grant-type:token-exchange"

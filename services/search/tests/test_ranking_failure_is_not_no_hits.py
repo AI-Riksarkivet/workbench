@@ -1,6 +1,6 @@
 """A search plane that has stopped ranking must not answer 200 with an empty list.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" (E9's sharpest claim, an E4 fail-open in substance) — "`frames.py`'s
+(E9's sharpest claim, an E4 fail-open in substance) — "`frames.py`'s
 `_ranked_or_fallback` is `try: return rank(scoped=True) / except: pass` → fall through, so a search
 plane that has stopped ranking anything returns an empty 200 no test can tell from 'no hits'".
 
@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 from search.services import frames
-from service_kit.exceptions import ServiceUnavailableError
+from workbench.exceptions import ServiceUnavailableError
 
 
 def _rank_that(*, scoped_exc: Exception | None, unscoped_exc: Exception | None, rows: list[dict[str, Any]] | None = None):

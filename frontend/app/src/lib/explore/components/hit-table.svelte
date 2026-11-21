@@ -1,6 +1,6 @@
 <script lang="ts" module>
 	import type { Hit } from '@workbench/explorer-api';
-	import { relevanceOf, isVoiceHit } from '@workbench/explorer-api';
+	import { relevanceOf } from '@workbench/explorer-api';
 	import { activeView, type DatasetView } from '@workbench/explorer-api/descriptor';
 	import { fmtTime } from '#lib/explore/utils.ts';
 
@@ -91,16 +91,6 @@
 					const r = relevanceOf(h);
 					return r != null ? r.toFixed(3) : '';
 				},
-			},
-			{
-				// Voice-search results only (blank for text hits): the matched diarized
-				// turn — per-video speaker label plus the turn's time span.
-				key: 'speaker',
-				label: 'Speaker',
-				render: (h) =>
-					isVoiceHit(h)
-						? `${h.speaker_label} · ${fmtTime(h.turn_start)}–${fmtTime(h.turn_end)}`
-						: '',
 			},
 		];
 
@@ -459,10 +449,8 @@
 							{@const rowKey = hitKey(hit)}
 							{@const playing = audioPreview.isPlaying(rowKey)}
 							{@const failed = audioPreview.isFailed(view.docId(hit))}
-							<!-- Voice hits preview the matched diarized TURN (the audio that
-                   actually matched), not the max-overlap ASR chunk span. -->
-							{@const clipStart = isVoiceHit(hit) ? hit.turn_start : (view.time(hit)?.start ?? 0)}
-							{@const clipEnd = isVoiceHit(hit) ? hit.turn_end : (view.time(hit)?.end ?? 0)}
+							{@const clipStart = view.time(hit)?.start ?? 0}
+							{@const clipEnd = view.time(hit)?.end ?? 0}
 							<td class="px-2 py-1 align-top">
 								<!-- One shared <audio> behind every button (audioPreview):
                      playing a row pauses any other, clicking again pauses. -->

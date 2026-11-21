@@ -84,7 +84,7 @@ from annotator.projects.models import (
 from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, membership_violation, validate_against_ontology
 from annotator.state.task_query import Contributor, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, page_of, work_of
 from annotator.text import storable_json, storable_text
-from service_kit.exceptions import ConflictError, DomainError
+from workbench.exceptions import ConflictError, DomainError
 
 
 if TYPE_CHECKING:

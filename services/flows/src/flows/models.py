@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from service_kit.exceptions import DomainError
+from workbench.exceptions import DomainError
 
 
 #: A node's `output_text` is truncated to this many characters before it leaves the service.
@@ -169,7 +169,7 @@ class RunRefused(BaseModel):
     structured `problems` list (an extension member, which the RFC explicitly allows).
 
     DOCUMENTATION ONLY: this is what `create_run` declares under `responses={422: ...}` so the
-    OpenAPI describes the refusal. The body itself is produced by the estate's one problem handler
+    OpenAPI describes the refusal. The body itself is produced by the one problem handler
     from `RunRefusedError` below — the route used to build this model and return it as a
     `JSONResponse`, which made this service the only one with a second error plane
     (FLOWS-422-BYPASSES-HIERARCHY).
@@ -185,7 +185,7 @@ class RunRefused(BaseModel):
 class RunRefusedError(DomainError):
     """A graph that does not validate, RAISED rather than returned.
 
-    The reason this could not exist before is recorded in `service_kit.exceptions`: `_problem` built
+    The reason this could not exist before is recorded in `workbench.exceptions`: `_problem` built
     four keys and dropped everything else, so the `problems` LIST — the whole substance of this
     refusal, and what the studio builder highlights nodes from — had nowhere to ride. The hierarchy
     now carries extension members, so the refusal is an exception like every other refusal in the
@@ -248,7 +248,7 @@ class RunRequest(BaseModel):
     `seeds` is keyed by NODE ID and holds text only. Bytes inputs (the `image` node kind) are a
     FRONTEND-ONLY lane in v0: an image rides the studio zone's own `+server.ts` straight to Serve
     because base64-ing it through a JSON envelope costs a third more bytes and triple-buffers it
-    (the estate's transport ruling). So a server-side run that reaches an `image` node fails that
+    So a server-side run that reaches an `image` node fails that
     node by design — see `executor.dispatch` — rather than pretending to have data it never got.
     """
 

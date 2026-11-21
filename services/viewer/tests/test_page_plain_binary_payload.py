@@ -1,6 +1,6 @@
 """A plain ``large_binary`` payload column is served, not 500'd — both routes, one answer.
 
-Adversarial re-audit of VS-05's fix (8834b95a): ``table`` is a free caller-supplied catalog id, so a
+``table`` is a free caller-supplied catalog id, so a
 ``payload`` that is a plain ``large_binary`` column rather than blob-v2 is a reachable shape — and
 `_page_rows` says exactly that in its own docstring, branching the LISTING on
 ``is_blob_field(ds.schema.field("payload"))``. But `_take_page` called
@@ -8,7 +8,7 @@ Adversarial re-audit of VS-05's fix (8834b95a): ``table`` is a free caller-suppl
 table answered 200 on ``/api/pages`` and 500 on ``/api/page``. A listing that advertises pages the
 byte route then refuses to serve is worse than either route failing alone.
 
-The listing branch is here too, and what it must NOT do is the other half of VS-05: this shape carries
+The listing branch is here too, and what it must NOT do is the other half of the bound: this shape carries
 no blob descriptor, so the only place its per-row length and validity exist is the payload itself, and
 reading that to answer a ``can_get_metadata`` call is the corpus-sized read the finding is about. It
 therefore reports both unknown; the byte route below stays the authority on presence.
@@ -28,14 +28,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.exceptions import register_handlers
-from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import namespace_client, write_table
 from viewer.api.v1.endpoints import pages as pg
 from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
+from workbench.exceptions import register_handlers
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 TABLE: str = "lake~acme$bronze$pages"

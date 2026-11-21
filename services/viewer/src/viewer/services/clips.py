@@ -22,8 +22,8 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
-from service_kit.exceptions import ServiceUnavailableError
 from viewer.services.build_slots import BuildSlots
+from workbench.exceptions import ServiceUnavailableError
 
 
 logger = logging.getLogger(__name__)

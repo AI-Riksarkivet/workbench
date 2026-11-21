@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 
 from lancedb.query import MatchQuery
 
-from client_kit.lancekit.predicate import eq
 from search.services.constants import (
     VECTOR_MAX_NPROBES,
     VECTOR_NPROBES,
@@ -27,7 +26,8 @@ from search.services.constants import (
 )
 from search.services.postprocess import RowKey, row_key
 from search.services.query_errors import is_caller_input_error
-from service_kit.exceptions import ServiceUnavailableError, ValidationError
+from workbench.exceptions import ServiceUnavailableError, ValidationError
+from workbench.lancekit.predicate import eq
 
 
 #: Cap on OR-of-ANDs composite-key clauses in the frame→row join — Lance's

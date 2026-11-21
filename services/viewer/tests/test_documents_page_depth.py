@@ -1,11 +1,11 @@
 """`?page=1000000` was a legal request against the document gallery.
 
-open_fastapi-audit — "The estate's only offset-paginated route has no MAX_OFFSET guard and runs an
+The defect: "The workbench's only offset-paginated route has no MAX_OFFSET guard and runs an
 unconditional `count_rows()` on a Lance table".
 
 HALF THE FINDING HOLDS AND HALF IS WITHDRAWN BY ITS OWN VERIFIER, and only the half that holds is
 implemented. Real: `page: Annotated[int, Query(ge=1)] = 1` has no upper bound, so the derived offset
-is unbounded and `grep -rn 'MAX_OFFSET'` returned zero across the estate — nothing implemented the
+is unbounded and `grep -rn 'MAX_OFFSET'` returned zero across the code — nothing implemented the
 reference's guard.
 
 Not implemented, deliberately: `total = ds.count_rows() if page == 1 else None`. The verifier
@@ -37,11 +37,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     `get_state` is overridden rather than monkeypatched because it is a real FastAPI dependency;
     `dataset_handle` is a plain call inside the body, so it is patched at the module that calls it.
     """
-    from client_kit.media.config import MediaSettings
-    from client_kit.media.deps import get_state
-    from client_kit.media.state import AppState
-    from service_kit.exceptions import register_handlers
     from viewer.api.v1.endpoints import system
+    from workbench.exceptions import register_handlers
+    from workbench.media.config import MediaSettings
+    from workbench.media.deps import get_state
+    from workbench.media.state import AppState
 
     class _Declared:
         document = None
@@ -84,7 +84,7 @@ def test_the_page_size_ceiling_is_still_enforced(client: TestClient) -> None:
 
 # ── the envelope ────────────────────────────────────────────────────────────────────────────────
 #
-# The other half of the same finding: `Page[Item]` in `client_kit.pagination` would be an envelope
+# The other half of the same finding: `Page[Item]` in `viewer.api.v1.pagination` would be an envelope
 # nothing sends. The gallery is its natural first consumer, and it is the reference's own argument —
 # `pages`/`has_next`/`has_prev` belong on the wire so a client is not computing them from a partial
 # view and drifting off-by-one from the server.

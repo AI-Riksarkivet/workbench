@@ -18,14 +18,14 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
-from client_kit.lancekit.registry import DatasetRegistry
-from client_kit.media.config import MediaSettings
 from search.services.result_cache import run_cached
 from search.services.spec import SearchSpec
-from service_kit.exceptions import ForbiddenError
-from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
+from workbench.exceptions import ForbiddenError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.registry import DatasetRegistry
+from workbench.media.config import MediaSettings
 
 
 _DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "search": {"row_table": "chunks"}}

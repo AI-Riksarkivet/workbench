@@ -5,9 +5,7 @@ description = "The annotator: a labeling tool that works on the lakehouse throug
 requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = [
-    "service-kit[governed,arrow]",
-    # The media app factory and lifespan the annotator is built on, and the dataset registry it reads.
-    "client-kit",
+    "workbench",
     "fastapi>=0.115",
     "pydantic>=2.7",
     "uvicorn[standard]>=0.30",
@@ -28,23 +26,4 @@ build-backend = "hatchling.build"
 packages = ["src/annotator"]
 
 [tool.uv.sources]
-client-kit = { workspace = true }
-service-kit = { workspace = true }
-
-# The annotator's own import-layer rule, run by `make lint-imports` beside the lakehouse's `.importlinter`, so it
-# travels with the annotator and the lakehouse's contracts name no annotator module.
-[tool.importlinter]
-root_packages = ["annotator", "service_kit", "client_kit"]
-include_external_packages = true
-
-[[tool.importlinter.contracts]]
-name = "importing annotator.projects pulls in no lancekit / registry"
-type = "forbidden"
-source_modules = ["annotator.projects.machines", "annotator.projects.models", "annotator.projects.ontology"]
-forbidden_modules = ["client_kit.lancekit"]
-
-[[tool.importlinter.contracts]]
-name = "XC-186: annotator imports nothing from lakehouse_kit, the lakehouse's kernel, by any chain"
-type = "forbidden"
-source_modules = ["annotator", "client_kit"]
-forbidden_modules = ["lakehouse_kit"]
+workbench = { workspace = true }

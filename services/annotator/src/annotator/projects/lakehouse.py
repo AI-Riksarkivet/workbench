@@ -1,7 +1,7 @@
 """The lakehouse side of the publish saga — the concrete :class:`~annotator.projects.saga.Publisher`.
 
 Posts through the catalog's REST API over the stock Lance Namespace SDK, the stack the media plane's
-merge transport uses (`client_kit.lancekit.catalog`) — **the annotator never writes Lance directly**
+merge transport uses (`workbench.lancekit.catalog`) — **the annotator never writes Lance directly**
 (§7.1): the catalog is what places the new table in its namespace's authorization graph and emits the
 ``CREATE`` RunEvent.
 
@@ -47,11 +47,11 @@ from lance_namespace import DescribeNamespaceRequest, LanceNamespace
 from annotator.core.config import get_annotator_settings
 from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, PublishRefusal, publish_namespace
 from annotator.projects.saga import LostLease, Publisher, PublishOutcome, run_publish
-from client_kit.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog, translate_catalog_errors
-from client_kit.sources import SOURCE_SEPARATOR
-from service_kit.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
-from service_kit.governed.token_exchange import LakehouseTokens
-from service_kit.naming import CATALOG_DELIMITER
+from workbench.exceptions import ForbiddenError, NotFoundError, ServiceUnavailableError
+from workbench.governed.token_exchange import LakehouseTokens
+from workbench.lancekit.catalog import NamespaceCatalogWriteTransport, connect_catalog, translate_catalog_errors
+from workbench.naming import CATALOG_DELIMITER
+from workbench.sources import SOURCE_SEPARATOR
 
 
 if TYPE_CHECKING:
@@ -60,8 +60,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The catalog Context headers that name a write's run and its inputs (ADR 0156 C2): the run is the commit's OpenLineage
-#: parent, a UUID run id with its job's namespace and name (ADR 0191).
+#: The catalog Context headers that name a write's run and its inputs (`docs/rask/WRITE-GOVERNANCE.md`,
+#: `docs/rask/COMMIT-EVENTS.md`): the run is the commit's OpenLineage parent, a UUID run id with its job's namespace and
+#: name.
 RUN_ID_HEADER = "x-rask-run-id"
 JOB_NAMESPACE_HEADER = "x-rask-job-namespace"
 JOB_HEADER = "x-rask-job"
@@ -85,7 +86,7 @@ def _arrow_stream_bytes(plan: PublishPlan) -> bytes:
     all-sentinel publish still produces correctly-typed columns."""
     import pyarrow as pa  # noqa: PLC0415 - heavy import, publish path only
 
-    from service_kit.arrow_ipc import encode_arrow_stream  # noqa: PLC0415 - keeps pyarrow off module import
+    from workbench.arrow_ipc import encode_arrow_stream  # noqa: PLC0415 - keeps pyarrow off module import
 
     return encode_arrow_stream(pa.Table.from_pylist(plan.rows, schema=PUBLISHED_LABELS_SCHEMA))
 
@@ -116,7 +117,7 @@ class CatalogPublisher:
         return self._source
 
     def _in_lakehouse(self, table: str) -> list[str]:
-        """A captured input's lakehouse id: its qualified name (``<source>~<id>``, `client_kit.sources`) without the source;
+        """A captured input's lakehouse id: its qualified name (``<source>~<id>``, `workbench.sources`) without the source;
         the saga passes only the lakehouse's own tables as inputs (`annotator.projects.publish.publish_inputs`).
 
         Raises:

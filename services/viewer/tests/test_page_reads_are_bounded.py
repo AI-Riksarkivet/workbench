@@ -1,6 +1,6 @@
 """Serving ONE page must not read the whole corpus, and listing metadata must read no bytes at all.
 
-VS-05 — "`/api/page` and `/api/pages` materialize every page blob in the dataset to serve one image
+"`/api/page` and `/api/pages` materialize every page blob in the dataset to serve one image
 or one page of metadata".
 
 Both routes issued the same unfiltered, unbounded `read_aligned_table(ds, columns=[..., "payload"])`
@@ -40,14 +40,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from lance import BlobFile, blob_array, blob_field
 
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.exceptions import register_handlers
-from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import namespace_client, write_table
 from viewer.api.v1.endpoints import pages as pg
 from viewer.api.v1.endpoints.pages import router
 from viewer.core.config import ViewerSettings, get_viewer_settings
+from workbench.exceptions import register_handlers
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 TABLE: str = "lake~acme$bronze$pages"
@@ -80,7 +80,7 @@ def dataset_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A REAL bronze-shaped blob-v2 dataset: 8 payload rows plus one null.
 
     `data_storage_version="2.2"` is mandatory (blob v2 refuses anything below it) and
-    `enable_stable_row_ids=True` matches how the medallion writes — the `_rowid` the fixed route
+    `enable_stable_row_ids=True` matches how a pipeline writes — the `_rowid` the fixed route
     resolves is then the same stable id production would resolve.
     """
     ids = [*range(ROWS_WITH_PAYLOAD), NULL_ROW_ID]

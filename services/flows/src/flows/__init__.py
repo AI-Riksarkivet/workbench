@@ -12,7 +12,7 @@ routers under `WORKBENCH_API_PREFIX` (`/api` in the chart and in `scripts/local-
 
 from flows import health, routes
 from flows.lifespan import lifespan
-from service_kit import make_service_app
+from workbench.app import make_service_app
 
 
 app = make_service_app(

@@ -1,6 +1,6 @@
 """A reranker's scores must line up with the candidates it was given, one per candidate.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" `VS-14` (E4, med). `rerank` promised "one relevance score per candidate, in input
+`rerank` promised "one relevance score per candidate, in input
 order" and delivered it only when the server returned a DENSE, full-length result list. It built the
 answer with `sorted((item.index, score) for item in results)` and returned the scores stripped of
 their indices — so a SHORT list (the server scored fewer than it was asked) or a SPARSE one (it
@@ -65,7 +65,7 @@ def test_a_sparse_reply_does_not_shift_scores_onto_the_wrong_candidate(monkeypat
     scores = _reranker([RerankResult(index=0, relevance_score=0.1), RerankResult(index=2, relevance_score=0.9)], monkeypatch).rerank("q", ["a", "b", "c"])
     assert len(scores) == 3, "the reply was short and the result silently lost a candidate"
     assert scores[0] == 0.1
-    assert scores[2] == 0.9, "candidate 2's score landed on candidate 1 — the misalignment VS-14 names"
+    assert scores[2] == 0.9, "candidate 2's score landed on candidate 1"
 
 
 def test_the_result_length_always_equals_the_candidate_count(monkeypatch: pytest.MonkeyPatch) -> None:

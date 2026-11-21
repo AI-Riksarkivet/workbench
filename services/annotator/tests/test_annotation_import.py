@@ -23,7 +23,7 @@ import pytest
 
 from annotator.projects.imports import shapes_from_ipc
 from annotator.projects.ontology import LabelClass, LabelOntology, RelationClass
-from service_kit.exceptions import ValidationError
+from workbench.exceptions import ValidationError
 
 
 #: The annotator's default body cap (WORKBENCH_MAX_BODY_BYTES), far above every body here.

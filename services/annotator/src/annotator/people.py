@@ -1,7 +1,7 @@
 """People by name: what the app shows for a principal, from the person's own verified token and from nowhere else.
 
 A principal (`dex~08a8…`) is what every grant, claim and review records, and it is unreadable to a person. A name is
-known honestly in one place only: the claims of the token the shared door verified (`service_kit.governed.deps`). So:
+known honestly in one place only: the claims of the token the shared door verified (`workbench.governed.deps`). So:
 
 - **The signed-in person** reads their own name off their own token at `/me` (`display_name`), and that read REGISTERS
   it (`register_person`): the app calls `/me` once each time a person signs in, so a person granted a role is known by

@@ -85,7 +85,7 @@ class Identity:
     @classmethod
     def workbench(cls) -> Identity:
         """The workbench's confidential client signed in for itself, with the grant and audience the annotator asks for
-        (`service_kit.governed.token_exchange.LakehouseTokens.for_service`)."""
+        (`workbench.governed.token_exchange.LakehouseTokens.for_service`)."""
         with open(WORKBENCH_CLIENT_SECRET_FILE, encoding="utf-8") as secret:
             credentials = (WORKBENCH_CLIENT, secret.read().strip())
         answer = requests.post(f"{DEX}/token", data={"grant_type": "client_credentials", "audience": LAKEHOUSE_AUDIENCE}, auth=credentials, timeout=20)

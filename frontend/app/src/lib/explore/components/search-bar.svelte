@@ -9,15 +9,14 @@
 	import SearchSettings from '#lib/explore/components/search-settings.svelte';
 	import { activeView, type SearchSpec, type SearchMode } from '@workbench/explorer-api';
 	import { untrack, type Snippet } from 'svelte';
-	import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
 	import { serviceHealth } from '#lib/explore/service-health.svelte.ts';
-	import { AudioLines, Loader2, Paperclip, Search, X, ImagePlus } from '@lucide/svelte';
+	import { Paperclip, Search, X, ImagePlus } from '@lucide/svelte';
 	import { on } from 'svelte/events';
 
 	type Props = {
 		spec: SearchSpec;
 		onsubmit?: (spec: SearchSpec) => void;
-		/** Bump when the spec was replaced EXTERNALLY (SavedViews apply, voice flows):
+		/** Bump when the spec was replaced EXTERNALLY (SavedViews apply, deep links):
 		 *  the bar re-adopts the spec into its dials. Echoes of the bar's own submit
 		 *  must NOT bump — adoptSpec is a lossy inverse of buildSpec, so adopting an
 		 *  echo would flip custom vector-space/image modes and reset latent dials. */
@@ -48,7 +47,7 @@
 	let imageFile = $state<File | null>(null);
 
 	/** The ONE spec→locals mapping — at init and whenever the spec is replaced
-	 *  externally (SavedViews apply, voice/atlas flows), so the bar always shows
+	 *  externally (SavedViews apply, deep links, atlas flows), so the bar always shows
 	 *  what will actually run. Replaces the parent's old force-remount hack. */
 	function adoptSpec(s: SearchSpec): void {
 		kind =
@@ -85,7 +84,7 @@
 	});
 
 	// Title-case a raw vector-space key for a dial label ('audio' → 'Audio',
-	// 'voice_print' → 'Voice Print').
+	// 'frame_caption' → 'Frame Caption').
 	const humanize = (key: string): string =>
 		key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
@@ -117,23 +116,11 @@
 				opts.push({ value: s.key, label: humanize(s.key) });
 			}
 		}
-		// A diarized dataset whose voice tables are not built says so where a person looks for voice search, rather than
-		// leaving the mode silently absent.
-		const voiceAbsent =
-			view.hasCapability('diarization') && voiceSearch.status !== null && !voiceSearch.built;
-		if (voiceAbsent)
-			opts.push({
-				value: 'voice',
-				label: 'Voice — needs voice tables this dataset has not built',
-				disabled: true,
-			});
 		// Every non-keyword, non-scene mode needs a query encoder; a declared embedding space does too.
 		return opts.map((o) =>
-			o.value === 'voice'
-				? o
-				: blocked && (encoderModes.has(o.value) || !['keyword', 'scene'].includes(o.value))
-					? { ...o, label: `${o.label} — encoder offline`, disabled: true }
-					: o,
+			blocked && (encoderModes.has(o.value) || !['keyword', 'scene'].includes(o.value))
+				? { ...o, label: `${o.label} — encoder offline`, disabled: true }
+				: o,
 		);
 	});
 
@@ -204,27 +191,6 @@
 	}
 
 	let fileInput = $state<HTMLInputElement | null>(null);
-
-	// ── Voice clip attach ("find this voice" from an uploaded snippet) ──
-	// Gated on voiceSearch.built (the page's one-shot status probe). Picking a
-	// file auto-applies: requestUpload() queues it on the shared store and the
-	// search page consumes it — no submit step, mirroring the image affordance.
-	let audioInput = $state<HTMLInputElement | null>(null);
-	/** Inline error for a rejected clip (too large) — never sent to the API. */
-	let audioError = $state<string | null>(null);
-	/** Mirrors the backend cap (`services/viewer/services/voice_service.py` _MAX_UPLOAD_BYTES);
-	 *  bigger files would 400 server-side, so they're refused client-side. */
-	const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-
-	function pickAudio(f: File) {
-		audioError = null;
-		if (f.size > MAX_AUDIO_BYTES) {
-			const mb = (f.size / (1024 * 1024)).toFixed(1);
-			audioError = `"${f.name}" is ${mb} MB — voice clips are capped at 25 MB. Trim to a few seconds of one person speaking.`;
-			return;
-		}
-		voiceSearch.requestUpload(f);
-	}
 
 	function dropZone(node: HTMLElement) {
 		const onDragOver = (e: DragEvent) => e.preventDefault();
@@ -343,34 +309,6 @@
 						}}
 					/>
 				{/if}
-				{#if voiceSearch.built}
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						disabled={voiceSearch.uploadPending}
-						title="Attach a short audio clip (≤ 25 MB) — find everywhere this voice speaks"
-						onclick={() => audioInput?.click()}
-					>
-						{#if voiceSearch.uploadPending}
-							<Loader2 class="animate-spin" />
-						{:else}
-							<AudioLines />
-						{/if}
-						<span class="sr-only @2xl:not-sr-only">Voice</span>
-					</Button>
-					<input
-						bind:this={audioInput}
-						type="file"
-						accept="audio/*,video/mp4,.m4a,.mp3,.wav"
-						class="hidden"
-						onchange={(e) => {
-							const f = e.currentTarget.files?.[0];
-							e.currentTarget.value = '';
-							if (f) pickAudio(f);
-						}}
-					/>
-				{/if}
 				<SearchSettings
 					bind:resultN
 					bind:rerank
@@ -442,10 +380,6 @@
 					Search
 				</Button>
 			</div>
-		{/if}
-
-		{#if audioError}
-			<p class="text-destructive text-xs" role="alert">{audioError}</p>
 		{/if}
 
 		{#if imagePreview && imageFile}

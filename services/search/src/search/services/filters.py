@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from client_kit.lancekit.predicate import eq
+from workbench.lancekit.predicate import eq
 
 
 # The one filterable with non-equality semantics: a topic name exact-matches ANY

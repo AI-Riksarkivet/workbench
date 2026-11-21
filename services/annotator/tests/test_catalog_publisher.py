@@ -11,7 +11,7 @@ holds up to the saga:
 - every call presents the annotator's own projected ServiceAccount token, read again for that call
   because the kubelet replaces it before it expires, and names the person the publish is for on
   `x-lance-originator`: the service authors every event the publish produces, so the header is the
-  only place the human survives (ADR 0171).
+  only place the human survives.
 - a create the catalog does not take is sent again, which `mode=exist_ok` makes safe, and only
   `CREATE_ATTEMPTS` times.
 """
@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from annotator.projects import lakehouse
 from annotator.projects.lakehouse import CatalogPublisher
 from annotator.projects.publish import PUBLISHED_LABELS_SCHEMA, PublishPlan, PublishRefusal
-from service_kit.exceptions import ServiceUnavailableError
+from workbench.exceptions import ServiceUnavailableError
 
 
 def _plan(rows: int = 1) -> PublishPlan:

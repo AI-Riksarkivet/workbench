@@ -17,8 +17,8 @@
  * A list is the parameter repeated rather than one value joined by a separator, so no value needs a
  * separator escaped and the query stays as `URLSearchParams` writes it.
  *
- * Every other parameter (`project`, `table`, the voice search's `voice_*`) is the page's own and is kept
- * as it is. Pure, so the round trip is testable without a browser.
+ * Every other parameter (`project`, `table`) is the page's own and is kept as it is. Pure, so the round
+ * trip is testable without a browser.
  */
 import { readSetups, SETUP_PARAMS, writeSetups, type Setups } from '#lib/plain/setup.ts';
 import { isPanelId, type PanelId } from './layout.ts';

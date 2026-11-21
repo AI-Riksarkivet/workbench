@@ -13,7 +13,7 @@ from annotator.annotations.access import ReadableUnit, UnitKey
 from annotator.api.dependencies import StoreDep
 from annotator.api.security import READS_DATASET
 from annotator.state.store import MAX_DRAFT_HISTORY
-from client_kit.media.deps import DatasetParam
+from workbench.media.deps import DatasetParam
 
 
 router = APIRouter(tags=["annotate"])

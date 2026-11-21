@@ -4,7 +4,7 @@ from functools import lru_cache
 
 from pydantic import Field
 
-from client_kit.media.config import GovernedMediaSettings, MediaSettings
+from workbench.media.config import GovernedMediaSettings, MediaSettings
 
 
 class SearchSettings(GovernedMediaSettings):

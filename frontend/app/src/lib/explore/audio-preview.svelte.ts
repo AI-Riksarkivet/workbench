@@ -9,7 +9,7 @@
  * same signed media link the player uses (`media.ts`) plus a media
  * fragment `#t=start,end`, so the browser range-requests straight to the
  * chunk; engines that ignore the END fragment are stopped by the timeupdate
- * guard below. Mirrors the `voiceSearch` singleton pattern.
+ * guard below.
  */
 import { SvelteSet } from 'svelte/reactivity';
 import { activeView } from '@workbench/explorer-api/descriptor';

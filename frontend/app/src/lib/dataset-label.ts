@@ -1,6 +1,6 @@
 /**
  * A dataset's name as a person reads it: its id is the source's name, a `~`, and the namespace within
- * the source (`client_kit.sources`), the root's being empty. Pure, so the list and the dataset's own
+ * the source (`workbench.sources`), the root's being empty. Pure, so the list and the dataset's own
  * page name it alike.
  */
 

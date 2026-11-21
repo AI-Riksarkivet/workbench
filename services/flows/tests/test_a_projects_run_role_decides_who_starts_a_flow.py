@@ -21,9 +21,9 @@ from fastapi.testclient import TestClient
 
 from flows.lifespan import lifespan
 from flows.routes import router
-from service_kit import make_service_app
 from tests.identity import IDP_ID, WORKBENCH_AUDIENCE, BrowserKey, Provider
 from tests.openfga import OpenFgaStore
+from workbench.app import make_service_app
 
 
 BODY = {"graph": {"nodes": [{"id": "t", "kind": "text"}, {"id": "s", "kind": "inspect"}], "edges": [{"source": "t", "target": "s"}]}, "seeds": {"t": "hi"}}

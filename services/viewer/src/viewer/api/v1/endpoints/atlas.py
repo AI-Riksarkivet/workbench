@@ -30,25 +30,25 @@ import lance
 from fastapi import APIRouter, Header, Query, Response
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.alignments import parse_alignments_json
-from client_kit.lancekit.descriptor import AtlasSpace, Declared
-from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
-from client_kit.lancekit.predicate import and_, eq, isin, or_
-from client_kit.lancekit.registry import DatasetHandle, table_dataset
-from client_kit.media.cache_bounds import keep_shared
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.frames import FRAME_INDEX_COLUMN
-from client_kit.media.state import AppState, dataset_handle
-from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
-from service_kit.arrow_rows import arrow_rows_response
-from service_kit.exceptions import NotFoundError, ValidationError
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
 from viewer.api.v1.endpoints.system import DURATION_COLUMN
 from viewer.core.config import viewer_settings
 from viewer.schemas.atlas import AtlasStatusResponse, ChunkHits, ChunkKeys, ChunkRowIds
+from viewer.services.alignments import parse_alignments_json
 from viewer.services.points import build_points
+from workbench.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
+from workbench.arrow_rows import arrow_rows_response
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.descriptor import AtlasSpace, Declared
+from workbench.lancekit.keys import chunk_key_filter, validate_doc_key
+from workbench.lancekit.predicate import and_, eq, isin, or_
+from workbench.lancekit.registry import DatasetHandle, table_dataset
+from workbench.media.cache_bounds import keep_shared
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.frames import FRAME_INDEX_COLUMN
+from workbench.media.state import AppState, dataset_handle
 
 
 logger = logging.getLogger(__name__)
@@ -356,7 +356,7 @@ def atlas_chunks_by_key(caller: CallerDep, state: StateDep, body: ChunkKeys, dat
 @router.post("/chunks", dependencies=[READS_DATASET])
 def atlas_chunks(caller: CallerDep, state: StateDep, body: ChunkRowIds, dataset: DatasetParam = None) -> Response:
     """Full hits for a lasso/box/legend selection, addressed by ``_rowid``: one Arrow IPC stream of rows
-    (`service_kit.arrow_rows`), since a selection is up to 1000 full corpus rows.
+    (`workbench.arrow_rows`), since a selection is up to 1000 full corpus rows.
 
     A flat ``_rowid IN (...)`` predicate lets Lance fetch exactly the selected
     rows by address (~one random-access take, not a filtered full scan), so a

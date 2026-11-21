@@ -4,7 +4,7 @@
 The batch door is a door like any other: a verified person, and every cell it names resolved as that person, from their
 own catalog read of the table at the version it names, so a cell the catalog does not let them read is never named.
 The link is then the permission (owner decision on #9): the GET reads exactly the signed cell, at the signed version, as
-the viewer's own identity on its client-credentials token (`service_kit.governed.deps.lakehouse_service_caller`), for as
+the viewer's own identity on its client-credentials token (`workbench.governed.deps.lakehouse_service_caller`), for as
 long as the signature is valid (`viewer.services.signed_media`). No person's token is held for it, so any replica serves
 it, and the workbench's client must hold a read grant on what its people may sign.
 
@@ -34,24 +34,24 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.blobs import is_blob_field
-from client_kit.lancekit.keys import validate_doc_key
-from client_kit.lancekit.predicate import eq
-from client_kit.lancekit.registry import DatasetHandle, reason_for, table_dataset
-from client_kit.media.deps import StateDep
-from client_kit.media.frames import frame_row
-from client_kit.media.source_gate import may_read, require_read
-from client_kit.media.state import AppState, dataset_handle
-from client_kit.sources import connect_source
-from service_kit.exceptions import ForbiddenError, NotFoundError
-from service_kit.governed.deps import lakehouse_service_caller
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import CallerDep, CheckerDep, CurrentSubject, SettingsDep
 from viewer.api.v1.endpoints.media import ByteRange, RangeVerdict, parse_range, served_media_type
 from viewer.api.v1.endpoints.pages import open_page_table, sniff_media_type
 from viewer.services import signed_media
 from viewer.services.plain_rows import at_version
 from viewer.services.signed_media import ServiceReads, SignedBlob
+from workbench.exceptions import ForbiddenError, NotFoundError
+from workbench.governed.deps import lakehouse_service_caller
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.blobs import is_blob_field
+from workbench.lancekit.keys import validate_doc_key
+from workbench.lancekit.predicate import eq
+from workbench.lancekit.registry import DatasetHandle, reason_for, table_dataset
+from workbench.media.deps import StateDep
+from workbench.media.frames import frame_row
+from workbench.media.source_gate import may_read, require_read
+from workbench.media.state import AppState, dataset_handle
+from workbench.sources import connect_source
 
 
 logger = logging.getLogger(__name__)

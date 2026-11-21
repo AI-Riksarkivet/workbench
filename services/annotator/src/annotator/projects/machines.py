@@ -1,4 +1,4 @@
-"""The two state machines of `OPEN-WORK.md#design--annotation-projects` §5, as data.
+"""The two state machines of an annotation project (the project's and each task's), as data.
 
 The transition tables ARE the spec — `fire()` consults them rather than reimplementing them in
 branches, so "everything not in the table is illegal" is structural. Each edge also carries the
@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
 from annotator.projects.models import ProjectState, Task, TaskState, Transition
-from service_kit.exceptions import ConflictError
+from workbench.exceptions import ConflictError
 
 
 #: The events an item holding a proposal nobody kept or removed is refused (ADR 0019): the one that hands it to review,

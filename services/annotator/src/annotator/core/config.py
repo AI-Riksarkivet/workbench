@@ -19,8 +19,8 @@ from typing import Literal, Self
 from pydantic import Field, model_validator
 
 from annotator.model_endpoint.client import ModelEndpoint
-from client_kit.media.config import GovernedMediaSettings
-from client_kit.sources import annotatable
+from workbench.media.config import GovernedMediaSettings
+from workbench.sources import annotatable
 
 
 class AnnotatorSettings(GovernedMediaSettings):
@@ -71,7 +71,7 @@ class AnnotatorSettings(GovernedMediaSettings):
     @model_validator(mode="after")
     def _default_is_annotatable(self) -> Self:
         """A default dataset is what an item naming none is sent from, so it must be one that can be annotated: a
-        lakehouse's, or one of a source git marks annotatable (`client_kit.sources.annotatable`)."""
+        lakehouse's, or one of a source git marks annotatable (`workbench.sources.annotatable`)."""
         if self.default_dataset is not None and (reason := annotatable(self.sources.locate(self.default_dataset).source)):
             raise ValueError(f"WORKBENCH_DEFAULT_DATASET {self.default_dataset!r} cannot be the annotator's default: {reason}")
         return self

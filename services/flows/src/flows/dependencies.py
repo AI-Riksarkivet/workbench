@@ -12,7 +12,7 @@ from fastapi import Depends, Request
 from flows.config import FlowsSettings
 from flows.runner import RunRunner
 from flows.store import FlowsStore
-from service_kit.exceptions import ServiceUnavailableError
+from workbench.exceptions import ServiceUnavailableError
 
 
 #: Why the run doors answer 503 on a process that names no run store.

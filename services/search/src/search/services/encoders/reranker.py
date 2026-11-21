@@ -67,7 +67,7 @@ class VLLMReranker:
         The reply MAY be unordered, short (fewer scores than documents) or sparse (an index skipped),
         so the answer is rebuilt BY INDEX rather than by the reply's own order: `sorted()`-then-strip
         aligned scores to candidates only when the reply was dense and full-length, and otherwise
-        handed candidate *i* candidate *j*'s score (VS-14). A candidate the server returned no score
+        handed candidate *i* candidate *j*'s score. A candidate the server returned no score
         for gets `_UNSCORED` — a floor, so it ranks last rather than inheriting a neighbour's score;
         the reranker declining to score a document is not evidence it is relevant.
         """

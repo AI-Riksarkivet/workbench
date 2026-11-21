@@ -1,5 +1,5 @@
 [project]
-name = "workbench"
+name = "workbench-workspace"
 version = "0.1.0"
 description = "Workbench uv workspace root (no entry points; deployables build via `uv sync --package <name>`)."
 requires-python = ">=3.13"
@@ -34,6 +34,8 @@ dev = [
     "jsonschema>=4.23",
     "ruff",
     "ty",
+    # The layer contracts below, run by `make lint` and `dagger call lint`.
+    "import-linter>=2.5",
     "ray[serve]>=2.60",
 ]
 
@@ -56,29 +58,28 @@ extend-select = ["TID251", "FAST001"]
 "services/search/**" = ["A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
 "services/annotator/**" = ["A002", "ANN401", "ANN201", "ANN202", "ANN002", "RUF001", "RUF002", "RUF003", "RUF005", "RUF012", "RUF043", "RUF100", "C901", "PERF401", "SIM108", "S110", "S112", "S310", "S324", "S608", "E501"]
 "services/viewer/src/viewer/services/clips.py" = ["S603"]
-"services/viewer/src/viewer/services/audio_prep.py" = ["S603"]
-"packages/service-kit/src/service_kit/governed/**" = ["ANN401", "ANN202", "C901", "PERF401"]
-"packages/service-kit/src/service_kit/draining.py" = ["TID251"]  # signal: the drain seam
-"packages/service-kit/src/service_kit/arrow_ipc.py" = ["TID251"]  # arrow ipc: the validating decoder
-"packages/client-kit/src/client_kit/lancekit/catalog.py" = ["A002"]  # `filter=` is the lance dataset API's own parameter name
-"packages/client-kit/src/client_kit/lancekit/**" = ["ANN401", "C901", "PERF401"]
-"packages/client-kit/src/client_kit/media/**" = ["E501"]
+"packages/workbench/src/workbench/governed/**" = ["ANN401", "ANN202", "C901", "PERF401"]
+"packages/workbench/src/workbench/draining.py" = ["TID251"]  # signal: the drain seam
+"packages/workbench/src/workbench/arrow_ipc.py" = ["TID251"]  # arrow ipc: the validating decoder
+"packages/workbench/src/workbench/lancekit/catalog.py" = ["A002"]  # `filter=` is the lance dataset API's own parameter name
+"packages/workbench/src/workbench/lancekit/**" = ["ANN401", "C901", "PERF401"]
+"packages/workbench/src/workbench/media/**" = ["E501"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses.dataclass".msg = "Structured values are pydantic BaseModel (CLAUDE.md, writing-python)."
 "boto3".msg = "No raw S3 client: data is reached through lance-namespace, on the storage options the catalog vends."
-"signal.signal".msg = "SIGTERM is taken only by service_kit.draining; a second handler replaces the drain."
-"pyarrow.ipc.open_stream".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.open_file".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.RecordBatchStreamReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.RecordBatchFileReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.MessageReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.read_message".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.read_record_batch".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.ipc.read_schema".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.RecordBatchStreamReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.RecordBatchFileReader".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
-"pyarrow.feather".msg = "Decode an Arrow IPC body only through service_kit.arrow_ipc: it bounds and validates what a caller sends."
+"signal.signal".msg = "SIGTERM is taken only by workbench.draining; a second handler replaces the drain."
+"pyarrow.ipc.open_stream".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.open_file".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.RecordBatchStreamReader".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.RecordBatchFileReader".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.MessageReader".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.read_message".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.read_record_batch".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.ipc.read_schema".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.RecordBatchStreamReader".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.RecordBatchFileReader".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
+"pyarrow.feather".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
@@ -93,14 +94,24 @@ lines-after-imports = 2
 # adds or deletes its member.
 known-first-party = [
     "annotator",
-    "client_kit",
     "flows",
     "scripts",
     "search",
-    "service_kit",
     "tests",
     "viewer",
+    "workbench",
 ]
+
+# The layer contracts, run by `make lint` and `dagger call lint` (`lint-imports`).
+[tool.importlinter]
+root_packages = ["annotator", "workbench"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "The annotator's project and task machines read no dataset: importing them pulls in no lancekit"
+type = "forbidden"
+source_modules = ["annotator.projects.machines", "annotator.projects.models", "annotator.projects.ontology"]
+forbidden_modules = ["workbench.lancekit"]
 
 [tool.ty.terminal]
 error-on-warning = true

@@ -157,7 +157,7 @@ async def dispatch(
             return _text(node, seed)
         case "image":
             # Stated, not silently skipped. Bytes ride the studio zone's own +server.ts straight to
-            # Serve (the estate's transport ruling: devalue would base64 an upload inside the JSON
+            # Serve (devalue would base64 an upload inside the JSON
             # payload, +33% and triple-buffered), so a server-side run never receives the image.
             raise NodeError("image seeds are frontend-only in v0")
         case "dataset":
@@ -178,8 +178,7 @@ async def dispatch(
             return _mcp(node)
         # The pure-CPU arms run OFF the loop: caller-supplied regex (and the DOTALL scans inside
         # alto_lines/compare_texts) are unbounded CPU work, and inline they froze the whole process —
-        # probes included, since /api/health shares the loop (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit"
-        # FLOWS-REDOS-ON-LOOP). A thread does not stop a GIL stall, so the subject-length cap in
+        # probes included, since /api/health shares the loop. A thread does not stop a GIL stall, so the subject-length cap in
         # `_regex` is the load-bearing half; the threadpool keeps well-behaved work from starving
         # concurrent requests.
         case "alto":

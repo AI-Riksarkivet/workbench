@@ -1,13 +1,11 @@
 /**
  * The explorer's reads, declared on the app's data layer (`reads.svelte.ts`): the dataset's view (its
- * descriptor, wrapped for the renderers), a search, a page of documents, a voice search by anchor, a
- * document's chunks and speaker turns, the filterable columns, the voice tables' status and the
- * viewer's health.
+ * descriptor, wrapped for the renderers), a search, a page of documents, a document's chunks and
+ * speaker turns, the filterable columns and the viewer's health.
  * Each goes through `@workbench/explorer-api` on the app's transport (`explorer.ts`), so the call is the
  * one DPoP seam's, with a read's timeout.
  *
- * A search or voice search that carries a FILE (an image to search by, a clip to match a voice to) is
- * not one of these: a file is no argument a read can be keyed by, so `explore.svelte.ts` calls the
+ * A search that carries a FILE (an image to search by) is not one of these: a file is no argument a read can be keyed by, so `explore.svelte.ts` calls the
  * client for it directly, on the same transport.
  */
 import * as v from 'valibot';
@@ -16,14 +14,11 @@ import {
 	getDiarization,
 	getDocChunks,
 	getHealth,
-	getVoiceStatus,
 	listColumns,
 	listDocuments,
 	listRows,
 	search,
-	voiceSimilar,
 	type SearchSpec,
-	type VoiceAnchor,
 } from '@workbench/explorer-api';
 import { query } from '#lib/reads.svelte.ts';
 
@@ -49,21 +44,6 @@ export const rowsPage = query(
 	({ page, perPage }) => listRows(page, perPage),
 );
 
-/** The voices most like an anchor's (a speaker turn, a speaker, or a moment of a document). */
-export const voiceHits = query(
-	'unchecked',
-	({
-		anchor,
-		n,
-		excludeSameDoc,
-	}: {
-		dataset: string;
-		anchor: VoiceAnchor;
-		n: number;
-		excludeSameDoc: boolean;
-	}) => voiceSimilar(anchor, { n, excludeSameDoc }),
-);
-
 /** One document's chunks, in order: the player's transcript and timeline. */
 export const documentChunks = query(
 	v.object({ dataset: v.string(), docId: v.string() }),
@@ -78,9 +58,6 @@ export const speakerTurns = query(
 
 /** The columns a filter can name, per dataset. */
 export const filterColumns = query(v.string(), () => listColumns());
-
-/** Whether the dataset's voice tables are built, which every voice affordance waits for. */
-export const voiceStatus = query(v.string(), () => getVoiceStatus());
 
 /** Whether the viewer reaches its encoders: the search modes that need one wait for it. */
 export const serviceHealthRead = query(() => getHealth());

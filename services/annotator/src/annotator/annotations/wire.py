@@ -19,9 +19,9 @@ from annotator.annotations.work import wire_table
 from annotator.api.dependencies import StoreDep
 from annotator.api.security import READS_DATASET, CallerDep
 from annotator.corpus import resolve
-from client_kit.media.deps import DatasetParam, StateDep
-from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE, encode_arrow_stream
-from service_kit.exceptions import NotFoundError
+from workbench.arrow_ipc import ARROW_STREAM_MEDIA_TYPE, encode_arrow_stream
+from workbench.exceptions import NotFoundError
+from workbench.media.deps import DatasetParam, StateDep
 
 
 if TYPE_CHECKING:

@@ -29,7 +29,7 @@ from typing import Annotated, Any, Final
 
 from pydantic import AfterValidator, Field
 
-from service_kit.exceptions import DomainError
+from workbench.exceptions import DomainError
 
 
 #: The longest name, label, class, kind, state or principal a request names.

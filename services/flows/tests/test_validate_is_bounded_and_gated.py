@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from flows import routes, security
 from flows.config import FlowsSettings
 from flows.models import MAX_GRAPH_NODES
-from service_kit.exceptions import register_handlers
+from workbench.exceptions import register_handlers
 
 
 def _app(settings: FlowsSettings) -> FastAPI:
@@ -76,7 +76,7 @@ def test_a_graph_AT_the_ceiling_still_validates(open_client: TestClient) -> None
 
 
 def test_validate_is_GATED_on_a_governed_stack() -> None:
-    """Owner ruling 2026-08-26: the estate is authenticated, so no route is ungated.
+    """Owner ruling 2026-08-26: the workbench is authenticated, so no route is ungated.
 
     `create_run` in this same file already carries `CurrentSubject` + `CheckerDep`; `validate` did
     not, which made the run gate's neighbour the way in.

@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1.11
-# rask annotator image — a labeling tool that works on the lakehouse through its public doors (ADR 0171).
-# It is a client of the lakehouse with its own release (the workbench chart, chart/), so it ships its own
+# The annotator image: the workbench's labeling service, released by the workbench chart (chart/). It ships its own
 # image built from the ROOT uv workspace with its own closure: `uv sync --package annotator` and nothing else.
 # Build (DAGGER builds every image in this repo — this recipe is the definition, not the driver):
 #   dagger call image --name=annotator
@@ -69,7 +68,7 @@ COPY --from=builder --link /opt/venv /opt/venv
 # The import gate: every module this image serves imports against the closure it ships, so a dependency the
 # annotator uses and does not declare fails the build here instead of a pod at start.
 COPY .docker/import-gate.py /tmp/import-gate.py
-RUN --network=none /opt/venv/bin/python /tmp/import-gate.py annotator && rm /tmp/import-gate.py
+RUN --network=none /opt/venv/bin/python /tmp/import-gate.py annotator workbench && rm /tmp/import-gate.py
 
 # Strip setuid/setgid bits from the whole shipped filesystem. Own RUN so its `|| true` (which only tolerates
 # find matching nothing) cannot mask a real build failure above.

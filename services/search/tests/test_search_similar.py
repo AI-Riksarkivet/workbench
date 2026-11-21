@@ -24,14 +24,14 @@ from typing import Any
 
 import pytest
 
-from client_kit.lancekit.descriptor import Declared
 from search.services.similar import (
     SimilarSpec,
     drop_seed,
     key_predicate,
     seed_vector,
 )
-from service_kit.exceptions import NotFoundError, ValidationError
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.lancekit.descriptor import Declared
 
 
 KEY_FIELDS = ["doc_id", "speech_id", "chunk_id"]

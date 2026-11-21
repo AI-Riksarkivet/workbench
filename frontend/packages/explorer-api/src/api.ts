@@ -4,7 +4,7 @@
  * Response envelopes are zod-defined + runtime-validated here, so backend
  * drift surfaces as a clean error instead of silent rendering bugs. The
  * schemas describe transport envelopes (ranking signals, alignments, atlas
- * wire format, graph/voice/topic shapes) — NEVER a corpus's column names.
+ * wire format, graph/topic shapes) — NEVER a corpus's column names.
  * Per-row field access goes through the {@link DatasetView} (see
  * `$lib/descriptor`), which every renderer reads instead of hardcoding fields.
  */
@@ -143,7 +143,7 @@ async function asJson<T>(r: Response, schema: v.GenericSchema<T>): Promise<T> {
 const HitsArraySchema = v.array(RowSchema) as v.GenericSchema<Row[]>;
 
 /** Schema-metadata key naming the columns the encoder carried as JSON text: the search and viewer
- *  services write this payload (`service_kit.arrow_rows`). */
+ *  services write this payload (`workbench.arrow_rows`). */
 const JSON_COLUMNS_KEY = 'json_columns';
 
 /**
@@ -886,108 +886,4 @@ export async function getGraphSubgraph(
 		await fetcher(apiUrl(`/api/graph/subgraph?${params}`)),
 		GraphSubgraphResponseSchema,
 	);
-}
-
-// ── Voice search ("Find this voice", capability-gated) ──────────────────────
-const VoiceStatusSchema = v.object({
-	built: v.boolean(),
-	turns: v.pipe(v.number(), v.integer()),
-	speakers: v.pipe(v.number(), v.integer()),
-});
-export type VoiceStatus = v.InferOutput<typeof VoiceStatusSchema>;
-
-export async function getVoiceStatus(fetcher: Fetcher = apiFetch): Promise<VoiceStatus> {
-	return asJson(await fetcher(apiUrl(`/api/voice/status${datasetSuffix()}`)), VoiceStatusSchema);
-}
-
-/** A voice-ranked hit: the matched row (renders as a normal result card) plus
- *  the matched speaker turn. The row envelope is a {@link Row}; the turn fields
- *  are the voice capability's own contract. */
-export const VoiceHitSchema = v.intersect([
-	RowSchema,
-	v.object({
-		speaker_label: v.string(),
-		turn_id: v.pipe(v.number(), v.integer()),
-		turn_start: v.number(),
-		turn_end: v.number(),
-		_distance: v.number(),
-		turn_score: v.number(),
-	}),
-]) as v.GenericSchema<VoiceHit>;
-export type VoiceHit = Row & {
-	speaker_label: string;
-	turn_id: number;
-	turn_start: number;
-	turn_end: number;
-	_distance: number;
-	turn_score: number;
-};
-
-const VoiceQueryInfoSchema = v.object({
-	doc_id: v.nullable(v.string()),
-	speaker_label: v.nullable(v.string()),
-	turn_id: v.nullable(v.pipe(v.number(), v.integer())),
-	turn_start: v.nullable(v.number()),
-	turn_end: v.nullable(v.number()),
-});
-export type VoiceQueryInfo = v.InferOutput<typeof VoiceQueryInfoSchema>;
-
-export const VoiceSimilarResponseSchema = v.object({
-	query: VoiceQueryInfoSchema,
-	hits: v.array(VoiceHitSchema),
-});
-export type VoiceSimilarResponse = v.InferOutput<typeof VoiceSimilarResponseSchema>;
-
-/** Query-by-example anchor: a document plus exactly one locator. */
-export type VoiceAnchor = { docId: string } & (
-	| { turnId: number }
-	| { speaker: string }
-	| { t: number }
-);
-
-export async function voiceSimilar(
-	anchor: VoiceAnchor,
-	opts: { n?: number | undefined; excludeSameDoc?: boolean | undefined } = {},
-	fetcher: Fetcher = apiFetch,
-): Promise<VoiceSimilarResponse> {
-	const params = new URLSearchParams({ doc_id: anchor.docId });
-	if ('turnId' in anchor) params.set('turn_id', String(anchor.turnId));
-	else if ('speaker' in anchor) params.set('speaker', anchor.speaker);
-	else params.set('t', String(anchor.t));
-	if (opts.n !== undefined) params.set('n', String(opts.n));
-	if (opts.excludeSameDoc !== undefined)
-		params.set('exclude_same_doc', String(opts.excludeSameDoc));
-	const ds = activeView().datasetParam();
-	if (ds) params.set('dataset', ds);
-	return asJson(await fetcher(apiUrl(`/api/voice/similar?${params}`)), VoiceSimilarResponseSchema);
-}
-
-export async function voiceSimilarUpload(
-	file: File,
-	opts: { n?: number | undefined } = {},
-	fetcher: Fetcher = apiFetch,
-): Promise<VoiceSimilarResponse> {
-	const params = new URLSearchParams();
-	if (opts.n !== undefined) params.set('n', String(opts.n));
-	const ds = activeView().datasetParam();
-	if (ds) params.set('dataset', ds);
-	const fd = new FormData();
-	fd.append('file', file);
-	const url = params.size > 0 ? `/api/voice/similar?${params}` : '/api/voice/similar';
-	const r = await fetcher(apiUrl(url), { method: 'POST', body: fd });
-	return asJson(r, VoiceSimilarResponseSchema);
-}
-
-export type VoiceBand = 'strong' | 'possible';
-
-export function voiceBandOf(turnScore: number): VoiceBand | null {
-	if (turnScore >= 0.7) return 'strong';
-	if (turnScore >= 0.6) return 'possible';
-	return null;
-}
-
-/** Narrow a Row to a VoiceHit so shared result components render the speaker
- *  chip only for voice-mode hits. Structural check (validated at fetch). */
-export function isVoiceHit(hit: Row): hit is VoiceHit {
-	return 'turn_score' in hit && 'speaker_label' in hit;
 }

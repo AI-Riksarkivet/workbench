@@ -21,7 +21,7 @@ from annotator.annotations.schema import EMPTY_SCHEMA, NewAnnotation, SaveAnnota
 from annotator.annotations.unit import Unit
 from annotator.projects.models import MODEL_SOURCE, PROPOSED, Draft, Link, Shape
 from annotator.text import MAX_METADATA, embedded_json
-from service_kit.exceptions import ConflictError, NotFoundError, ValidationError
+from workbench.exceptions import ConflictError, NotFoundError, ValidationError
 
 
 #: How many ids a refusal names: enough to find them, bounded so a refusal is never as large as the save.

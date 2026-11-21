@@ -9,7 +9,7 @@
 	 * transport and the transcript on the recording's time axis. This pane is what the explorer adds: which rows are
 	 * a document's pages and segments, the signed links, the speakers, the failures and how to ask again.
 	 */
-	import { onMount, untrack } from 'svelte';
+	import { untrack } from 'svelte';
 	import {
 		type Hit,
 		type DocChunk,
@@ -17,7 +17,6 @@
 		activeView,
 		viewForHit,
 	} from '@workbench/explorer-api';
-	import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
 	import { frameLink, mediaLink, resolveFrame, resolveMedia } from '#lib/explore/media.ts';
 	import { linkMayHaveExpired, resumeAfterSwap } from '#lib/explore/media-source.ts';
 	import { documentChunks, speakerTurns } from '#lib/api/explore.api.ts';
@@ -290,29 +289,6 @@
 	// reset. The tab SHOWN is derived from the pick and what the dataset offers.
 	let tab = $state<'transcript' | 'speakers'>('transcript');
 	const shown = $derived(shownTab(tab, panes));
-
-	/** Why voice search is not offered on a diarized dataset, once the probe has answered; null while it is. */
-	const voiceAbsent = $derived(
-		voiceSearch.status !== null && !voiceSearch.built
-			? 'Voice search needs voice tables this dataset has not built.'
-			: null,
-	);
-	// The probe is shared and idempotent, and never throws (`built` stays false on a failure).
-	onMount(() => {
-		voiceSearch.probe();
-	});
-
-	// "Find this voice" queues the request on the shared voice search, which the dataset page consumes.
-	const findVoice = (pick: { speaker: string } | { turnId: number }) => {
-		const h = hit;
-		if (!h) return;
-		const docId = view.docId(h);
-		const label = view.title(h) || undefined;
-		voiceSearch.request(
-			'speaker' in pick ? { docId, speaker: pick.speaker } : { docId, turnId: pick.turnId },
-			label,
-		);
-	};
 
 	/** Jump there and play: a transcript line, a speaker's turn. */
 	const seekTo = (t: number) => {
@@ -720,11 +696,6 @@
 					{@render failure(viewsFailure.what, viewsFailure.detail)}
 				{:else if shown === 'speakers'}
 					<div class="flex min-h-0 flex-1 flex-col" data-testid="viewer-sync-body">
-						{#if voiceAbsent}
-							<p class="text-muted-foreground px-3 pt-2 text-xs" data-testid="voice-absent">
-								{voiceAbsent}
-							</p>
-						{/if}
 						{#if diarTurns.length > 0}
 							<div class="shrink-0 px-1.5">
 								<DiarizationTimeline
@@ -734,8 +705,6 @@
 									segmentStart={segmentSpan?.start}
 									segmentEnd={segmentSpan?.end}
 									onSeek={seekTo}
-									voiceEnabled={voiceSearch.built}
-									onFindVoice={findVoice}
 									{noun}
 								/>
 							</div>

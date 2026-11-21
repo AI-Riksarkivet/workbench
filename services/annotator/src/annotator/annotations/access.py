@@ -29,8 +29,8 @@ from annotator.api.v1.endpoints.tasks import require_editable, require_work_read
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.projects.models import Task
 from annotator.state.store import AnnotatorStore
-from client_kit.media.deps import DatasetParam
-from service_kit.exceptions import NotFoundError
+from workbench.exceptions import NotFoundError
+from workbench.media.deps import DatasetParam
 
 
 #: The task whose item a unit is.

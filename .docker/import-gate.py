@@ -1,57 +1,38 @@
 """Import every module of the packages an image serves, at BUILD time.
 
-Run as `python /tmp/import-gate.py <pkg> [<pkg> ...] [--absent <module> ...]` from a dockerfile, against the venv
-the runtime stage actually ships. A non-zero exit fails the build.
+Run as `python /tmp/import-gate.py <pkg> [<pkg> ...]` from a dockerfile, against the venv the runtime stage ships. A
+non-zero exit fails the build.
 
-`--absent` names what the image must NOT ship: each module after it fails the build when the venv can import it. The
-lakehouse image names the client kit and lancedb, and the Ray image names the lakehouse kit, so a dependency that
-drags a client into the lakehouse, or the lakehouse into an engine, is refused at the build that would ship it
-([[XC-178]]).
+**Why this exists.** The suite runs in the workspace venv, which holds every member's dependencies, so a module whose
+import needs a package its own member does not declare passes every test and still fails in an image whose venv is
+`uv sync --package <pkg>` and nothing else: the pod crash-loops on `ModuleNotFoundError`. This is the first place
+where the deployable's real dependency closure is the only one present.
 
-**Why this exists.** A deployable's module can import `service_kit.governed.fga` while its member
-declares a bare `"service-kit"` — openfga-sdk lives behind that library's `[governed]` extra. The
-whole suite stays green, because the workspace venv resolves openfga-sdk through a SIBLING member
-that does declare the extra. The image's venv is `uv sync --package <pkg>` and nothing else, so the
-pod crash-loops on `ModuleNotFoundError: No module named 'openfga_sdk'` — measured 2026-08 on a fleet
-deployable, found by watching a rollout, not by any test.
+**It reports every failure, not the first**, so one build lists every missing dependency.
 
-A declared-dependency gap is structurally invisible to tests that run in the workspace venv. This is
-the first place in the pipeline where the deployable's real dependency closure is the only one
-present, so it is the first place the gap can be seen.
-
-**It reports every failure, not the first.** Collecting all of them means one build round-trip lists
-every missing dependency instead of revealing them one rebuild at a time.
-
-**Reading that report.** Dagger does NOT print a failing exec's stdout — a blocked build says only
-`✘ withExec … exit code: 1`, with no module name. A failing RUN also aborts the build, so there is no
-image left to interrogate afterwards. Reproduce the deployable's closure on the host instead, which is
-exactly what the image does and needs no build at all:
+**Reading that report.** Dagger does not print a failing exec's stdout (a blocked build says only
+`withExec … exit code: 1`), and a failing RUN leaves no image to look into. Reproduce the image's closure on the host
+instead:
 
     UV_PROJECT_ENVIRONMENT=/tmp/gatevenv uv sync --frozen --no-dev --package <pkg>
     /tmp/gatevenv/bin/python .docker/import-gate.py <pkg>
 
-(For an image that syncs several packages, pass every `--package` its dockerfile does.)
+(For an image that syncs several packages, pass every `--package` its dockerfile does.) Every dockerfile names the
+venv's interpreter by its absolute path, since the gate runs before `PATH` names the venv.
 
-Not knowing this cost a full debugging loop: the first failure here was `python` resolving to the BASE
-image's interpreter — the gate sits above `ENV PATH=/opt/venv/bin:$PATH` — which is indistinguishable
-from a real missing dependency when all you are given is `exit code: 1`. Hence the absolute
-interpreter path in every dockerfile.
-
-Kept as a FILE rather than an inline `RUN python -c`: a heredoc RUN needs a `# syntax=` frontend
-directive none of these dockerfiles declare, and the one-liner form has to be escaped through
-`sh -c` twice, which is how the escaping — not the imports — became the thing under test.
+A FILE rather than an inline `RUN python -c`: a heredoc RUN needs a `# syntax=` directive none of these dockerfiles
+declare, and the one-liner form must be escaped through `sh -c` twice.
 """
 
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import pkgutil
 import sys
 
 
 def main(argv: list[str]) -> int:
-    packages, absent = _split(argv)
+    packages = argv
     if not packages:
         print("import-gate: no packages given", file=sys.stderr)
         return 2
@@ -88,34 +69,20 @@ def main(argv: list[str]) -> int:
 
     # A module that raised something OTHER than an import error got far enough to RUN, which means
     # every import in its chain resolved — the only thing this gate is contracted to prove. Reported,
-    # never fatal: `catalog.main` builds its pydantic Settings at module scope and therefore cannot be
-    # imported without live credentials, and failing the build on that would be this gate asserting a
-    # design opinion about someone else's module while pretending to check packaging.
+    # never fatal: a module that builds its settings at import cannot be imported without its deployment's
+    # environment, and failing the build on that would not be a packaging check.
     for line in executed:
         print(f"import gate: NOT a packaging problem, module executed and raised — {line}")
-
-    present = [name for name in absent if importlib.util.find_spec(name) is not None]
 
     attempted = len(modules) + len(failures) + len(executed)
     if failures:
         print(f"import gate FAILED — {len(failures)}/{attempted} modules could not be IMPORTED:")
         for line in failures:
             print(f"  {line}")
-    if present:
-        print(f"import gate FAILED — the image ships what it must not: {', '.join(present)}")
-    if failures or present:
         return 1
 
-    print(f"import gate: {len(modules)} modules OK ({', '.join(packages)})" + (f"; absent: {', '.join(absent)}" if absent else ""))
+    print(f"import gate: {len(modules)} modules OK ({', '.join(packages)})")
     return 0
-
-
-def _split(argv: list[str]) -> tuple[list[str], list[str]]:
-    """The packages to import, and the modules after `--absent` the image must not be able to import."""
-    if "--absent" not in argv:
-        return argv, []
-    at = argv.index("--absent")
-    return argv[:at], argv[at + 1 :]
 
 
 def _is_packaging_failure(exc: BaseException) -> bool:

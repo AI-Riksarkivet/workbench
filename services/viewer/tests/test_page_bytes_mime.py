@@ -1,6 +1,6 @@
 """A byte response must declare what it actually is, and the seam must not name a modality.
 
-open_fastapi-audit — "`GET /api/page` stamps `Content-Type: image/jpeg` on an opaque governed payload
+The defect: "`GET /api/page` stamps `Content-Type: image/jpeg` on an opaque governed payload
 — the tier schema carries no MIME and the table is a free query parameter".
 
 `table` is a caller-supplied catalog table id and the governed tier schema is

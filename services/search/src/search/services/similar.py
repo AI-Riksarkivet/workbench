@@ -21,10 +21,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from client_kit.lancekit.descriptor import Declared
-from client_kit.lancekit.keys import chunk_key_filter
 from search.services.query_errors import is_caller_input_error
-from service_kit.exceptions import NotFoundError, ValidationError
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.lancekit.descriptor import Declared
+from workbench.lancekit.keys import chunk_key_filter
 
 
 logger = logging.getLogger(__name__)
@@ -65,9 +65,9 @@ class SimilarSpec(BaseModel):
 def key_predicate(declared: Declared, key: str) -> str:
     """Compile a key path into an equality over EVERY identity field.
 
-    The RENDERING is `client_kit.lancekit.keys.chunk_key_filter` — the estate's one key→predicate
-    boundary, which viewer and annotator already run every identity filter through. This module used
-    to render its own, quoting every segment as SQL text, and that duplication was the bug: identity
+    The RENDERING is `workbench.lancekit.keys.chunk_key_filter`, the one key→predicate
+    boundary the viewer and the annotator run every identity filter through. A rendering of its own,
+    quoting every segment as SQL text, would be a second rule: identity
     is mixed-type by contract (a text doc key beside integer sub-keys), so `speech_id = '0'` against
     an int64 column is not a narrower filter but an expression Lance refuses outright. Every seed
     lookup on an integer-keyed corpus — the only kind `scripts/seed_demo_corpus.py` produces — came

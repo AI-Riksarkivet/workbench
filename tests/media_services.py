@@ -18,12 +18,12 @@ from fastapi.testclient import TestClient
 
 from annotator import main as annotator_main
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
-from client_kit.media.config import MediaSettings
 from search import main as search_main
 from search.core.config import SearchSettings, get_search_settings
-from service_kit.otel import TelemetrySinks
 from viewer import main as viewer_main
 from viewer.core.config import ViewerSettings, get_viewer_settings
+from workbench.media.config import MediaSettings
+from workbench.otel import TelemetrySinks
 
 
 #: The media services, by the name each exports its telemetry under.

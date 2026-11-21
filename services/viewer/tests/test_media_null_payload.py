@@ -1,6 +1,6 @@
 """A document with no media payload must 404, not 200-then-crash.
 
-open_fastapi-audit — "`GET /api/media` answers 200 with Content-Length 0 and then crashes mid-stream
+The defect: "`GET /api/media` answers 200 with Content-Length 0 and then crashes mid-stream
 for a document whose media payload is NULL — two sibling helpers took opposite decisions on the same
 value".
 
@@ -36,8 +36,8 @@ import pyarrow as pa
 import pytest
 from lance import blob_array, blob_field
 
-from service_kit.exceptions import NotFoundError
 from viewer.api.v1.endpoints import media as media_ep
+from workbench.exceptions import NotFoundError
 
 
 def _dataset(tmp_path: Path, payload: bytes | None) -> lance.LanceDataset:
@@ -49,7 +49,7 @@ def _dataset(tmp_path: Path, payload: bytes | None) -> lance.LanceDataset:
     schema = pa.schema([pa.field("doc_id", pa.string()), blob_field("media"), pa.field("mime", pa.string())])
     table = pa.table({"doc_id": ["doc-1"], "media": blob_array([payload]), "mime": ["audio/wav"]}, schema=schema)
     # `data_storage_version="2.2"` is mandatory, not tidiness: blob v2 refuses anything below it
-    # ("Blob v2 requires file version >= 2.2"). `enable_stable_row_ids` matches how the medallion
+    # ("Blob v2 requires file version >= 2.2"). `enable_stable_row_ids` matches how a pipeline
     # writes, so the `_rowid` this test takes by is the one the route would resolve.
     return lance.write_dataset(
         table,

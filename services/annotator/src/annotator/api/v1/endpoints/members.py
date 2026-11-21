@@ -36,11 +36,11 @@ from annotator.core.config import AnnotatorSettings
 from annotator.people import RECORDS_PERSON, names_for
 from annotator.projects.roles import ADMINISTRATIVE, GRANTABLE, MemberGrant, Role
 from annotator.text import Text
-from service_kit.exceptions import ConflictError, NotFoundError, ServiceUnavailableError, ValidationError
-from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.deps import FgaChecker
-from service_kit.governed.fga import Authorizer, Grant, subject_of, user_object
-from service_kit.governed.principal import is_principal
+from workbench.exceptions import ConflictError, NotFoundError, ServiceUnavailableError, ValidationError
+from workbench.governed.audit import AuditOutcome, audit
+from workbench.governed.deps import FgaChecker
+from workbench.governed.fga import Authorizer, Grant, subject_of, user_object
+from workbench.governed.principal import is_principal
 
 
 logger = logging.getLogger(__name__)

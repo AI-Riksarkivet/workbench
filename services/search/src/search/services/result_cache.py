@@ -4,7 +4,7 @@ Mirrors the atlas ``points_cache``: memoize a query's full result on
 ``(dataset, SELECTED search + its table versions, query hash)``. Any write to a table the query reads
 advances that table's Lance version, so the key changes and the stale entry
 becomes unreachable — Firn's invalidation model, no manual busting. The cache
-lives on :class:`~client_kit.media.state.AppState` (per app instance, never
+lives on :class:`~workbench.media.state.AppState` (per app instance, never
 module-global) and is sized by search's ``cache_size`` and ``cache_bytes`` settings (``SEARCH_CACHE_SIZE``,
 ``SEARCH_CACHE_BYTES``; 0 disables each).
 
@@ -21,16 +21,16 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from client_kit.media.cache_bounds import evict_to_bounds
-from service_kit.exceptions import ServiceUnavailableError
+from workbench.exceptions import ServiceUnavailableError
+from workbench.media.cache_bounds import evict_to_bounds
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from contextlib import AbstractContextManager
 
-    from client_kit.lancekit.registry import DatasetHandle
     from search.services.spec import SearchSpec
+    from workbench.lancekit.registry import DatasetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def _search_tables(handle: DatasetHandle, table: str | None) -> list[str]:
     tables. A write to any of them must invalidate a cached result, so all of
     their versions go into the key.
 
-    Resolved through ``search_named`` (VS-04): reading ``declared.search`` versioned the DEFAULT's
+    Resolved through ``search_named``: reading ``declared.search`` versioned the DEFAULT's
     tables whatever the caller selected, so two tables' searches collided on one entry and a write
     to the non-default table could never invalidate it. An unknown name degrades to ``[]`` — that is
     unreachable in practice, because ``resolve_target`` 400s the name before anything is stored."""

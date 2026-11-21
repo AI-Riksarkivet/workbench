@@ -1,4 +1,4 @@
-"""ANN-10 — `POST /projects` writes the project's grants first, then its row: a failed row write takes the grants back.
+"""`POST /projects` writes the project's grants first, then its row: a failed row write takes the grants back.
 
 The grants lead so a project never exists that nobody may manage. A grant on a project with no row answers nothing but
 a 404, and `project_id` is minted per attempt, so a retry makes a second project: the first attempt's grants would
@@ -23,9 +23,9 @@ from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import projects as projects_ep
 from annotator.core.config import AnnotatorSettings
 from annotator.state.store import AnnotatorStore
-from service_kit.exceptions import register_handlers
-from service_kit.governed import fga
 from tests.openfga import OpenFgaStore
+from workbench.exceptions import register_handlers
+from workbench.governed import fga
 
 
 CREATOR = "keycloak~gina"

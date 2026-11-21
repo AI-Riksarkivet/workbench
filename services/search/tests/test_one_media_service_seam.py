@@ -1,10 +1,10 @@
-"""The media trio is assembled ONCE (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" DUP-16 + X12 + DUP-20).
+"""The media trio is assembled ONCE .
 
 `viewer`, `search` and `annotator` are three deployments of one shape — a Lance media service over
-`client_kit.media` — and each hand-assembled that shape in its own `main.py`. Three findings live on
+`workbench.media` — and each hand-assembled that shape in its own `main.py`. Three findings live on
 that one surface:
 
-* **DUP-16** — the lifespan body was copy-pasted three ways (build `AppState`, warm the default
+* the lifespan body was copy-pasted three ways (build `AppState`, warm the default
   dataset handle off the loop, `attach_auth`, set the lifecycle flags, arm the SIGTERM drain, dispose
   in a `finally`) and the copies had already drifted: viewer disposed FGA before disarming the drain,
   search disarmed first, and the three closed different resource sets in different orders.
@@ -12,8 +12,8 @@ that one surface:
   DIFFERENT app from production: no problem handlers on search's, no probes on either, no body cap on
   search's. A regression in exactly the layer their production comments describe (an
   `UnauthenticatedError` answering 500 instead of 401) could not be caught through the seam.
-* **DUP-20** — `service_kit` exported two different `register_middleware` functions under one name
-  (`service_kit.middleware` and `client_kit.media.middleware`), imported bare by different callers,
+* `workbench` exported two different `register_middleware` functions under one name
+  (`workbench.middleware` and `workbench.media.middleware`), imported bare by different callers,
   so a call site did not say which stack it registered.
 """
 
@@ -22,9 +22,9 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from lance_namespace import UnauthenticatedError
 
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
 from search.main import create_search_app
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 def test_the_test_seam_app_maps_the_same_errors_production_does() -> None:

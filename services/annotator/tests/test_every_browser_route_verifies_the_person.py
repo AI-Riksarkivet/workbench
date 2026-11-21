@@ -1,7 +1,7 @@
 """Every annotator route a browser can be routed to verifies the person: a DPoP-bound token and its proof.
 
 The chart's HTTPRoute publishes the annotator's doors one prefix at a time (`chart/`'s `route.doors`), so whichever prefix is published next, a route under it must already resolve the door that verifies the
-caller (`service_kit.governed.deps`' `authenticate`). Deny by default: the walk requires it of every route of the app
+caller (`workbench.governed.deps`' `authenticate`). Deny by default: the walk requires it of every route of the app
 the pod serves, except the routes in the table below, each with the reason it takes no person's token. A route added
 later arrives gated or argued, never silently open.
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 
-from service_kit.exceptions import ServiceUnavailableError
+from workbench.exceptions import ServiceUnavailableError
 
 
 #: How long a refused caller is told to wait before asking again, in seconds.

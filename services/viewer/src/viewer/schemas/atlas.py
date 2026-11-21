@@ -10,14 +10,14 @@ from pydantic import BaseModel, Field
 class AtlasStatusResponse(BaseModel):
     """Which projection spaces are built + the requested space's projected rows.
 
-    ``spaces`` always reports every DECLARED space's built-ness (so the UI can gate its toggle);
-    ``projected``/``rows`` reflect the requested ``space``.
+     ``spaces`` always reports every DECLARED space's built-ness (so the UI can gate its toggle);
+     ``projected``/``rows`` reflect the requested ``space``.
 
-    ``space`` is a plain string — the descriptor names its own projection spaces, so a fixed enum
-    here could not describe a corpus that declares any others. This model previously WAS such an
-    enum (``text``/``visual``/``caption``), unused by any route and unable to describe half the
-    corpora the route serves; that is why the route's answer went out as a bare mapping instead
-    (VS-18).
+     ``space`` is a plain string — the descriptor names its own projection spaces, so a fixed enum
+     here could not describe a corpus that declares any others. This model previously WAS such an
+     enum (``text``/``visual``/``caption``), unused by any route and unable to describe half the
+     corpora the route serves; that is why the route's answer went out as a bare mapping instead
+    .
     """
 
     projected: bool

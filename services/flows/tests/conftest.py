@@ -25,9 +25,9 @@ from fastapi.testclient import TestClient
 
 from flows import executor, health, routes
 from flows.lifespan import lifespan
-from service_kit import make_service_app
 from tests.flows_runs import ServeStandIn, state_env
 from tests.postgres import StateDatabase
+from workbench.app import make_service_app
 
 
 @pytest.fixture(autouse=True)

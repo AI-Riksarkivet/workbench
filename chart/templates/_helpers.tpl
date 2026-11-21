@@ -15,7 +15,7 @@ app.kubernetes.io/component: annotator
 
 {{- define "annotator.otlpEndpoint" -}}{{ required "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" .Values.otel.endpoint }}{{- end -}}
 
-{{- /* A service's telemetry (`service_kit.otel`): with `otel.enabled`, its traces, metrics and logs (the audit trail on
+{{- /* A service's telemetry (`workbench.otel`): with `otel.enabled`, its traces, metrics and logs (the audit trail on
 its own instrumentation scope, `workbench.audit`, which routing to a table of its own is the gateway's job) go over OTLP/HTTP to `otel.endpoint` under the service's own name, and,
 where the gateway asks who sends (`otel.identity.audience`), each export presents the pod's own ServiceAccount token
 for that audience, projected by the kubelet and read when the export is sent: no telemetry credential exists. Off, the
@@ -52,18 +52,18 @@ service sends nothing. Called with (list $ <service>). */ -}}
 {{- end }}
 {{- end -}}
 
-{{- /* The sources the services read (`client_kit.sources`), validated here so a release that could not be read as
+{{- /* The sources the services read (`workbench.sources`), validated here so a release that could not be read as
 written fails at render: each a DNS-label `name`, one of three kinds, at most one `rask` lakehouse (by its catalog's REST
 `uri`, read as the person or as the workbench, never as nobody), a `namespace` by its lance-namespace `impl`, a `tables`
 source by its `uri` or by a `path` on its `claim`. A declaration carries no credential: every property and storage
 option must be on the allow-list `files/source-keys.json` holds (the services enforce the same list,
-`client_kit.source_keys`, and `make chart-check` fails when the two differ), a credential file must lie under its mount
+`workbench.source_keys`, and `make chart-check` fails when the two differ), a credential file must lie under its mount
 root, and no location carries a user, a password, a query or a fragment. A source the workbench decides for (any but a
 lakehouse read as the person) names its `readers`, organisations and principal keys the model writer grants `reader` on
 `source:<name>`; with none, nobody reads it. A source with a `claim` reads a PersistentVolumeClaim mounted read-only at
 `/var/lib/workbench/sources/<name>`: a `namespace` source's `dir` root, or a `tables` source's directory, at the
 `path` it names on the claim (never outside it). A lakehouse's datasets are always annotated; any other source's only
-when it is marked `annotatable: true` (a boolean, `client_kit.sources.annotatable`), with or without a lakehouse
+when it is marked `annotatable: true` (a boolean, `workbench.sources.annotatable`), with or without a lakehouse
 beside it: work in progress is the annotator's own, and only a publish needs a lakehouse. The declaration
 rendered is the file every service reads (`WORKBENCH_SOURCES_FILE`). */ -}}
 {{- define "workbench.sources" -}}
@@ -147,7 +147,7 @@ option (`base_<id>.<key>`) is held to its key's rule. */ -}}
 {{- if has $name $keys.mountedFiles -}}
 {{- if or (not (hasPrefix $keys.mountRoot (toString $v))) (contains "/../" (printf "%s/" $v)) }}{{ fail (printf "%s.%s names a credential file outside %s: mount it there" $where $k $keys.mountRoot) }}{{ end -}}
 {{- else if not (has $name $keys.storage) -}}
-{{- fail (printf "%s.%s is not a storage option a source may declare (no credential is declared; see client_kit.source_keys)" $where $k) -}}
+{{- fail (printf "%s.%s is not a storage option a source may declare (no credential is declared; see workbench.source_keys)" $where $k) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -187,7 +187,7 @@ option (`base_<id>.<key>`) is held to its key's rule. */ -}}
 {{- define "workbench.lakehouseAuth" -}}{{ $lake := include "workbench.lakehouse" . | fromJson }}{{ if and .Values.auth.enabled $lake.uri .Values.auth.lakehouse.audience }}true{{ end }}{{- end -}}
 
 {{- /* Whether a declared source is the workbench's own to authorize: any but a lakehouse read as the person, read only
-by its declared `readers` (`client_kit.sources.workbench_decides`). The viewer and search then need the workbench's
+by its declared `readers` (`workbench.sources.workbench_decides`). The viewer and search then need the workbench's
 store as the annotator does, and with sign-in on a service declaring one refuses to start without it. */ -}}
 {{- define "workbench.decidesASource" -}}
 {{- range (include "workbench.sources" . | fromJson).sources }}{{ if or (ne .kind "rask") (eq .identity "service") }}true{{ end }}{{ end -}}

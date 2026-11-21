@@ -17,8 +17,8 @@ import pytest
 
 from search.api.v1 import router as router_mod
 from search.services.fuse import RRF_SCORE
-from service_kit.exceptions import ValidationError
-from service_kit.governed.deps import ANONYMOUS_CALLER
+from workbench.exceptions import ValidationError
+from workbench.governed.deps import ANONYMOUS_CALLER
 
 
 class _Declared:
@@ -101,7 +101,7 @@ def test_the_result_is_RANK_fused_not_score_sorted(monkeypatch: pytest.MonkeyPat
 
 def test_a_REFUSING_corpus_is_skipped_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
     """One misconfigured corpus must not take the others down. A fan-out that 400s because the third
-    of five corpora declares no search bindings is unusable in exactly the estate it exists for."""
+    of five corpora declares no search bindings is unusable in exactly the workbench it exists for."""
     searched = _install(monkeypatch, results={"a": [hit("a", "x")], "c": [hit("c", "z")]}, refuse={"b"})
 
     fused = fan(["a", "b", "c"])

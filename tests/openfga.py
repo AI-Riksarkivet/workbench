@@ -21,7 +21,7 @@ from pathlib import Path
 
 import httpx
 
-from service_kit.governed import fga
+from workbench.governed import fga
 
 
 def _free_port() -> int:

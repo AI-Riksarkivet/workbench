@@ -29,10 +29,10 @@ from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.models import AnnotationProject, ProjectState, Task
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
-from client_kit.media.config import MediaSettings
-from client_kit.media.deps import get_state
-from client_kit.media.state import AppState
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
+from workbench.media.config import MediaSettings
+from workbench.media.deps import get_state
+from workbench.media.state import AppState
 
 
 DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "search": {"row_table": "chunks"}}
@@ -100,7 +100,7 @@ def _beside_the_lake(tmp_path: Path, *, annotatable: bool | None) -> list[dict[s
 
 @pytest.mark.parametrize("named", [True, False], ids=["named", "by-default"])
 def test_an_item_of_a_source_not_marked_annotatable_is_refused_with_the_reason(state_app: Callable[..., FastAPI], tmp_path: Path, named: bool) -> None:
-    """A source other than the lakehouse is annotated only where git marks it (`client_kit.sources.annotatable`): an item
+    """A source other than the lakehouse is annotated only where git marks it (`workbench.sources.annotatable`): an item
     of an unmarked one, named or taken by default, is refused before the catalog is asked, naming why, and nothing is
     written; and the annotator refuses to start with such a default."""
     sources = _beside_the_lake(tmp_path, annotatable=None)

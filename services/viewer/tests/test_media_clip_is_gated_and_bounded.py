@@ -1,6 +1,6 @@
 """`GET /api/media-clip/{doc_id}` ran an unauthenticated libx264 transcode behind a global lock.
 
-open_fastapi-audit HIGH, re-verified at HEAD. Three defects in one route, and they compound:
+Three defects in one route, and they compound:
 
 1. **No auth.** `media.py` contained ZERO auth constructs — the module's whole `Depends` count was
    nought — while its siblings gate on `can_get_metadata` (`datasets.py`) and `can_read_data`

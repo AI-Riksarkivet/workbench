@@ -19,11 +19,10 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from client_kit.lancekit.topics_meta import NOISE_LABEL
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.topics import TopicsResponse
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.state import dataset_handle
 
 
 router = APIRouter(prefix="/api/topics", tags=["topics"])
@@ -34,6 +33,11 @@ router = APIRouter(prefix="/api/topics", tags=["topics"])
 _LAYERS = "layers"
 _N_CHUNKS = "n_chunks"
 _DEFAULT_HIERARCHY_COLUMN = "hierarchy"
+
+#: The bucket a noise row (stored as NULL) is shown in, so every path reaches full depth and only true leaves carry a
+#: value (d3 sums leaf values up, and a branch that also held one would be counted twice). Served on every answer, so
+#: the app never states it itself.
+NOISE_LABEL = "(övrigt)"
 
 _NOT_BUILT = TopicsResponse(built=False, noise_label=NOISE_LABEL)
 

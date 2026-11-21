@@ -1,6 +1,6 @@
-"""The KG engine cache must be per-app and per-key, not one module global behind one lock (VS-08).
+"""The KG engine cache must be per-app and per-key, not one module global behind one lock.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-08, two defects in one cache:
+Two defects in one cache:
 
 1. **Module-global mutable state.** `create_viewer_app` can build several apps over different
    `AppState`s (the test/composition seam this codebase deliberately has), and they all shared one
@@ -25,10 +25,10 @@ from typing import Any
 
 import pytest
 
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.governed.deps import ANONYMOUS_CALLER
 from viewer.api.v1.endpoints import graph as graph_ep
+from workbench.governed.deps import ANONYMOUS_CALLER
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 #: A cold build takes ~20 s in production; a test needs only "long enough that a serialized second

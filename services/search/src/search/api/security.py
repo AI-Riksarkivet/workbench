@@ -4,8 +4,8 @@ Every route needs a person the workbench verified, and every read is made as tha
 person decides it on their own token (`CallerDep`), and its refusal is final; a fan-out across corpora leaves out a
 corpus the lakehouse refuses (`_fused_search` skips it). Every other source (a lance-namespace catalog, a bare table, a
 lakehouse read as the workbench) knows nobody, so the workbench's own OpenFGA decides: the caller every read is made as
-carries the sources it admits them to (`client_kit.media.source_gate.admit`), and a read of any other is refused (403) as
-it resolves its source, the default dataset included (`client_kit.sources.require_admitted`); a fan-out is refused
+carries the sources it admits them to (`workbench.media.source_gate.admit`), and a read of any other is refused (403) as
+it resolves its source, the default dataset included (`workbench.sources.require_admitted`); a fan-out is refused
 outright when it names a corpus of such a source (`READS_DATASET`), rather than skipping it.
 """
 
@@ -15,11 +15,11 @@ from typing import Annotated
 
 from fastapi import Depends, Query
 
-from client_kit.media.deps import StateDep
-from client_kit.media.source_gate import admit, require_read
 from search.core.config import SearchSettings, get_search_settings
-from service_kit.governed.deps import FgaChecker, make_auth_deps
-from service_kit.governed.token_exchange import LakehouseCaller
+from workbench.governed.deps import FgaChecker, make_auth_deps
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.deps import StateDep
+from workbench.media.source_gate import admit, require_read
 
 
 SettingsDep = Annotated[SearchSettings, Depends(get_search_settings)]

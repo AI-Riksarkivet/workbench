@@ -17,12 +17,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from client_kit.media.config import MediaSettings
-from client_kit.media.deps import get_state
-from client_kit.media.state import AppState
-from service_kit.exceptions import register_handlers
 from tests.media_catalog import lakehouse_dir
 from viewer.api.v1.endpoints.system import router as system_router
+from workbench.exceptions import register_handlers
+from workbench.media.config import MediaSettings
+from workbench.media.deps import get_state
+from workbench.media.state import AppState
 
 
 class _DeadEncoders:

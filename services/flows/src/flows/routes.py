@@ -4,7 +4,7 @@ Mounted under `settings.api_prefix` by `make_service_app`, so the deployed paths
 `/api/flows/...` (the chart sets `WORKBENCH_API_PREFIX=/api`, and `scripts/local-stack.sh` matches it) —
 which is exactly what the cluster route's `/api/flows` rule forwards unrewritten. A router prefix of
 `/flows` with an api_prefix of `/api/v1` would serve `/api/v1/flows/...` and every call through the
-route would 404; that trap has already been paid for once in this estate (the ingest row's `/v1`).
+route would 404.
 
 Every project route is gated on that project's roles in the workbench's own store (`flows.security`), and a run id is
 DERIVED from the caller's `Idempotency-Key` rather than minted per attempt — the run id is the run row's key, so
@@ -39,8 +39,8 @@ from flows.models import (
     ValidateResponse,
 )
 from flows.serve_auth import ServeCredentialError, serve_authorization
-from service_kit.exceptions import NotFoundError, ServiceUnavailableError
-from service_kit.exceptions import ValidationError as BadRequestError
+from workbench.exceptions import NotFoundError, ServiceUnavailableError
+from workbench.exceptions import ValidationError as BadRequestError
 
 
 log = logging.getLogger(__name__)
@@ -55,12 +55,11 @@ RunId = Annotated[str, Path(pattern=r"^run-[0-9a-f]{32}$")]
 #: The namespace that makes a run id deterministic across processes, replicas and restarts. A fixed
 #: constant, not uuid1/uuid4: the whole point is that the same `Idempotency-Key` yields the same run
 #: id — and therefore the same run row — on a different pod, after a crash, on a retry.
-#: Distinct from `ingest.runs.RUN_NAMESPACE` so the two services cannot collide on one key.
 RUN_NAMESPACE = uuid.UUID("2c9b7f41-6d4a-5e18-9a3c-71b0c5d2e480")
 
 
 def run_id_for(project: str, subject: str, idempotency_key: str) -> str:
-    """Derive the run id from the CALLER's key — the estate's idempotency pattern (`ingest.runs`).
+    """Derive the run id from the CALLER's key.
 
     Deterministic by construction: same subject + same key -> same id, on any pod, after any crash.
     A token minted per attempt leaves one orphan run per retry, and it is what made a schedule
@@ -104,7 +103,7 @@ async def validate(
     """Graph hygiene, with no cluster involved: duplicate ids, unknown kinds, dangling edges,
     self-loops, cycles. Same vocabulary the frontend executor refuses on.
 
-    GATED since 2026-08-26 (owner ruling: the estate is authenticated). The graph is also bounded at
+    GATED: every door is authenticated. The graph is also bounded at
     the MODEL now — `FlowGraph.nodes` carries `max_length` — because the ceiling in `validate_graph`
     fires only after every node has been built, which bounded the answer and not the work.
     """

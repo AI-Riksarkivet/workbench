@@ -16,12 +16,12 @@ from typing import Any, cast
 
 import pyarrow as pa
 
-from client_kit.lancekit.registry import DatasetRegistry
-from client_kit.media.config import MediaSettings
 from search.services.result_cache import entry_bytes, run_cached
 from search.services.spec import SearchSpec
-from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import lakehouse_dir, write_table
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.registry import DatasetRegistry
+from workbench.media.config import MediaSettings
 
 
 def _fake_key(monkeypatch: Any, name: str) -> None:

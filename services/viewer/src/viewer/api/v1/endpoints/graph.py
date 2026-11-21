@@ -30,8 +30,6 @@ import lance_graph as lg
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
 
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import AppState, dataset_handle
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.graph import (
     CypherResponse,
@@ -47,13 +45,15 @@ from viewer.schemas.graph import (
     GraphStatusResponse,
     SubgraphResponse,
 )
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.state import AppState, dataset_handle
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from client_kit.lancekit.descriptor import Declared
-    from client_kit.lancekit.registry import DatasetHandle
+    from workbench.lancekit.descriptor import Declared
+    from workbench.lancekit.registry import DatasetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ type _CacheKey = tuple[str, tuple[int, ...]]
 
 
 class _GraphCache:
-    """One app's KG engines, bounded, with SINGLE-FLIGHT PER KEY (VS-08).
+    """One app's KG engines, bounded, with SINGLE-FLIGHT PER KEY.
 
     Two things were wrong with the module-global dict this replaces.
 
@@ -255,7 +255,7 @@ class _GraphCache:
 #: ``AppState`` is collected — which is what makes an engine die with the app that built it.
 #: ``id()`` rather than a ``WeakKeyDictionary`` because ``AppState`` is a Pydantic model and
 #: therefore unhashable; the finalizer gives the same lifetime guarantee. It is deliberately NOT a
-#: field on ``AppState``: that model lives in ``service_kit`` and is shared with the search service
+#: field on ``AppState``: that model lives in ``workbench`` and is shared with the search service
 #: and the annotator, and the knowledge graph is a viewer-only concern.
 _CACHES: dict[int, _GraphCache] = {}
 _CACHES_GUARD = threading.Lock()

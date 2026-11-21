@@ -45,13 +45,13 @@ from annotator.projects.publish import publish_namespace, require_in_warehouse
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, ItemWork, SortOrder, TaskFilter, TaskSort, principals_in
 from annotator.text import MAX_MASK, MAX_TEXT, Id, Name, Text
-from client_kit.media.deps import StateDep
-from client_kit.media.source_gate import require_read
-from client_kit.media.state import AppState
-from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
-from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.fga import Grant
-from service_kit.governed.token_exchange import LakehouseCaller
+from workbench.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
+from workbench.governed.audit import AuditOutcome, audit
+from workbench.governed.fga import Grant
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.deps import StateDep
+from workbench.media.source_gate import require_read
+from workbench.media.state import AppState
 
 
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 """Decoupled search business logic — the mode-aware retrieval core.
 
 Ported from ``backend.search.service``, descriptor-driven: ``run_search`` takes
-a :class:`~client_kit.lancekit.registry.DatasetHandle`, resolves it to a
+a :class:`~workbench.lancekit.registry.DatasetHandle`, resolves it to a
 :class:`~search.services.target.SearchTarget` once, and routes a
 :class:`~search.services.spec.SearchSpec` across the seven modes
 (fts / semantic / visual / scene / scene_fts / hybrid / all), returning a
@@ -19,7 +19,7 @@ frame table rank there and join back by the identity key fields.
 
 It takes the two vLLM client getters as plain callables, so this module never
 imports the FastAPI app or app state — only domain exceptions from
-:mod:`service_kit.exceptions` for error mapping. The HTTP router wires it to
+:mod:`workbench.exceptions` for error mapping. The HTTP router wires it to
 the request via dependency injection.
 """
 
@@ -45,16 +45,16 @@ from search.services.rerank import rerank_by_text
 from search.services.spec import SearchMode, SearchSpec
 from search.services.target import SearchTarget, resolve_target
 from search.services.vector import vector_search
-from service_kit.exceptions import ServiceUnavailableError, ValidationError
+from workbench.exceptions import ServiceUnavailableError, ValidationError
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from client_kit.lancekit.descriptor import FtsBinding, VectorBinding
-    from client_kit.lancekit.registry import DatasetHandle
     from search.services.encoders.embedding import EmbeddingClient
     from search.services.encoders.reranker import VLLMReranker
+    from workbench.lancekit.descriptor import FtsBinding, VectorBinding
+    from workbench.lancekit.registry import DatasetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,7 @@ def _drop_or_raise(leg: str, exc: Exception) -> None:
     ``frames_to_row_hits``. One space the caller cannot drive must not 400 a search the other legs
     can still answer.
 
-    Anything else is the estate's fault and PROPAGATES — a store outage, an expired credential, a
+    Anything else is the service's fault and PROPAGATES — a store outage, an expired credential, a
     corrupt manifest, a :class:`ServiceUnavailableError` from a frame ranker that could not run. A
     fused response is indistinguishable from a complete one, so swallowing those hands the caller
     vector-only hits presented as the fused answer: a wrong answer, not a degraded one.

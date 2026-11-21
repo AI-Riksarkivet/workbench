@@ -13,11 +13,11 @@ from http import HTTPStatus
 
 from pydantic import BaseModel
 
-from client_kit.lancekit.descriptor import Declared
-from client_kit.lancekit.introspect import TableInfo
-from client_kit.lancekit.keys import validate_doc_key
-from client_kit.lancekit.predicate import and_, eq
-from service_kit.exceptions import DomainError, ValidationError
+from workbench.exceptions import DomainError, ValidationError
+from workbench.lancekit.descriptor import Declared
+from workbench.lancekit.introspect import TableInfo
+from workbench.lancekit.keys import validate_doc_key
+from workbench.lancekit.predicate import and_, eq
 
 
 #: A segment of an integer identity field.

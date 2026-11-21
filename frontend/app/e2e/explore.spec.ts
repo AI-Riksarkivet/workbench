@@ -1,11 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 import { textContrast } from './contrast';
 import { serveRecording } from './recording';
-import { callsOf, person, signIn } from './session';
+import { person, signIn } from './session';
 import { EDGE } from './ports';
 
 // The explorer's features on the dataset page, on the built app: browsing before a search, the three
-// layouts, the voice search, saved views, a topic link, the keyboard, and the states a reader meets
+// layouts, saved views, a topic link, the keyboard, and the states a reader meets
 // when a read fails or a dataset is not there.
 
 const results = (page: Page) => page.getByRole('list', { name: 'Search results' });
@@ -77,12 +77,9 @@ test('a recording whose media and transcript both fail says so, and one Try agai
 	await expect(player.getByRole('region', { name: 'Transcript' })).toBeVisible();
 });
 
-test('a diarized dataset without voice tables says so in its search modes and its Speakers tab', async ({
-	page,
-	context,
-}) => {
+test("a diarized recording's Speakers tab names it a recording", async ({ page, context }) => {
 	await signIn(context, person('Ada'));
-	// The stand-in's letters as a diarized recording whose voice tables are not built.
+	// The stand-in's letters as a diarized recording.
 	await page.route('**/api/viewer/api/datasets/*/descriptor', async (route) => {
 		const answer = await route.fetch();
 		const body = await answer.json();
@@ -90,16 +87,7 @@ test('a diarized dataset without voice tables says so in its search modes and it
 		body.declared.capabilities = { ...body.declared.capabilities, diarization: 'turns' };
 		await route.fulfill({ response: answer, json: body });
 	});
-	await page.route('**/api/viewer/api/voice/status*', (route) =>
-		route.fulfill({ json: { built: false, turns: 0, speakers: 0 } }),
-	);
 	await page.goto('/datasets/lake~acme%24letters');
-
-	await page.getByLabel('Search mode').click();
-	await expect(
-		page.getByRole('option', { name: 'Voice — needs voice tables this dataset has not built' }),
-	).toHaveAttribute('data-disabled');
-	await page.keyboard.press('Escape');
 
 	await page
 		.getByRole('list', { name: 'Documents' })
@@ -107,9 +95,6 @@ test('a diarized dataset without voice tables says so in its search modes and it
 		.click();
 	const player = page.getByRole('region', { name: 'Player' });
 	await player.getByRole('button', { name: 'Speakers' }).click();
-	await expect(player.getByTestId('voice-absent')).toHaveText(
-		'Voice search needs voice tables this dataset has not built.',
-	);
 	// A recording is named a recording, not a video.
 	await expect(player.getByText('No speaker turns for this recording.')).toBeVisible();
 });
@@ -192,33 +177,6 @@ test('the hits are a list, a grid or a table, and a still-image dataset offers n
 	await expect(table.getByRole('columnheader', { name: 'Collection' })).toBeVisible();
 	await expect(table.getByRole('columnheader', { name: 'Play' })).toHaveCount(0);
 	await expect(table.getByRole('cell', { name: 'Maps' })).toBeVisible();
-});
-
-test('a voice search finds the speaker elsewhere, and clearing it returns to the text results', async ({
-	page,
-	context,
-}) => {
-	const who = person('Barbara');
-	await signIn(context, who);
-	await page.goto('/datasets/lake~acme%24letters');
-	await searchFor(page, 'master');
-	await expect(results(page).getByRole('listitem')).toHaveCount(1);
-
-	await results(page).getByRole('button', { name: 'Find this voice' }).click();
-
-	await expect(page.getByText(/Voice: A letter from the harbour/)).toBeVisible();
-	await expect(results(page).getByRole('listitem')).toHaveCount(2);
-	await page.getByRole('button', { name: 'Clear voice search' }).click();
-	await expect(results(page).getByRole('listitem')).toHaveCount(1);
-	const calls = await callsOf(page, who);
-	expect(calls).toContainEqual(
-		expect.objectContaining({
-			service: 'viewer',
-			method: 'GET',
-			path: '/api/voice/similar',
-			status: 200,
-		}),
-	);
 });
 
 test('a saved search is kept for the person and applied again on another visit', async ({

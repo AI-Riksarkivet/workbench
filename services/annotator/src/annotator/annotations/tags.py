@@ -21,8 +21,8 @@ from annotator.api.security import READS_DATASET, CallerDep, CurrentSubject
 from annotator.corpus import resolve
 from annotator.people import RECORDS_PERSON
 from annotator.projects.models import Draft, Link, Shape, TaskState
-from client_kit.lancekit.keys import validate_doc_key
-from client_kit.media.deps import DatasetParam, StateDep
+from workbench.lancekit.keys import validate_doc_key
+from workbench.media.deps import DatasetParam, StateDep
 
 
 logger = logging.getLogger(__name__)

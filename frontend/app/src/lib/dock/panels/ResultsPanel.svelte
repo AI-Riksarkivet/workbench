@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Search and browse one dataset: the search bar (text, semantic, image, voice), its filters and
+	 * Search and browse one dataset: the search bar (text, semantic, image), its filters and
 	 * saved views, and the results as a list, a grid or a table; before any search, the dataset's
 	 * documents, a page at a time. Picking a result opens it in the Player panel.
 	 *
@@ -15,7 +15,6 @@
 	import { selectionKeys } from '#lib/projects/send.ts';
 	import { projectOf } from '#lib/project.ts';
 	import {
-		AudioLines,
 		Inbox,
 		Lasso,
 		ChevronLeft,
@@ -64,7 +63,7 @@
 	const browsingDocuments = $derived(explore.browsing && !itemsAreRows);
 	const active = $derived(explore.active);
 	const activeKey = $derived(active ? hitKey(active) : null);
-	const gridHighlight = $derived(makeHighlighter(queryTerms(explore.resultsQuery)));
+	const gridHighlight = $derived(makeHighlighter(queryTerms(explore.spec.q)));
 	const docCount = $derived(new Set(hits.map((h) => ds.docId(h))).size);
 
 	// Send to project: the rows the search answered, or the atlas selection shown as rows (all of it, listed or not).
@@ -91,7 +90,6 @@
 		'thumbnail',
 		'score',
 		...META_KEYS,
-		...(ds.hasCapability('diarization') ? ['speaker'] : []),
 		...(ds.hasTime ? ['start', 'end', 'duration'] : []),
 		...(ds.bodyField ? [ds.bodyField] : []),
 		...(ds.captionField ? [ds.captionField] : []),
@@ -266,40 +264,6 @@
 		{#if searchable}
 			<ActiveFilters bind:spec={explore.spec} onchange={(next) => void explore.runSearch(next)} />
 		{/if}
-		{#if explore.voiceActive}
-			<div class="flex flex-wrap items-center gap-2 px-3 pb-3 text-xs">
-				<Badge variant="secondary" class="gap-1.5 py-0.5 pr-0.5 pl-2">
-					<AudioLines class="text-primary" />
-					<span class="max-w-[24rem] truncate">
-						Voice: {explore.voiceLabel ?? explore.voiceQuery?.doc_id ?? '…'}
-						{#if explore.voiceQuery?.speaker_label}· {explore.voiceQuery.speaker_label}{/if}
-					</span>
-					<Button
-						variant="ghost"
-						size="icon-xs"
-						class="size-4 rounded-full"
-						title="Clear the voice search: back to the previous results"
-						aria-label="Clear voice search"
-						onclick={() => explore.dismissVoice()}
-					>
-						<X />
-					</Button>
-				</Badge>
-				{#if explore.voiceQuery && explore.voiceQuery.turn_start != null && explore.voiceQuery.turn_end != null}
-					<span class="text-muted-foreground">
-						anchor turn {fmtTime(explore.voiceQuery.turn_start)}–{fmtTime(
-							explore.voiceQuery.turn_end,
-						)}
-					</span>
-				{/if}
-				{#if explore.spec.q}
-					<span class="text-muted-foreground w-full">
-						Showing the voice's matches; the text search “{explore.spec.q}” returns when you clear
-						it.
-					</span>
-				{/if}
-			</div>
-		{/if}
 		{#if explore.mapSelection}
 			<div class="flex flex-wrap items-center gap-2 px-3 pb-3 text-xs">
 				<Badge variant="secondary" class="gap-1.5 py-0.5 pr-0.5 pl-2">
@@ -346,10 +310,6 @@
 				<span class="text-destructive">{explore.error}</span>
 			{:else if explore.error}
 				<!-- The failure is said once, below, beside the way to try again. -->
-			{:else if explore.voiceActive}
-				<strong class="text-foreground">{hits.length}</strong>
-				{hits.length === 1 ? 'voice match' : 'voice matches'}
-				{#if explore.allLoaded}<span class="text-muted-foreground">· all shown</span>{/if}
 			{:else if hits.length === 0}
 				No hits.
 			{:else}
@@ -604,12 +564,8 @@
 				<SearchX class="text-muted-foreground size-6" />
 				<p>No hits.</p>
 				<p class="text-xs">
-					{#if explore.voiceActive}
-						No similar voices found. Try <strong>include the same document</strong> in Settings.
-					{:else}
-						Try <strong>Match by</strong> <em>Semantic</em>, or <strong>Style</strong>
-						<em>Fuzzy</em>.
-					{/if}
+					Try <strong>Match by</strong> <em>Semantic</em>, or <strong>Style</strong>
+					<em>Fuzzy</em>.
 				</p>
 			</div>
 		{:else if explore.layout === 'grid'}
@@ -622,7 +578,7 @@
 					<li>
 						<HitCard
 							{hit}
-							query={explore.resultsQuery}
+							query={explore.spec.q}
 							highlight={gridHighlight}
 							active={activeKey === hitKey(hit)}
 							layout="tile"
@@ -639,16 +595,11 @@
 				widths={tableWidths}
 				wrap={tableWrap}
 				onwidthchange={setColWidth}
-				query={explore.resultsQuery}
+				query={explore.spec.q}
 				onselect={(hit) => (explore.active = hit)}
 			/>
 		{:else}
-			<HitList
-				{hits}
-				query={explore.resultsQuery}
-				{active}
-				onselect={(hit) => (explore.active = hit)}
-			/>
+			<HitList {hits} query={explore.spec.q} {active} onselect={(hit) => (explore.active = hit)} />
 		{/if}
 
 		{#if browseRows}
@@ -662,11 +613,7 @@
 					disabled={explore.loadingMore}
 					onclick={() => void explore.loadMore()}
 				>
-					{explore.loadingMore
-						? 'Loading…'
-						: explore.voiceActive
-							? 'Look for more voice matches'
-							: `Show ${PAGE_STEP} more`}
+					{explore.loadingMore ? 'Loading…' : `Show ${PAGE_STEP} more`}
 				</Button>
 			</div>
 		{/if}

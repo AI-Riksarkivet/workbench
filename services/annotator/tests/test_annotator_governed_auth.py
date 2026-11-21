@@ -1,11 +1,11 @@
 """The annotator's governed-auth seam: a VERIFIED subject, and authz that fails closed.
 
 `services/annotator` served the read-plane and took its author from a trusted `X-User` header
-(`client_kit.media.deps.get_author`, defaulting to `"anon"`). That is fine for reads and a
+(`workbench.media.deps.get_author`, defaulting to `"anon"`). That is fine for reads and a
 cross-user leak for annotation projects, whose every entity is keyed on who owns or claims it.
 
 These tests pin the two properties that make the difference real (the door itself, token and proof, is
-`packages/service-kit/tests/test_every_verifier_failure_is_a_401_or_a_503.py`'s):
+`packages/workbench/tests/test_every_verifier_failure_is_a_401_or_a_503.py`'s):
 
 1. the subject comes from a **verified token**, with no header fallback; and
 2. an auth layer that is *enabled but broken* returns **503**, never open access.
@@ -29,8 +29,8 @@ from annotator.api.security import (
     CurrentSubject,
 )
 from annotator.core.config import AnnotatorSettings
-from service_kit.exceptions import register_handlers
-from service_kit.ns_errors import install_problem_handlers
+from workbench.exceptions import register_handlers
+from workbench.ns_errors import install_problem_handlers
 
 
 def _app(settings: AnnotatorSettings, **state: Any) -> FastAPI:
@@ -117,11 +117,11 @@ def test_authorization_without_authentication_is_refused_at_construction(monkeyp
 
 # ── the WRITE routes' author stamp ──────────────────────────────────────────────────────────────
 #
-# docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" — "Write authorship comes from an unverified, client-supplied `X-User` header".
+# — "Write authorship comes from an unverified, client-supplied `X-User` header".
 #
 # This file already pinned the projects plane ("X-User used to BE the identity; it must now be
 # inert") — but the two Lance WRITE routes kept the old seam: `save_annotations` and `apply_tags`
-# stamped `client_kit.media.deps.get_author`'s value as the reviewer, so any caller could sign
+# stamped `workbench.media.deps.get_author`'s value as the reviewer, so any caller could sign
 # another person's name onto annotation provenance by setting a header. The independent re-audit
 # (2026-08-28) confirmed it live at HEAD and noted the sharp part: the gateway's spoofable-header
 # strip covered `x-forwarded-*` but not `x-user`, so the header sailed through the edge.

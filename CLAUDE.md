@@ -14,16 +14,16 @@ model pipelines over them**, as one product (FiftyOne-like). Its parts:
 
 **It reads the sources a deployment declares, and is a client of rask, never part of it** (owner, 2026-11-16: "as a client
 for rask, or without rask with lance-namespace or a Lance table directly"). The sources are one declaration in git
-(`client_kit.sources`; the chart's `sources`, the local stack's `scripts/local-sources.json`), each a name and a kind:
+(`workbench.sources`; the chart's `sources`, the local stack's `scripts/local-sources.json`), each a name and a kind:
 `rask` (a lakehouse by its catalog's REST door, at most one), `namespace` (any lance-namespace implementation and its
 properties, through `lance_namespace.connect`) or `tables` (a bare `.lance` table or a directory of them, read as a V1
 directory catalog with the manifest off). A dataset is a namespace of a source that holds tables, at any depth, and its
 id is `<source>~<namespace>` (`lake~acme$corpus`, `scans~`). **Everything rask-only sits behind the `rask` kind** and
 nothing else: the person's lakehouse token (never sent to another source), the `x-lance-originator` and `x-rask-*`
 headers, the warehouse-first id rule, and publish. Every other source is read-only and read with no
-token, through `client_kit.lancekit.confined.ConfinedNamespace` (only the names it lists, only under its declared
+token, through `workbench.lancekit.confined.ConfinedNamespace` (only the names it lists, only under its declared
 locations, on its declared storage options). **What is labelled** (owner, 2026-11-17: "Only if marked"): a lakehouse's
-datasets always; any other source's only when git marks it `annotatable: true` (`client_kit.sources.annotatable`, the
+datasets always; any other source's only when git marks it `annotatable: true` (`workbench.sources.annotatable`, the
 one function the send door, `annotator.corpus.resolve`, the default-dataset check and the app's send gate read, through
 the descriptor's `read_only` reason "source '<name>' is not marked annotatable"). Its items record their table and
 version at send like a lakehouse's, and a publish names only the lakehouse's tables as lineage inputs while every published row names its item's table and
@@ -33,13 +33,13 @@ the lakehouse is written once, at publish, through the catalog's doors. So label
 deployment with no `rask` source labels any source marked annotatable, and its publish says plainly there is nowhere to
 publish to), and the workbench holds no write grant in a lakehouse while people label. **Who reads what:** a lakehouse read as the person decides every read itself; every other
 source, and a lakehouse read as the workbench (`identity: service`), is decided by the workbench's own OpenFGA, `reader`
-on `source:<name>` from the source's `readers` in git (`client_kit.media.source_gate`; none means nobody), which the
+on `source:<name>` from the source's `readers` in git (`workbench.media.source_gate`; none means nobody), which the
 viewer, search and the annotator each ask: the request's caller carries the answer (`source_gate.admit`) and every read
-checks it as it resolves its source (`client_kit.sources.require_admitted`). A service that signs people in refuses to
+checks it as it resolves its source (`workbench.sources.require_admitted`). A service that signs people in refuses to
 start beside such a source without that store, and beside a `rask` directory stand-in read as nobody
-(`client_kit.media.config.GovernedMediaSettings`), so only sign-in off lets every check allow. No source
-names a credential: properties and storage options are an allow-list (`client_kit.source_keys`, the chart's copy in
-`chart/files/source-keys.json`), and every id segment a request names is checked (`client_kit.source_names`). A dataset with no `lance_media.descriptor` (or an invalid one) is shown from its
+(`workbench.media.config.GovernedMediaSettings`), so only sign-in off lets every check allow. No source
+names a credential: properties and storage options are an allow-list (`workbench.source_keys`, the chart's copy in
+`chart/files/source-keys.json`), and every id segment a request names is checked (`workbench.source_names`). A dataset with no `lance_media.descriptor` (or an invalid one) is shown from its
 schema as a plain table (`viewer.services.plain_rows`, the dock's Rows and Row panels, `#lib/plain`): paging, sorting where
 Lance orders a column, text search only where a full-text index is, similar rows only where a vector index is, a blob
 cell's image or audio previewed through a signed media URL, every read bounded (a page's depth, a sort's keys, a cell's
@@ -75,10 +75,10 @@ lakehouse only through what rask publishes, the way any outside tool would:
   provider's discovery advertises `dpop_signing_alg_values_supported` (`frontend/app/src/lib/auth.svelte.ts`), and
   every service verifies the token, and its proof unless the deployment says the provider binds none
   (`WORKBENCH_DPOP_REQUIRED=false`; a token naming a key is never accepted without its proof), on every request
-  (`service_kit.governed.deps`, `service_kit.governed.dpop`). A person is named exactly as rask names them, from issuer
+  (`workbench.governed.deps`, `workbench.governed.dpop`). A person is named exactly as rask names them, from issuer
   and subject (`<idp id>~<subject>`, Dex's connector map, several issuers, a client's token naming nobody:
-  `service_kit.governed.identity`), so a grant in the workbench's store and one in rask name the same person. How long a
-  signing key is trusted is one rule in every service (`service_kit.governed.oidc.OIDCVerifier`): one background
+  `workbench.governed.identity`), so a grant in the workbench's store and one in rask name the same person. How long a
+  signing key is trusted is one rule in every service (`workbench.governed.oidc.OIDCVerifier`): one background
   refresher per process (started by the app's startup, stopped at shutdown, restarted by a request if it ever ended)
   reads each issuer's key set every 60 s and discovery every cache TTL, gives each attempt 5 s in all (each read is
   streamed raw with `Accept-Encoding: identity`, cut at 1 MiB, follows no redirect, and is cut at that deadline from
@@ -129,14 +129,14 @@ lakehouse only through what rask publishes, the way any outside tool would:
   its tokens when it sees a new sign-out id and raises the shell's one prompt (nothing navigates until the person
   chooses "Sign in again", which keeps the canvas's unsaved edits), and a sign-in sent before the last sign-out is
   discarded at its callback, whatever happened in between. None of these values is a credential.
-- **Authorization** is the workbench's own OpenFGA model and store (`service_kit/governed/auth/model.fga`): an org's
+- **Authorization** is the workbench's own OpenFGA model and store (`workbench/governed/auth/model.fga`): an org's
   admins and members, a project's five roles (owner > manager > reviewer > annotator > viewer), and the tasks, corpora
   and flows that inherit from a project. It never asks rask's decision door or rask's OpenFGA store, and rask knows
   nothing of the workbench's users or roles. The model and the declared organisations are written by the model writer
-  (`python -m service_kit.governed.auth.write_model`), a Job the deployment runs; a service finds the store by its name
+  (`python -m workbench.governed.auth.write_model`), a Job the deployment runs; a service finds the store by its name
   and the model its own image carries, and never writes either.
 - **Data** in a rask lakehouse is rask's to govern. A read is made as the person: where the provider exchanges its own
-  tokens (RFC 8693, Keycloak), on a token the service exchanges for them (`service_kit.governed.token_exchange`,
+  tokens (RFC 8693, Keycloak), on a token the service exchanges for them (`workbench.governed.token_exchange`,
   `WORKBENCH_LAKEHOUSE_DELEGATION=exchange`); where it does not (Dex), the app's sign-in asks for the lakehouse's
   audience too, and the service passes the person's own token on unchanged, only when it names that audience and no key
   (`forward`). Delegation is per issuer, and a token is never sent to an issuer other than its own. A publish is written
@@ -144,7 +144,7 @@ lakehouse only through what rask publishes, the way any outside tool would:
   namespace of the project's warehouse, and names the person in the commit; a corpus binding grants reading, never
   writing. rask decides whether that caller may, and its refusal is final.
 
-The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); every credential is a mounted file:
+The settings, one `WORKBENCH_*` name each (`workbench.governed.settings`); every credential is a mounted file:
 
 | Setting | What it names |
 | --- | --- |
@@ -155,10 +155,10 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_PUBLIC_URL`, `WORKBENCH_PUBLIC_MOUNT`, `WORKBENCH_DPOP_WINDOW_SECONDS` | the URL a DPoP proof's `htu` names (and the path a gateway rewrites it to), and the proof's `iat` and replay window |
 | `WORKBENCH_OIDC_CLIENT_ID`, `WORKBENCH_OIDC_CLIENT_SECRET_FILE`, `WORKBENCH_LAKEHOUSE_AUDIENCE`, `_AUDIENCE_SCOPE` | the workbench's confidential client, which exchanges a person's token and takes its own, both addressed to the lakehouse (asking for the audience's scope where the provider reads one, Dex's `audience:server:client_id:<audience>`) |
 | `WORKBENCH_LAKEHOUSE_DELEGATION` | `exchange` (default) or `forward`: how the primary issuer's people's reads reach the lakehouse; `forward` needs `WORKBENCH_DPOP_REQUIRED=false`. A further issuer names its own in its `WORKBENCH_OIDC_PROVIDERS` entry (`lakehouse`, with its own client), or its people's reads are refused: a token is exchanged only at the issuer that signed it. Under `forward` a read presents the person's latest token, never one past its own `exp` (`token_exchange.PersonTokens`) |
-| `WORKBENCH_SOURCES_FILE` | the sources declaration (`{"sources": [...]}`, `client_kit.sources`), a file the chart renders from `sources` (`<release>-sources`); a relative local path in it is read beside the file. `WORKBENCH_SOURCES` gives the list inline (tests). No source names a credential: a property or storage option off the allow-list (`client_kit.source_keys`) is refused at load, by name |
+| `WORKBENCH_SOURCES_FILE` | the sources declaration (`{"sources": [...]}`, `workbench.sources`), a file the chart renders from `sources` (`<release>-sources`); a relative local path in it is read beside the file. `WORKBENCH_SOURCES` gives the list inline (tests). No source names a credential: a property or storage option off the allow-list (`workbench.source_keys`) is refused at load, by name |
 | `WORKBENCH_DEFAULT_DATASET`, `WORKBENCH_DESCRIPTOR_DIR` | the dataset a request naming none reads (`<source>~<namespace>`; the annotator's must be annotatable), and where a dataset's descriptor may be given as a file |
-| `WORKBENCH_CORS_ORIGINS`, `WORKBENCH_DOCS`, `WORKBENCH_MAX_BODY_BYTES`, `WORKBENCH_AUDIT_ENABLED` | what the app factory (`service_kit.app.make_service_app`) builds every service with: the origins besides the app's own a browser may call from (none by default), the interactive docs (off), the request-body cap (64 MiB; the viewer and search 32, the annotator 16), the audit trail (on) |
-| `WORKBENCH_OTEL_ENABLED`, `WORKBENCH_OTEL_TOKEN_FILE` | whether a service exports its traces, metrics and logs (the audit trail on its own scope, `workbench.audit`, which the platform's gateway may route to a table of its own) over OTLP/HTTP to the `OTEL_EXPORTER_OTLP_*` endpoint, as its own `service.name`; and the mounted projected token each export presents, read when it is sent (`service_kit.otel`) |
+| `WORKBENCH_CORS_ORIGINS`, `WORKBENCH_DOCS`, `WORKBENCH_MAX_BODY_BYTES`, `WORKBENCH_AUDIT_ENABLED` | what the app factory (`workbench.app.make_service_app`) builds every service with: the origins besides the app's own a browser may call from (none by default), the interactive docs (off), the request-body cap (64 MiB; the viewer and search 32, the annotator 16), the audit trail (on) |
+| `WORKBENCH_OTEL_ENABLED`, `WORKBENCH_OTEL_TOKEN_FILE` | whether a service exports its traces, metrics and logs (the audit trail on its own scope, `workbench.audit`, which the platform's gateway may route to a table of its own) over OTLP/HTTP to the `OTEL_EXPORTER_OTLP_*` endpoint, as its own `service.name`; and the mounted projected token each export presents, read when it is sent (`workbench.otel`) |
 | `ANNOTATOR_MODEL_ENDPOINT_URL`, `_TOKEN_FILE`, `_TIMEOUT_SECONDS` | the model endpoint assist asks by the workbench's model protocol (`docs/model-protocol.md`, ADR 0023, 0030 and 0032: a Ray Serve deployment; the chart's `models.endpoint`), the mounted file holding the token the annotator presents to it as itself (a credential: a projected ServiceAccount token for the endpoint's audience, read on every call, required with a URL), and how long an ask may take (default 30 s); no URL, no assist, said to the person |
 | `WORKBENCH_EMBED_URL`, `WORKBENCH_RERANK_URL` | the embedding and reranking model servers search queries and the viewer's health reports on |
 | `VIEWER_CACHE_BYTES`, `VIEWER_DERIVED_BUILDS` | the one byte budget the viewer's drawn answers share (the chart's `media.viewer.cacheBytes`), and how many derived views it builds at once |
@@ -174,7 +174,7 @@ The settings, one `WORKBENCH_*` name each (`service_kit.governed.settings`); eve
 | `WORKBENCH_FLOWS_RUN_MAX_ATTEMPTS`, `_RETENTION_DAYS` | how many times a run may be claimed before it fails for good (default 5), and how long an ended run stays before every replica's sweep deletes it (30 days) |
 
 It imports no rask code and shares none with it. What it once imported from rask is its own copy here, under its own
-names, changed freely: service-kit, and the frontend packages `@workbench/api` and `@workbench/config`. Its
+names, changed freely: the `workbench` library, and the frontend packages `@workbench/api` and `@workbench/config`. Its
 licence is Apache-2.0 (`LICENSE`, ADR 0024). Its design system is `@riksarkivet/ui` (`AI-Riksarkivet/ui`), a repository of its own. Its settings are `WORKBENCH_*` environment variables
 (the `LANCE_*` ones name what it asks of a lakehouse). rask's repository is `AI-Riksarkivet/rask`;
 compute (Ray Serve) is a repository of its own, called over HTTP, and a model is an endpoint the workbench is given and never deploys (ADR 0023).
@@ -183,14 +183,13 @@ The code came out of rask's history at `64ef118a9` on 2026-11-14 (issue #1).
 
 ## Where the work stands
 
-Work is tracked one GitHub issue per row, in the order of a pinned map issue (§ Agent skills). Until the owner's
-`/to-spec` and `/to-tickets` file the first rows, the open issues are #1 and #6 to #10 (WB-A to WB-E); their bodies and
-comments record what landed and the owner's decisions, #9's above all. The open work found in them, re-checked against
-the code, is `docs/planning/INPUT-2026-11-20.md`, and the decisions already made are `docs/adr/`. The owner's order
+Work is tracked one GitHub issue per row, in the order of the pinned map issue (#33, § Agent skills): the rows of the
+spec #16, whose comments also hold the questions still open for the owner. The closed issues #1 and #6 to #10 (WB-A to
+WB-E) record what landed before it, #9's above all, and the decisions already made are `docs/adr/`. The owner's order
 (2026-11-16) was to make it run before any feature step: `make local` runs the whole app on demo data with sign-in off (R1), and the annotator
 keeps its state in its own Postgres (R2). R3 made sign-in work with whatever OIDC provider the cluster runs (token
 exchange and DPoP only where the provider's discovery offers them) and built the first cluster run (`make deploy-dev`,
-docs/DEPLOY.md). R4 made the workbench read any Lance source (`client_kit.sources`, above); R5 made a dataset one dock whose panels are
+docs/DEPLOY.md). R4 made the workbench read any Lance source (`workbench.sources`, above); R5 made a dataset one dock whose panels are
 every view (graph and tree beside the atlas, one navigation, the view in the address); R6 the set-ups of any table;
 D3b-2a the labeling canvas's classes, names and review panel, and audio and video labeling on the shared viewers;
 D3b-2b text spans, compare and assist; then work in progress moved into the annotator's Postgres (Lance written only
@@ -293,11 +292,14 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 
 Two language-pure planes, as in rask; never blur them.
 
-- `packages/`: reusable Python libraries, no entrypoints. `service-kit` (the service base: THE app factory every
-  service is built by, `make_service_app`, with its exception handlers, middleware, probes, drain and telemetry;
-  governed auth; settings) and `client-kit` (what the viewer, search and annotator compose onto that factory: their
-  shared settings, lifespan, readiness and dataset registry, `client_kit.media`; and `client_kit.sources`, the
-  declared sources). Every dataset is a namespace of a declared source opened
+- `packages/workbench`: the ONE Python library (import `workbench`), no entrypoints, no extras: what two or more
+  services share, and nothing one service alone uses (that lives in the service, as rask's ADR 0224 puts it). THE app
+  factory every service is built by (`workbench.app.make_service_app`), with its exception handlers, middleware,
+  probes, drain and telemetry; governed auth and settings (`workbench.governed`); what the viewer, search and annotator
+  compose onto that factory (their shared settings, lifespan, readiness and dataset registry, `workbench.media`,
+  `workbench.lancekit`); and `workbench.sources`, the declared sources. Its one layer contract (the annotator's
+  project and task machines import no `workbench.lancekit`) is the root `pyproject.toml`'s `[tool.importlinter]`,
+  run by `make lint` and `dagger call lint` (`lint-imports`). Every dataset is a namespace of a declared source opened
   through lance-namespace, as the caller on a lakehouse (on the credentials the catalog vends) and with no token anywhere
   else: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
@@ -384,7 +386,7 @@ Two language-pure planes, as in rask; never blur them.
     (their role and the identity rules, `machines.caller_events`), the one rule the table, the quick view and the
     canvas's panel offer from; a dataset whose items are its rows (a corpus of texts, no document) is browsed by its rows
     (`GET /api/rows`) and sent from there; a dataset's
-    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record (a task's work is its item's first unit, `access.work_unit`) and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`; the rows are the task's draft in the annotator's Postgres, served as Arrow (`annotations.work.wire_table`, the draft's revision as `X-Annotations-Version`) and changed by a save of only what changed, links included, in one transaction under the task's row lock (`AnnotatorStore.change_draft`, 409 on a stale revision of that task, a change that changes nothing writes nothing), a draft held to 10,000 shapes, 10,000 links and 8 MiB whichever door changes it (413 naming the cap), each save kept in a history of the task's last 50 within 8 MiB (`MAX_DRAFT_HISTORY`, `MAX_HISTORY_BYTES`, `draft_history`: each row what undoes its save, a past save rebuilt from the draft by undoing the later ones), of which the History panel lists the latest 20 and reads a past save from; so a consensus item's replicas never share rows; a replica's rows and draft are read only by its own annotator or someone who may review it, `tasks.require_work_readable`, and a person who ever held one replica of a group may never claim or be assigned a sibling, `Task.holders`, so a release-and-claim hop cannot reach another annotator's work). A text item (a dataset with no document, sent as `text`) is its row's own text (`text/TextCanvas.svelte`); under a picture or a recording every row with text is a line (`text/TextLane.svelte`); a selection is a span (a `text` row naming its parent and `char_start`/`char_end`, offsets in code points on the wire and in the canvas, `text/codepoints.ts`, saved on the `spans` channel) with the class picker, overlapping spans on lanes, edges dragged or moved with Alt+←/→, and a corrected line (Enter applies it, Ctrl+S applies and saves) re-anchors its spans by a character diff (`span-remap.ts`, jsdiff), dropping a span whose words are all gone; the item's own text is written as a row (`source: dataset`) when the first span is marked in it, and Submit names an unclassed span as it names a region (`validate_against_ontology`). Compare (`compare/ComparePanel.svelte`, `compare/compare.ts`) sets, for someone who may review the item, another replica's work (its task's own draft in the annotator's Postgres) or the model's proposals beside the item's own, pairs them by overlap, draws theirs (a second Arrow layer on the picture, lanes on the time strip, dashed under a text) and takes one in, on the undo stack. Assist (`AssistPanel.svelte`) lists the models of the deployment's model endpoint (`GET /api/assist/models`, which says assist is unavailable where the deployment names none) and asks one through the annotator's `POST /api/assist/<unit key>?project=&dataset=` (the task's id in the body, the unit one of that task's) with the prompts that model takes (words, a drawn box, clicks); the annotator sends the endpoint the unit's picture (`client_kit.media.frames.frame_row`, the frame the canvas draws) by the workbench's model protocol (`annotator.model_endpoint`, `docs/model-protocol.md`) as itself, and an endpoint that is slow or fails is an error the person reads, never an empty answer. Proposals land as `prediction` rows that name their model, its version and its score (a save lacking one is refused), to keep (A) or reject (R), or all at once; an item holding one nobody kept or removed is refused at submit, and at a reviewer's accept, with the count (ADR 0019, `machines.SETTLES_PROPOSALS`), and `POST /api/annotations/<unit key>/proposals` keeps or removes them all as one revision, which the Label grid offers per item from its `work.proposals` count. A drawn region opens the class picker (`ClassPicker.svelte`; the task's ontology classes, never the labels already on the item; digits, type-ahead, Enter, the last class the default; Escape discards a region on a task whose classes are closed; the open picker takes keys wherever the focus is, `controller.pickerKey`); the digits relabel the selection. The side panel's head (`TaskPanel.svelte`, `task-panel.ts`) says what the person is doing from the task's state, holder and their permissions, offers the transitions its `legal_events` allow (the task door answers them), lists what blocks a submit (`classes.ts`, the same rule as `validate_against_ontology`: every region carries a class once the ontology names any), and carries a reviewer's send-back note to the annotator. The page names the item from its row and dataset declaration (`#lib/projects/item-name.ts`) and names the breadcrumb's project and item (`#lib/shell/crumb-names.svelte.ts`), the ids as tooltips. A recording's or a video's unit opens the whole document on one time line (`temporal/TemporalCanvas.svelte`): the video's frame drawn by the image stage from a hidden `<video>` (a pixi `ImageSource` over the element, which the stage never empties as a `VideoSource`'s destroy would, frames uploaded per `requestVideoFrameCallback`), under it ONE time strip (`#lib/media/time/TimeStrip.svelte`, hand-written WebGPU rectangles in `#lib/gpu/rects.ts`: the waveform, speakers, parts, region lanes and each track's lane of keyframes), then the shared transport. Regions are `segment` rows in seconds (`t_start`/`t_end`, the save's `temporal` channel, the one undo stack); a video's tracks are box rows sharing a `group`, each keyframe its `t_start`, interpolated between, absent from an outside keyframe (a box of no area) to the next (`temporal/tracks.ts`). The dataset's player draws the same strip, read-only, and a video's frames through the same image stage. Image
+    search results and atlas selection are sent to a project from `#lib/projects/SendToProjectDialog.svelte`. A task's labeling canvas is `/projects/[project]/tasks/[task]` (`#lib/canvas`: the engine, folded in from `@workbench/engine`, drawing its annotation layer over the shared image stage; WebGPU only; its annotations, tags and versions at the annotator's `/api/annotations/<unit key>` with `?project=`, `?task=` and `?dataset=`, `#lib/api/annotations.api.ts`, where the door reads the unit against the task's own record (a task's work is its item's first unit, `access.work_unit`) and takes an edit only from the claim's holder or a reviewer of work in review, `annotator.annotations.access`; the rows are the task's draft in the annotator's Postgres, served as Arrow (`annotations.work.wire_table`, the draft's revision as `X-Annotations-Version`) and changed by a save of only what changed, links included, in one transaction under the task's row lock (`AnnotatorStore.change_draft`, 409 on a stale revision of that task, a change that changes nothing writes nothing), a draft held to 10,000 shapes, 10,000 links and 8 MiB whichever door changes it (413 naming the cap), each save kept in a history of the task's last 50 within 8 MiB (`MAX_DRAFT_HISTORY`, `MAX_HISTORY_BYTES`, `draft_history`: each row what undoes its save, a past save rebuilt from the draft by undoing the later ones), of which the History panel lists the latest 20 and reads a past save from; so a consensus item's replicas never share rows; a replica's rows and draft are read only by its own annotator or someone who may review it, `tasks.require_work_readable`, and a person who ever held one replica of a group may never claim or be assigned a sibling, `Task.holders`, so a release-and-claim hop cannot reach another annotator's work). A text item (a dataset with no document, sent as `text`) is its row's own text (`text/TextCanvas.svelte`); under a picture or a recording every row with text is a line (`text/TextLane.svelte`); a selection is a span (a `text` row naming its parent and `char_start`/`char_end`, offsets in code points on the wire and in the canvas, `text/codepoints.ts`, saved on the `spans` channel) with the class picker, overlapping spans on lanes, edges dragged or moved with Alt+←/→, and a corrected line (Enter applies it, Ctrl+S applies and saves) re-anchors its spans by a character diff (`span-remap.ts`, jsdiff), dropping a span whose words are all gone; the item's own text is written as a row (`source: dataset`) when the first span is marked in it, and Submit names an unclassed span as it names a region (`validate_against_ontology`). Compare (`compare/ComparePanel.svelte`, `compare/compare.ts`) sets, for someone who may review the item, another replica's work (its task's own draft in the annotator's Postgres) or the model's proposals beside the item's own, pairs them by overlap, draws theirs (a second Arrow layer on the picture, lanes on the time strip, dashed under a text) and takes one in, on the undo stack. Assist (`AssistPanel.svelte`) lists the models of the deployment's model endpoint (`GET /api/assist/models`, which says assist is unavailable where the deployment names none) and asks one through the annotator's `POST /api/assist/<unit key>?project=&dataset=` (the task's id in the body, the unit one of that task's) with the prompts that model takes (words, a drawn box, clicks); the annotator sends the endpoint the unit's picture (`workbench.media.frames.frame_row`, the frame the canvas draws) by the workbench's model protocol (`annotator.model_endpoint`, `docs/model-protocol.md`) as itself, and an endpoint that is slow or fails is an error the person reads, never an empty answer. Proposals land as `prediction` rows that name their model, its version and its score (a save lacking one is refused), to keep (A) or reject (R), or all at once; an item holding one nobody kept or removed is refused at submit, and at a reviewer's accept, with the count (ADR 0019, `machines.SETTLES_PROPOSALS`), and `POST /api/annotations/<unit key>/proposals` keeps or removes them all as one revision, which the Label grid offers per item from its `work.proposals` count. A drawn region opens the class picker (`ClassPicker.svelte`; the task's ontology classes, never the labels already on the item; digits, type-ahead, Enter, the last class the default; Escape discards a region on a task whose classes are closed; the open picker takes keys wherever the focus is, `controller.pickerKey`); the digits relabel the selection. The side panel's head (`TaskPanel.svelte`, `task-panel.ts`) says what the person is doing from the task's state, holder and their permissions, offers the transitions its `legal_events` allow (the task door answers them), lists what blocks a submit (`classes.ts`, the same rule as `validate_against_ontology`: every region carries a class once the ontology names any), and carries a reviewer's send-back note to the annotator. The page names the item from its row and dataset declaration (`#lib/projects/item-name.ts`) and names the breadcrumb's project and item (`#lib/shell/crumb-names.svelte.ts`), the ids as tooltips. A recording's or a video's unit opens the whole document on one time line (`temporal/TemporalCanvas.svelte`): the video's frame drawn by the image stage from a hidden `<video>` (a pixi `ImageSource` over the element, which the stage never empties as a `VideoSource`'s destroy would, frames uploaded per `requestVideoFrameCallback`), under it ONE time strip (`#lib/media/time/TimeStrip.svelte`, hand-written WebGPU rectangles in `#lib/gpu/rects.ts`: the waveform, speakers, parts, region lanes and each track's lane of keyframes), then the shared transport. Regions are `segment` rows in seconds (`t_start`/`t_end`, the save's `temporal` channel, the one undo stack); a video's tracks are box rows sharing a `group`, each keyframe its `t_start`, interpolated between, absent from an outside keyframe (a box of no area) to the next (`temporal/tracks.ts`). The dataset's player draws the same strip, read-only, and a video's frames through the same image stage. Image
     `.docker/frontend.dockerfile`; released by the chart (`chart/`, `app.*`) at `/`.
     Its design system is `@riksarkivet/ui`, the public repository `AI-Riksarkivet/ui`, read from source (no build
     step) and pinned by a full commit sha in `frontend/app/package.json` (`github:AI-Riksarkivet/ui#<sha>`; `bun.lock`
@@ -434,8 +436,8 @@ Two language-pure planes, as in rask; never blur them.
   Ray is imported, without which a Ray started under `uv run` never starts a worker).
 - `docs/model-protocol.md` and `docs/model-protocol-openapi.json`: the protocol the workbench calls a model endpoint by, published (`make model-protocol` writes the second from the stand-in, and a test holds them equal).
 - `docs/rask/`: rask's published contract, vendored (`PROVENANCE.md` says from which sha and how to refresh it).
-- `GLOSSARY.md` (the glossary), `docs/adr/` (the decisions), `docs/agents/` (how the workflow's skills use this
-  repository) and `docs/planning/` (the inputs a planning session starts from): see § Agent skills.
+- `GLOSSARY.md` (the glossary), `docs/adr/` (the decisions) and `docs/agents/` (how the workflow's skills use this
+  repository): see § Agent skills.
 - `scripts/`: dev and ops scripts.
 
 Workspace membership is globbed: `[tool.uv.workspace] members = ["packages/*", "services/*"]` and
@@ -464,7 +466,7 @@ Work moves from idea to shipped along one path. Every step holds its output to t
 principles, GitOps first.
 
 1. `/grill-with-docs` sharpens an idea by interview, and records terms in `GLOSSARY.md` and decisions as ADRs in
-   `docs/adr/`. The input for the first session is `docs/planning/INPUT-2026-11-20.md`.
+   `docs/adr/`.
 2. `/to-spec` writes the spec as an issue; `/to-tickets` splits it into rows with native blocking edges, each a
    sub-issue of the spec and placed in the map.
 3. A row is built test-first (`/tdd` at the agreed seams), with the type checker and single test files as it goes and

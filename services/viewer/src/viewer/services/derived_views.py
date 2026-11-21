@@ -46,9 +46,9 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from pydantic import BaseModel, Field
 
-from service_kit.arrow_ipc import encode_arrow_stream
-from service_kit.exceptions import ServiceUnavailableError, ValidationError
 from viewer.services.plain_rows import MAX_OFFSET, MAX_PAGE, ROW_ID, ColumnKind, ColumnView, RowsPage, quote_column
+from workbench.arrow_ipc import encode_arrow_stream
+from workbench.exceptions import ServiceUnavailableError, ValidationError
 
 
 #: How long a derived read may take, reading and working on what it read.

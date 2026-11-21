@@ -29,9 +29,9 @@ import lance
 from lance_namespace import LanceNamespace
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from client_kit.lancekit.catalog import bounded, translate_catalog_errors
-from client_kit.lancekit.registry import INDEX_CACHE_BYTES, METADATA_CACHE_BYTES, reusable_until
-from service_kit.exceptions import ForbiddenError, ServiceUnavailableError
+from workbench.exceptions import ForbiddenError, ServiceUnavailableError
+from workbench.lancekit.catalog import bounded, translate_catalog_errors
+from workbench.lancekit.registry import INDEX_CACHE_BYTES, METADATA_CACHE_BYTES, reusable_until
 
 
 #: The shortest key the viewer signs with: RFC 2104 § 3 sets the floor at L, the hash's output length, 32 bytes for
@@ -49,7 +49,7 @@ class SignedBlob(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    #: The source the table is read from (`client_kit.sources`), whose kind decides the identity the GET reads as.
+    #: The source the table is read from (`workbench.sources`), whose kind decides the identity the GET reads as.
     source: str
     #: The person the URL was signed for: where the workbench decides who reads the source, the GET serves the cell only
     #: while they still may.
@@ -149,7 +149,7 @@ class _Open(BaseModel):
 class ServiceReads:
     """The viewer's own opens of signed tables, one per (table, version), each reused until shortly before its vend expires.
 
-    One session, since every open here is the one identity's (`client_kit.lancekit.registry.CallerSessions` says why a
+    One session, since every open here is the one identity's (`workbench.lancekit.registry.CallerSessions` says why a
     session is never shared between identities). A signed GET then costs no DescribeTable while its table's open lasts,
     however many cells of the table a page shows.
     """

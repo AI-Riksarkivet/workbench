@@ -1,17 +1,17 @@
-"""`create_run` refuses through the estate's exception hierarchy, not around it.
+"""`create_run` refuses through the workbench's exception hierarchy, not around it.
 
 `create_run` was declared `-> RunState | JSONResponse` and hand-built its own problem+json body,
-for one stated reason: `service_kit.exceptions._problem` flattened a problem to four keys, and the
+for one stated reason: `workbench.exceptions._problem` flattened a problem to four keys, and the
 refusal's whole point is a structured `problems` LIST the builder highlights nodes from
 (FLOWS-422-BYPASSES-HIERARCHY). So the one route in this service that can refuse for a domain reason
 was also the one route whose refusal no handler produced — a second error plane, one route wide.
 
 The cost is not theoretical. A union return type means the next refusal added here can return any
 `JSONResponse` at all with nothing checking its shape, and the hand-built body is a private copy of a
-document the estate owns: `_problem` gaining a member (or changing one) leaves this route answering
+document the workbench owns: `_problem` gaining a member (or changing one) leaves this route answering
 the old shape, silently, forever.
 
-The hierarchy now carries RFC 9457 extension members (`packages/service-kit/tests/
+The hierarchy now carries RFC 9457 extension members (`packages/workbench/tests/
 test_problem_extension_members.py`), so the reason is gone and so is the escape hatch. The refusal
 keeps its specific `about:blank#flow-invalid` type — a domain naming its own failure is the point of
 the taxonomy, not a departure from it.

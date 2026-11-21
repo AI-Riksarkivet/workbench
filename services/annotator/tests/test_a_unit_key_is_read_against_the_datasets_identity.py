@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 
 from annotator.annotations.unit import UnitKeyError, parse_unit
-from client_kit.lancekit.descriptor import Declared
-from client_kit.lancekit.introspect import ColumnInfo, TableInfo
+from workbench.lancekit.descriptor import Declared
+from workbench.lancekit.introspect import ColumnInfo, TableInfo
 
 
 def _dataset(fields: dict[str, str]) -> tuple[Declared, dict[str, TableInfo]]:

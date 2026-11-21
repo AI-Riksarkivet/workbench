@@ -1,6 +1,6 @@
 """Descriptor → runtime search target: the one place table/column names resolve.
 
-``resolve_target`` turns a :class:`~client_kit.lancekit.registry.DatasetHandle`
+``resolve_target`` turns a :class:`~workbench.lancekit.registry.DatasetHandle`
 into a :class:`SearchTarget` holding the opened Lance handles plus every name
 the retrieval modules need (key fields, hit projection, bindings). Nothing
 downstream of this module reads the descriptor, so the "all corpus knowledge
@@ -14,13 +14,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from client_kit.lancekit.descriptor import Declared, FtsBinding, VectorBinding
-from client_kit.lancekit.introspect import TableInfo
-from client_kit.lancekit.registry import DatasetHandle
 from search.services.constants import DURATION_COLUMN
 from search.services.filters import topic_layer_columns
 from search.services.spec import SearchMode
-from service_kit.exceptions import NotFoundError, ValidationError
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.lancekit.descriptor import Declared, FtsBinding, VectorBinding
+from workbench.lancekit.introspect import TableInfo
+from workbench.lancekit.registry import DatasetHandle
 
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,7 @@ def resolve_target(handle: DatasetHandle, table: str | None = None) -> SearchTar
     alignments_ref = declared.capabilities.get(_ALIGNMENTS_CAPABILITY)
     if alignments_ref:
         # NOT `table`: that parameter is the searchable table the CALLER selected, and rebinding it
-        # here left one name meaning two different things in one function (VS-23).
+        # here left one name meaning two different things in one function.
         alignments_table, _, column = alignments_ref.partition(".")
         # Only a row-table column can ride on hits; a foreign-table target would
         # make the pop strip an unrelated same-named hit field.

@@ -15,12 +15,12 @@ import numpy as np
 import pyarrow as pa
 from fastapi.testclient import TestClient
 
-from client_kit.media.lifespan import make_media_state
 from search.api.dependencies import get_embedder
 from search.core.config import SearchSettings
 from search.main import create_search_app
 from search.services.fuse import DEFAULT_K
 from tests.media_catalog import lakehouse_dir, write_table
+from workbench.media.lifespan import make_media_state
 
 
 _DESCRIPTOR = {

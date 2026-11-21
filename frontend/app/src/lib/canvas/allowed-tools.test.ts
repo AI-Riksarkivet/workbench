@@ -1,15 +1,10 @@
 /**
  * The rail offers only what the task will accept.
  *
- * Enforcement was server-side only: all ten tools stayed available regardless of the task's
- * declared tools, so an annotator drew a polygon in a bbox-only task and learned at SUBMIT, after
- * the work — a 409 naming a rule the UI never showed. That is enforcement that punishes; declining
- * to offer the tool is enforcement that teaches, and the 409 stays as the backstop for any caller
- * that is not this canvas.
- *
- * `ProjectsLanding.svelte` asserted in a comment that "the canvas constrains its tools to it".
- * It did not. OPEN-WORK recorded the same thing as open. A comment cannot fail a build, which is
- * why this file exists.
+ * With every tool offered whatever the task declares, an annotator would draw a polygon in a
+ * bbox-only task and learn at SUBMIT, after the work, from a 409 naming a rule the UI never showed.
+ * Declining to offer the tool teaches; the 409 stays as the backstop for any caller that is not
+ * this canvas.
  *
  * The two sides also speak different vocabularies — the task declares canonical shape types
  * (`bbox`, `polyline`) and the engine names tools after what they draw (`rect`, `line`) — so the

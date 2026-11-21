@@ -12,7 +12,7 @@ Each is a read of the table as the caller, behind the same gate as the plain row
 who may read the source; a lakehouse decides on the person's own token), at the version named or the latest. The table
 is opened as the caller first, so a kept answer is reached only behind the caller's own read. An answer is kept per
 (dataset, table, version, read, the columns picked) within the byte budget it shares with the stamped atlas's points
-(`client_kit.media.cache_bounds.keep_shared`), built once however many ask for it cold. A cold build of a whole view
+(`workbench.media.cache_bounds.keep_shared`), built once however many ask for it cold. A cold build of a whole view
 takes one of the viewer's derived build slots (`viewer.services.build_slots`; ``VIEWER_DERIVED_BUILDS``) or is refused
 with 503 and Retry-After; a build every caller has left stops at its next check and keeps nothing.
 """
@@ -32,16 +32,6 @@ from fastapi import APIRouter, Path, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.blobs import is_blob_field
-from client_kit.lancekit.introspect import TableInfo
-from client_kit.lancekit.keys import validate_doc_key
-from client_kit.lancekit.predicate import eq
-from client_kit.media.cache_bounds import keep_shared
-from client_kit.media.deps import StateDep
-from client_kit.media.state import AppState, dataset_handle
-from service_kit.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
-from service_kit.exceptions import DomainError, NotFoundError, ServiceUnavailableError
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep, SettingsDep
 from viewer.api.v1.endpoints.datasets import TableParam, table_at
 from viewer.core.config import ViewerSettings, viewer_settings
@@ -74,6 +64,16 @@ from viewer.services.derived_views import (
 )
 from viewer.services.peaks import peaks_of
 from viewer.services.plain_rows import ColumnView, columns_of, page_of_rowids
+from workbench.arrow_ipc import ARROW_STREAM_MEDIA_TYPE
+from workbench.exceptions import DomainError, NotFoundError, ServiceUnavailableError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.blobs import is_blob_field
+from workbench.lancekit.introspect import TableInfo
+from workbench.lancekit.keys import validate_doc_key
+from workbench.lancekit.predicate import eq
+from workbench.media.cache_bounds import keep_shared
+from workbench.media.deps import StateDep
+from workbench.media.state import AppState, dataset_handle
 
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])

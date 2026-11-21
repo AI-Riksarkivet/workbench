@@ -1,8 +1,8 @@
 """Publish → the lakehouse: which annotations land, in what shape, and whose names travel with them.
 
-The publish DECISION, implementing `OPEN-WORK.md#design--annotation-projects` §7. Deliberately pure — no
+The publish DECISION. Deliberately pure — no
 store, no Lance, no catalog client — so the rules that would be expensive to get wrong in a cluster
-are testable exhaustively here. **The annotator never writes Lance directly** (§7.1); the publish saga
+are testable exhaustively here. **The annotator never writes Lance directly**; the publish saga
 takes this plan and posts it through the catalog, which is what seeds FGA ownership and emits the
 `CREATE` RunEvent.
 
@@ -37,8 +37,8 @@ import pyarrow as pa
 from pydantic import BaseModel, Field
 
 from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Task, TaskState, labels_of
-from client_kit.source_names import SOURCE_SEPARATOR
-from service_kit.naming import CATALOG_DELIMITER, is_safe_project
+from workbench.naming import CATALOG_DELIMITER, is_safe_project
+from workbench.source_names import SOURCE_SEPARATOR
 
 
 #: The only state that contributes SHAPES. Every other terminal state contributes a sentinel row.

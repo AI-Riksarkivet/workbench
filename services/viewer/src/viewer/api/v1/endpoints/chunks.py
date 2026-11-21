@@ -13,16 +13,16 @@ import logging
 
 from fastapi import APIRouter
 
-from client_kit.lancekit.alignments import parse_alignments_json
-from client_kit.lancekit.descriptor import Declared
-from client_kit.lancekit.keys import chunk_key_filter, validate_doc_key
-from client_kit.lancekit.predicate import eq
-from client_kit.lancekit.registry import table_dataset
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
-from service_kit.exceptions import NotFoundError
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.chunks import ChunkAlignments, DocChunks
+from viewer.services.alignments import parse_alignments_json
+from workbench.exceptions import NotFoundError
+from workbench.lancekit.descriptor import Declared
+from workbench.lancekit.keys import chunk_key_filter, validate_doc_key
+from workbench.lancekit.predicate import eq
+from workbench.lancekit.registry import table_dataset
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.state import dataset_handle
 
 
 logger = logging.getLogger(__name__)

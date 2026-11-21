@@ -1,6 +1,6 @@
 """A cached clip must survive being evicted while it is being served.
 
-open_fastapi-audit — "A cached clip can be unlinked between the handler's `exists()` check and
+The defect: "A cached clip can be unlinked between the handler's `exists()` check and
 Starlette's `os.stat`, turning a valid `/api/media-clip` request into a 500".
 
 `build_clip` returns a path on a cache hit; the route hands that path to `FileResponse`, which stats

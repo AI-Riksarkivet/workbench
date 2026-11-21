@@ -1,0 +1,47 @@
+[project]
+name = "workbench"
+version = "0.1.0"
+description = "What two or more of the workbench's services share: the app factory, sign-in and authorization, telemetry, the declared sources and the dataset registry."
+requires-python = ">=3.13"
+license = "Apache-2.0"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.5",
+    "httpx>=0.27",
+    "pyarrow",
+    "pylance[otel]>=13.0.0",
+    # The stock Lance Namespace SDK every source is opened through (`lance_namespace.connect`); pylance 13.0.0 requires
+    # >=0.11.1,<0.12.
+    "lance-namespace>=0.11.1,<0.12",
+    # `workbench.lancekit.registry` opens every dataset it serves with a lancedb connection.
+    "lancedb>=0.40.0",
+    "openfga-sdk>=0.10.4",
+    # Floors at the first releases without the advisories of 2026-11-06: PyJWT's authentication bypass and
+    # redirect-following key-set fetch, and aiohttp, urllib3, certifi and cryptography behind them.
+    "pyjwt[crypto]>=2.15.1",
+    # The JWS and JWK work under DPoP proof verification (`workbench.governed.dpop`): signature, key import, RFC 7638
+    # thumbprint.
+    "joserfc>=1.8.0",
+    "aiohttp>=3.14.4",
+    "urllib3>=2.8.0",
+    "certifi>=2026.10.23",
+    "cryptography>=49",
+    "tenacity>=9.1.4",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-instrumentation-fastapi>=0.65b0",
+    "opentelemetry-instrumentation-httpx>=0.65b0",
+    "opentelemetry-instrumentation-logging>=0.65b0",
+    "opentelemetry-instrumentation-requests>=0.65b0",
+    "opentelemetry-instrumentation-aiohttp-client>=0.65b0",
+    "opentelemetry-instrumentation-botocore>=0.65b0",
+    "opentelemetry-instrumentation-urllib3>=0.65b0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workbench"]

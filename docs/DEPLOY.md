@@ -41,7 +41,7 @@ Rask's own `make k3s-up` installs its Dex with rask's values alone, so it drops 
 
 The development Dex keeps its state in memory, so every restart signs with new keys and every token signed before is
 unverifiable. Each service's background refresher reads the issuer's key set every 60 s (`KEY_SET_MAX_AGE_SECONDS`,
-`service_kit.governed.oidc`), so the viewer, search and the annotator all refuse such a token within about a minute of
+`workbench.governed.oidc`), so the viewer, search and the annotator all refuse such a token within about a minute of
 the restart. Until a service has read the new set its reads still succeed. The first request naming the old key after
 that read asks the issuer once more (the forced read below); a second read running without the key retires it there
 (`RETIRE_AFTER_READS`: two reads, because replicas of one issuer can serve different sets for a while, and an issuer
@@ -215,7 +215,7 @@ while the service runs, its doors answering 503 until it is found. Only with sig
 everyone is `anon`) does every check allow.
 
 **No credential in git.** A source's properties and storage options are held to an allow-list
-(`chart/files/source-keys.json`, the same list the services enforce, `client_kit.source_keys`): no key, token, signature,
+(`chart/files/source-keys.json`, the same list the services enforce, `workbench.source_keys`): no key, token, signature,
 header or proxy, no location with a user, password or query, and a credential file only under `/var/run/secrets/`. A
 store is reached on the workload's own identity: with `storeIdentity.audience` named, the viewer and search mount their
 ServiceAccount's token for that audience at `/var/run/secrets/workbench/store/token`, which the source's `storage`

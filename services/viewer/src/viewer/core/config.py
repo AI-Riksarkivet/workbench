@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import Field
 
-from client_kit.media.config import GovernedMediaSettings, MediaSettings
+from workbench.media.config import GovernedMediaSettings, MediaSettings
 
 
 class ViewerSettings(GovernedMediaSettings):
@@ -21,15 +21,6 @@ class ViewerSettings(GovernedMediaSettings):
     #: lookup bounds. `0` disables the byte bound only. The chart sets it from `media.viewer.cacheBytes`, sized against
     #: the pod's memory limit.
     cache_bytes: int = Field(default=192 * 1024 * 1024, ge=0, alias="VIEWER_CACHE_BYTES")
-
-    #: Where the voiceprint runner's Ray Serve app answers. EMPTY DISABLES the upload form, and that
-    #: is the honest default: the read plane no longer carries a speaker encoder, so an estate that
-    #: has not deployed the runner cannot embed — and saying so at the door beats a 500 from a model
-    #: that is not there. The Lance-anchored GET forms are unaffected; they run no encoder.
-    #:
-    #: A setting rather than a literal because a hard-coded endpoint does not survive multi-env
-    #: deploys (`fastapi` references/anti-patterns.md).
-    voiceprint_serve_url: str = Field(default="", alias="VIEWER_VOICEPRINT_SERVE_URL")
 
     #: The mounted file holding the key media URLs are signed with (`viewer.services.signed_media`), read on each use so
     #: a rotated key signs and verifies from the next request. Unset, the signing door answers 503.

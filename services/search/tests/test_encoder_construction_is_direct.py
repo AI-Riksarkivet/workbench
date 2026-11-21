@@ -1,6 +1,6 @@
-"""Encoder construction must be direct, not shaped by test doubles (VS-19).
+"""Encoder construction must be direct, not shaped by test doubles.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-19 — `clients._construct` picked the kwargs to pass by
+`clients._construct` picked the kwargs to pass by
 `inspect.signature(factory)`, so that a param-less fake monkeypatched over the client
 class would "work" by silently receiving NOTHING. That put the production construction
 path in service of test doubles: a fake with the wrong signature proved nothing (it
@@ -20,12 +20,12 @@ import pytest
 
 from search.services import clients
 from search.services.encoders import embedding, reranker
-from service_kit.exceptions import ServiceUnavailableError
-from service_kit.governed.deps import ANONYMOUS_CALLER
+from workbench.exceptions import ServiceUnavailableError
+from workbench.governed.deps import ANONYMOUS_CALLER
 
 
 if TYPE_CHECKING:
-    from client_kit.media.state import AppState
+    from workbench.media.state import AppState
 
 
 class _Settings:

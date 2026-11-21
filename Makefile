@@ -20,7 +20,7 @@ help:
 OPENFGA_BIN := $(CURDIR)/.localbin/openfga
 OPENFGA_IMAGE = $(shell sed -n 's/^[[:space:]]*OpenfgaImage[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' .dagger/main.go)
 FGA_CLI_IMAGE = $(shell sed -n 's/^[[:space:]]*FgaCliImage[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' .dagger/main.go)
-AUTH_MODEL = packages/service-kit/src/service_kit/governed/auth
+AUTH_MODEL = packages/workbench/src/workbench/governed/auth
 $(OPENFGA_BIN): .dagger/main.go
 	@mkdir -p $(dir $@)
 	cd /tmp && $(DAGGER) core container from --address=$(OPENFGA_IMAGE) file --path=/openfga export --path=$@
@@ -79,6 +79,7 @@ test: $(OPENFGA_BIN) $(POSTGRES_DIR)/bin/postgres
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
+	uv run lint-imports
 	bun --cwd=frontend run lint
 
 fmt:
@@ -135,7 +136,7 @@ model-protocol:
 	uv run python -m annotator.model_endpoint.stand_in --openapi > docs/model-protocol-openapi.json
 
 chart-check:
-	uv run python -m client_kit.source_keys | diff - chart/files/source-keys.json
+	uv run python -m workbench.source_keys | diff - chart/files/source-keys.json
 	helm lint chart -f deploy/values-dev.yaml
 	helm template workbench chart -n workbench $(CHART_APIS) -f deploy/values-dev.yaml >/dev/null
 	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_PLATFORM) >/dev/null

@@ -24,8 +24,6 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, Up
 from pydantic import ValidationError as PydanticValidationError
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.registry import DatasetHandle
-from client_kit.media.state import AppState, dataset_handle
 from search.api.dependencies import EmbedderFactoryDep, RerankerFactoryDep, StateDep
 from search.api.security import READS_DATASET, CallerDep, FanOut
 from search.core.config import search_settings
@@ -38,9 +36,11 @@ from search.services.similar import SimilarSpec, drop_seed, key_predicate, seed_
 from search.services.spec import PostSearchSpec, SearchMode, SearchSpec
 from search.services.target import resolve_target
 from search.services.vector import vector_search
-from service_kit.arrow_rows import arrow_rows_response
-from service_kit.exceptions import DomainError, ValidationError
-from service_kit.governed.token_exchange import LakehouseCaller
+from workbench.arrow_rows import arrow_rows_response
+from workbench.exceptions import DomainError, ValidationError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.registry import DatasetHandle
+from workbench.media.state import AppState, dataset_handle
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["search"])
 
-#: Cap on an uploaded query image, matching the voice upload's 25 MB bound.
+#: Cap on an uploaded query image, below the media apps' body ceiling (`MediaSettings.max_body_bytes`).
 _MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 
@@ -106,7 +106,7 @@ def _spec_from_query(request: Request) -> SearchSpec:
 
     That pattern is BROKEN on the deployed FastAPI (0.140.13, measured 2026-08-07): under a real
     uvicorn socket the model never flattens — the server demands a single required ``spec`` param and
-    422s every flat call, which killed live search estate-wide — while ``TestClient`` binds the same
+    422s every flat call — while ``TestClient`` binds the same
     request happily, so no in-process test can see it. Isolated by driving the identical app object
     through both paths inside the running pod. ``SearchSpec`` already owns validation, clamping and
     ``extra="ignore"`` (filters + ``corpus`` ride the same query string), so binding is one call; a
@@ -129,7 +129,7 @@ def search_get(
     # FAN-OUT: `?corpus=a&corpus=b`. Each corpus is read as the caller, and one the lakehouse refuses is skipped.
     corpus: FanOut = None,
 ) -> Response:
-    """The hits, one Arrow IPC stream of rows (`service_kit.arrow_rows`)."""
+    """The hits, one Arrow IPC stream of rows (`workbench.arrow_rows`)."""
     return arrow_rows_response(_search_rows(caller, request, state, get_embedder, get_reranker, corpus))
 
 
@@ -255,7 +255,7 @@ async def search_post(
     image_bytes = None
     if image is not None:
         # Bound the read so a large multipart part can't be buffered whole
-        # before validation (mirrors the voice upload's cap).
+        # before validation.
         image_bytes = await image.read(_MAX_IMAGE_BYTES + 1)
         if len(image_bytes) > _MAX_IMAGE_BYTES:
             raise ValidationError(f"image upload exceeds {_MAX_IMAGE_BYTES // (1024 * 1024)} MB")
@@ -354,8 +354,7 @@ async def search_similar(
     The seed is excluded from its own results — it ranks first at distance 0, and a "more like this"
     whose best answer is the thing you clicked reads as broken.
     """
-    # AUTHORIZED BEFORE THE SEED IS READ. This route takes a raw SQL `where` ANDed into the query
-    # (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-13 names that as the sharp edge of the service having no authz at all);
+    # AUTHORIZED BEFORE THE SEED IS READ. This route takes a raw SQL `where` ANDed into the query;
     # the predicate stays — `duration > 60` is a real feature — but it can now only ever run against
     # the corpus TABLE this caller may read — `table=`, the same one `_run_similar` resolves rows from.
     spec = SimilarSpec(key=key, n=n, space=space, where=where)

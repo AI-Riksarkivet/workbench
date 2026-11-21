@@ -14,12 +14,12 @@ from typing import Any, cast
 
 import pytest
 
-from client_kit.lancekit.descriptor import DatasetDescriptor
-from client_kit.lancekit.registry import DatasetHandle
 from search.services.filters import extract_filters
 from search.services.spec import SearchSpec
 from search.services.target import resolve_target
-from service_kit.exceptions import NotFoundError, ValidationError
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.lancekit.descriptor import DatasetDescriptor
+from workbench.lancekit.registry import DatasetHandle
 
 
 def _descriptor(searches: list[dict[str, Any]]) -> DatasetDescriptor:
@@ -183,7 +183,7 @@ def test_a_LEGACY_single_table_corpus_resolves_exactly_as_before() -> None:
     assert target.row_table_name == "chunks"
 
 
-# ── the result cache must SEE the selector (docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-04) ─────────────────────────────
+# ── the result cache must SEE the selector  ─────────────────────────────
 #
 # `cache_key` omitted `spec.table` and `version_signature` read the DEFAULT `declared.search`, so
 # two searches over different tables of one corpus collided on one entry — and the stale rows carry

@@ -1,4 +1,4 @@
-"""ANN-07 — the task and project routes publish their declared models, never a stored document as it lies.
+"""the task and project routes publish their declared models, never a stored document as it lies.
 
 With no response model, `/openapi.json` describes a response as "an object", and whatever the stored document holds is
 what ships: a field added to a document for the store's own bookkeeping, or one that drifted, reaches every client.

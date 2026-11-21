@@ -16,7 +16,7 @@ correct for single-row serving (``ids=[rowid]``, where an empty result IS the nu
 ``large_binary`` payload has neither a take-path nor a descriptor; both routes decide that shape from
 ``ds.schema`` (see ``_page_rows`` / ``_take_page``).
 
-READS MUST BE BOUNDED BY THE REQUEST, NOT BY THE DATASET (VS-05). Both routes used to run one
+READS MUST BE BOUNDED BY THE REQUEST, NOT BY THE DATASET. Both routes used to run one
 unfiltered, unbounded ``read_aligned_table`` at ``blob_handling="all_binary"``, which materialises
 EVERY row's bytes: serving one page cost the whole corpus, and the listing's ``limit`` was applied
 only after the scan, so the listing's memory was bounded by the volume. A blob
@@ -44,17 +44,17 @@ from fastapi.responses import StreamingResponse
 from lance.blob import BlobFile
 from pydantic import BaseModel, computed_field
 
-from client_kit.lancekit.absence import reads_as_absent
-from client_kit.lancekit.blobs import is_blob_field
-from client_kit.lancekit.catalog import bounded, translate_catalog_errors
-from client_kit.lancekit.predicate import eq
-from client_kit.media.deps import StateDep
-from client_kit.media.state import AppState
-from client_kit.sources import connect_as
-from service_kit.exceptions import NotFoundError, ServiceUnavailableError, UnauthorizedError
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.media import MAX_BUFFERED_BLOB_BYTES, _handle_size, _stream_handle, served_media_type
+from workbench.exceptions import NotFoundError, ServiceUnavailableError, UnauthorizedError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.absence import reads_as_absent
+from workbench.lancekit.blobs import is_blob_field
+from workbench.lancekit.catalog import bounded, translate_catalog_errors
+from workbench.lancekit.predicate import eq
+from workbench.media.deps import StateDep
+from workbench.media.state import AppState
+from workbench.sources import connect_as
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ class Page(BaseModel):
     source_uri: str
     stage: str
     #: The payload's length in bytes, read from the blob DESCRIPTOR rather than from the bytes — the
-    #: listing must never dereference a payload (VS-05).
+    #: listing must never dereference a payload.
     #:
     #: TWO CASES WHERE THAT IS NOT A BYTE COUNT, stated rather than smuggled, and both report 0:
     #:
@@ -169,7 +169,7 @@ def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lan
     credential of its own.
 
     The caller's own token for the lakehouse rides the namespace client, never a service credential: the lakehouse decides
-    the read for the person, and its 403 is final. Its refusals keep their meaning (`client_kit.lancekit.catalog.translate_catalog_errors`): absent is 404, an unknown
+    the read for the person, and its 403 is final. Its refusals keep their meaning (`workbench.lancekit.catalog.translate_catalog_errors`): absent is 404, an unknown
     caller 401 (saying whether a bearer was sent at all), a refused one 403, and an unreachable or failing catalog 503, which a reader retries, never the terminal
     404. A store failure behind a table the catalog resolved is a 503 too, with the location kept out of the detail: it
     is a path the caller never supplied.
@@ -183,7 +183,7 @@ def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lan
     try:
         with translate_catalog_errors():
             # No shared session: one shared across callers serves a later caller the store an earlier caller's live open
-            # was vended (`client_kit.lancekit.registry.CallerSessions`); this open lives for the request alone.
+            # was vended (`workbench.lancekit.registry.CallerSessions`); this open lives for the request alone.
             return bounded(lambda: lance.dataset(namespace_client=client, table_id=identifier))
     except UnauthorizedError as exc:
         # "No credential sent" and "credential refused" send a reader in opposite directions, so the detail says which.
@@ -199,8 +199,8 @@ def open_page_table(state: AppState, table: str, caller: LakehouseCaller) -> lan
 def _page_rows(ds: lance.LanceDataset, limit: int) -> tuple[pa.Table, bool]:
     """The listing's scan, bounded by the REQUEST, plus whether ``payload`` came back as descriptors.
 
-    ``limit`` is pushed into the scan rather than applied to the result. That is the OOM half of
-    VS-05: capped at 500 by the query model but never handed to Lance, the read was bounded by the
+    ``limit`` is pushed into the scan rather than applied to the result. That is the OOM half:
+    capped at 500 by the query model but never handed to Lance, the read was bounded by the
     volume, so ~10k pages at ~1 MB was ~10 GB materialised to return 100 metadata rows.
 
     THE PAYLOAD COLUMN IS PROJECTED ONLY WHERE PROJECTING IT IS FREE. At DEFAULT ``blob_handling`` a
@@ -209,7 +209,7 @@ def _page_rows(ds: lance.LanceDataset, limit: int) -> tuple[pa.Table, bool]:
     caller-supplied catalog id, though, so a ``payload`` that is a plain ``large_binary`` column is a
     reachable shape — and there the same scan returns the BYTES. Projecting it would hand a route
     gated at the metadata rung the payload of every listed row: 500 rows at ~1 MB is half a gigabyte
-    materialised to answer a listing (VS-05, and the same OOM as the unbounded scan above). So that
+    materialised to answer a listing (the same OOM as the unbounded scan above). So that
     shape is scanned without the column, and `list_pages` reports what a metadata read can know.
 
     THE FIDELITY THAT COSTS IS FORCED, NOT CHOSEN — measured 2026-08-31 with ``/proc/self/io`` rchar
@@ -239,7 +239,7 @@ def _take_page(ds: lance.LanceDataset, table: str, page_id: int) -> tuple[BlobFi
     Blob-v2: ``id`` -> stable ``_rowid`` -> ``take_blobs(ids=[...])``. ``ids`` survive deletes and
     compaction where positional ``indices`` do not, and no step pairs a blob read against a second
     scan, so the null-row landmine in this module's docstring cannot apply. The whole corpus is no
-    longer read to find one row (VS-05).
+    longer read to find one row.
 
     Plain ``large_binary``: there is no take-path, so the filtered scan itself carries the bytes —
     still bounded by the request (one matched row, ``limit=1``), and the cell's own validity is the
@@ -342,7 +342,7 @@ async def get_page(
     Selected by the ``id`` COLUMN, never by row position: positional indexing into a blob read is
     the misattribution bug this module exists to avoid, and a caller holding an id from the listing
     must get that page or a 404 — never a different one. The filter pushes that selection into the
-    scan, so the cost is one page rather than the corpus (VS-05).
+    scan, so the cost is one page rather than the corpus.
 
     Buffered while small, streamed above the threshold. ``payload`` is opaque and ``table`` is a free
     query parameter, so the response size is whatever the DATA names — the same reason `/api/media`

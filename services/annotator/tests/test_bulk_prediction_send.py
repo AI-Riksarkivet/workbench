@@ -33,10 +33,10 @@ from annotator.api.v1.endpoints import project_events as ev
 from annotator.projects.models import MAX_SOURCE_KEYS, AnnotationProject, Draft, ProjectState, Task
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import SortOrder, TaskFilter, TaskSort
-from client_kit.media.config import MediaSettings
-from client_kit.media.deps import get_state
-from client_kit.media.state import AppState
 from tests.media_catalog import lakehouse_dir, write_table
+from workbench.media.config import MediaSettings
+from workbench.media.deps import get_state
+from workbench.media.state import AppState
 
 
 SUBJECT = "henry"

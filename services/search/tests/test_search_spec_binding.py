@@ -2,7 +2,7 @@
 
 `Annotated[SearchSpec, Query()]` is broken on the deployed FastAPI (0.140.13): under a real uvicorn
 socket the model never flattens — the server demands one required `spec` param and 422s every flat
-call, which killed live search estate-wide — while TestClient binds the identical request happily,
+call, which killed live search  — while TestClient binds the identical request happily,
 so the in-process suite stayed green through the whole outage. Proven by driving the same app object
 through both paths inside the running pod (2026-08-07). These tests pin the explicit binding and the
 tripwire against the pattern coming back; no TestClient is used, because TestClient is the liar here.
@@ -16,7 +16,7 @@ import pytest
 
 from search.api.v1 import router as router_module
 from search.api.v1.router import _spec_from_query
-from service_kit.exceptions import ValidationError
+from workbench.exceptions import ValidationError
 
 
 class _Req:

@@ -1,10 +1,10 @@
-"""The annotator, driven from its own release, works the lakehouse through its public doors only (XC-167, ADR 0171).
+"""The annotator, driven from its own release, works the lakehouse through its public doors only.
 
 The annotator is a client of the lakehouse like Label Studio would be: it keeps its projects, tasks and roles in its own
 state, reads a governed media table through the catalog as the person, keeps the work people do in its own database,
 and publishes as the workbench's own confidential client, which a project admin granted writer on the publish target through the catalog's
 grant door. Which principal that client is, the catalog says (`GET /management/v1/me` on its client-credentials token).
-One drive, against the deployed estate:
+One drive, against a deployed lakehouse:
 
 * a scratch tenant's admin seeds a governed media dataset (a chunks table stamped with its descriptor), grants the
   annotating person reader on it, creates the publish target under the run rule (`rask.requires_run`), and grants the
@@ -38,7 +38,7 @@ import requests
 from lakehouse_doors import CATALOG, Identity, Tenant, ok, rask_properties
 from pydantic import BaseModel
 
-from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
+from workbench.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
 
 
 ANNOTATOR = os.environ.get("LANCE_E2E_ANNOTATOR_URL", "").rstrip("/")
@@ -220,7 +220,7 @@ def drive(tenant: Tenant) -> Iterator[Drive]:
 
 
 def test_the_annotator_works_the_lakehouse_through_its_public_doors(drive: Drive, tenant: Tenant) -> None:
-    """The closes-when of XC-167, read off the one drive.
+    """What the annotator must do on a lakehouse, read off the one drive.
 
     The annotator decides its own project roles: a person of no tenant is refused the project until the admin grants them
     a role on it. Work in progress stays in the annotator: the person's save is read back from it, and reaches the

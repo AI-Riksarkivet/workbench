@@ -1,6 +1,6 @@
 """flows-only settings.
 
-`service_kit.config.Settings` is the shared base (api_prefix, CORS, OTel), which `make_service_app` builds and puts on
+`workbench.config.Settings` is the shared base (api_prefix, CORS, OTel), which `make_service_app` builds and puts on
 `app.state.settings`. This class extends it with the fields that are nobody else's business, so it reads every field
 from its one environment name, as the base does.
 
@@ -15,8 +15,8 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from service_kit.config import Settings
-from service_kit.governed.settings import GovernedAuthSettings
+from workbench.config import Settings
+from workbench.governed.settings import GovernedAuthSettings
 
 
 class FlowsSettings(GovernedAuthSettings, Settings):
@@ -83,5 +83,5 @@ class FlowsSettings(GovernedAuthSettings, Settings):
 
 
 def build_flows_settings() -> FlowsSettings:
-    """Read once, at startup, from the process's environment, as `service_kit.build_settings` reads the shared ones."""
+    """Read once, at startup, from the process's environment, as `workbench.build_settings` reads the shared ones."""
     return FlowsSettings.model_validate({})

@@ -19,6 +19,7 @@ import threading
 from collections.abc import Iterator
 
 import pytest
+import respx
 
 from tests.identity import Provider
 from tests.openfga import OpenFgaServer, OpenFgaStore, openfga_binary
@@ -37,6 +38,12 @@ os.environ.setdefault("WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED", "true")
 # `uv run` on an uploaded copy of the working directory instead, where none starts (measured on Ray 2.60.0). Ray reads
 # this once, when it is first imported, so it is set here, before any test module imports it.
 os.environ.setdefault("RAY_ENABLE_UV_RUN_RUNTIME_ENV", "0")
+
+# respx's bare `@respx.mock` is a module-level router built with `_assert_all_called = False`, unlike the `respx_mock`
+# fixture and the called decorator form, so a route registered for a call the code no longer makes would pass silently.
+# Flipping the one instance makes every bare use strict. To assert a call is not made, register no route for it
+# (`assert_all_mocked` already raises on an unregistered call) or assert over `respx.calls`.
+respx.mock._assert_all_called = True
 
 
 @pytest.fixture(scope="session")
@@ -86,7 +93,7 @@ def no_refresher_outlives_its_test() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def no_telemetry_outlives_its_test() -> Iterator[None]:
-    """An app that exported telemetry took it down at its shutdown (`service_kit.otel.Telemetry.close`): no OTel log
+    """An app that exported telemetry took it down at its shutdown (`workbench.otel.Telemetry.close`): no OTel log
     handler is left on the root logger. The SDK's process-wide providers are set once per process, so they are put back
     unset here, as OpenTelemetry's own test utilities do: the next test's app installs its own."""
     from opentelemetry import trace

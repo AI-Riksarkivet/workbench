@@ -16,12 +16,6 @@ from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.descriptor import DatasetDescriptor
-from client_kit.lancekit.introspect import TableInfo
-from client_kit.lancekit.registry import DatasetHandle, Survey, Unlisted
-from client_kit.media.deps import StateDep
-from client_kit.media.state import dataset_handle
-from service_kit.exceptions import NotFoundError
 from viewer.api.security import AUTHENTICATED, READS_DATASET, CallerDep
 from viewer.services.derived_views import VECTOR_MAX_DIM
 from viewer.services.plain_rows import (
@@ -35,6 +29,12 @@ from viewer.services.plain_rows import (
     read_page,
     read_row,
 )
+from workbench.exceptions import NotFoundError
+from workbench.lancekit.descriptor import DatasetDescriptor
+from workbench.lancekit.introspect import TableInfo
+from workbench.lancekit.registry import DatasetHandle, Survey, Unlisted
+from workbench.media.deps import StateDep
+from workbench.media.state import dataset_handle
 
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ async def list_datasets(caller: CallerDep, state: StateDep) -> DatasetsResponse:
     """Every source the deployment declares that the caller may read, with the datasets the caller can see in each.
 
     A lakehouse read as the person lists what it lets the caller read, on their own token; any other source is listed
-    only to its declared readers (`client_kit.media.source_gate`), with what its catalog holds. Each source is surveyed on
+    only to its declared readers (`workbench.media.source_gate`), with what its catalog holds. Each source is surveyed on
     its own, within a deadline; a dataset that cannot be opened, and a source or namespace that cannot be listed or did
     not answer in time, is reported with a short reason.
     """

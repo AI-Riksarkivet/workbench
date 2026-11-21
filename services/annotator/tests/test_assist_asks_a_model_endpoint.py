@@ -40,10 +40,10 @@ from annotator.model_endpoint import protocol, stand_in
 from annotator.model_endpoint.client import MAX_ANSWER_BYTES
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Shape, Task, TaskState
 from annotator.projects.ontology import LabelClass, LabelOntology
-from client_kit.media.state import AppState
 from tests import ray_model
 from tests.identity import Provider
 from tests.media_catalog import write_table
+from workbench.media.state import AppState
 
 
 SOURCE = "scans"

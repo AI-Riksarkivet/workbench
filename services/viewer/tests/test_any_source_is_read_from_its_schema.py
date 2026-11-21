@@ -2,7 +2,7 @@
 
 Driven through the real viewer app over HTTP on real pylance: a lakehouse stand-in (a directory catalog laid out as rask's),
 a lance-namespace directory catalog with tables at its root and three namespaces deep, and a bare ``.lance`` table by
-path (`client_kit.sources`), the bare table marked annotatable and the directory catalog not, so each dataset says
+path (`workbench.sources`), the bare table marked annotatable and the directory catalog not, so each dataset says
 whether it can be sent to a project and why not. The plain table is paged, sorted where Lance orders a column, searched where a full-text
 index is, ranked where a vector index is, and refuses each of these where the table cannot answer it; a row's image cell
 is named by its bytes and served through a signed media URL. Every read is bounded: a page starts no deeper than
@@ -116,7 +116,7 @@ def test_a_listed_table_whose_data_is_gone_is_answered_unavailable_once_a_while_
     for table in (["wide"], ["a", "b", "c", "observations"]):
         uri = lance.dataset(namespace_client=archive, table_id=table).uri.removeprefix("file://")
         shutil.rmtree(Path(uri) / "_versions")
-    caplog.set_level(logging.WARNING, logger="client_kit.lancekit.registry")
+    caplog.set_level(logging.WARNING, logger="workbench.lancekit.registry")
 
     listings = [client.get("/api/datasets").json()["sources"] for _ in range(2)]
     door = client.get("/api/datasets/archive~a$b$c")
@@ -133,7 +133,7 @@ def test_a_listed_table_whose_data_is_gone_is_answered_unavailable_once_a_while_
         ([("archive~", ["at_root"], {"wide": gone})], [{"id": "archive~a$b$c", "reason": gone}])
     ]
     assert (door.status_code, gone in door.json()["detail"]) == (404, True)
-    assert sorted((r.getMessage(), r.exc_info) for r in caplog.records if r.name == "client_kit.lancekit.registry") == [
+    assert sorted((r.getMessage(), r.exc_info) for r in caplog.records if r.name == "workbench.lancekit.registry") == [
         ("table observations of archive~a$b$c is listed but holds no version to read", None),
         ("table wide of archive~ is listed but holds no version to read", None),
     ]

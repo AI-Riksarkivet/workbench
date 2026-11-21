@@ -2,7 +2,7 @@
 
 The ENVELOPE is fixed and belongs in the schema; the rows inside it are not. A chunk row's columns
 are derived from the dataset descriptor (identity keys, the declared time axis, the display body),
-so they stay an explicit ``dict[str, Any]`` — which is the finding's own line (VS-18): declare what
+so they stay an explicit ``dict[str, Any]`` — so: declare what
 is structural, and say so where the body is genuinely dataset-dependent, rather than annotating the
 whole answer as a mapping and documenting nothing.
 """

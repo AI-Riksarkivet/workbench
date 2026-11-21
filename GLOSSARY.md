@@ -13,13 +13,13 @@ Each term says what it is in one or two sentences, then where it lives (_Lives i
 **Source**:
 A place the workbench reads Lance data from, declared in git with a name and a kind: `rask` (a lakehouse, through its
 catalog), `namespace` (any Lance-namespace catalog) or `tables` (a bare `.lance` table or a directory of them).
-_Lives in_: `client_kit.sources`; the chart's `sources` value; `scripts/local-sources.json`.
+_Lives in_: `workbench.sources`; the chart's `sources` value; `scripts/local-sources.json`.
 _Avoid_: store, backend, catalog (for the source itself)
 
 **Annotatable**:
 Whether a source's datasets may be sent to a project and labelled. A lakehouse's always are; any other source's only
 when git marks it `annotatable: true`.
-_Lives in_: `client_kit.sources.annotatable`; ADR 0005.
+_Lives in_: `workbench.sources.annotatable`; ADR 0005.
 _Avoid_: labelable, writable
 
 **Reader (of a source)**:
@@ -31,14 +31,14 @@ _Avoid_: viewer (that is a project role)
 **Dataset**:
 A namespace of a source that holds tables, at any depth, named `<source>~<namespace>` (`lake~acme$corpus`, `scans~`).
 It is what the Datasets page lists and what a dataset page opens.
-_Lives in_: `client_kit.lancekit.registry`; `/datasets/[id]`.
+_Lives in_: `workbench.lancekit.registry`; `/datasets/[id]`.
 _Avoid_: corpus (the annotator's code name for it), collection, table
 
 **Descriptor**:
 The declaration that tells the workbench a dataset's roles: which fields are a row's identity, where its media bytes
 are, what to display, how search binds to its columns. It is read from the `lance_media.descriptor` stamp a pipeline
 writes on a table.
-_Lives in_: `client_kit.lancekit.descriptor`; ADR 0014.
+_Lives in_: `workbench.lancekit.descriptor`; ADR 0014.
 _Avoid_: schema, metadata, config
 
 **Stamped dataset**:
@@ -114,7 +114,7 @@ _Lives in_: `annotator.projects.machines.PROJECT_EDGES`.
 **Role**:
 What a person may do on a project, highest first: owner > manager > reviewer > annotator > viewer. Each role holds every
 right of the roles below it; an organisation's members are viewers of its projects.
-_Lives in_: `service_kit/governed/auth/model.fga`.
+_Lives in_: `workbench/governed/auth/model.fga`.
 _Avoid_: permission (a permission is one right a role grants, such as `can_review`)
 
 **Ontology**:

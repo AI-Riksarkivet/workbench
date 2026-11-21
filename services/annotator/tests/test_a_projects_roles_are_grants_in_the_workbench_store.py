@@ -30,15 +30,15 @@ from annotator.api.v1.endpoints import tasks as task_doors
 from annotator.core.config import AnnotatorSettings
 from annotator.projects.models import Task
 from annotator.state.store import AnnotatorStore
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.exceptions import ServiceUnavailableError, register_handlers
-from service_kit.governed import fga
-from service_kit.governed.identity import Caller
-from service_kit.governed.oidc import IDToken
-from service_kit.governed.principal import Principal
 from tests.media_catalog import lakehouse_dir, write_table
 from tests.openfga import OpenFgaStore
+from workbench.exceptions import ServiceUnavailableError, register_handlers
+from workbench.governed import fga
+from workbench.governed.identity import Caller
+from workbench.governed.oidc import IDToken
+from workbench.governed.principal import Principal
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 class _Door:

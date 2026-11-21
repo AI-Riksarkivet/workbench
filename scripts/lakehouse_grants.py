@@ -12,7 +12,7 @@ The workbench's services reach the lakehouse in two ways, and only one of them n
 
 The doors (`docs/rask/catalog-openapi.json`): `POST /management/v1/warehouse/{id}/access/{grant,revoke,list}`; `GET
 /management/v1/warehouses`. rask keeps a
-grant made at its doors across every upgrade of its release (rask's CLAUDE.md, LH-563).
+grant made at its doors across every upgrade of its release.
 
     uv run python scripts/lakehouse_grants.py {plan,grant,list,revoke} --values deploy/values-dev.yaml --reads acme --admin alice@example.com
 

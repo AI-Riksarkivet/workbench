@@ -36,10 +36,10 @@ from annotator.projects.models import (
 )
 from annotator.projects.ontology import RequestOntology
 from annotator.text import Text
-from service_kit.exceptions import NotFoundError
-from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.fga import Authorizer, Grant, user_object
-from service_kit.naming import CONTROL_ID_PATTERN
+from workbench.exceptions import NotFoundError
+from workbench.governed.audit import AuditOutcome, audit
+from workbench.governed.fga import Authorizer, Grant, user_object
+from workbench.naming import CONTROL_ID_PATTERN
 
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ LIST_RELATION = "can_list_projects"
 ProjectId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
 
 #: The project permissions a project's read answers the caller holds: each one an action on its pages is gated on
-#: (`service_kit/governed/auth/model.fga`). `can_view` is implied by the read itself.
+#: (`workbench/governed/auth/model.fga`). `can_view` is implied by the read itself.
 READER_PERMISSIONS: Final[tuple[str, ...]] = ("can_administer", "can_manage", "can_publish", "can_review", "can_annotate", "can_claim", "can_send_items")
 
 

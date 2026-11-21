@@ -4,9 +4,7 @@
 # both from it with a different command (chart/templates/media.yaml):
 #   viewer.main:app (:8101) · search.main:app (:8102)
 # — under plain uvicorn: each app exports its own telemetry when `WORKBENCH_OTEL_ENABLED` is on, the SDK wired in process
-# by the app factory (`service_kit.otel`), so no launcher wraps the command.
-# They are clients of the lakehouse, so they build apart from its image (.docker/rest-catalog.dockerfile): deleting
-# them changes nothing the lakehouse image installs ([[XC-177]]).
+# by the app factory (`workbench.otel`), so no launcher wraps the command.
 # Build context = repo root:  scripts/dagger-image.sh --name media --tag media:dev
 
 # ── builder: two-step uv sync against the ROOT uv.lock ───────────────────────
@@ -90,12 +88,12 @@ COPY --from=builder --link /opt/venv /opt/venv
 # DECLARED dependency is invisible to the workspace venv (a sibling member resolves it) and can
 # only be seen here, where the deployable's own closure is the only one present. See the script.
 COPY .docker/import-gate.py /tmp/import-gate.py
-RUN --network=none /opt/venv/bin/python /tmp/import-gate.py viewer search client_kit && rm /tmp/import-gate.py
+RUN --network=none /opt/venv/bin/python /tmp/import-gate.py viewer search workbench && rm /tmp/import-gate.py
 
 # ── the demo seeder ──────────────────────────────────────────────────────────
 # The chart's demo Job (chart/templates/demo.yaml, off by default) fills its demo source's volume with
 # scripts/seed_demo_corpus.py, which needs exactly this venv's closure: PyAV (the films), pylance,
-# lancedb (the FTS indexes), numpy, pillow and client_kit. Run once here, offline, into a scratch
+# lancedb (the FTS indexes), numpy, pillow and workbench. Run once here, offline, into a scratch
 # directory, so an image whose venv could not seed fails its build rather than its Job.
 COPY --chmod=0444 scripts/seed_demo_corpus.py /opt/workbench/seed_demo_corpus.py
 RUN --network=none /opt/venv/bin/python /opt/workbench/seed_demo_corpus.py --once /tmp/seed-gate && rm -rf /tmp/seed-gate

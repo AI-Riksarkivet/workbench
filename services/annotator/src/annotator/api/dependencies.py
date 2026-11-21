@@ -12,8 +12,8 @@ from fastapi import Depends, Request
 
 from annotator.projects.lakehouse import PublishRunner
 from annotator.state.store import AnnotatorStore
-from client_kit.media.deps import DatasetParam, StateDep
-from service_kit.exceptions import ServiceUnavailableError
+from workbench.exceptions import ServiceUnavailableError
+from workbench.media.deps import DatasetParam, StateDep
 
 
 __all__ = ["DatasetParam", "PublishRunnerDep", "StateDep", "StoreDep"]

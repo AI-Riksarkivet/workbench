@@ -271,7 +271,7 @@
 		/** A row a link opened that still waits for its search keeps its place in the address. */
 		const linked = active === null ? explore.linked : null;
 		const time = active && view?.hasTime ? view.time(active) : null;
-		const searched = !isPlain && !explore.voiceActive && explore.mapSelection === null;
+		const searched = !isPlain && explore.mapSelection === null;
 		// The address as it is now (a shallow replace is not a navigation), not as the page opened.
 		const here = new URLSearchParams(location.search);
 		if (isPlain && plain.table !== null && Object.keys(plain.facts?.tables ?? {}).length > 1) {

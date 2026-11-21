@@ -3,8 +3,8 @@ description: Installs the Dagger CLI pinned to the module's engineVersion, from 
 runs:
   using: composite
   steps:
-    # NO SCRIPT FETCHED AT RUN TIME ([[XC-202]]). The release job's token pushes packages, so whatever this step runs could
-    # publish in rask's name: the archive is the module's engineVersion, and its sha256 is the one Dagger publishes in the
+    # NO SCRIPT FETCHED AT RUN TIME. The release job's token pushes packages, so whatever this step runs could
+    # publish in the repository's name: the archive is the module's engineVersion, and its sha256 is the one Dagger publishes in the
     # release's checksums.txt, read once and committed here, so a changed archive fails the check instead of running.
     - name: Install Dagger CLI (the module's engineVersion, digest-checked)
       shell: bash

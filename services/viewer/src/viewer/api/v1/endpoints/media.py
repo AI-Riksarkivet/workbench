@@ -30,17 +30,17 @@ from lance.blob import BlobFile
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.descriptor import DocumentBinding
-from client_kit.lancekit.keys import validate_doc_key
-from client_kit.lancekit.predicate import eq
-from client_kit.lancekit.registry import DatasetHandle, table_dataset
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.frames import frame_row
-from client_kit.media.state import AppState, dataset_handle
-from service_kit.exceptions import NotFoundError, ValidationError
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.services.clips import MAX_CLIP_S, build_clip
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.descriptor import DocumentBinding
+from workbench.lancekit.keys import validate_doc_key
+from workbench.lancekit.predicate import eq
+from workbench.lancekit.registry import DatasetHandle, table_dataset
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.frames import frame_row
+from workbench.media.state import AppState, dataset_handle
 
 
 logger = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ class RangeVerdict(Enum):
     means a well-formed single ``bytes=`` range the body cannot satisfy (→ 416).
 
     An enum plus :class:`ByteRange` rather than the old ``tuple | str-sentinel |
-    None`` (VS-20): three anonymous shapes forced the caller to decode the answer
+    None``: three anonymous shapes forced the caller to decode the answer
     by rebinding its header variable, and a string sentinel is one typo away from
     a header value.
     """
@@ -308,7 +308,7 @@ def chunk_frame(
     """A chunk's frame from the frames table; 404 until frames are extracted.
     ``frame_idx`` selects which frame when a chunk was sampled multiple times
     (0 = the representative frame). The path is the unit's key: its segments map positionally onto the
-    descriptor's identity key fields (doc key first), however many it has (`client_kit.media.frames`)."""
+    descriptor's identity key fields (doc key first), however many it has (`workbench.media.frames`)."""
     segments = keys.split("/")
     if not all(re.fullmatch(r"-?\d{1,19}", segment) for segment in segments):
         raise ValidationError(f"a frame's key fields after the doc key are integers, not {keys!r}")

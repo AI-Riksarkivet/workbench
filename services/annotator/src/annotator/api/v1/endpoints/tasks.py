@@ -50,10 +50,10 @@ from annotator.projects.models import AnnotationProject, Draft, Link, Shape, Tas
 from annotator.state.store import AnnotatorStore
 from annotator.state.task_query import principals_in
 from annotator.text import Id, Text
-from service_kit.exceptions import ConflictError, DomainError, ForbiddenError, NotFoundError, ValidationError
-from service_kit.governed.audit import AuditOutcome, audit
-from service_kit.governed.fga import Grant
-from service_kit.governed.principal import is_principal
+from workbench.exceptions import ConflictError, DomainError, ForbiddenError, NotFoundError, ValidationError
+from workbench.governed.audit import AuditOutcome, audit
+from workbench.governed.fga import Grant
+from workbench.governed.principal import is_principal
 
 
 router = APIRouter(prefix="/tasks", tags=["annotation-tasks"], dependencies=[Depends(get_store), *RECORDS_PERSON])
@@ -191,7 +191,7 @@ async def fire_task_event(
     refusal = event_refusal(payload.event, current, facts)
     if refusal is not None:
         raise _refused(refusal, current, facts, payload.event)
-    # An assignee is the subject the assigned person's own token will prove ([[LH-063]]): with authentication on that
+    # An assignee is the subject the assigned person's own token will prove: with authentication on that
     # is a principal, so a bare name, which no token proves, is refused rather than stored for nobody to claim.
     if settings.oidc_enabled and payload.assignee is not None and not is_principal(payload.assignee):
         raise ValidationError(f"assignee {payload.assignee!r} is not a principal: '<idp-id>~<subject>'")
@@ -297,7 +297,7 @@ async def import_annotations(
 ) -> DraftImport:
     """Import annotations made elsewhere into this task's draft, as Arrow IPC.
 
-    ONE format — the canonical annotations schema — because the estate already has one and three
+    ONE format — the canonical annotations schema — because the workbench already has one and three
     parsers inside the service would be three things that rot. Converting COCO or YOLO into it is a
     `scripts/` concern. See `annotator.projects.imports`.
 

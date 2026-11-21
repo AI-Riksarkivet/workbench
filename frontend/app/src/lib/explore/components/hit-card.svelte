@@ -1,14 +1,12 @@
 <script lang="ts">
 	import SignedImage from '#lib/explore/components/signed-image.svelte';
 	import RowPreview from '#lib/explore/components/row-preview.svelte';
-	import { type Hit, isVoiceHit, viewForHit, voiceBandOf } from '@workbench/explorer-api';
+	import { type Hit, viewForHit } from '@workbench/explorer-api';
 	import { chunkFrameUrl } from '#lib/explore/media.ts';
 	import { activeView } from '@workbench/explorer-api/descriptor';
-	import { voiceSearch } from '#lib/explore/voice-search.svelte.ts';
 	import { audioPreview } from '#lib/explore/audio-preview.svelte.ts';
 	import { fmtTime, queryTerms, makeHighlighter, cn, hitKey } from '#lib/explore/utils.ts';
 	import { AudioLines, FileText, Film, Image as ImageIcon, Play, Pause } from '@lucide/svelte';
-	import { Badge } from '@riksarkivet/ui';
 
 	type Props = {
 		hit: Hit;
@@ -69,71 +67,16 @@
 		for (const m of view.metadata(hit)) if (m.value !== title) segs.push(m.value);
 		return segs.join('  ·  ');
 	});
-
-	// ── Voice search ──
-	// Voice-mode hits carry the matched diarized turn; render its speaker chip +
-	// confidence badge. Ordinary text hits leave `voice` null (no extra DOM).
-	const voice = $derived(isVoiceHit(hit) ? hit : null);
-	const band = $derived(voice ? voiceBandOf(voice.turn_score) : null);
-	const bandTitle = $derived(
-		voice
-			? `Voice similarity ${voice.turn_score.toFixed(3)} (1 − cosine distance). ` +
-					'Confidence bands are still calibrating.'
-			: '',
-	);
-
-	/** Query-by-example: rank everywhere this hit's voice speaks. A voice hit
-	 *  anchors on its exact matched turn; a text hit anchors on whoever speaks
-	 *  at the chunk's midpoint — with the chunk start as a one-shot fallback,
-	 *  since the midpoint can land in a mid-speech diarization gap (ASR chunks
-	 *  and diarized turns disagree at boundaries). Auto-applies: the request
-	 *  queues on the shared store, and the dataset page consumes it. */
-	function findVoice() {
-		const label = title;
-		if (voice) voiceSearch.request({ docId, turnId: voice.turn_id }, label);
-		else {
-			const t = view.time(hit);
-			const mid = t ? (t.start + t.end) / 2 : 0;
-			const start = t ? t.start : 0;
-			voiceSearch.request({ docId, t: mid }, label, { docId, t: start });
-		}
-	}
 </script>
-
-{#snippet voiceMeta()}
-	{#if voice}
-		<div class="flex flex-wrap items-center gap-1 pt-0.5">
-			<Badge variant="secondary" class="px-1.5 py-px font-mono text-[0.7rem]">
-				{voice.speaker_label} · {fmtTime(voice.turn_start)}–{fmtTime(voice.turn_end)}
-			</Badge>
-			<!-- Match confidence rides the estate status tokens, not one-off emerald/amber. -->
-			{#if band === 'strong'}
-				<Badge variant="success" title={bandTitle} class="px-1.5 py-px text-[0.7rem]">
-					Strong match
-				</Badge>
-			{:else if band === 'possible'}
-				<Badge variant="warning" title={bandTitle} class="px-1.5 py-px text-[0.7rem]"
-					>Possible</Badge
-				>
-			{:else}
-				<Badge variant="outline" title={bandTitle} class="px-1.5 py-px font-mono text-[0.7rem]">
-					{voice.turn_score.toFixed(2)}
-				</Badge>
-			{/if}
-		</div>
-	{/if}
-{/snippet}
 
 {#snippet playButton(extra: string)}
 	<!-- Per-card audio preview — the same shared one-element audioPreview store
-       (and row key) as the table's play column, so state syncs across views.
-       Voice hits preview the matched diarized TURN (the audio that actually
-       matched), not the max-overlap ASR chunk span. -->
+       (and row key) as the table's play column, so state syncs across views. -->
 	{@const rowKey = hitKey(hit)}
 	{@const playing = audioPreview.isPlaying(rowKey)}
 	{@const failed = audioPreview.isFailed(docId)}
-	{@const clipStart = voice ? voice.turn_start : (time?.start ?? 0)}
-	{@const clipEnd = voice ? voice.turn_end : (time?.end ?? 0)}
+	{@const clipStart = time?.start ?? 0}
+	{@const clipEnd = time?.end ?? 0}
 	<button
 		type="button"
 		disabled={failed}
@@ -164,7 +107,7 @@
 {/snippet}
 
 {#if layout === 'tile'}
-	<!-- Relative wrapper: the card root is a <button>, so the voice action must
+	<!-- Relative wrapper: the card root is a <button>, so the play action must
        be a SIBLING overlay (nested buttons are invalid HTML). -->
 	<div class="group relative h-full" data-hit-key={hitKey(hit)}>
 		<button
@@ -203,7 +146,6 @@
 				{#if metaLine}
 					<div class="text-muted-foreground truncate font-mono text-[0.7rem]">{metaLine}</div>
 				{/if}
-				{@render voiceMeta()}
 				<div class="line-clamp-3 text-xs leading-snug [overflow-wrap:anywhere]">
 					<!-- highlight() HTML-escapes then wraps matches — safe to inject -->
 					<!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -219,17 +161,6 @@
 		<div class="absolute top-1.5 right-1.5 z-[2] flex gap-1">
 			{#if view.isPlayable}
 				{@render playButton('bg-black/60 text-white enabled:hover:bg-primary')}
-			{/if}
-			{#if voiceSearch.built}
-				<button
-					type="button"
-					title="Find this voice — everywhere this speaker talks, across documents"
-					aria-label="Find this voice"
-					onclick={findVoice}
-					class="hover:bg-primary focus-visible:ring-ring inline-flex size-6 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
-				>
-					<AudioLines class="size-3.5" />
-				</button>
 			{/if}
 		</div>
 	</div>
@@ -266,7 +197,6 @@
 				{#if metaLine}
 					<div class="text-muted-foreground truncate font-mono text-xs">{metaLine}</div>
 				{/if}
-				{@render voiceMeta()}
 				<div class="line-clamp-3 text-sm leading-snug [overflow-wrap:anywhere]">
 					<!-- highlight() HTML-escapes then wraps matches — safe to inject -->
 					<!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -284,17 +214,6 @@
 				{@render playButton(
 					'border border-border bg-card text-muted-foreground shadow-sm enabled:hover:text-primary',
 				)}
-			{/if}
-			{#if voiceSearch.built}
-				<button
-					type="button"
-					title="Find this voice — everywhere this speaker talks, across documents"
-					aria-label="Find this voice"
-					onclick={findVoice}
-					class="border-border bg-card text-muted-foreground hover:text-primary focus-visible:ring-ring inline-flex size-6 items-center justify-center rounded-md border opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
-				>
-					<AudioLines class="size-3.5" />
-				</button>
 			{/if}
 		</div>
 	</div>

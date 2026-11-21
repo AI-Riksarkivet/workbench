@@ -37,7 +37,7 @@ class _Fake:
 
 
 def _Target(declared: set[str]) -> SearchTarget:
-    """The double, cast to the real type — the estate's fake-by-shape idiom (`testing-python`:
+    """The double, cast to the real type — the workbench's fake-by-shape idiom (`testing-python`:
     `cast(JobSubmissionClient, fake)`), which keeps the signature honest without a suppression."""
     return cast("SearchTarget", _Fake(declared))
 

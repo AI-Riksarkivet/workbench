@@ -1,8 +1,8 @@
 """A dependency being down is not a missing page, and its driver text is not for the browser.
 
-open_fastapi-audit — "viewer's page resolver reports a catalog or object-store OUTAGE as 404 Not Found, with the raw
+The defect: "viewer's page resolver reports a catalog or object-store OUTAGE as 404 Not Found, with the raw
 exception text in the client-visible detail". A 404 is TERMINAL: the zone renders "page not found", the reader stops,
-and nothing retries, for a condition that is transient and would clear on its own. And `service_kit.exceptions._problem`
+and nothing retries, for a condition that is transient and would clear on its own. And `workbench.exceptions._problem`
 puts `str(exc)` verbatim into the client body at any status, so an interpolated driver message put the internal host
 and the ``s3://`` location on the wire.
 
@@ -23,12 +23,12 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.exceptions import NotFoundError, ServiceUnavailableError
-from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from viewer.api.v1.endpoints import pages as pages_ep
+from workbench.exceptions import NotFoundError, ServiceUnavailableError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 TABLE: str = "lake~acme$bronze$pages"

@@ -4,7 +4,7 @@
 // A person's ROLE is the first word of their name, lowercased, as `person('Manager')` mints `user:manager-…`: owner,
 // manager, reviewer, annotator or viewer holds that role on every seeded project of the organisation `acme`, and any
 // other name (`person('Stranger')`) belongs to no organisation and holds no role. Each door asks the role the
-// annotator's does (`service_kit/governed/auth/model.fga`'s ladder: owner > manager > reviewer > annotator > viewer)
+// annotator's does (`workbench/governed/auth/model.fga`'s ladder: owner > manager > reviewer > annotator > viewer)
 // and refuses as it does: 403 naming the relation, before it says whether the project exists or what state it is in.
 
 /** The ladder, highest first, and the permissions each rung holds (`model.fga`). */

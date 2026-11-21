@@ -1,12 +1,12 @@
 """Who is asking the viewer, as whom it reads a source, and who decides each read.
 
 Every route needs a person the workbench verified (`AUTHENTICATED`), and every read is made as that person. Who decides
-a read is the source's (`client_kit.sources`): a rask lakehouse read as the person decides it on their own token, which
+a read is the source's (`workbench.sources`): a rask lakehouse read as the person decides it on their own token, which
 the viewer exchanges or passes on for them (`CallerDep`), and its refusal reaches the caller as the lakehouse gave it.
 Every other source (a lance-namespace catalog, a bare table, a lakehouse read as the workbench) knows nobody, so the
 workbench's own OpenFGA decides: the caller every read is made as carries the sources it admits them to
-(`client_kit.media.source_gate.admit`), and a read of any other is refused (403) as it resolves its source, the default
-dataset included (`client_kit.sources.require_admitted`).
+(`workbench.media.source_gate.admit`), and a read of any other is refused (403) as it resolves its source, the default
+dataset included (`workbench.sources.require_admitted`).
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from client_kit.media.deps import StateDep
-from client_kit.media.source_gate import admit
-from service_kit.governed.deps import FgaChecker, make_auth_deps
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.core.config import ViewerSettings, get_viewer_settings
+from workbench.governed.deps import FgaChecker, make_auth_deps
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.deps import StateDep
+from workbench.media.source_gate import admit
 
 
 SettingsDep = Annotated[ViewerSettings, Depends(get_viewer_settings)]

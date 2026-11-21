@@ -21,11 +21,11 @@ from fastapi.testclient import TestClient
 
 from search import main as main_mod
 from search.core.config import SearchSettings, get_search_settings
-from service_kit.governed import fga
-from service_kit.governed.fga import user_object
 from tests.identity import IDP_ID, WORKBENCH_AUDIENCE, Provider
 from tests.media_catalog import write_table
 from tests.openfga import OpenFgaServer, OpenFgaStore
+from workbench.governed import fga
+from workbench.governed.fga import user_object
 
 
 _DESCRIPTOR = {

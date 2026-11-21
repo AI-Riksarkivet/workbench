@@ -1,6 +1,6 @@
 """A derivative blob must not be read whole into memory just because it is usually small.
 
-open_fastapi-audit — "`/api/thumbnail` and `/api/chunk-frame` read a descriptor-declared blob whole
+The defect: "`/api/thumbnail` and `/api/chunk-frame` read a descriptor-declared blob whole
 into memory with no ceiling and no `Accept-Ranges`, while their sibling on the same table streams".
 
 The audit ADJUSTS its own finding twice, and both adjustments are honoured here.
@@ -37,8 +37,8 @@ from fastapi.responses import StreamingResponse
 from lance import blob_array, blob_field
 from lance.blob import BlobFile
 
-from service_kit.exceptions import NotFoundError
 from viewer.api.v1.endpoints import media as media_ep
+from workbench.exceptions import NotFoundError
 
 
 JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF"
@@ -48,7 +48,7 @@ def _handle(tmp_path: Path, payload: bytes) -> BlobFile:
     """A REAL pylance blob handle, because the defect is about what `read()` does to one.
 
     Same shape as `test_media_null_payload`'s fixture: blob v2 refuses a file version below 2.2, and
-    stable row ids match how the medallion writes, so the `_rowid` taken here is the one a route
+    stable row ids match how a pipeline writes, so the `_rowid` taken here is the one a route
     would resolve.
     """
     schema = pa.schema([pa.field("doc_id", pa.string()), blob_field("thumb")])

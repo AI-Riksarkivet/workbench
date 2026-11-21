@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict
 from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import AnnotationProject, ProjectState, PublishRecord
 from annotator.projects.publish import PublishPlan, PublishRefusal, build_plan, publish_inputs, table_properties
-from service_kit.naming import CATALOG_DELIMITER
+from workbench.naming import CATALOG_DELIMITER
 
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ class Publisher(Protocol):
 
     @property
     def lakehouse(self) -> str:
-        """The name of the lakehouse source it writes to (`client_kit.sources`): only that source's tables are inputs."""
+        """The name of the lakehouse source it writes to (`workbench.sources`): only that source's tables are inputs."""
         ...
 
     async def create_table(

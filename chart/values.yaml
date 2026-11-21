@@ -72,7 +72,7 @@ docs: false
 forwardedAllowIps: 127.0.0.1
 
 # The sources the workbench reads, declared here and rendered into the file every service reads
-# (`<release>-sources`, `client_kit.sources`); several in one release, each a dataset id's prefix (`<name>~<namespace>`):
+# (`<release>-sources`, `workbench.sources`); several in one release, each a dataset id's prefix (`<name>~<namespace>`):
 # - `kind: rask`: a rask lakehouse by its catalog's REST door (`uri`, `http://<rask>-catalog.<namespace>:2333`), read as
 #   the person (`identity: person`, under `auth.lakehouse`: the lakehouse decides every read) or as the workbench's own
 #   client (`service`: the workbench decides, by `readers`). At most one; its datasets are always annotated, it alone

@@ -1,4 +1,4 @@
-"""Lazy vLLM query-encoder accessors bound to :class:`~client_kit.media.state.AppState`.
+"""Lazy vLLM query-encoder accessors bound to :class:`~workbench.media.state.AppState`.
 
 Ported from ``backend.clients`` onto the vendored encoders: each accessor
 returns the cached client if present, else constructs it on first use and
@@ -16,16 +16,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from client_kit.media.state import dataset_handle
 from search.services.spec import SearchMode
-from service_kit.exceptions import ServiceUnavailableError
-from service_kit.governed.token_exchange import LakehouseCaller
+from workbench.exceptions import ServiceUnavailableError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.media.state import dataset_handle
 
 
 if TYPE_CHECKING:
-    from client_kit.media.state import AppState
     from search.services.encoders.embedding import EmbeddingClient
     from search.services.encoders.reranker import VLLMReranker
+    from workbench.media.state import AppState
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def ensure_embedder(state: AppState, caller: LakehouseCaller) -> EmbeddingClient
     try:
         from search.services.encoders.embedding import VLLMEmbeddingClient
 
-        # Constructed with the real kwargs, unconditionally (VS-19: a signature-introspecting
+        # Constructed with the real kwargs, unconditionally (a signature-introspecting
         # helper here existed to accommodate param-less test fakes, which meant a drifted real
         # signature dropped kwargs silently). A double that cannot take these fails loudly.
         state.embedder = VLLMEmbeddingClient(state.settings.embed_url, expected_dim=_default_embed_dim(state, caller))

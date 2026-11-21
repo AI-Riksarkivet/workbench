@@ -1,7 +1,6 @@
 """The annotation-project domain: four documents, two state machines, one publish record.
 
-Server-side counterpart of `frontend/packages/labeling`'s `LabelOp` model. Spec:
-`OPEN-WORK.md#design--annotation-projects` §4 (entities) and §5 (state machines).
+Server-side counterpart of `frontend/packages/labeling`'s `LabelOp` model.
 
 Deliberately store-free and corpus-free. This module imports nothing from the lakehouse plane — no
 `lancekit`, no registry, no dataset handle — because an annotation project's state (tasks, claims,
@@ -25,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from annotator.projects.ontology import LabelOntology
 from annotator.text import MAX_ID, MAX_NAME, Text
-from service_kit.naming import CONTROL_ID_PATTERN
+from workbench.naming import CONTROL_ID_PATTERN
 
 
 def new_id() -> str:

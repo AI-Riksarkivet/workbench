@@ -10,8 +10,6 @@ operation. `gh` infers the repository from `git remote -v` when it runs inside a
   and never reused. Commits, comments and docs cite the row id; `#n` is GitHub's handle for the same row.
   - The ids already taken stay as they are: `WB-A` to `WB-E` (issues #6 to #10) and `WB-1` to `WB-11` (rows inside
     the move spec, #1). Three digits from 101 cannot collide with either.
-  - How the six issues open on 2026-11-20 (#1, #6 to #10) map onto rows is proposed in
-    `docs/planning/INPUT-2026-11-20.md` § (e); the owner settles it.
   - A spec that `/to-spec` writes is an issue too. Its title is `Spec: …` and it carries no row id; the rows
     `/to-tickets` cuts from it are its sub-issues.
 - **No unnamed sub-steps inside an umbrella issue.** A piece of work is a row, or it waits until it is one. A comment

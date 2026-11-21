@@ -26,8 +26,8 @@ from psycopg.types.json import Jsonb
 from annotator.core.config import AnnotatorSettings
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, ProjectState, Task
 from annotator.state.store import AnnotatorStore
-from service_kit.exceptions import DomainError
 from tests.postgres import StateDatabase
+from workbench.exceptions import DomainError
 
 
 #: An ontology document an OLDER model version would have written. Before the ontology merge the

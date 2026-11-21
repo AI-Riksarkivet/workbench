@@ -1,11 +1,11 @@
-"""The annotator's corpus: media datasets read as the person, through lance-namespace (ADR 0171).
+"""The annotator's corpus: media datasets read as the person, through lance-namespace.
 
-A media dataset is a namespace of a declared source (`client_kit.sources`): a lakehouse's are always annotated, any
-other source's only where git marks it annotatable (`client_kit.sources.annotatable`). A lakehouse's is opened through
-the namespace with the person's bearer (the media registry, :mod:`client_kit.lancekit.registry`), so pylance asks
+A media dataset is a namespace of a declared source (`workbench.sources`): a lakehouse's are always annotated, any
+other source's only where git marks it annotatable (`workbench.sources.annotatable`). A lakehouse's is opened through
+the namespace with the person's bearer (the media registry, :mod:`workbench.lancekit.registry`), so pylance asks
 `DescribeTable` for the credential the catalog vends that person and reads with it, and a table the person may not read
 is refused at the catalog. Any other source is read with no token through its confined namespace, after the workbench's
-own check that the person reads it (`client_kit.media.source_gate`). The annotator holds no store credential.
+own check that the person reads it (`workbench.media.source_gate`). The annotator holds no store credential.
 
 A dataset's declared roles (row identity, the document binding) come from the `lance_media.descriptor` stamp on one of
 its tables, checked against the tables before a route uses them.
@@ -20,18 +20,18 @@ import lance
 import lance_namespace
 from pydantic import BaseModel, ConfigDict
 
-from client_kit.lancekit.absence import reads_as_absent
-from client_kit.lancekit.catalog import bounded
-from client_kit.lancekit.descriptor import Declared
-from client_kit.lancekit.registry import DatasetHandle
-from client_kit.media.state import dataset_handle
-from client_kit.sources import RaskSource, annotatable, connect_as
-from service_kit.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError
-from service_kit.governed.token_exchange import LakehouseCaller
+from workbench.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.absence import reads_as_absent
+from workbench.lancekit.catalog import bounded
+from workbench.lancekit.descriptor import Declared
+from workbench.lancekit.registry import DatasetHandle
+from workbench.media.state import dataset_handle
+from workbench.sources import RaskSource, annotatable, connect_as
 
 
 if TYPE_CHECKING:
-    from client_kit.media.state import AppState
+    from workbench.media.state import AppState
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def resolve(state: AppState, dataset_id: str | None, caller: LakehouseCaller) ->
     the threadpool."""
     handle = dataset_handle(state, dataset_id, caller)
     if handle.descriptor.read_only is not None:
-        # A source git does not mark annotatable (`client_kit.sources.annotatable`) is never sent to a project, labelled
+        # A source git does not mark annotatable (`workbench.sources.annotatable`) is never sent to a project, labelled
         # or published, so no write can follow from reading it.
         raise ConflictError(f"dataset {handle.id!r} cannot be annotated: {handle.descriptor.read_only}")
     return Corpus(id=handle.id, declared=handle.declared, handle=handle)
@@ -63,7 +63,7 @@ def _is_table(client: lance_namespace.LanceNamespace, identifier: list[str]) -> 
     """Whether the catalog holds ``identifier`` as a table; a nested namespace of the same depth answers no.
 
     Asked with DescribeTable, which the spec answers TableNotFound for anything but a table, asking no credential (a
-    classification reads no bytes) and bounded like every catalog call (`client_kit.lancekit.catalog.bounded`, whose
+    classification reads no bytes) and bounded like every catalog call (`workbench.lancekit.catalog.bounded`, whose
     timeout is a ServiceUnavailableError, which `input_tables` reads as a check that did not run). TableExists and
     NamespaceExists are not: measured 2026-11-14 on lance-namespace's ``dir`` catalog (pylance 13.0.0), each answers
     yes for a nested namespace's id and for a table's id alike.
@@ -92,7 +92,7 @@ def not_annotatable(state: AppState, names: list[str]) -> list[str]:
 def input_tables(state: AppState, names: list[str], caller: LakehouseCaller) -> dict[str, str | None] | None:
     """For each of ``names`` its source shows the caller, the table an item's captured version is a version of.
 
-    A name is qualified by its source (`client_kit.sources`) and, in a lakehouse, written with its warehouse first. A name
+    A name is qualified by its source (`workbench.sources`) and, in a lakehouse, written with its warehouse first. A name
     its source holds as a table (in a lakehouse, one of three or more segments) is its own table; any other is a dataset
     (a namespace, possibly nested, or a source's root), whose items are rows of its default search's row table: the table
     whose version a sender captures (the zone's `rowTableVersion`). Every item thus records its table and version, from

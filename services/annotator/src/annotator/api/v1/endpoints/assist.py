@@ -31,11 +31,11 @@ from annotator.model_endpoint.client import NO_ENDPOINT, ModelEndpoint, ModelEnd
 from annotator.projects.models import ShapeType, Task
 from annotator.projects.ontology import LabelOntology
 from annotator.text import Text
-from client_kit.lancekit.registry import table_dataset
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.frames import frame_row
-from service_kit.exceptions import NotFoundError
-from service_kit.governed.audit import AuditOutcome, audit
+from workbench.exceptions import NotFoundError
+from workbench.governed.audit import AuditOutcome, audit
+from workbench.lancekit.registry import table_dataset
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.frames import frame_row
 
 
 logger = logging.getLogger(__name__)

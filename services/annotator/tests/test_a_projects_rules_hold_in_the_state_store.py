@@ -20,7 +20,7 @@ from annotator.core.config import AnnotatorSettings
 from annotator.projects.machines import IllegalTransition
 from annotator.projects.models import AnnotationProject, ProjectState, PublishRecord, Shape, Task, TaskState
 from annotator.state.store import AnnotatorStore
-from service_kit.exceptions import ConflictError
+from workbench.exceptions import ConflictError
 
 
 TARGET = "acme$published"

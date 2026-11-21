@@ -1,12 +1,12 @@
 """Annotator service entry — the lance-ns thin-``main.py`` template.
 
 Module-level ``app``; ALL construction in the lifespan onto ``app.state`` (importing this module does
-zero I/O). The lifespan and the assembly are both SHARED — ``client_kit.media.lifespan`` and
-``client_kit.media.app`` — because viewer, search and annotator are three deployments of one shape.
+zero I/O). The lifespan and the assembly are both SHARED — ``workbench.media.lifespan`` and
+``workbench.media.app`` — because viewer, search and annotator are three deployments of one shape.
 What is genuinely this service's own — its state store and its publish runner — arrives through the shared lifespan's
 ``setup`` hook, which runs before readiness is announced, and leaves through its ``teardown``.
 
-The annotator is a client of the lakehouse with its own release (ADR 0171): it publishes nothing on the
+The annotator has its own release and state: it publishes nothing on a
 lakehouse's bus, and tells a person about their work on its own surface.
 """
 
@@ -21,19 +21,19 @@ from annotator.api.v1.router import router as api_router
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.lakehouse import PublishRunner
 from annotator.state.store import AnnotatorStore
-from client_kit.media.app import build_media_app
-from client_kit.media.config import MediaSettings
-from client_kit.media.lifespan import make_media_lifespan
-from client_kit.media.state import AppState
-from service_kit import setup_logging
-from service_kit.obs import configure_app_logging
-from service_kit.otel import TelemetrySinks
-from service_kit.schemas.health import Readiness, ReadinessStatus
+from workbench.app import setup_logging
+from workbench.media.app import build_media_app
+from workbench.media.config import MediaSettings
+from workbench.media.lifespan import make_media_lifespan
+from workbench.media.state import AppState
+from workbench.obs import configure_app_logging
+from workbench.otel import TelemetrySinks
+from workbench.schemas.health import Readiness, ReadinessStatus
 
 
 logger = logging.getLogger(__name__)
 
-configure_app_logging(packages=("annotator", "client_kit"))  # INFO audit/lifecycle logs reach OTLP (lance-ns obs contract)
+configure_app_logging(packages=("annotator", "workbench"))  # INFO audit/lifecycle logs reach OTLP (lance-ns obs contract)
 
 
 async def _open_state(app: FastAPI, state: AppState) -> None:
@@ -80,14 +80,14 @@ async def _close_state(app: FastAPI) -> None:
 
 # Application logging, before the app exists — every module here uses getLogger(__name__), and
 # without this they propagate to a root logger with no handlers and are DISCARDED
-# (see service_kit.setup_logging).
+# (see workbench.app.setup_logging).
 setup_logging()
 
 
 async def _state_ready(request: Request) -> Readiness:
     """Report the state store as a COMPONENT of a 200, never as `degraded`.
 
-    `service_kit.probes` renders `degraded` as a 503, which would pull the pod from rotation and take the read-plane
+    `workbench.probes` renders `degraded` as a 503, which would pull the pod from rotation and take the read-plane
     annotation routes down with the project plane. A store that was named opened before readiness, or the start
     failed; one that was not named is reported as such.
     """

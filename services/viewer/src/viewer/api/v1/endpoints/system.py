@@ -16,17 +16,17 @@ from fastapi import APIRouter
 from pydantic import computed_field
 from starlette.concurrency import run_in_threadpool
 
-from client_kit.lancekit.introspect import ColumnInfo
-from client_kit.lancekit.registry import table_dataset
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.source_gate import admit
-from client_kit.media.state import AppState, dataset_handle
-from client_kit.pagination import Page, PaginationDep, build_page
-from service_kit.governed.deps import ANONYMOUS_SUBJECT
-from service_kit.governed.token_exchange import LakehouseCaller
 from viewer.api.security import READS_DATASET, CallerDep, CheckerDep, OptionalCallerDep
 from viewer.api.v1.endpoints.chunks import alignments_binding
+from viewer.api.v1.pagination import Page, PaginationDep, build_page
 from viewer.schemas.system import ColumnKind, DbFacts, FilterColumn, HealthResponse, VllmPing
+from workbench.governed.deps import ANONYMOUS_SUBJECT
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.introspect import ColumnInfo
+from workbench.lancekit.registry import table_dataset
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.source_gate import admit
+from workbench.media.state import AppState, dataset_handle
 
 
 logger = logging.getLogger(__name__)

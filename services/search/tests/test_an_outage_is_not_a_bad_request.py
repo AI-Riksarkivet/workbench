@@ -1,7 +1,7 @@
-"""A store outage must not be reported to the caller as "you sent a bad request" (VS-06).
+"""A store outage must not be reported to the caller as "you sent a bad request".
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" VS-06. Six retrieval sites caught bare ``Exception`` and re-raised
-:class:`ValidationError`, which ``service_kit.exceptions`` maps to HTTP 400. An unreachable S3
+Six retrieval sites caught bare ``Exception`` and re-raised
+:class:`ValidationError`, which ``workbench.exceptions`` maps to HTTP 400. An unreachable S3
 endpoint, an expired credential, a corrupt Lance manifest and a genuinely malformed ``where`` all
 came out as the same 400 — which tells the caller to fix their input, tells the operator nothing is
 wrong on the server, and excludes the failure from every 5xx-based SLO and alert.
@@ -23,15 +23,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from client_kit.lancekit.descriptor import FtsBinding, VectorBinding
 from search.services import frames, service, similar, vector
 from search.services.spec import SearchSpec
 from search.services.target import SearchTarget
-from service_kit.exceptions import ValidationError
+from workbench.exceptions import ValidationError
+from workbench.lancekit.descriptor import FtsBinding, VectorBinding
 
 
 if TYPE_CHECKING:
-    from client_kit.lancekit.registry import DatasetHandle
+    from workbench.lancekit.registry import DatasetHandle
 
 
 #: What Lance raises for a malformed caller predicate, verbatim in shape (see the module docstring).

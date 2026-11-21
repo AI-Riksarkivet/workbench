@@ -27,11 +27,11 @@ from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.lakehouse import PublishRunner
 from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, Task, TaskState
 from annotator.state.store import AnnotatorStore
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.exceptions import register_handlers
 from tests.media_catalog import write_table
 from tests.postgres import StateDatabase
+from workbench.exceptions import register_handlers
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 #: The annotatable source outside rask `work_client` reads, its dataset, and the unit of task t1's item.

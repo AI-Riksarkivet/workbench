@@ -23,7 +23,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from annotator.model_endpoint.protocol import MODELS_PATH, PROPOSALS_PATH, ModelListing, ProposalsRequest, ProposalsResponse
-from service_kit.exceptions import DomainError, NotFoundError, ServiceUnavailableError
+from workbench.exceptions import DomainError, NotFoundError, ServiceUnavailableError
 
 
 logger = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 """The search spec accepted an unbounded query string, and its cache missed on every variation.
 
-open_fastapi-audit, the two halves of the `/search` finding that the rate limiter does not address.
+The two halves of the `/search` finding that the rate limiter does not address.
 A limiter bounds how OFTEN the work happens; these bound how EXPENSIVE one unit of it is, and whether
 the second identical request pays again.
 

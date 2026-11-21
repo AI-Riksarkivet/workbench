@@ -1,6 +1,6 @@
 """Search answers its hits (`GET /api/search`) as one Arrow IPC stream of rows, in the schema the browser reads.
 
-The same wire as the viewer's selection door (`service_kit.arrow_rows`): driven through the real search app, a full-text
+The same wire as the viewer's selection door (`workbench.arrow_rows`): driven through the real search app, a full-text
 search over a real indexed table on the ``dir`` catalog.
 """
 
@@ -11,10 +11,10 @@ from pathlib import Path
 import pyarrow as pa
 from fastapi.testclient import TestClient
 
-from client_kit.media.lifespan import make_media_state
 from search.core.config import SearchSettings
 from search.main import create_search_app
 from tests.media_catalog import lakehouse_dir, write_table
+from workbench.media.lifespan import make_media_state
 
 
 _DESCRIPTOR = {

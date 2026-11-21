@@ -12,7 +12,7 @@ the service and testable on its own.
 
 Bytes, not a table reference. The whole point is data that is NOT yet in the lakehouse — a governed
 Lance table is a different and easier case that needs no import at all — so the transport is Arrow
-IPC, matching the rule the estate already follows for bulk payloads.
+IPC, the form every bulk body the workbench takes has.
 
 **Where it lands, and why that is not the annotations table.** An imported label is unreviewed work,
 and the draft is where unreviewed work lives. Landing it in the draft means it reaches the table
@@ -27,12 +27,12 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 import pydantic
 
+from annotator.arrow_body import decode_arrow_stream_or_file
 from annotator.projects.models import Link, Shape
 from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.text import MAX_ID, MAX_METADATA, MAX_NAME, embedded_json
-from client_kit.lancekit.arrow_body import decode_arrow_stream_or_file
-from service_kit.arrow_ipc import ArrowBodyError
-from service_kit.exceptions import ValidationError
+from workbench.arrow_ipc import ArrowBodyError
+from workbench.exceptions import ValidationError
 
 
 if TYPE_CHECKING:
@@ -91,10 +91,7 @@ def shapes_from_ipc(
 ) -> tuple[list[Shape], list[Link]]:
     """Decode Arrow IPC into draft shapes + links, or raise `ValidationError` naming the offender.
 
-    Fails CLOSED. This paragraph used to draw the contrast with assist, which "fails open — an
-    unreadable rule must not lose a single interactive prediction"; that stopped being true when
-    ANN-05 landed and the whole service went fail-closed on an unreadable ontology. The reason for
-    THIS door's posture never depended on the contrast and still stands on its own: an import is a
+    Fails CLOSED, as the whole service does on an unreadable ontology: an import is a
     bulk write of somebody else's data that nobody is watching, so a label outside the taxonomy must
     be refused AT THE DOOR and named, not discovered at submit after a reviewer has already worked
     through the item.
@@ -150,7 +147,7 @@ def _read_table(payload: bytes, *, max_bytes: int) -> pa.Table:
     past its values buffer becomes a shape's text holding process memory, which the draft stores and
     the route returns. Held to ``max_bytes`` once inflated and to what its bytes carry before any row is
     read, so a body cannot declare rows no byte backs. The rows an honest body does carry are not bounded
-    here, and `to_pylist` builds a dict for each ([[XC-107]], parked).
+    here, and `to_pylist` builds a dict for each.
     """
     if not payload:
         raise ValidationError("import refused — the request carried no data")

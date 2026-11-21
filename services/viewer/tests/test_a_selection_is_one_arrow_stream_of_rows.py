@@ -14,9 +14,9 @@ from pathlib import Path
 import pyarrow as pa
 from fastapi.testclient import TestClient
 
-from client_kit.media.config import MediaSettings
 from tests.media_catalog import lakehouse_dir, write_table
 from viewer.main import create_viewer_app
+from workbench.media.config import MediaSettings
 
 
 _DESCRIPTOR = {

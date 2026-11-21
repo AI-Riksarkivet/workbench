@@ -16,12 +16,12 @@ import re
 
 from fastapi import APIRouter
 
-from client_kit.lancekit.predicate import eq
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
-from service_kit.exceptions import ValidationError
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.schemas.diarization import DiarizationResponse, SpeakerTurn
+from workbench.exceptions import ValidationError
+from workbench.lancekit.predicate import eq
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.state import dataset_handle
 
 
 router = APIRouter(prefix="/api/diarization", tags=["diarization"])

@@ -1,16 +1,16 @@
 """Who the request is, and what the workbench's own store lets them do in the annotator.
 
-Who: a person verified by the shared door (`service_kit.governed.deps`), a DPoP-bound token addressed to the workbench.
+Who: a person verified by the shared door (`workbench.governed.deps`), a DPoP-bound token addressed to the workbench.
 
-What: the workbench's own OpenFGA model (`service_kit/governed/auth/model.fga`): an organisation's admins and members,
+What: the workbench's own OpenFGA model (`workbench/governed/auth/model.fga`): an organisation's admins and members,
 a project's five concentric roles (owner > manager > reviewer > annotator > viewer), and the tasks and corpora that
 inherit from a project. The annotator never asks the lakehouse what a person may do in the annotator.
 
-Data: a corpus is a lakehouse's, or one of a source git marks annotatable (`client_kit.sources.annotatable`). Read as the
+Data: a corpus is a lakehouse's, or one of a source git marks annotatable (`workbench.sources.annotatable`). Read as the
 person (``identity: person``), the lakehouse decides, on a token the annotator exchanges or passes on for them
 (`CallerDep`); read as the workbench (``identity: service``), and for every other source, the workbench's own store
-decides, `reader` on its source: the caller carries the sources it admits them to (`client_kit.media.source_gate.admit`),
-and a read of any other is refused as it resolves its source (`client_kit.sources.require_admitted`). The work people do on it is kept in the annotator's own
+decides, `reader` on its source: the caller carries the sources it admits them to (`workbench.media.source_gate.admit`),
+and a read of any other is refused as it resolves its source (`workbench.sources.require_admitted`). The work people do on it is kept in the annotator's own
 database (`annotator.annotations`); a publish writes a project's accepted work to the lakehouse as the workbench's own
 identity once the annotator's own role check has passed, naming the person in the commit.
 """
@@ -23,13 +23,13 @@ from typing import Annotated, Any
 from fastapi import Depends, Query, Request
 
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
-from client_kit.media.deps import StateDep
-from client_kit.media.source_gate import admit
-from service_kit.exceptions import ForbiddenError, ServiceUnavailableError
-from service_kit.governed.deps import ANONYMOUS_SUBJECT, FgaChecker, make_auth_deps
-from service_kit.governed.fga import Authorizer, Grant
-from service_kit.governed.identity import Caller
-from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
+from workbench.exceptions import ForbiddenError, ServiceUnavailableError
+from workbench.governed.deps import ANONYMOUS_SUBJECT, FgaChecker, make_auth_deps
+from workbench.governed.fga import Authorizer, Grant
+from workbench.governed.identity import Caller
+from workbench.governed.token_exchange import LakehouseCaller, LakehouseTokens
+from workbench.media.deps import StateDep
+from workbench.media.source_gate import admit
 
 
 __all__ = [
@@ -130,8 +130,8 @@ async def require_view(checker: FgaChecker, subject: str, obj: str, refusal: str
     """``can_view`` on ``obj``, asked before anything about the object is read: refused, the caller learns ``refusal`` and
     nothing else (404, as for an object that does not exist)."""
     from annotator.audit_actions import AnnotatorAuditAction
-    from service_kit.exceptions import NotFoundError
-    from service_kit.governed.audit import AuditOutcome, audit
+    from workbench.exceptions import NotFoundError
+    from workbench.governed.audit import AuditOutcome, audit
 
     if not await checker(user=subject, relation="can_view", obj=obj, contextual=contextual):
         audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=obj, relation="can_view")
@@ -147,7 +147,7 @@ def project_gate(relation: str) -> Any:
 
     async def _gate(project: ProjectParam, subject: CurrentSubject, checker: CheckerDep) -> None:
         from annotator.audit_actions import AnnotatorAuditAction
-        from service_kit.governed.audit import AuditOutcome, audit
+        from workbench.governed.audit import AuditOutcome, audit
 
         obj = f"project:{project}"
         if not await checker(user=subject, relation=relation, obj=obj):

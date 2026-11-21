@@ -20,15 +20,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from client_kit.lancekit.descriptor import AtlasSpace, Declared
-from service_kit.exceptions import ServiceUnavailableError
-from service_kit.governed.token_exchange import LakehouseCaller
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
 from viewer.api import security
 from viewer.api.v1.endpoints import atlas
 from viewer.core.config import ViewerSettings
 from viewer.main import create_viewer_app
+from workbench.exceptions import ServiceUnavailableError
+from workbench.governed.token_exchange import LakehouseCaller
+from workbench.lancekit.descriptor import AtlasSpace, Declared
 
 
 _DESCRIPTOR = {

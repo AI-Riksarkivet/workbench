@@ -136,7 +136,10 @@ Events posted to `POST /api/lineage/api/v1/lineage` by other OpenLineage produce
 Their `rask_author.sub` is bound to the posting token, and each governed dataset's `tableUuid` and `namespaceUuid` are the
 ones its name resolved to through the catalog with that token when lineage took the event in, whatever the producer
 claimed. A name the token cannot resolve (a service account's token is lineage's audience, which the catalog refuses)
-is recorded without a uuid. Every other facet is that producer's own claim.
+is recorded without a uuid. A governed table another producer names by any identifier (an input, an output, a
+`symlinks` entry, a `columnLineage` upstream, a `lifecycleStateChange`'s `previousIdentifier`) is decided as that table
+before the event is recorded, so a rename's old name, which no table holds once the rename landed, is named only by the
+catalog's own signed announcement. Every other facet is that producer's own claim.
 
 A dataset another producer names by a storage location, and every identifier its `symlinks` facet lists, is decided on
 the table it names, because the forwarded graph joins them to that table: lineage asks the catalog which table a
@@ -169,11 +172,15 @@ named the table by its id.
 - A table's lifecycle markers (a declare, a register, a rename, a drop, a deregister, an undrop) and the control
   events the doors that change grants, roles, projects and principals send are filed on the control root before their
   change ([ADR 0205](adr/0205-a-changes-announcements-are-filed-before-it-and-a-failed-doors-are-finished.md)). A door
-  that fails after its change has them sent by the catalog's finish within the hour, once the store shows the change
-  landed, as the events the door built: a marker's run id and a control event's `event_id` are the ones the door
+  that fails after its change has them sent by the catalog's finish within about 75 minutes, once the store shows the
+  change landed: a filing is judged only once its lease has passed (15 minutes, `announcement_intents.LEASE`, the
+  location claim's `LEASE`), and the finish is asked by maintenance's audit (`@hourly`, `MAINTENANCE_AUDIT_SCHEDULE`),
+  as the events the door built: a marker's run id and a control event's `event_id` are the ones the door
   would have sent, so a copy that did go out lands one row; the namespace and warehouse cascades file theirs the same
-  way. A follower that must not miss a table coming or going still reads `ListTables` and `DescribeTable` as the truth,
-  and the marker as its cue.
+  way. A drop's or a deregister's announcement is finished once the table is registered under no name, and the store
+  cannot tell who retired it: when such a door died and another request then deregistered or destroyed the same table,
+  both announcements go out, under different ids, and the dead door's names its own verb. A follower that must not miss
+  a table coming or going still reads `ListTables` and `DescribeTable` as the truth, and the marker as its cue.
 - An event the outbox drain or the reconciler recovers takes a new, larger seq, so it can arrive after events for later
   commits. Order the writes of one table by `rask_lance.version`, not by `seq`.
 - The feed keeps rows for `services.lineage.eventsRetentionDays` of arrival time (default 7), and longer for a row the
@@ -216,7 +223,7 @@ The catalog announces each governance change on the `catalog.control.v1` topic a
 announces its purges there too), after the change succeeds, signed by the role `control_signer_role` names for its
 action. Most actions name an object and nobody.
 These name a person in `extra.subject`, the OpenFGA user the change concerns (`user:` and the principal key
-percent-encoded, which `fga.subject_of` decodes, or a userset):
+percent-encoded, which `fga_ids.subject_of` decodes, or a userset):
 
 | `action` | `extra.subject` |
 | --- | --- |
@@ -277,7 +284,7 @@ event rides the envelope its first publish rode.
   which is why the state is part of it. One event is told under one id by design: every failure of maintenance's pass
   over a table carries the run id derived from that table, so a failure repeated inside the window is stored once, as
   the feed keeps its row once. A publisher counts a publish the stream answers as a duplicate as delivered only when
-  the stored message carries the same event (`lakehouse.bus` reads it back), so a repeat that differs stays staged
+  the stored message carries the same event (`lakehouse.events.bus` reads it back), so a repeat that differs stays staged
   where its lane stages, and its relay delivers it once the window has passed. The id is the key lineage's feed keeps the row of a run's event, and of a signed dataset
   change, under, so a reader of the bus and a walker of the feed key those alike; the feed keys an unsigned dataset
   change under the subject it was recorded for as well.
@@ -296,16 +303,16 @@ A client reads these events with no import from the lakehouse: this section and 
 (`spec/facets/rask/`) are the contract. Inside the lakehouse its producers and doors share one definition of each
 name, in the `lakehouse` library:
 
-- `lakehouse.cloud_events`: `CloudEvent`, and `lineage_envelope` and `control_envelope`, the one derivation of each
+- `lakehouse.events.cloud_events`: `CloudEvent`, and `lineage_envelope` and `control_envelope`, the one derivation of each
   lane's envelope (§ The envelope on the bus above), which a producer's publish and a relay's copy share;
-- `lakehouse.control_events`: `CatalogControlEvent`, `ControlAction`, `CONTROL_TOPIC` and `control_signer_role`;
-- `lakehouse.lineage_events`: the `rask_lance` and `rask_author` facet keys and their schema URLs, `dataset_uuids`
+- `lakehouse.events.control_events`: `CatalogControlEvent`, `ControlAction`, `CONTROL_TOPIC` and `control_signer_role`;
+- `lakehouse.events.lineage_events`: the `rask_lance` and `rask_author` facet keys and their schema URLs, `dataset_uuids`
   and `with_dataset_uuids`, and `event_identity` and `static_event_id`, the one derivation of an event's identity
   (§ An event's identity below), so a notifier reading the bus and one walking the feed key a change alike;
 - `lakehouse.governed.subjects`: `is_person_subject`, the address rule above;
-- `lakehouse.signature_doors`: `SignatureDoorSettings`, a verifying door's mode (`RASK_SIGNATURE_DOORS`) and the
+- `lakehouse.events.signature_doors`: `SignatureDoorSettings`, a verifying door's mode (`RASK_SIGNATURE_DOORS`) and the
   identities that sign the lakehouse's events (`RASK_EVENT_SIGNERS`, `RASK_EVENT_DELEGATORS`,
-  `RASK_CONTROL_SIGNER_ROLES`), against which a notifier verifies each event's `rask_signature` (`lakehouse.lineage.signing`)
+  `RASK_CONTROL_SIGNER_ROLES`), against which a notifier verifies each event's `rask_signature` (`lakehouse.events.signing`)
   before it tells anyone. Each signer's public key is the secret `signing-public-<key name>` (the signer's
   ServiceAccount name, `lance.signingKeys`) in the platform's secret store. No store role the product chart renders
   names a client (`lance.storeReads`), so a notifier's release provisions its own role to read those keys.

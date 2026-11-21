@@ -1,4 +1,4 @@
-// The lakehouse, as the mock services reach it, the way the workbench's services do (`service_kit.governed.deps`,
+// The lakehouse, as the mock services reach it, the way the workbench's services do (`workbench.governed.deps`,
 // `token_exchange`): a person's read on a token addressed to the lakehouse, exchanged at a Keycloak-shaped provider and
 // the person's own token passed on at a Dex-shaped one. Labeling writes nothing there: the work is the annotator's own
 // until a publish. The door admits only a token naming the lakehouse's audience

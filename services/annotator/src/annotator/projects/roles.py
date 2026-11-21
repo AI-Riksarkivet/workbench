@@ -1,6 +1,6 @@
 """A project's five roles, owner > manager > reviewer > annotator > viewer, as grants in the workbench's own store.
 
-What each role may do is the model's (`service_kit/governed/auth/model.fga`, `type project`): the roles are
+What each role may do is the model's (`workbench/governed/auth/model.fga`, `type project`): the roles are
 concentric, and each `can_*` an annotator route asks names its least role there. A reviewer reaches the annotator's
 actions because a reviewer must be able to `fix_and_accept`, which IS annotating; publishing is the manager's act.
 """

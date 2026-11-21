@@ -1,5 +1,5 @@
 // RFC 9449 for the e2e mocks: the proof rules the workbench's services enforce
-// (`service_kit.governed.dpop`), and the RFC 7638 thumbprint a token's `cnf.jkt` names. The mock
+// (`workbench.governed.dpop`), and the RFC 7638 thumbprint a token's `cnf.jkt` names. The mock
 // issuer binds every token it issues to the key of the proof its token request carried, and the mock
 // services refuse a call whose proof is missing, malformed, for another method or URL, stale, replayed,
 // or signed by another key: a call the app signs wrongly fails here as it would live.
@@ -51,7 +51,7 @@ export interface Proof {
 /** RFC 3986 § 2.3's unreserved characters, whose percent-encoding is the character itself. */
 const UNRESERVED = /^[A-Za-z0-9\-._~]$/;
 
-/** `url` as RFC 9449 § 4.3 rule 9 compares it, the way the services do (`service_kit.governed.dpop`): no query or
+/** `url` as RFC 9449 § 4.3 rule 9 compares it, the way the services do (`workbench.governed.dpop`): no query or
  *  fragment, the scheme and host lower-cased and the default port dropped (the WHATWG parser does both), and the path's
  *  percent-encoding normalised by RFC 3986 § 6.2.2: hex digits upper-cased, unreserved characters decoded, a reserved
  *  character left as it was sent. */

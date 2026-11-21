@@ -30,7 +30,7 @@ def lake(identifier: str) -> str:
 
 
 def lakehouse_dir(root: Path | str) -> dict[str, object]:
-    """The settings declaring the directory catalog at ``root`` as the deployment's lakehouse (`client_kit.sources`)."""
+    """The settings declaring the directory catalog at ``root`` as the deployment's lakehouse (`workbench.sources`)."""
     return {"WORKBENCH_SOURCES": [{"kind": "rask", "name": LAKE, "dir": str(root), "identity": "none"}]}
 
 

@@ -2,7 +2,7 @@
 // as a deployment's HTTPRoutes put them: the viewer (`/api/viewer`), search (`/api/search`) and the
 // annotator (`/api/annotator`). Each answers its own paths below that base, as the edge rewrites it.
 //
-// EVERY CALL IS HELD TO THE SERVICES' RULE (`service_kit.governed.deps`), as a deployment configures it for the
+// EVERY CALL IS HELD TO THE SERVICES' RULE (`workbench.governed.deps`), as a deployment configures it for the
 // provider that issued the token (`providers.ts`): a token addressed to the workbench's audience; at a provider that
 // binds tokens, `Authorization: DPoP <token>` and one `DPoP` proof whose `htm` is the method and whose `htu` is the
 // PUBLIC URL the browser called without its query (the edge passes the public base in `x-forwarded-prefix`, as a
@@ -21,7 +21,7 @@
 // `clear` puts it back.
 //
 // EACH SERVICE HOLDS ITS OWN COPY OF THE ISSUER'S KEY SET, kept per person as the mock issuer keys them (`mock-oidc.ts`),
-// and treats a token naming a key it does not hold as `service_kit.governed.oidc.OIDCVerifier` does: one forced read
+// and treats a token naming a key it does not hold as `workbench.governed.oidc.OIDCVerifier` does: one forced read
 // of the issuer, at most one per `KEY_PACE_MS`, which every such request arriving while it is in flight waits for, up
 // to `FORCED_WAITERS` at once. It is refused 401 only when that read found a set without its key; past the cap, with
 // the pace spent and no read in flight, or when the read failed (the refresher then asks again after `KEY_RETRY_MS`),
@@ -80,7 +80,7 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 		headers: { 'content-type': 'application/json', ...headers },
 	});
 
-/** `service_kit.governed.oidc`'s `FORCED_WAITERS` and `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`. */
+/** `workbench.governed.oidc`'s `FORCED_WAITERS` and `UNKNOWN_KID_REFRESH_INTERVAL_SECONDS`. */
 const FORCED_WAITERS = 8;
 const KEY_PACE_MS = 30_000;
 /** How long the issuer takes to answer a forced read: long enough that a page's parallel reads all meet it in flight. */
@@ -94,7 +94,7 @@ const KEY_RETRY_MS = 1000;
 interface KeySet {
 	held: Set<string>;
 	/** Keys a set this service read held and the `RETIRE_AFTER_READS` reads after it, periodic or forced, all lack:
-	 *  `service_kit.governed.oidc`'s retired `kid`s, refused at once with no forced read (its cap and age are never
+	 *  `workbench.governed.oidc`'s retired `kid`s, refused at once with no forced read (its cap and age are never
 	 *  reached by a spec). */
 	retired: Set<string>;
 	/** Keys absent from the latest reads, with how many reads running lacked each. */
@@ -136,7 +136,7 @@ async function issuerKeys(sub: string): Promise<Set<string>> {
 	return new Set(body.keys.map((key) => key.kid));
 }
 
-/** `service_kit.governed.oidc`'s `RETIRE_AFTER_READS`. */
+/** `workbench.governed.oidc`'s `RETIRE_AFTER_READS`. */
 const RETIRE_AFTER_READS = 2;
 
 /** A set the service read replacing the one it held: a key the held set had and the new one lacks is absent from one
@@ -1355,34 +1355,6 @@ Bun.serve({
 		if (url.pathname === '/api/columns' && req.method === 'GET') {
 			ok(200);
 			return json([{ name: 'collection', type: 'string' }]);
-		}
-		// Voice tables are built for the letters only: the other dataset offers no voice search.
-		if (url.pathname === '/api/voice/status' && req.method === 'GET') {
-			ok(200);
-			const built = dataset === 'lake~acme$letters';
-			return json({ built, turns: built ? CHUNKS.length : 0, speakers: built ? 2 : 0 });
-		}
-		if (url.pathname === '/api/voice/similar' && req.method === 'GET') {
-			const anchor = url.searchParams.get('doc_id');
-			ok(200);
-			return json({
-				query: {
-					doc_id: anchor,
-					speaker_label: 'SPEAKER_00',
-					turn_id: 0,
-					turn_start: 0,
-					turn_end: 4,
-				},
-				hits: CHUNKS.filter((c) => c.doc.doc_id !== anchor).map((c, i) => ({
-					...chunkRow(c, 1 - i / 10),
-					speaker_label: 'SPEAKER_00',
-					turn_id: i + 1,
-					turn_start: 0,
-					turn_end: 4,
-					_distance: i / 10,
-					turn_score: 0.9 - i / 10,
-				})),
-			});
 		}
 		const docChunks = /^\/api\/doc-chunks\/([^/]+)$/.exec(url.pathname);
 		if (docChunks && req.method === 'GET') {

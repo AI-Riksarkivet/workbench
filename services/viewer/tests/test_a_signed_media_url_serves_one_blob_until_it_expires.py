@@ -20,13 +20,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from lance import blob_array, blob_field
 
-from service_kit.governed.token_exchange import LakehouseCaller, LakehouseTokens
 from tests.media_catalog import lakehouse_dir, lakehouse_rest, write_table
 from tests.vending_catalog import VendingCatalog
 from viewer.api import security
 from viewer.core.config import ViewerSettings, get_viewer_settings
 from viewer.main import create_viewer_app
 from viewer.services import signed_media
+from workbench.governed.token_exchange import LakehouseCaller, LakehouseTokens
 
 
 _DOCUMENTS = {"identity": {"key_fields": ["doc_id"]}, "document": {"table": "docs", "media_blob": "media", "mime": "mime"}}

@@ -39,7 +39,7 @@ const (
 	// developer box. The major matches the CloudNativePG Cluster the workbench chart (`chart/`) renders.
 	PostgresImage = "postgres:17.6-bookworm"
 	// Where the workbench's authorization model lives in the source tree.
-	authModelDir = "packages/service-kit/src/service_kit/governed/auth"
+	authModelDir = "packages/workbench/src/workbench/governed/auth"
 )
 
 // Image builds .docker/<name>.dockerfile with the repository root as its context.
@@ -100,6 +100,7 @@ func (m *Workbench) Lint(
 	return m.python(src).
 		WithExec([]string{"uv", "run", "--frozen", "ruff", "check", "."}).
 		WithExec([]string{"uv", "run", "--frozen", "ruff", "format", "--check", "."}).
+		WithExec([]string{"uv", "run", "--frozen", "lint-imports"}).
 		WithExec([]string{"uv", "run", "--frozen", "ty", "check"}).
 		Stdout(ctx)
 }
@@ -180,7 +181,7 @@ func (m *Workbench) AppEndToEnd(
 // the model's compiled form, so the model the services load is the one the tests judged.
 func (m *Workbench) FgaTest(
 	ctx context.Context,
-	// +ignore=["**", "!packages/service-kit/src/service_kit/governed/auth/**"]
+	// +ignore=["**", "!packages/workbench/src/workbench/governed/auth/**"]
 	// +defaultPath="/"
 	src *dagger.Directory,
 ) (string, error) {

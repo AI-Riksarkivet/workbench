@@ -21,8 +21,8 @@ from flows.config import build_flows_settings
 from flows.dependencies import NO_RUN_STORE
 from flows.runner import RunRunner
 from flows.store import FlowsStore
-from service_kit.governed.auth_lifespan import attach_auth
-from service_kit.governed.auth_lifespan import dispose as auth_dispose
+from workbench.governed.auth_lifespan import attach_auth
+from workbench.governed.auth_lifespan import dispose as auth_dispose
 
 
 log = logging.getLogger(__name__)
@@ -33,8 +33,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Run inside `make_service_app`'s own lifespan, which has put the shared settings on `app.state.settings`."""
     app.state.flows_settings = build_flows_settings()
     flows_settings = app.state.flows_settings
-    # AUTHN/AUTHZ, the fleet's shape. Built here, never at import (an OIDCVerifier fetches discovery). A failure to
-    # BUILD is logged and non-fatal — the estate default — so the dependency finds no verifier/client on app.state
+    # AUTHN/AUTHZ, as every service builds it. Built here, never at import (an OIDCVerifier fetches discovery). A failure to
+    # BUILD is logged and non-fatal, so the dependency finds no verifier/client on app.state
     # and answers 503; falling back to a permissive checker would turn a broken authorization layer into an open one.
     await attach_auth(app, flows_settings, service="flows")
     # One app-scoped client so connections are pooled across steps and runs. The per-node budget is passed per call

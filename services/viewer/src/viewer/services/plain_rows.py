@@ -30,10 +30,10 @@ import pyarrow as pa
 from lance.dataset import ColumnOrdering
 from pydantic import BaseModel, Field, JsonValue
 
-from client_kit.lancekit.blobs import is_blob_field
-from client_kit.lancekit.introspect import TableInfo
-from service_kit.exceptions import NotFoundError, ValidationError
 from viewer.api.v1.endpoints.pages import sniff_media_type
+from workbench.exceptions import NotFoundError, ValidationError
+from workbench.lancekit.blobs import is_blob_field
+from workbench.lancekit.introspect import TableInfo
 
 
 #: The most rows one page answers.
@@ -54,7 +54,7 @@ MAX_OFFSET: Final = 100_000
 VECTOR_HEAD: Final = 6
 #: How many leading bytes name a binary cell's media type (`pages.sniff_media_type`).
 SNIFF_BYTES: Final = 12
-#: The index kinds `client_kit.lancekit.introspect` names (the type URL's tail, measured on pylance 13.0.0:
+#: The index kinds `workbench.lancekit.introspect` names (the type URL's tail, measured on pylance 13.0.0:
 #: ``InvertedIndexDetails`` for a full-text index, ``VectorIndexDetails`` for every vector index).
 FULL_TEXT_INDEX: Final = "Inverted"
 VECTOR_INDEX: Final = "Vector"

@@ -30,7 +30,6 @@ import pyarrow as pa
 import pytest
 from fastapi.testclient import TestClient
 
-from service_kit.governed.fga import user_object
 from tests.identity import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -47,6 +46,7 @@ from tests.openfga import OpenFgaStore
 from tests.vending_catalog import VendingCatalog
 from viewer import main as main_mod
 from viewer.core.config import ViewerSettings, get_viewer_settings
+from workbench.governed.fga import user_object
 
 
 _DESCRIPTOR = {"identity": {"key_fields": ["doc_id"], "doc_key": "doc_id"}, "search": {"row_table": "chunks"}}

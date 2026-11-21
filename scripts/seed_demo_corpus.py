@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Seed REAL, SEARCHABLE dev datasets, so every media surface has something to show.
 
-The media plane reads its datasets from the sources a deployment declares (`client_kit.sources`). The local stack
+The media plane reads its datasets from the sources a deployment declares (`workbench.sources`). The local stack
 declares three (`scripts/local-sources.json`), one of each kind, and this writes all three under one root:
 
 - ``<root>/lakehouse``: a directory catalog laid out as a lakehouse's (``<warehouse>$<namespace>``), standing in for one,
@@ -75,8 +75,8 @@ from lance_namespace import (
 )
 from PIL import Image, ImageDraw
 
-from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, Declared
-from service_kit.naming import CATALOG_DELIMITER
+from workbench.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, Declared
+from workbench.naming import CATALOG_DELIMITER
 
 
 #: The warehouse the fixture is written in when the command line names none.
@@ -145,7 +145,7 @@ DOCUMENTS: list[dict] = [
 ]
 
 #: Each page's topic, broadest layer first (``topic_l0``, ``topic_l1``: the layer columns the search's topic filter and the
-#: viewer's topic tree read, `client_kit.lancekit.topics_meta`). Every name is unique across the layers, since a topic
+#: viewer's topic tree read). Every name is unique across the layers, since a topic
 #: filters the rows whose ANY layer names it.
 TOPIC_ROOT = "Ämnen"
 

@@ -8,7 +8,7 @@
 // WHERE THE PROVIDER BINDS THE TOKEN TO THIS TAB'S KEY (DPoP, RFC 9449), every request carries
 // `Authorization: DPoP <token>` and a `DPoP` proof signed for exactly that request: its method (`htm`) and
 // its URL without query or fragment (`htu`, § 4.2; the services compare it so,
-// `service_kit.governed.dpop`). One proof per request, never reused: each carries a fresh `jti`, which a
+// `workbench.governed.dpop`). One proof per request, never reused: each carries a fresh `jti`, which a
 // service remembers against a replay. Where it binds none (`auth.svelte.ts` reads which from its
 // discovery), the token goes as `Authorization: Bearer <token>`, alone.
 // oidc-client-ts signs `htu` exactly as it is given (3.5.0's `generateDPoPProof` puts the url argument in
@@ -22,7 +22,7 @@ import type { WriteKey } from '../write-key.svelte.ts';
 /** Per-request timeout for a read: a hung service must not stack reads. */
 const FETCH_TIMEOUT_MS = 8000;
 
-/** A read that carries a file (an image or a voice clip to search by) uploads it and runs its encoder
+/** A read that carries a file (an image to search by) uploads it and runs its encoder
  *  first, which the first call after a service restart loads: given longer than a plain read. */
 const UPLOAD_TIMEOUT_MS = 30_000;
 
@@ -119,7 +119,7 @@ function timeoutSignal(ms: number = FETCH_TIMEOUT_MS): AbortSignal {
 }
 
 /** How many times a read is sent again after a 503 that says when to come back, and how long it waits for that in all.
- *  A service answers so while it cannot yet judge the session's token (`service_kit.governed.oidc`: its issuer's key
+ *  A service answers so while it cannot yet judge the session's token (`workbench.governed.oidc`: its issuer's key
  *  set is being read, or is read again within its pace, at most 30 s away), never to say the session is refused; so a
  *  read right after the person signed in again at a restarted issuer finds the new key by itself rather than failing.
  *  A 503 without `Retry-After`, or one asking for longer than is left, is the read's answer. Reads alone: a write goes

@@ -221,7 +221,7 @@ export function makeBackendProxy(opts: {
 						...headers,
 						'content-type': request.headers.get('content-type') ?? 'application/json',
 					},
-					// Bytes, not text: a multipart body (image search, voice upload) is binary — a
+					// Bytes, not text: a multipart body (image search) is binary — a
 					// text round-trip would corrupt it.
 					body: await request.arrayBuffer(),
 				};
@@ -391,7 +391,7 @@ export function makeLineageProxy(env: Env): RequestHandler {
 
 /**
  * `api/**` → the VIEWER service: the media-plane catch-all (documents, media/thumbnail/chunk-frame
- * streams, atlas, graph, voice, topics, datasets, health). GET-only, forwarding the signed-in user's
+ * streams, atlas, graph, topics, datasets, health). GET-only, forwarding the signed-in user's
  * bearer so the backend can attribute the caller. Range rides through (media seeking) and the upstream's
  * response headers pass back (content-range/accept-ranges/cache-control). The search + annotations/
  * assist/jobs domains have their own more-specific routes beside this one.

@@ -32,7 +32,7 @@ from tests.postgres import StateDatabase
 
 
 ME, OTHER, REVIEWER = "me", "other", "rev"
-#: Each role of the model's ladder, by the project permissions it holds (`service_kit/governed/auth/model.fga`).
+#: Each role of the model's ladder, by the project permissions it holds (`workbench/governed/auth/model.fga`).
 ROLES: dict[str, set[str]] = {
     "viewer": {"can_view"},
     "annotator": {"can_view", "can_claim", "can_annotate", "can_send_items"},

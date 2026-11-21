@@ -3,7 +3,7 @@
 WHY THIS REPLACES TWO OBJECTS. A project used to carry `label_schema` (classes, each with a
 `colour` and a `shape_types` list) *and* `template` (a `kind`, an allowed `tools` list, a
 `required_labels` list of bare strings, and typed `attributes`). Nothing cross-checked them, and
-they disagreed in ways the estate then acted on:
+they disagreed in ways the annotator then acted on:
 
 * No validator existed between them, so `Shape kind = polygon` + `Task type = bbox-detection` was
   an accepted 201 — a project whose taxonomy says polygon and whose enforcement refuses every

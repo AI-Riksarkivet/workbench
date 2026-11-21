@@ -16,11 +16,11 @@ import pyarrow as pa
 import pytest
 
 from annotator import corpus
-from client_kit.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
-from client_kit.media.config import MediaSettings
-from client_kit.media.state import AppState
-from service_kit.governed.deps import ANONYMOUS_CALLER
 from tests.media_catalog import lakehouse_dir
+from workbench.governed.deps import ANONYMOUS_CALLER
+from workbench.lancekit.descriptor import DESCRIPTOR_METADATA_KEY
+from workbench.media.config import MediaSettings
+from workbench.media.state import AppState
 
 
 DESCRIPTOR = {"identity": {"key_fields": ["doc_id"]}, "searches": [{"name": "default", "row_table": "chunks"}]}

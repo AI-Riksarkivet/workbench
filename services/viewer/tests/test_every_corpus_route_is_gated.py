@@ -1,11 +1,11 @@
 """Every viewer route that serves corpus-derived content must resolve a verified subject.
 
-docs/adr/0047-the-python-estate-audit-2026-08-07-2026-09-05.md "The Python estate audit" (P0, E1) — "25 of the viewer's 32 routes serve corpus content with no authn and no
+(P0, E1) — "25 of the viewer's 32 routes serve corpus content with no authn and no
 FGA gate, including every media-byte route". Re-verified at HEAD by the independent re-audit
 (8 gated / 24 not, after the clip route was gated in the fastapi drain): the primary media blob
-route, every atlas/chunks/voice/graph/topics/diarization route, and `POST /graph/cypher` all served
+route, every atlas/chunks/graph/topics/diarization route, and `POST /graph/cypher` all served
 with no subject and no checker — reachable at the edge through the gateway's `/api/explorer` rows,
-on an estate whose chart defaults auth ON. The bypass was structural: the LISTING was gated while
+on a release whose chart defaults auth ON. The bypass was structural: the LISTING was gated while
 the content behind it was not, so knowing a `doc_id` was authorization.
 
 DENY-BY-DEFAULT IS THE GATE'S SHAPE. The audit's sharpest observation was that `router.py` mounts
@@ -93,5 +93,5 @@ def test_every_route_is_gated_or_argued() -> None:
                 open_routes.append(f"{method} {route.path}")
     assert not open_routes, (
         "these routes serve with no verified subject in their dependant graph — knowing a doc_id is "
-        "authorization on an auth-ON estate:\n  " + "\n  ".join(sorted(open_routes))
+        "authorization with auth ON:\n  " + "\n  ".join(sorted(open_routes))
     )

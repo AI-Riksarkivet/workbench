@@ -5,11 +5,7 @@ description = "the flows service — the studio flow-builder's server half: a de
 requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = [
-    # [governed] because `flows.security` imports `service_kit.governed.deps` → `.fga` — openfga-sdk,
-    # pyjwt and friends live behind that extra. The bare "service-kit" is enough for the local venv
-    # (another workspace member pulls openfga-sdk in) and NOT enough for the image, whose venv is
-    # `uv sync --package flows` alone — the exact crash-loop the ingest door already paid for.
-    "service-kit[governed]",
+    "workbench",
     # The regex NODE's engine, and declared here for the reason the comment above already paid for:
     # the image's venv is `uv sync --package flows` alone, so a transitive dep from another workspace
     # member is present locally and ABSENT in the image. `regex` is a superset of `re` (every pattern
@@ -35,4 +31,4 @@ build-backend = "hatchling.build"
 packages = ["src/flows"]
 
 [tool.uv.sources]
-service-kit = { workspace = true }
+workbench = { workspace = true }

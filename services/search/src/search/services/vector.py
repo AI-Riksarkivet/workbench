@@ -20,7 +20,7 @@ from search.services.constants import (
     VECTOR_REFINE_FACTOR,
 )
 from search.services.query_errors import is_caller_input_error
-from service_kit.exceptions import ValidationError
+from workbench.exceptions import ValidationError
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def vector_search(
     except Exception as e:
         if not is_caller_input_error(e):
             # An outage, an expired credential, a corrupt manifest: NOT the caller's doing, so it
-            # must reach the global handler as the 500 it is (VS-06).
+            # must reach the global handler as the 500 it is.
             raise
         logger.warning("vector search failed", exc_info=True)
         raise ValidationError("vector search failed") from e

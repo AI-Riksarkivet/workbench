@@ -11,13 +11,13 @@ from typing import Any, Final
 
 from fastapi import APIRouter, Response
 
-from client_kit.lancekit.registry import table_dataset
-from client_kit.media.deps import DatasetParam, StateDep
-from client_kit.media.state import dataset_handle
-from client_kit.pagination import Page, PaginationDep, build_page
-from service_kit.exceptions import NotFoundError
 from viewer.api.security import READS_DATASET, CallerDep
 from viewer.api.v1.endpoints.atlas import finalize_hits, hit_columns
+from viewer.api.v1.pagination import Page, PaginationDep, build_page
+from workbench.exceptions import NotFoundError
+from workbench.lancekit.registry import table_dataset
+from workbench.media.deps import DatasetParam, StateDep
+from workbench.media.state import dataset_handle
 
 
 router = APIRouter(prefix="/api", tags=["browse"])
@@ -28,7 +28,7 @@ LISTED_TEXT_CHARS: Final = 8192
 
 @router.get("/rows", dependencies=[READS_DATASET])
 def rows(caller: CallerDep, state: StateDep, pagination: PaginationDep, response: Response, dataset: DatasetParam = None) -> Page[dict[str, Any]]:
-    """The declared row table's rows as hits, paged (the shared offset bounds, `client_kit.pagination`), each text cell
+    """The declared row table's rows as hits, paged (the shared offset bounds, `viewer.api.v1.pagination`), each text cell
     cut at `LISTED_TEXT_CHARS` and a binary cell answered as null, each named on its row (`atlas.finalize_hits`). A
     person's own read, so kept by their browser alone (`private`) and revalidated on each use.
 
