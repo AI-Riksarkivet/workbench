@@ -37,7 +37,6 @@ from workbench.governed import fga
 from workbench.governed.identity import Caller
 from workbench.governed.oidc import IDToken
 from workbench.governed.principal import Principal
-from workbench.media.config import MediaSettings
 from workbench.media.state import AppState
 
 
@@ -81,7 +80,7 @@ def door(openfga_store: OpenFgaStore, state_settings: AnnotatorSettings, tmp_pat
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        app.state.resources = AppState(settings=MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
+        app.state.resources = AppState(settings=AnnotatorSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
         app.state.authz = fga.Authorizer(
             fga.make_client(openfga_store.url, credential_file=None, store_id=openfga_store.store_id, model_id=openfga_store.model_id)
         )

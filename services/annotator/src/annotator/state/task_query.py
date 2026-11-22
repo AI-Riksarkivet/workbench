@@ -21,6 +21,7 @@ from typing import Any, Final
 from psycopg import AsyncConnection, sql
 from pydantic import AwareDatetime, BaseModel, Field
 
+from annotator.judgement import Judgement
 from annotator.projects.models import TaskState
 
 
@@ -56,6 +57,9 @@ class TaskSort(StrEnum):
     UPDATED = "updated"
     SUBMITTED = "submitted"
     REVIEWED = "reviewed"
+    #: What a judge said of each item's submission (ADR 0026): the flagged first, then those no judge has read, then
+    #: those it found nothing in; within each, the longest waiting first.
+    JUDGE = "judge"
 
 
 class SortOrder(StrEnum):
@@ -107,9 +111,15 @@ _ITEMS: Final = sql.SQL(
     "CASE WHEN t.state = 'claimed' AND t.lease_expires_at <= now() THEN 'unassigned' ELSE t.state END AS state, "
     "CASE WHEN t.state = 'claimed' AND t.lease_expires_at <= now() THEN NULL ELSE t.assignee END AS assignee, "
     "t.dataset, t.submitted_by, t.reviewed_by, t.review_action, t.holders, t.predicted, "
-    "t.sent_at, t.submitted_at, t.reviewed_at, t.updated_at "
+    "t.sent_at, t.submitted_at, t.reviewed_at, t.updated_at, "
+    # Whether a judge flagged the item's submission of now; NULL where none has read it. A statement that does not name
+    # the column never runs the subquery.
+    "(SELECT j.flagged FROM judgements j WHERE j.task_id = t.task_id AND j.submitted_at = t.submitted_at) AS flagged "
     "FROM tasks t WHERE t.project_id = {project}"
 )
+
+#: Where an item sits in the judge's order: flagged, unread, clear.
+_JUDGE_RANK: Final = sql.SQL("CASE WHEN flagged THEN 0 WHEN flagged IS NULL THEN 1 ELSE 2 END")
 
 
 class TaskFilter(BaseModel):
@@ -196,6 +206,48 @@ class TaskPage(BaseModel):
     #: Each listed item's work, by task id, when the read asked for it (`AnnotatorStore.task_page`'s ``work``); an item
     #: with no draft yet is absent.
     work: dict[str, ItemWork] = Field(default_factory=dict)
+    #: Each listed item's verdict on its submission of now, by task id, when the read asked for it; an item no judge has
+    #: read is absent. And how many of the items the filter matches are flagged, clear and unread.
+    judgements: dict[str, Judgement] = Field(default_factory=dict)
+    judged: JudgeCounts | None = None
+
+
+class PageExtras(BaseModel):
+    """What a page carries beside its items: each listed item's work, each one's verdict with the filter's counts of
+    them, and each person's part in the project."""
+
+    work: bool = False
+    judge: bool = False
+    contributors: bool = False
+
+
+class JudgeCounts(BaseModel):
+    """How a judge has read the items a filter matches: how many it flagged, how many it found nothing in, and how many
+    no judge has read."""
+
+    flagged: int = 0
+    clear: int = 0
+    unread: int = 0
+
+
+async def judgements_of(conn: Connection, *, project_id: str, filters: TaskFilter, task_ids: list[str]) -> tuple[dict[str, Judgement], JudgeCounts]:
+    """The verdict on the submission of now of each of ``task_ids`` that has one, and the counts over everything
+    ``filters`` matches."""
+    rows = await (
+        await conn.execute(
+            "SELECT j.document FROM judgements j JOIN tasks t ON t.task_id = j.task_id AND t.submitted_at = j.submitted_at WHERE j.task_id = ANY(%s)",
+            (task_ids,),
+        )
+    ).fetchall()
+    verdicts = [Judgement.model_validate(row[0]) for row in rows]
+    items = _ITEMS.format(project=sql.Literal(project_id))
+    counted = await (
+        await conn.execute(
+            sql.SQL("WITH items AS ({}) SELECT {} AS rank, count(*) FROM items WHERE {} GROUP BY 1").format(items, _JUDGE_RANK, filters.clauses())
+        )
+    ).fetchall()
+    by_rank = {int(rank): int(count) for rank, count in counted}
+    return {v.task_id: v for v in verdicts}, JudgeCounts(flagged=by_rank.get(0, 0), unread=by_rank.get(1, 0), clear=by_rank.get(2, 0))
 
 
 #: The most whole-item tags one item's work answers in a listing (`ItemWork.tags`): a bulk label reads an item's tags to
@@ -269,6 +321,8 @@ def _order(sort: TaskSort, order: SortOrder) -> sql.Composed:
     direction = sql.SQL("DESC") if order is SortOrder.DESC else sql.SQL("ASC")
     if sort is TaskSort.ITEM:
         return sql.SQL("task_id {}").format(direction)
+    if sort is TaskSort.JUDGE:
+        return sql.SQL("{} {}, submitted_at ASC NULLS LAST, task_id ASC").format(_JUDGE_RANK, direction)
     # NULLS LAST either way: an item with no such instant (or no assignee) is never what a person sorted to find.
     return sql.SQL("{} {} NULLS LAST, task_id ASC").format(_SORT_KEY[sort], direction)
 
@@ -380,12 +434,15 @@ __all__ = [
     "Contributor",
     "DateField",
     "ItemWork",
+    "JudgeCounts",
+    "PageExtras",
     "SortOrder",
     "TaskFilter",
     "TaskPage",
     "TaskSort",
     "WorkTag",
     "contributors_of",
+    "judgements_of",
     "page_of",
     "principals_in",
     "work_of",

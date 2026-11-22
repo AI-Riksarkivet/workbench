@@ -9,6 +9,10 @@ same answer. Each way an endpoint can behave is a model of its own, so a person 
 - ``stand-in-slow``: never finishes its answer; it sends a byte now and then until the caller gives up.
 - ``stand-in-failing``: answers 500.
 - ``stand-in-tagger``: takes no prompt; one tag about the whole item, labelled with the task's first class.
+- ``stand-in-judge``: proposes nothing and assesses labels: it disagrees with every label of the task's last class
+  (suggesting the first), and with an item nobody labelled.
+
+The slow and the failing model assess as they propose: never, and with a 500.
 
 It accepts any bearer token and refuses a call with none (401): who a token names is a real endpoint's to verify.
 
@@ -24,7 +28,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from http import HTTPStatus
-from typing import Annotated, Final
+from typing import Annotated, Final, get_args
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -33,13 +37,18 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.exceptions import HTTPException
 
 from annotator.model_endpoint.protocol import (
+    ASSESSMENTS_PATH,
     MODELS_PATH,
     PROPOSALS_PATH,
+    AssessmentRequest,
+    AssessmentResponse,
+    Disagreement,
     ModelInfo,
     ModelListing,
     Point,
     Problem,
     Proposal,
+    ProposalShape,
     ProposalsRequest,
     ProposalsResponse,
 )
@@ -52,13 +61,20 @@ SEGMENTER: Final = "stand-in-segmenter"
 SLOW: Final = "stand-in-slow"
 FAILING: Final = "stand-in-failing"
 TAGGER: Final = "stand-in-tagger"
+JUDGE: Final = "stand-in-judge"
+
+#: Every shape type: what the stand-ins that assess take.
+ANY_SHAPE: Final[tuple[ProposalShape, ...]] = get_args(ProposalShape)
 
 MODELS: Final[tuple[ModelInfo, ...]] = (
     ModelInfo(name=DETECTOR, version=VERSION, title="Stand-in detector", reads=["image"], prompts=["text", "box"], returns=["bbox"]),
     ModelInfo(name=SEGMENTER, version=VERSION, title="Stand-in segmenter", reads=["image"], prompts=["box", "points"], returns=["polygon"]),
-    ModelInfo(name=SLOW, version=VERSION, title="Stand-in that never answers", reads=["image"], prompts=["text", "box"], returns=["bbox"]),
-    ModelInfo(name=FAILING, version=VERSION, title="Stand-in that fails", reads=["image"], prompts=["text", "box"], returns=["bbox"]),
+    ModelInfo(
+        name=SLOW, version=VERSION, title="Stand-in that never answers", reads=["image"], prompts=["text", "box"], returns=["bbox"], assesses=list(ANY_SHAPE)
+    ),
+    ModelInfo(name=FAILING, version=VERSION, title="Stand-in that fails", reads=["image"], prompts=["text", "box"], returns=["bbox"], assesses=list(ANY_SHAPE)),
     ModelInfo(name=TAGGER, version=VERSION, title="Stand-in tagger", reads=["image"], prompts=[], returns=["tag"]),
+    ModelInfo(name=JUDGE, version=VERSION, title="Stand-in judge", reads=["image"], assesses=list(ANY_SHAPE)),
 )
 
 #: The box the detector proposes when the person drew none, and the side of the patch grown around a click.
@@ -71,6 +87,10 @@ TAGGER_SCORE: Final = 0.6
 SEGMENTER_SCORE: Final = 0.75
 CLICK_GAIN: Final = 0.05
 SCORE_CEILING: Final = 0.95
+#: How sure the judge says it is of a doubted class, and of an item nobody labelled.
+JUDGE_SCORE: Final = 0.8
+UNLABELLED_SCORE: Final = 0.5
+UNLABELLED: Final = "nothing is labelled on this item"
 #: How often the slow model sends a byte and looks whether its caller is still there.
 SLOW_POLL_SECONDS: Final = 0.05
 
@@ -139,6 +159,26 @@ def _tag(ask: ProposalsRequest) -> list[Proposal]:
     return [Proposal(shape_type="tag", label=_label(ask), score=TAGGER_SCORE)]
 
 
+def doubt(label: str, instead: str) -> str:
+    """Why the stand-in judge disagrees with a label of the class it doubts, as a reviewer reads it."""
+    return f"the stand-in judge doubts every {label!r}: it would say {instead!r}"
+
+
+def _judge(ask: AssessmentRequest) -> list[Disagreement]:
+    """The stand-in judge's rule, from the ask alone: an item nobody labelled, and every label of the task's last class
+    (where it names two or more), which it would have given the first."""
+    if not ask.labels:
+        return [Disagreement(reason=UNLABELLED, score=UNLABELLED_SCORE)]
+    if len(ask.classes) < 2:
+        return []
+    first, doubted = ask.classes[0], ask.classes[-1]
+    return [
+        Disagreement(label_id=label.id, reason=doubt(doubted, first), suggested_label=first, score=JUDGE_SCORE)
+        for label in ask.labels
+        if label.label == doubted
+    ]
+
+
 async def _drip_until_the_caller_leaves(request: Request) -> AsyncIterator[bytes]:
     """An answer that never ends: a byte of JSON whitespace now and then, for as long as the caller stays. A caller that
     bounds only each read waits for ever; one that bounds the whole ask gives up at its deadline."""
@@ -191,6 +231,8 @@ def create_stand_in() -> FastAPI:
         model = next((m for m in MODELS if m.name == ask.model), None)
         if model is None:
             raise _Refused(HTTPStatus.NOT_FOUND, f"this endpoint serves no model named {ask.model!r}")
+        if not model.returns:
+            raise _Refused(HTTPStatus.UNPROCESSABLE_ENTITY, f"{model.name} proposes nothing")
         if ask.item.content.kind not in model.reads:
             raise _Refused(HTTPStatus.UNPROCESSABLE_ENTITY, f"{model.name} reads {', '.join(model.reads)}, not {ask.item.content.kind}")
         if unread := sorted(ask.prompts.kinds() - set(model.prompts)):
@@ -202,6 +244,22 @@ def create_stand_in() -> FastAPI:
         answer = {SEGMENTER: _segment, TAGGER: _tag}.get(model.name, _detect)
         proposals = answer(ask)
         return ProposalsResponse(model=model.name, version=model.version, proposals=proposals)
+
+    @app.post(ASSESSMENTS_PATH, dependencies=caller, responses=errors, response_model=AssessmentResponse)
+    async def assess(request: Request, ask: AssessmentRequest) -> AssessmentResponse | StreamingResponse:
+        """What one model disagrees with among the labels people made on one item."""
+        model = next((m for m in MODELS if m.name == ask.model), None)
+        if model is None:
+            raise _Refused(HTTPStatus.NOT_FOUND, f"this endpoint serves no model named {ask.model!r}")
+        if not model.assesses:
+            raise _Refused(HTTPStatus.UNPROCESSABLE_ENTITY, f"{model.name} assesses no labels")
+        if ask.item.content.kind not in model.reads:
+            raise _Refused(HTTPStatus.UNPROCESSABLE_ENTITY, f"{model.name} reads {', '.join(model.reads)}, not {ask.item.content.kind}")
+        if model.name == SLOW:
+            return StreamingResponse(_drip_until_the_caller_leaves(request), media_type="application/json")
+        if model.name == FAILING:
+            raise _Refused(HTTPStatus.INTERNAL_SERVER_ERROR, f"{FAILING} fails every ask")
+        return AssessmentResponse(model=model.name, version=model.version, disagreements=_judge(ask))
 
     return app
 

@@ -209,6 +209,14 @@ const box = (
 	source: 'human',
 });
 
+/** The work of an item a judge reads (`vetting`, `appeals`): a figure alone (`-a`, `-mine`), a figure and a caption
+ *  (`-b`, `-d`), nothing (`-c`); none for any other item. */
+function vettedRows(id: string): Row[] {
+	if (!/^(vetting|appeals)-/.test(id) || id.endsWith('-c')) return [];
+	const figure = box(`${id}-fig`, 10, 10, 50, 40, 'figure');
+	return /-[bd]$/.test(id) ? [figure, box(`${id}-cap`, 90, 100, 60, 40, 'caption')] : [figure];
+}
+
 /** Each replica of the `pages` consensus item has its own work: the first its figure and caption, the second the figure
  *  where the first has it, the caption called a figure, and a box the first has not. */
 const REPLICA_ROWS: Record<string, Row[]> = {
@@ -237,6 +245,23 @@ interface Project {
 	publish_error: string | null;
 	publish_progress: string | null;
 	pending_target_namespace: string | null;
+	judge_model: string;
+}
+
+/** A judge's verdict on one submission, as the annotator keeps it (`annotator.judgement.Judgement`). */
+interface Judgement {
+	task_id: string;
+	submitted_at: string;
+	revision: number;
+	model: string;
+	version: string;
+	judged_at: string;
+	asked_by: string;
+	flags: { shape_id: string | null; reason: string; suggested_label: string; score: number }[];
+	settled_by: string | null;
+	settled_at: string | null;
+	settled_action: string | null;
+	agreed: boolean | null;
 }
 
 interface World {
@@ -247,6 +272,8 @@ interface World {
 	drafts: Map<string, Draft>;
 	/** The name each principal's own token carried when they last wrote (`annotator.people`). */
 	people: Map<string, string>;
+	/** Each submission's verdict, by task and the instant it was submitted (`annotator.state.store`'s `judgements`). */
+	judgements: Map<string, Judgement>;
 }
 
 /** The names the seeded people wrote under, as the annotator would have kept them from their tokens. `user:gone` never
@@ -264,6 +291,19 @@ export const SENT_BACK_NOTE =
 	'Check the class: these pages are ledgers, not letters, and the stamp in the lower corner needs a box of its own before this goes back for review.';
 
 const worlds = new Map<string, World>();
+
+/** The stand-in judge, as the stand-in endpoint serves it (`annotator.model_endpoint.stand_in`). */
+const JUDGE_MODEL = 'stand-in-judge';
+const JUDGE_VERSION = 'stand-in.1';
+/** What the annotator says of a project that names no judge, and of a deployment that names no model endpoint. */
+const NO_JUDGE = 'this project names no judge';
+const NO_ENDPOINT = 'assist is unavailable: this deployment names no model endpoint';
+/** Why the stand-in judge disagrees with a label of the class it doubts (`stand_in.doubt`). */
+const doubt = (label: string, instead: string): string =>
+	`the stand-in judge doubts every '${label}': it would say '${instead}'`;
+/** A submission's key among the verdicts: its task and the instant it was submitted. */
+const verdictKey = (t: Pick<Task, 'task_id' | 'submitted_at'>): string =>
+	`${t.task_id}@${t.submitted_at ?? ''}`;
 /** A lease an hour from the seed, as a claim takes one. */
 const later = (): string => new Date(Date.now() + 3600_000).toISOString();
 
@@ -315,6 +355,7 @@ function project(id: string, over: Partial<Project>): Project {
 		publish_error: null,
 		publish_progress: null,
 		pending_target_namespace: null,
+		judge_model: '',
 		...over,
 	};
 }
@@ -691,6 +732,49 @@ function seed(sub: string): World {
 			}),
 		);
 	}
+	// Projects a judge reads (ADR 0026): `vetting` names the stand-in judge, which doubts every label of the last class
+	// (`caption`, suggesting `figure`) and an item nobody labelled; four items in review, each another annotator's, one
+	// already judged, and one the reader holds to submit. `appeals` names the stand-in that fails every ask.
+	const vettingOntology = {
+		kind: 'object-detection',
+		modality: 'image',
+		classes: [
+			{ name: 'figure', tools: [], required: false, transcribe: false, attributes: [] },
+			{ name: 'caption', tools: [], required: false, transcribe: false, attributes: [] },
+		],
+		relations: [],
+		allow_empty: true,
+	};
+	for (const [pid, title, judge] of [
+		['vetting', 'Vetting', 'stand-in-judge'],
+		['appeals', 'Appeals', 'stand-in-failing'],
+	] as const) {
+		projects.set(pid, project(pid, { title, ontology: vettingOntology, judge_model: judge }));
+		for (const [suffix, key, at] of [
+			['a', 'letter-001/0', '2026-11-17T09:00:00Z'],
+			['b', 'letter-001/1', '2026-11-17T10:00:00Z'],
+			['c', 'letter-002/0', '2026-11-17T11:00:00Z'],
+			['d', 'map-003/0', '2026-11-17T12:00:00Z'],
+		] as const)
+			tasks.set(
+				`${pid}-${suffix}`,
+				task(pid, `${pid}-${suffix}`, 'in_review', key, {
+					submitted_by: 'user:alpha',
+					submitted_at: at,
+					holders: ['user:alpha'],
+					ontology: vettingOntology,
+				}),
+			);
+	}
+	tasks.set(
+		'vetting-mine',
+		task('vetting', 'vetting-mine', 'claimed', 'letter-001/0', {
+			assignee: sub,
+			lease_expires_at: later(),
+			holders: [sub],
+			ontology: vettingOntology,
+		}),
+	);
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
@@ -739,8 +823,9 @@ function seed(sub: string): World {
 					},
 				],
 			}[t.task_id] ?? [];
-		if (rows.length === 0 && tagged.length === 0) continue;
-		const seeded = structuredClone([...rows, ...tagged]);
+		const vetted = vettedRows(t.task_id);
+		if (rows.length === 0 && tagged.length === 0 && vetted.length === 0) continue;
+		const seeded = structuredClone([...rows, ...tagged, ...vetted]);
 		drafts.set(t.task_id, {
 			rows: seeded,
 			links: [],
@@ -748,7 +833,40 @@ function seed(sub: string): World {
 			history: [{ version: 1, timestamp: seededAt, author: 'seed', rows: seeded }],
 		});
 	}
-	return { role, projects, tasks, grants, drafts, people: new Map(Object.entries(SEEDED_NAMES)) };
+	// `vetting-d` was judged when it was submitted: the judge doubted its caption.
+	const judgements = new Map<string, Judgement>();
+	const d = tasks.get('vetting-d');
+	if (d?.submitted_at)
+		judgements.set(verdictKey(d), {
+			task_id: d.task_id,
+			submitted_at: d.submitted_at,
+			revision: 1,
+			model: JUDGE_MODEL,
+			version: JUDGE_VERSION,
+			judged_at: d.submitted_at,
+			asked_by: 'user:alpha',
+			flags: [
+				{
+					shape_id: 'vetting-d-cap',
+					reason: doubt('caption', 'figure'),
+					suggested_label: 'figure',
+					score: 0.8,
+				},
+			],
+			settled_by: null,
+			settled_at: null,
+			settled_action: null,
+			agreed: null,
+		});
+	return {
+		role,
+		projects,
+		tasks,
+		grants,
+		drafts,
+		people: new Map(Object.entries(SEEDED_NAMES)),
+		judgements,
+	};
 }
 
 /** Whether `sub` may read a task's work: any task they may view, but a consensus replica only when it is theirs or
@@ -860,15 +978,22 @@ const refuse = (sub: string, relation: string, obj: string): Response => {
 	);
 };
 
-/** Answer one call to the project plane, or null when the path is not one of its doors. `record(status)` writes the
- *  call into the ledger; `fault` is the spec's switch for this person and path. */
+/** Who made a call to the annotator and how the mock answers it: `record(status)` writes the call into the ledger,
+ *  `fault` is the spec's switch for this person and path, and `endpoint` false is a deployment that names no model
+ *  endpoint (the spec's `no-endpoint` on `/api/assist/models`). */
+export interface CallOf<F extends string> {
+	sub: string;
+	record: (status: number) => void;
+	fault: F | undefined;
+	endpoint: boolean;
+}
+
+/** Answer one call to the project plane, or null when the path is not one of its doors; a listing's judge says what
+ *  `endpoint` false means. */
 export async function projectsDoor(
 	req: Request,
 	url: URL,
-	sub: string,
-	record: (status: number) => void,
-	fault: 'fail' | 'unbuilt' | 'slow' | undefined,
-	name?: string,
+	{ sub, record, fault, name, endpoint }: CallOf<'fail' | 'unbuilt' | 'slow'> & { name?: string },
 ): Promise<Response | null> {
 	const path = url.pathname;
 	if (!path.startsWith('/projects') && !path.startsWith('/tasks/')) return null;
@@ -1050,6 +1175,12 @@ export async function projectsDoor(
 				'skipped',
 			];
 			const sort = q.get('sort') ?? 'item';
+			// Where an item sits in the judge's order (`task_query._JUDGE_RANK`): flagged, unread, clear.
+			const verdictOf = (t: Task): Judgement | undefined => world.judgements.get(verdictKey(t));
+			const rankOf = (t: Task): number => {
+				const verdict = verdictOf(t);
+				return verdict === undefined ? 1 : verdict.flags.length > 0 ? 0 : 2;
+			};
 			const keyOf = (t: Task): string | number | null =>
 				sort === 'state'
 					? ORDER.indexOf(t.state)
@@ -1070,6 +1201,13 @@ export async function projectsDoor(
 					const kb = keyOf(b);
 					if (sort === 'item')
 						return desc ? b.task_id.localeCompare(a.task_id) : a.task_id.localeCompare(b.task_id);
+					if (sort === 'judge') {
+						const rank = (rankOf(a) - rankOf(b)) * (desc ? -1 : 1);
+						if (rank !== 0) return rank;
+						const [sa, sb] = [a.submitted_at ?? null, b.submitted_at ?? null];
+						if (sa !== sb) return sa === null ? 1 : sb === null ? -1 : sa < sb ? -1 : 1;
+						return a.task_id.localeCompare(b.task_id);
+					}
 					if (ka !== kb) {
 						if (ka === null) return 1;
 						if (kb === null) return -1;
@@ -1140,6 +1278,9 @@ export async function projectsDoor(
 								...t,
 								legal_events: callerEvents(t, sub, perms, frozen),
 								...(include.includes('work') ? { work: workOf(t) } : {}),
+								...(include.includes('judge')
+									? { judgement: mayReadWork(t, sub, perms) ? (verdictOf(t) ?? null) : null }
+									: {}),
 							})),
 							missing: [],
 							matched: matched.length,
@@ -1149,6 +1290,18 @@ export async function projectsDoor(
 							datasets: [
 								...new Set(all.map((t) => t.source.where).filter((w): w is string => !!w)),
 							].sort(),
+							...(include.includes('judge')
+								? {
+										judge: {
+											model: p?.judge_model ?? '',
+											available: !!p?.judge_model && endpoint,
+											reason: !p?.judge_model ? NO_JUDGE : endpoint ? '' : NO_ENDPOINT,
+											flagged: matched.filter((t) => rankOf(t) === 0).length,
+											clear: matched.filter((t) => rankOf(t) === 2).length,
+											unread: matched.filter((t) => rankOf(t) === 1).length,
+										},
+									}
+								: {}),
 						}
 					: {}),
 				...(include.includes('contributors')
@@ -1191,6 +1344,7 @@ export async function projectsDoor(
 				'review_required',
 				'lease_seconds',
 				'consensus_n',
+				'judge_model',
 			] as const)
 				if (b[key] !== undefined) (p as unknown as Record<string, unknown>)[key] = b[key];
 			return answer(withCounts(world, p));
@@ -1440,10 +1594,11 @@ export async function projectsDoor(
 				},
 			});
 		}
-		const { event, assignee, message } = (await body()) as {
+		const { event, assignee, message, judge_agreed } = (await body()) as {
 			event: string;
 			assignee?: string;
 			message?: string;
+			judge_agreed?: boolean;
 		};
 		const edge = TASK_EDGES[t.state]?.[event];
 		if (!edge) {
@@ -1474,6 +1629,26 @@ export async function projectsDoor(
 				409,
 			);
 		}
+		// A review decision settles the submission's verdict: whether the reviewer agreed with its flags, as they said or
+		// as the decision says (`judgement.agreed_with`); saying it of an item with no flag is refused (`store`).
+		const verdict = world.judgements.get(verdictKey(t));
+		const decides = ['accept', 'fix_and_accept', 'request_changes'].includes(event);
+		if (judge_agreed !== undefined && !(decides && verdict && verdict.flags.length > 0))
+			return answer(
+				{
+					detail: decides
+						? 'this submission carries no flag: there is nothing to agree with'
+						: `${event} is no review decision: only one says whether a judge's flag was right`,
+				},
+				409,
+			);
+		if (decides && verdict)
+			Object.assign(verdict, {
+				settled_by: sub,
+				settled_at: new Date().toISOString(),
+				settled_action: event === 'accept' ? 'accepted' : event,
+				agreed: verdict.flags.length > 0 ? (judge_agreed ?? event !== 'accept') : null,
+			});
 		t.state = edge[0];
 		if (event === 'claim') {
 			t.assignee = sub;
@@ -1504,6 +1679,120 @@ export async function projectsDoor(
 		});
 	}
 	return null;
+}
+
+/** Answer one call to the judge door (`POST /api/judge/<unit key>`, `annotator.api.v1.endpoints.judge`), or null when the
+ *  path is not that door. It refuses in the service's order: the item unseen or not this unit's (404), a caller who
+ *  neither submitted it nor may review it (403), an item not in review or a project naming no judge (409), no model
+ *  endpoint (503), then the endpoint's own failure; an item already judged answers its kept verdict. The stand-in judge
+ *  doubts every label of the task's last class and an item nobody labelled; `stand-in-failing` fails every ask, as does
+ *  any judge on a unit a spec planted `fail` on, and a unit a spec planted `left-review` on is refused as an item that
+ *  left review while it was asked. */
+export type JudgeFault = 'fail' | 'left-review';
+export async function judgeDoor(
+	req: Request,
+	url: URL,
+	{ sub, record, fault, endpoint }: CallOf<JudgeFault>,
+): Promise<Response | null> {
+	if (!url.pathname.startsWith('/api/judge/') || req.method !== 'POST') return null;
+	const answer = (body: unknown, status = 200): Response => {
+		record(status);
+		return new Response(JSON.stringify(body), {
+			status,
+			headers: { 'content-type': status < 400 ? 'application/json' : 'application/problem+json' },
+		});
+	};
+	const world = worldOf(sub);
+	const id = url.searchParams.get('task') ?? '';
+	const t = world.tasks.get(id);
+	const perms = t ? held(world, sub, t.project_id) : [];
+	if (!t || t.project_id !== url.searchParams.get('project') || !perms.includes('can_view'))
+		return answer({ detail: `No task ${id} that you can see` }, 404);
+	const key = decodeURIComponent(url.pathname.slice('/api/judge/'.length));
+	if (t.source.keys[0] !== key || t.source.where !== url.searchParams.get('dataset'))
+		return answer({ detail: `unit ${key} is not this item's` }, 404);
+	if (t.submitted_by !== sub && !perms.includes('can_review')) {
+		record(403);
+		return refuse(sub, 'can_review', `project:${t.project_id}`);
+	}
+	const problem = (type: string, status: number, detail: string): Response =>
+		answer({ type: `about:blank#${type}`, status, detail }, status);
+	if (t.state !== 'in_review' || !t.submitted_at)
+		return problem('conflict', 409, `this item is ${t.state}: a judge reads an item in review`);
+	const kept = world.judgements.get(verdictKey(t));
+	if (kept) return answer(kept);
+	const model = world.projects.get(t.project_id)?.judge_model ?? '';
+	if (!model) return problem('no-judge', 409, NO_JUDGE);
+	if (!endpoint) return problem('no-model-endpoint', 503, NO_ENDPOINT);
+	if (fault === 'left-review')
+		return problem(
+			'conflict',
+			409,
+			'this item left review while its judge was asked: the verdict is not kept',
+		);
+	if (model === 'stand-in-failing' || fault === 'fail')
+		return problem(
+			'model-endpoint-failed',
+			502,
+			model === 'stand-in-failing'
+				? 'the model endpoint failed (500): stand-in-failing fails every ask'
+				: 'the model endpoint failed (500)',
+		);
+	const draft = world.drafts.get(id);
+	const flags = standInFlags(
+		(draft?.rows ?? []).filter((r) => r.status !== 'prediction'),
+		classNames(t),
+	);
+	const verdict: Judgement = {
+		task_id: id,
+		submitted_at: t.submitted_at,
+		revision: draft?.revision ?? 0,
+		model,
+		version: JUDGE_VERSION,
+		judged_at: new Date().toISOString(),
+		asked_by: sub,
+		flags,
+		settled_by: null,
+		settled_at: null,
+		settled_action: null,
+		agreed: null,
+	};
+	world.judgements.set(verdictKey(t), verdict);
+	return answer(verdict);
+}
+
+/** The names of a task's classes, as its captured ontology lists them. */
+const classNames = (t: Task): string[] => {
+	const classes = t.ontology?.classes;
+	return Array.isArray(classes)
+		? classes.flatMap((c: unknown) =>
+				c && typeof c === 'object' && 'name' in c ? [String(c.name)] : [],
+			)
+		: [];
+};
+
+/** What the stand-in judge disagrees with (`stand_in._judge`): an item nobody labelled, and every label of the last of
+ *  two or more classes, which it would have given the first. */
+function standInFlags(labels: Row[], classes: string[]): Judgement['flags'] {
+	if (labels.length === 0)
+		return [
+			{
+				shape_id: null,
+				reason: 'nothing is labelled on this item',
+				suggested_label: '',
+				score: 0.5,
+			},
+		];
+	const [first, doubted] = [classes[0], classes.at(-1)];
+	if (classes.length < 2 || first === undefined || doubted === undefined) return [];
+	return labels
+		.filter((r) => r.label === doubted)
+		.map((r) => ({
+			shape_id: r.id,
+			reason: doubt(doubted, first),
+			suggested_label: first,
+			score: 0.8,
+		}));
 }
 
 /** Register the name a person's own token carries, as `GET /me` does (`annotator.people.register_person`). */

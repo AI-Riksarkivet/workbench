@@ -219,6 +219,19 @@ CREATE TABLE IF NOT EXISTS draft_history (
     PRIMARY KEY (task_id, revision)
 );
 
+-- A judge's verdict on one submission (`annotator.judgement`, ADR 0026): what a model the project names disagreed with
+-- among the labels submitted, and what the reviewer then decided. A row of its own, written beside the task and never to
+-- it: no item moves because of a judge. One per submission (the task and the instant it was submitted), so a resubmitted
+-- item has none until it is judged again, and each submission's verdict stays with its reviewer's decision.
+CREATE TABLE IF NOT EXISTS judgements (
+    task_id      text        NOT NULL REFERENCES tasks (task_id) ON DELETE CASCADE,
+    submitted_at timestamptz NOT NULL,
+    -- Whether the judge disagreed with anything: what the review list orders by.
+    flagged      boolean     NOT NULL,
+    document     jsonb       NOT NULL,
+    PRIMARY KEY (task_id, submitted_at)
+);
+
 -- Each task's state as a reader sees it: a claim past its expiry is unassigned. `annotator.projects.machines.lapse_expired_claim`
 -- is the same rule on a document, and `annotator.state.task_query` the same rule over the listing's columns. The clock is
 -- the transaction's (`now()`), so every statement of one repeatable-read answer reads a lapse at one instant.

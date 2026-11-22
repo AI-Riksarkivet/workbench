@@ -50,6 +50,7 @@ import {
 	draftOf,
 	orgsOf,
 	permissionsOn,
+	judgeDoor,
 	projectsDoor,
 	registerName,
 	taskOf,
@@ -974,7 +975,8 @@ const TOPICS = {
  *  (`unauthorized` on every call, `unauthorized-write` on a write alone), on `/api/assist/models` a deployment that
  *  names no model endpoint (`no-endpoint`), or on one unit's `/api/assist/<unit>` an endpoint busy for it (`busy`) or
  *  a model that answers it a shape its classes may not take, beside what it found (`mixed`) or in its place
- *  (`polygon`). */
+ *  (`polygon`), or on one unit's `/api/judge/<unit>` an item that left review while its judge was asked
+ *  (`left-review`). */
 type Fault =
 	| 'fail'
 	| 'unbuilt'
@@ -985,7 +987,8 @@ type Fault =
 	| 'busy'
 	| 'mixed'
 	| 'polygon'
-	| 'moved-after';
+	| 'moved-after'
+	| 'left-review';
 const FAULTS: readonly string[] = [
 	'fail',
 	'unbuilt',
@@ -997,6 +1000,7 @@ const FAULTS: readonly string[] = [
 	'mixed',
 	'polygon',
 	'moved-after',
+	'left-review',
 ];
 const faults = new Map<string, Map<string, Fault>>();
 const faultOf = (sub: string, path: string): Fault | undefined => faults.get(sub)?.get(path);
@@ -1685,14 +1689,21 @@ Bun.serve({
 			fault,
 		);
 		if (assist) return assist;
-		const projects = await projectsDoor(
-			req,
-			url,
-			who.sub,
-			ok,
-			fault === 'fail' || fault === 'unbuilt' || fault === 'slow' ? fault : undefined,
-			who.name,
-		);
+		const endpoint = faultOf(who.sub, '/api/assist/models') !== 'no-endpoint';
+		const judge = await judgeDoor(req, url, {
+			sub: who.sub,
+			record: ok,
+			fault: fault === 'fail' || fault === 'left-review' ? fault : undefined,
+			endpoint,
+		});
+		if (judge) return judge;
+		const projects = await projectsDoor(req, url, {
+			sub: who.sub,
+			record: ok,
+			fault: fault === 'fail' || fault === 'unbuilt' || fault === 'slow' ? fault : undefined,
+			name: who.name,
+			endpoint,
+		});
 		if (projects) return projects;
 		ok(404);
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);

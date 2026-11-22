@@ -406,8 +406,20 @@ export async function annotationsDoor(
 	return answer({ saved: b.inserts.length + b.edits.length + gone.size, version: next });
 }
 
-/** The stand-in endpoint's models, as the annotator lists them (`annotator.model_endpoint.stand_in`). */
+/** The stand-in endpoint's models, as the annotator lists them (`annotator.model_endpoint.stand_in`): the judge
+ *  proposes nothing, and the slow and the failing model judge as they propose. */
 const VERSION = 'stand-in.1';
+/** Every shape type: what the stand-ins that judge take (`stand_in.ANY_SHAPE`). */
+const ANY_SHAPE = [
+	'bbox',
+	'polygon',
+	'polyline',
+	'keypoint',
+	'mask',
+	'tag',
+	'text',
+	'segment',
+] as const;
 const MODELS = [
 	{
 		name: 'stand-in-detector',
@@ -416,6 +428,7 @@ const MODELS = [
 		reads: ['image'],
 		prompts: ['text', 'box'],
 		returns: ['bbox'],
+		assesses: [],
 		compatible: null,
 	},
 	{
@@ -425,6 +438,7 @@ const MODELS = [
 		reads: ['image'],
 		prompts: ['box', 'points'],
 		returns: ['polygon'],
+		assesses: [],
 		compatible: null,
 	},
 	{
@@ -434,6 +448,7 @@ const MODELS = [
 		reads: ['image'],
 		prompts: [],
 		returns: ['tag'],
+		assesses: [],
 		compatible: null,
 	},
 	{
@@ -443,6 +458,7 @@ const MODELS = [
 		reads: ['image'],
 		prompts: ['text', 'box'],
 		returns: ['bbox'],
+		assesses: ANY_SHAPE,
 		compatible: null,
 	},
 	{
@@ -452,6 +468,17 @@ const MODELS = [
 		reads: ['image'],
 		prompts: ['text', 'box'],
 		returns: ['bbox'],
+		assesses: ANY_SHAPE,
+		compatible: null,
+	},
+	{
+		name: 'stand-in-judge',
+		version: VERSION,
+		title: 'Stand-in judge',
+		reads: ['image'],
+		prompts: [],
+		returns: [],
+		assesses: ANY_SHAPE,
 		compatible: null,
 	},
 ];

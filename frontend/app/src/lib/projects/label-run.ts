@@ -44,7 +44,7 @@ import {
 import type { TaskDetail } from './types.ts';
 
 /** How many items are written at once: enough to hide a round trip, few enough to leave the annotator's pool to others. */
-const IN_FLIGHT = 4;
+export const IN_FLIGHT = 4;
 
 /** Why an item, or a part of what was asked for it, was refused: in the item's own words (``reason``, its cell's), and
  *  in those a summary groups it by (``group``; the reason itself when absent), which say what failed and never which

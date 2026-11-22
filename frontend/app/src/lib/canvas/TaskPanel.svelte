@@ -3,12 +3,17 @@
 	// submission, waiting for a review, reading it), what still keeps it from being submitted, and the transitions they
 	// may make now. A submit saves first; a review that sends the item back carries a note, which its annotator reads
 	// here when they open it again. A model's proposals on the item are kept or removed here all at once (Alt+A, Alt+R),
-	// each one action on the canvas's undo stack; while one is left the item is not offered for submitting.
+	// each one action on the canvas's undo stack; while one is left the item is not offered for submitting. An item in
+	// review that the project's judge has read shows what it flagged, each flagged label a button that selects it, and
+	// sending a flagged item back asks whether the flag was right (ADR 0026).
 	import { Check, CheckCheck, CornerUpLeft, Hand, Send, Trash2, Undo } from '@lucide/svelte';
 	import { Button } from '@riksarkivet/ui/button';
 	import { cn } from '@riksarkivet/ui/utils';
+	import { askJudgeAfterSubmit } from '#lib/api/judge.api.ts';
 	import { fireTaskEvent } from '#lib/api/projects.api.ts';
-	import type { TaskDetail } from '#lib/projects/types.ts';
+	import type { Judgement, TaskDetail } from '#lib/projects/types.ts';
+	import JudgeQuestion from '#lib/projects/JudgeQuestion.svelte';
+	import JudgeVerdict from '#lib/projects/JudgeVerdict.svelte';
 	import SendBackDialog from '#lib/projects/SendBackDialog.svelte';
 	import { SETTLES_PROPOSALS, submittable, unsettledProposals } from './classes.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
@@ -21,6 +26,7 @@
 		permissions,
 		me,
 		browsing = false,
+		judgement = null,
 		onchanged,
 	}: {
 		controller: AnnotatorController;
@@ -29,6 +35,8 @@
 		me: string | null;
 		/** A browse pass: the panel says where the item stands, read-only, whatever its state, and offers nothing. */
 		browsing?: boolean;
+		/** What the project's judge said of the item's submission, where one has read it. */
+		judgement?: Judgement | null;
 		/** The task after a transition, for the page to show. */
 		onchanged: (task: TaskDetail) => void;
 	} = $props();
@@ -54,8 +62,17 @@
 	};
 	let noteOpen = $state(false);
 
-	/** Fire ``event``; true when the door took it. */
-	async function fire(event: string, message?: string): Promise<boolean> {
+	/** The judge's verdict, shown while the item is in review. */
+	const verdict = $derived(task.state === 'in_review' ? judgement : null);
+	const flagged = $derived((verdict?.flags.length ?? 0) > 0);
+	const rowOf = (shapeId: string) => controller.rows.find((r) => r.id === shapeId);
+
+	/** Fire ``event`` with what its body adds (a send-back's note, what the reviewer said of a judge's flag); true when
+	 *  the door took it. */
+	async function fire(
+		event: string,
+		extra: { message?: string; judge_agreed?: boolean } = {},
+	): Promise<boolean> {
 		if (busy) return false;
 		busy = event;
 		refused = null;
@@ -74,12 +91,27 @@
 		const result = await fireTaskEvent({
 			taskId: task.task_id,
 			event,
-			...(message ? { message } : {}),
+			...extra,
 		});
 		busy = null;
+		if (result.ok && event === 'submit') askJudgeAfterSubmit(result.data);
 		if (result.ok) onchanged(result.data);
 		else refuse(result.detail);
 		return result.ok;
+	}
+
+	/** Whether the reviewer found the judge's flag right, asked when they send a flagged item back; yes until they say no. */
+	let flagRight = $state(true);
+	function openNote(): void {
+		flagRight = true;
+		noteOpen = true;
+	}
+	/** Send the item back with ``note``, saying the judge's flag was wrong only when the reviewer said so. */
+	function sendBack(note: string): Promise<boolean> {
+		return fire('request_changes', {
+			message: note,
+			...(flagged && !flagRight ? { judge_agreed: false } : {}),
+		});
 	}
 
 	const REVIEW_HINTS: Record<string, string> = {
@@ -108,7 +140,7 @@
 			refuse(unsettledProposals(blockers.proposals, event));
 			return;
 		}
-		if (event === 'request_changes') noteOpen = true;
+		if (event === 'request_changes') openNote();
 		else void fire(event);
 	}
 	const unlabelledNoun = $derived.by(() => {
@@ -143,6 +175,19 @@
 			<span class="font-medium">{panel.note.by}:</span>
 			{panel.note.message}
 		</blockquote>
+	{/if}
+
+	{#if verdict && (panel.mode === 'reviewing' || panel.mode === 'waiting')}
+		<div data-testid="task-judge">
+			<JudgeVerdict
+				judgement={verdict}
+				shapeName={(id) => rowOf(id)?.label || null}
+				onshape={(id) => {
+					const row = rowOf(id);
+					if (row) controller.select(row.index);
+				}}
+			/>
+		</div>
 	{/if}
 
 	{#if panel.mode === 'annotating' && (controller.classDefs.length > 0 || blockers.proposals > 0)}
@@ -238,7 +283,7 @@
 						? 'Fix what the list above names first'
 						: REVIEW_HINTS[event]}
 					data-testid={`task-${event}`}
-					onclick={() => (event === 'request_changes' ? (noteOpen = true) : void fire(event))}
+					onclick={() => (event === 'request_changes' ? openNote() : void fire(event))}
 				>
 					{#if event === 'submit'}<Send class="size-3.5" />
 					{:else if event === 'accept'}<Check class="size-3.5" />
@@ -256,12 +301,17 @@
 	{/if}
 </section>
 
+{#snippet judgeQuestion()}
+	<JudgeQuestion bind:agreed={flagRight} />
+{/snippet}
+
 <SendBackDialog
 	bind:open={noteOpen}
 	title="Send the item back"
 	description="Say what should change: the note goes to its annotator with the item."
 	placeholder="The second box cuts off the signature."
 	busy={busy !== null}
+	question={flagged ? judgeQuestion : undefined}
 	testid="send-back-dialog"
-	onsend={(message) => fire('request_changes', message)}
+	onsend={sendBack}
 />

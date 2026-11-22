@@ -32,8 +32,12 @@ from workbench.media.deps import StateDep
 from workbench.media.source_gate import admit
 
 
+#: The relation that reviews a project's work, and reads a consensus replica's.
+CAN_REVIEW = "can_review"
+
 __all__ = [
     "ANONYMOUS_SUBJECT",
+    "CAN_REVIEW",
     "READS_DATASET",
     "AuthorizerDep",
     "CallerDep",

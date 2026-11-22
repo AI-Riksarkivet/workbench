@@ -21,6 +21,7 @@ class AnnotatorAuditAction(StrEnum):
     ANNOTATION_PROJECT_UPDATE_SETTINGS = "annotation_project.update_settings"
     ANNOTATION_SAVE = "annotation.save"
     ANNOTATOR_ASSIST = "annotator.assist"
+    ANNOTATOR_JUDGE = "annotator.judge"
     ANNOTATOR_AUTHORIZE = "annotator.authorize"
     PROJECT_ADJUDICATE = "project.adjudicate"
     PROJECT_DROP_TASK = "project.drop_task"

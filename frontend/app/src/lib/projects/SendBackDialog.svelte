@@ -1,10 +1,12 @@
 <script lang="ts">
 	// THE NOTE A REVIEWER SENDS AN ITEM BACK WITH, one form wherever it is written (the Items table, the Label grid, the
 	// canvas's side panel). A note typed is never lost by a stray key: Escape, a click outside or Cancel with text in it
-	// asks before discarding it, while an empty form closes at once.
+	// asks before discarding it, while an empty form closes at once. A page may ask one more thing beside the note
+	// (`question`: whether a judge's flag was right), which it holds itself.
 	import { Button } from '@riksarkivet/ui/button';
 	import { Dialog } from '@riksarkivet/ui/dialog';
 	import { Textarea } from '@riksarkivet/ui/textarea';
+	import type { Snippet } from 'svelte';
 
 	let {
 		open = $bindable(false),
@@ -12,6 +14,7 @@
 		description,
 		placeholder = '',
 		busy = false,
+		question,
 		testid,
 		onsend,
 	}: {
@@ -21,6 +24,8 @@
 		placeholder?: string;
 		/** A send in flight: the form waits for it. */
 		busy?: boolean;
+		/** One more thing the form asks under the note, held by the page. */
+		question?: Snippet;
 		testid: string;
 		/** The note, trimmed. The form closes once it is taken: at once, or when the answer is true; an answer of false
 		 *  (the item was not sent back) keeps the note in the form. */
@@ -84,6 +89,9 @@
 				{placeholder}
 				readonly={confirming}
 			/>
+			{#if question}
+				{@render question()}
+			{/if}
 			{#if confirming}
 				<div
 					class="border-warning bg-warning/10 flex flex-wrap items-center gap-2 border-l-2 px-2 py-1.5 text-sm"

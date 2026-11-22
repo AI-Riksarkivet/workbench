@@ -25,13 +25,15 @@ from fastapi import APIRouter, Path, Query, status
 from pydantic import AwareDatetime, BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from annotator.api.dependencies import PublishRunnerDep, StoreDep
-from annotator.api.security import AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, lacking, require_view, unseen_project
+from annotator.api.dependencies import EndpointDep, PublishRunnerDep, StoreDep
+from annotator.api.security import CAN_REVIEW, AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, lacking, require_view, unseen_project
 from annotator.api.v1.endpoints.tasks import caller_facts, reads_work
-from annotator.api.v1.responses import DropReceipt, SendReceipt, TaskListing
+from annotator.api.v1.responses import DropReceipt, JudgeState, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import get_annotator_settings
 from annotator.corpus import input_tables, not_annotatable, unheld_versions
+from annotator.judgement import NO_JUDGE
+from annotator.model_endpoint.client import NO_ENDPOINT, ModelEndpoint
 from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import (
     PROJECT_EDGES,
@@ -43,7 +45,7 @@ from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, S
 from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.projects.publish import publish_namespace, require_in_warehouse
 from annotator.state.store import AnnotatorStore
-from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, ItemWork, SortOrder, TaskFilter, TaskSort, principals_in
+from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, ItemWork, JudgeCounts, PageExtras, SortOrder, TaskFilter, TaskSort, principals_in
 from annotator.text import MAX_MASK, MAX_TEXT, Id, Name, Text
 from workbench.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from workbench.governed.audit import AuditOutcome, audit
@@ -434,12 +436,25 @@ class TaskInclude(StrEnum):
     #: With `details`, each item's work as a bulk label reads it (`task_query.ItemWork`), or null where the caller may not
     #: read that item's work (`tasks.reads_work`).
     WORK = "work"
+    #: With `details`, what the project's judge said of each listed item's submission (`annotator.judgement`), the
+    #: filter's counts of them, and whether a judge can be asked (ADR 0026).
+    JUDGE = "judge"
 
 
 #: The most principals one answer names (`people`): a page of 200 items names a few people in practice.
 MAX_NAMED: Final = 1000
 
 TextFilter = Annotated[Text | None, Query(min_length=1, max_length=MAX_FILTER)]
+
+
+def _judge_of(project: AnnotationProject | None, endpoint: ModelEndpoint, counts: JudgeCounts) -> JudgeState:
+    """Whether the project's judge can be asked, the reason when it cannot, and how it has read the listed filter."""
+    model = project.judge_model if project else ""
+    if not model:
+        return JudgeState(model="", available=False, reason=NO_JUDGE, **counts.model_dump())
+    if not endpoint.configured:
+        return JudgeState(model=model, available=False, reason=NO_ENDPOINT, **counts.model_dump())
+    return JudgeState(model=model, available=True, reason="", **counts.model_dump())
 
 
 # `exclude_unset`: the plain listing publishes FOUR keys; each `include` adds its own.
@@ -449,6 +464,7 @@ async def list_project_tasks(
     checker: CheckerDep,
     subject: CurrentSubject,
     store: StoreDep,
+    endpoint: EndpointDep,
     include: Annotated[list[TaskInclude] | None, Query(max_length=len(TaskInclude))] = None,
     state: Annotated[list[TaskState] | None, Query(max_length=len(TaskState))] = None,
     assignee: TextFilter = None,
@@ -511,8 +527,11 @@ async def list_project_tasks(
         limit=limit,
         offset=offset,
         around=around,
-        contributors=TaskInclude.CONTRIBUTORS in includes,
-        work=details_asked and TaskInclude.WORK in includes,
+        extras=PageExtras(
+            work=details_asked and TaskInclude.WORK in includes,
+            judge=details_asked and TaskInclude.JUDGE in includes,
+            contributors=TaskInclude.CONTRIBUTORS in includes,
+        ),
     )
     listing: dict[str, Any] = index.model_dump(mode="json")
     named: set[str] = set()
@@ -520,16 +539,21 @@ async def list_project_tasks(
         # What THIS caller may fire on each item (`machines.caller_events`): exactly what the task door would accept from
         # them now, by the one rule it refuses by (`machines.event_refusal`), from facts read once for the page. A race
         # (the rows moving before the click) and an `assign` whose recipient worked another replica are still the door's.
-        facts = await caller_facts(store, checker, subject, await store.get_project(project_id), tasks)
+        project = await store.get_project(project_id)
+        facts = await caller_facts(store, checker, subject, project, tasks)
         details: list[dict[str, Any]] = []
         for task, mine in zip(tasks, facts, strict=True):
             detail = {**task.model_dump(mode="json"), "legal_events": caller_events(task, mine)}
+            # The work doors' own rule (`tasks.reads_work`), `can_review` read off the facts: a task's relations are its
+            # project's. A verdict says what the item's labels are, so it is read by who reads the work and no one else.
+            readable = reads_work(task, subject, may_review=CAN_REVIEW in mine.held)
             if TaskInclude.WORK in includes:
-                # The work doors' own rule (`tasks.reads_work`), `can_review` read off the facts: a task's relations are
-                # its project's. An item with no draft yet is at revision 0 with no tags.
-                readable = reads_work(task, subject, may_review="can_review" in mine.held)
+                # An item with no draft yet is at revision 0 with no tags.
                 work = page.work.get(task.task_id, ItemWork(revision=0, tags=[], tags_cut=False, proposals=0))
                 detail["work"] = work.model_dump(mode="json") if readable else None
+            if TaskInclude.JUDGE in includes:
+                verdict = page.judgements.get(task.task_id) if readable else None
+                detail["judgement"] = verdict.model_dump(mode="json") if verdict else None
             details.append(detail)
         found = {d["task_id"] for d in details}
         listing |= {
@@ -541,6 +565,8 @@ async def list_project_tasks(
             "position": page.position,
             "datasets": page.datasets,
         }
+        if TaskInclude.JUDGE in includes and page.judged is not None:
+            listing["judge"] = _judge_of(project, endpoint, page.judged).model_dump(mode="json")
         named |= principals_in(details)
     if contributors is not None:
         listing["contributors"] = [c.model_dump() for c in contributors]

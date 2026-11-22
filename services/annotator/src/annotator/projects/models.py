@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from annotator.model_endpoint.protocol import NAME_PATTERN
 from annotator.projects.ontology import LabelOntology
 from annotator.text import MAX_ID, MAX_NAME, Text
 from workbench.naming import CONTROL_ID_PATTERN
@@ -62,6 +63,8 @@ TERMINAL_TASK_STATES: frozenset[TaskState] = frozenset({TaskState.ACCEPTED, Task
 SkipPolicy = Literal["requeue_for_others", "requeue_for_me", "terminal"]
 ShapeType = Literal["bbox", "polygon", "mask", "keypoint", "polyline", "segment", "tag", "text"]
 ReviewAction = Literal["accepted", "fix_and_accept", "request_changes"]
+#: The review decisions, and what each records as the reviewer's action.
+REVIEW_ACTIONS: Final[dict[str, ReviewAction]] = {"accept": "accepted", "fix_and_accept": "fix_and_accept", "request_changes": "request_changes"}
 #: Where a draft's contents came from. `import` is its own member rather than being folded into
 #: `model`: imported work may be a model's output OR a person's, made in another tool, and calling
 #: a human's labels "model" would put a false provenance claim onto every row they eventually
@@ -290,6 +293,8 @@ DESCRIPTION_MAX: Final = 4_000
 INSTRUCTIONS_MAX: Final = 20_000
 LEASE_MAX_SECONDS: Final = 7 * 24 * 3600
 MAX_REVIEW_NOTES: Final = 50
+#: A judge's name, as the model protocol names a model, or nothing.
+JUDGE_MODEL_PATTERN: Final = rf"^(?:{NAME_PATTERN})?$"
 
 
 class Task(BaseModel):
@@ -382,6 +387,8 @@ class ProjectSettings(BaseModel):
     review_required: bool | None = None
     lease_seconds: int | None = Field(default=None, gt=0, le=LEASE_MAX_SECONDS)
     consensus_n: int | None = Field(default=None, ge=1, le=5)
+    #: The model that judges this project's submissions, as the deployment's endpoint names it; empty names none.
+    judge_model: Annotated[str, Field(max_length=128, pattern=JUDGE_MODEL_PATTERN)] | None = None
 
 
 def publish_warehouse_of(project: Mapping[str, object]) -> str:
@@ -422,6 +429,10 @@ class AnnotationProject(BaseModel):
     #: work already in review.
     ontology: LabelOntology = Field(default_factory=LabelOntology)
     skip_policy: SkipPolicy = "requeue_for_others"
+    #: The model that judges this project's submissions (ADR 0026), as the deployment's model endpoint names it; empty:
+    #: the project has no judge. Read when a judge is asked, never captured on an item: a verdict records the model and
+    #: version that gave it.
+    judge_model: str = Field(default="", max_length=128, pattern=JUDGE_MODEL_PATTERN)
     #: Consensus v1's merge step: replica group id → the manager's canonical pick. Pre-publish
     #: metadata (re-pickable while the project is adjudicable); the publish validates every pick
     #: still names an ACCEPTED replica and stamps the map into the run facet.

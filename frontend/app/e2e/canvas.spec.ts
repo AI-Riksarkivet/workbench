@@ -997,6 +997,65 @@ test('a reviewer opens someone’s submission, reads it as theirs to review, and
 	await expect(panel.getByTestId('review-note')).toContainText('Box the legend too.');
 });
 
+test('a reviewer walks the judge’s order: reads what it flagged, finds the flagged label, and says whether the flag was right only by unticking it', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	// The Review tab asks the judge about the items it had not read; the pass starts at the first flagged one.
+	await page.goto('/projects/vetting?tab=review');
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'Judge stand-in-judge: 3 flagged, 1 clear.',
+	);
+	await page.getByTestId('review-start').click();
+	await expect(page).toHaveURL(/\/tasks\/vetting-b\?/);
+	await ready(page);
+	const panel = page.getByTestId('task-panel');
+	const judge = panel.getByTestId('task-judge');
+	await expect(judge.getByTestId('judge-by')).toHaveText('judged by stand-in-judge stand-in.1');
+	await expect(judge.getByTestId('judge-flag')).toHaveText(
+		"The caption label: the stand-in judge doubts every 'caption': it would say 'figure' (suggests figure)",
+	);
+	// The flagged label is one click away.
+	await judge.getByTestId('judge-flag-shape').click();
+	await expect(page.getByTestId('annotation-detail')).toContainText('caption');
+
+	// Sent back with the flag found right (the default): the decision says it, so nothing more is sent.
+	let fired = page.waitForRequest((req) => req.url().includes('/tasks/vetting-b/events'));
+	await panel.getByTestId('task-request_changes').click();
+	const dialog = page.getByTestId('send-back-dialog');
+	await expect(dialog.getByTestId('send-back-judge').getByRole('checkbox')).toBeChecked();
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Call it a figure.');
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+	expect((await fired).postDataJSON()).toEqual({
+		event: 'request_changes',
+		message: 'Call it a figure.',
+	});
+
+	// The next flagged item: a flag on the whole item, sent back with the flag found wrong.
+	await expect(page).toHaveURL(/\/tasks\/vetting-c\?/);
+	await expect(panel.getByTestId('task-judge').getByTestId('judge-flag')).toHaveText(
+		'Whole item: nothing is labelled on this item',
+	);
+	fired = page.waitForRequest((req) => req.url().includes('/tasks/vetting-c/events'));
+	await panel.getByTestId('task-request_changes').click();
+	await dialog.getByTestId('send-back-judge').getByRole('checkbox').click();
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Label the page.');
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+	expect((await fired).postDataJSON()).toEqual({
+		event: 'request_changes',
+		message: 'Label the page.',
+		judge_agreed: false,
+	});
+
+	// A plain accept of a flagged item sends nothing about the flag: the annotator records the disagreement.
+	await expect(page).toHaveURL(/\/tasks\/vetting-d\?/);
+	await expect(panel.getByTestId('task-judge').getByTestId('judge-flagged')).toBeVisible();
+	fired = page.waitForRequest((req) => req.url().includes('/tasks/vetting-d/events'));
+	await panel.getByTestId('task-accept').click();
+	expect((await fired).postDataJSON()).toEqual({ event: 'accept' });
+});
+
 /** Where `word` (its `nth` occurrence) is drawn in `line`, as a page point at its middle. */
 async function wordAt(
 	line: Locator,
@@ -1284,6 +1343,8 @@ test('a model asked from the canvas proposes shapes, each naming its model, vers
 	// The endpoint's models by title, and what each is: its name and version. Which prompts each takes is the endpoint's
 	// word: the detector is asked with words, the segmenter armed for a box or clicks.
 	await expect(panel.getByTestId('assist-model')).toHaveCount(5);
+	// A model that proposes nothing judges labels only, and is no model to ask.
+	await expect(modelRow(panel, 'stand-in-judge')).toHaveCount(0);
 	await expect(modelRow(panel, 'stand-in-detector')).toContainText('Stand-in detector');
 	await expect(modelRow(panel, 'stand-in-detector').getByTestId('assist-model-version')).toHaveText(
 		'stand-in-detector · stand-in.1 · returns bbox',

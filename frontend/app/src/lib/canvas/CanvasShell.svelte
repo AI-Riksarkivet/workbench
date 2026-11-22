@@ -25,7 +25,7 @@
 	import { ResizableSplit } from '@riksarkivet/ui/resizable-split';
 	import { cn } from '@riksarkivet/ui/utils';
 	import { beforeSigningInAgain } from '#lib/reauth.svelte.ts';
-	import type { TaskDetail } from '#lib/projects/types.ts';
+	import type { Judgement, TaskDetail } from '#lib/projects/types.ts';
 	import { viewTransitions } from '#lib/view-transition.svelte.ts';
 	import { AnnotatorController } from './controller.svelte.ts';
 	import AnnotationSidebar from './AnnotationSidebar.svelte';
@@ -66,6 +66,7 @@
 		ontaskchange,
 		itemName,
 		replicas = [],
+		judgement = null,
 	}: {
 		task: TaskDetail;
 		/** The open unit's key path. */
@@ -103,6 +104,8 @@
 		itemName: string;
 		/** The item's other replicas (its consensus group), for comparing. */
 		replicas?: readonly TaskDetail[];
+		/** What the project's judge said of the item's submission, where one has read it. */
+		judgement?: Judgement | null;
 	} = $props();
 
 	const controller = new AnnotatorController();
@@ -610,6 +613,7 @@
 		{permissions}
 		{me}
 		browsing={walk.browsing}
+		{judgement}
 		onchanged={ontaskchange}
 	/>
 	<!-- Another replica's work is offered only to someone who may review the item: the replicas are independent until

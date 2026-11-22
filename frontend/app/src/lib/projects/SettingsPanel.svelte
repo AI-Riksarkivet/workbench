@@ -1,14 +1,18 @@
 <script lang="ts">
 	// A project's settings, each with when it may still change said beside it (the annotator's rule,
 	// `AnnotatorStore.update_settings`; the door decides): the title, description and instructions; whether review is
-	// required and how long a claim lasts; the consensus. Saved together, only what changed is sent.
+	// required and how long a claim lasts; the consensus; the judge, a model of the deployment's endpoint that judges
+	// labels (ADR 0026). Saved together, only what changed is sent.
 	import { untrack } from 'svelte';
 	import { Button } from '@riksarkivet/ui/button';
 	import { Input } from '@riksarkivet/ui/input';
+	import { Select } from '@riksarkivet/ui/select';
 	import { Switch } from '@riksarkivet/ui/switch';
 	import { Textarea } from '@riksarkivet/ui/textarea';
 
+	import { judges, listModels } from '#lib/api/assist.api.ts';
 	import { updateProjectSettings, type ProjectSettings } from '#lib/api/projects.api.ts';
+	import { sentence } from './presentation.ts';
 	import type { Project } from './types.ts';
 
 	let {
@@ -32,6 +36,7 @@
 		review_required: project.review_required ?? true,
 		lease_minutes: Math.round((project.lease_seconds ?? 1800) / 60),
 		consensus_n: project.consensus_n ?? 1,
+		judge_model: project.judge_model ?? '',
 	}));
 	let title = $state(initial.title);
 	let description = $state(initial.description);
@@ -39,6 +44,7 @@
 	let reviewRequired = $state(initial.review_required);
 	let leaseMinutes = $state(initial.lease_minutes);
 	let consensus = $state(initial.consensus_n);
+	let judgeModel = $state(initial.judge_model);
 	let busy = $state(false);
 	let notice = $state<{ ok: boolean; text: string } | null>(null);
 
@@ -47,6 +53,23 @@
 		project.state === 'publishing' || project.state === 'published' || project.state === 'archived',
 	);
 	const editable = $derived(mayManage && !publishing);
+
+	// THE JUDGES the deployment's endpoint serves (models that judge labels), read for a manager. A judge the project
+	// names that the endpoint does not list now stays offered, so it can be seen and cleared.
+	const modelsRead = $derived(mayManage ? listModels({ project: project.project_id }) : null);
+	const models = $derived(modelsRead?.current?.ok ? modelsRead.current.data : null);
+	const modelsFailure = $derived(
+		modelsRead?.current && !modelsRead.current.ok ? modelsRead.current.detail : null,
+	);
+	const judgeOptions = $derived.by(() => {
+		const offered = (models?.models ?? [])
+			.filter(judges)
+			.map((m) => ({ value: m.name, label: m.title ? `${m.title} (${m.name})` : m.name }));
+		const named = project.judge_model ?? '';
+		return named && !offered.some((o) => o.value === named)
+			? [...offered, { value: named, label: `${named} (not served by the model endpoint now)` }]
+			: offered;
+	});
 
 	const changes = $derived.by<ProjectSettings>(() => {
 		const out: ProjectSettings = {};
@@ -57,6 +80,7 @@
 		if (leaseMinutes * 60 !== (project.lease_seconds ?? 1800))
 			out.lease_seconds = leaseMinutes * 60;
 		if (consensus !== (project.consensus_n ?? 1)) out.consensus_n = consensus;
+		if (judgeModel !== (project.judge_model ?? '')) out.judge_model = judgeModel;
 		return out;
 	});
 	const dirty = $derived(Object.keys(changes).length > 0);
@@ -157,6 +181,35 @@
 				? 'Fixed: items were sent, each made into this many replicas.'
 				: 'Changes until the first items are sent.'}
 		</p>
+	</div>
+
+	<div class="flex flex-col gap-2 border-t pt-3">
+		<div class="flex flex-col gap-1 text-sm" data-testid="settings-judge">
+			Judge
+			<span class="text-muted-foreground text-xs">
+				A model that reads each submitted item and flags the labels it disagrees with. It decides
+				nothing: reviewers still accept or send back every item, the flagged ones first.
+			</span>
+			<Select
+				bind:value={judgeModel}
+				ariaLabel="Judge"
+				disabled={!editable}
+				options={[{ value: '', label: 'No judge' }, ...judgeOptions]}
+			/>
+		</div>
+		{#if modelsFailure !== null}
+			<p class="text-destructive text-xs" data-testid="settings-judge-reason">
+				The model endpoint's judges could not be listed: {modelsFailure}
+			</p>
+		{:else if models !== null && !models.available}
+			<p class="text-muted-foreground text-xs" data-testid="settings-judge-reason">
+				{sentence(models.reason)}.
+			</p>
+		{:else if models !== null && judgeOptions.length === 0}
+			<p class="text-muted-foreground text-xs" data-testid="settings-judge-reason">
+				The model endpoint serves no model that judges labels.
+			</p>
+		{/if}
 	</div>
 
 	{#if editable}

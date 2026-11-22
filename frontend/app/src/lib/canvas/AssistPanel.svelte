@@ -14,7 +14,14 @@
 	import { Button } from '@riksarkivet/ui/button';
 	import * as Popover from '@riksarkivet/ui/popover';
 	import { Slider } from '@riksarkivet/ui/slider';
-	import { fetchModels, takes, type AssistListing, type AssistModel } from '#lib/api/assist.api.ts';
+	import {
+		fetchModels,
+		proposes,
+		takes,
+		type AssistListing,
+		type AssistModel,
+	} from '#lib/api/assist.api.ts';
+	import { sentence } from '#lib/projects/presentation.ts';
 	import type { AnnotatorController } from './controller.svelte.ts';
 
 	let {
@@ -38,8 +45,9 @@
 		else failure = answer.detail;
 	}
 
-	/** Every model the endpoint lists: one that takes no prompt answers from the item alone, and is asked as it is. */
-	const offered = $derived(listing?.models ?? []);
+	/** Every model the endpoint lists that proposes anything (one that returns nothing is a project's judge only): one
+	 *  that takes no prompt answers from the item alone, and is asked as it is. */
+	const offered = $derived((listing?.models ?? []).filter(proposes));
 	const promptless = (m: AssistModel): boolean => m.prompts.length === 0;
 	const anyWords = $derived(offered.some((m) => takes(m, 'text')));
 
@@ -90,7 +98,7 @@
 				<p class="text-muted-foreground text-xs" role="status">Reading the models…</p>
 			{:else if !listing.available}
 				<p class="text-muted-foreground text-xs" data-testid="assist-unavailable">
-					{listing.reason.charAt(0).toUpperCase() + listing.reason.slice(1)}.
+					{sentence(listing.reason)}.
 				</p>
 			{:else if offered.length === 0}
 				<p class="text-muted-foreground text-xs" data-testid="assist-no-models">

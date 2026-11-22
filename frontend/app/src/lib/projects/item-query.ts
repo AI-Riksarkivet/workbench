@@ -211,7 +211,9 @@ export function readPass(params: Params): Pass {
 
 /** What a pass walks, as a query: your live claims; the labeled work a browse filter names (items whose work holds a
  *  shape or a link, `has_work`: a claim nobody has drawn on is not labeled work); the work in review that someone other
- *  than you submitted. The canvas reads it one page around the open item. */
+ *  than you submitted, in the judge's order (the items it flagged first, then those it has not read, then those it found
+ *  nothing in, each the longest waiting first), so the Review tab and the canvas walking it list one order. The canvas
+ *  reads it one page around the open item. */
 export function passParams(pass: Pass, query: ItemQuery, me: string | null): URLSearchParams {
 	if (pass === 'label') {
 		const out = new URLSearchParams({ state: 'claimed', sort: 'item' });
@@ -221,6 +223,8 @@ export function passParams(pass: Pass, query: ItemQuery, me: string | null): URL
 	if (pass === 'review') {
 		const out = doorParams({ ...query, states: ['in_review'] }, me);
 		if (me !== null) out.set('not_submitter', me);
+		out.set('sort', 'judge');
+		out.set('order', 'asc');
 		return out;
 	}
 	const out = doorParams(

@@ -884,6 +884,259 @@ test('the review tab lists the work waiting for the reviewer by its annotators�
 	);
 });
 
+// THE JUDGE (ADR 0026): `vetting` names the stand-in judge, which doubts every caption (suggesting a figure) and an item
+// nobody labelled; `appeals` names the stand-in that fails every ask (`e2e/mock-projects.ts`).
+const judgeAsks = async (page: Page, who: MockIdentity): Promise<Call[]> =>
+	(await annotatorCalls(page, who)).filter(
+		(c) => c.method === 'POST' && c.path.startsWith('/api/judge/'),
+	);
+const DOUBT = "the stand-in judge doubts every 'caption': it would say 'figure'";
+/** An item's name in the lists, by its key; a key with no name is a mistake in the spec. */
+const nameOf = (key: string): string => {
+	const name = NAMES[key];
+	if (name === undefined) throw new Error(`no item is named for ${key}`);
+	return name;
+};
+
+test('the review tab asks the judge about the items it has not read, then lists the flagged first with what it disagreed with and the model that judged', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Reviewer');
+	await page.goto('/projects/vetting?tab=review');
+
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'Judge stand-in-judge: 3 flagged, 1 clear.',
+	);
+	// The three items no judge had read were asked about once each; the one judged at its submit was not.
+	expect((await judgeAsks(page, who)).map((c) => [c.path, c.status]).sort()).toEqual([
+		['/api/judge/letter-001/0', 200],
+		['/api/judge/letter-001/1', 200],
+		['/api/judge/letter-002/0', 200],
+	]);
+	// Flagged first, each the longest waiting first, then the clear one.
+	const items = page.getByTestId('review-list').locator(':scope > li');
+	await expect(items).toHaveCount(4);
+	await expect(items.nth(0)).toContainText(nameOf('letter-001/1'));
+	await expect(items.nth(0).getByTestId('judge-flagged')).toContainText('Flagged');
+	await expect(items.nth(0).getByTestId('judge-flag')).toHaveText(
+		`A label: ${DOUBT} (suggests figure)`,
+	);
+	await expect(items.nth(0).getByTestId('judge-by')).toHaveText(
+		'judged by stand-in-judge stand-in.1',
+	);
+	await expect(items.nth(1)).toContainText(nameOf('letter-002/0'));
+	await expect(items.nth(1).getByTestId('judge-flag')).toHaveText(
+		'Whole item: nothing is labelled on this item',
+	);
+	await expect(items.nth(2)).toContainText(nameOf('map-003/0'));
+	await expect(items.nth(2).getByTestId('judge-flagged')).toBeVisible();
+	await expect(items.nth(3)).toContainText(nameOf('letter-001/0'));
+	await expect(items.nth(3).getByTestId('judge-flagged')).toHaveCount(0);
+	await expect(items.nth(3).getByTestId('judge-clear')).toHaveText(
+		'Nothing flagged, judged by stand-in-judge stand-in.1',
+	);
+	// The pass starts at the first flagged item.
+	await expect(page.getByTestId('review-start')).toHaveAttribute(
+		'href',
+		/\/projects\/vetting\/tasks\/vetting-b\?/,
+	);
+});
+
+test('a project with no judge lists its review as it does without one, and says quietly that it has none', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Reviewer');
+	await page.goto('/projects/judging?tab=review');
+
+	await expect(page.getByTestId('review-judge')).toHaveText('This project has no judge.');
+	await expect(page.getByTestId('review-list').getByTestId('person')).toHaveText([
+		'Alma Alpha',
+		'Bert Beta',
+		'Sam Else',
+	]);
+	await expect(page.getByTestId('review-list').getByTestId(/^judge-/)).toHaveCount(0);
+	expect(await judgeAsks(page, who)).toEqual([]);
+});
+
+test('a judge that fails is said unavailable, is asked once per item and no more, and the list still works', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Reviewer');
+	await page.goto('/projects/appeals?tab=review');
+
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'The judge is unavailable: the model endpoint failed (500): stand-in-failing fails every ask',
+	);
+	const items = page.getByTestId('review-list').locator(':scope > li');
+	await expect(items).toHaveCount(4);
+	await expect(items.getByTestId('judge-unread')).toHaveCount(4);
+	await expect(page.getByTestId('review-start')).toBeVisible();
+	// The four unread items went out at once, each failing alike.
+	expect((await judgeAsks(page, who)).map((c) => c.status)).toEqual([502, 502, 502, 502]);
+	// A judge that failed is asked no more: the list read again by Refresh asks nothing.
+	const reread = page.waitForResponse(
+		(res) => res.url().includes('/projects/appeals/tasks?') && res.request().method() === 'GET',
+	);
+	await page.getByRole('button', { name: 'Refresh' }).click();
+	await reread;
+	await expect(items.getByTestId('judge-unread')).toHaveCount(4);
+	expect(await judgeAsks(page, who)).toHaveLength(4);
+
+	// A deployment that names no model endpoint: the listing says why, and nothing is asked.
+	await faultOn(page, who, '/api/assist/models', 'no-endpoint');
+	await page.reload();
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'The judge is unavailable: assist is unavailable: this deployment names no model endpoint',
+	);
+	await expect(items).toHaveCount(4);
+	expect(await judgeAsks(page, who)).toHaveLength(4);
+});
+
+test('an item refused for itself stays not judged and is asked no more, while the rest are judged and the judge is not called unavailable', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Reviewer');
+	// The first item leaves review while its judge is asked.
+	await faultOn(page, who, '/api/judge/letter-001/0', 'left-review');
+	await page.goto('/projects/vetting?tab=review');
+
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'Judge stand-in-judge: 3 flagged, 0 clear, 1 not judged.',
+	);
+	const items = page.getByTestId('review-list').locator(':scope > li');
+	await expect(items.nth(3)).toContainText(nameOf('letter-001/0'));
+	await expect(items.nth(3).getByTestId('judge-unread')).toHaveText('Not judged yet');
+	// Asked once each: the list read again after the others were judged does not ask the refused one again.
+	expect((await judgeAsks(page, who)).map((c) => [c.path, c.status]).sort()).toEqual([
+		['/api/judge/letter-001/0', 409],
+		['/api/judge/letter-001/1', 200],
+		['/api/judge/letter-002/0', 200],
+	]);
+});
+
+test('a submit that lands in review asks the project’s judge about the item, and a project with none is not asked', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	// A project with no judge first: its submit asks nothing.
+	await page.goto('/projects/letters?state=claimed');
+	await row(page, 'letter-001/1')
+		.getByRole('button', { name: /^Submit/ })
+		.click();
+	await expect(row(page, 'letter-001/1')).toHaveCount(0);
+
+	await page.goto('/projects/vetting?state=claimed');
+	await row(page, 'letter-001/0')
+		.getByRole('button', { name: /^Submit/ })
+		.click();
+	await expect(row(page, 'letter-001/0')).toHaveCount(0);
+	// The one ask is the judging project's: none came of the first submit, a page and a submit earlier.
+	await expect
+		.poll(async () => (await judgeAsks(page, who)).map((c) => [c.path, c.status]))
+		.toEqual([['/api/judge/letter-001/0', 200]]);
+});
+
+test('sending a flagged item back from the items table or the grid asks whether the judge was right, and only an untick says no, for the flagged items alone', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	const fired: Record<string, unknown> = {};
+	page.on('request', (req) => {
+		const at = /\/tasks\/([\w-]+)\/events$/.exec(new URL(req.url()).pathname);
+		if (at?.[1] && req.method() === 'POST') fired[at[1]] = req.postDataJSON();
+	});
+	// The items table: `vetting-d` was flagged at its submit.
+	await page.goto('/projects/vetting');
+	await row(page, 'map-003/0').getByRole('button', { name: 'Request changes' }).click();
+	const form = page.getByTestId('items-send-back');
+	const question = form.getByTestId('send-back-judge');
+	await expect(question).toHaveText("The judge's flag was right");
+	await expect(question.getByRole('checkbox')).toBeChecked();
+	await question.getByRole('checkbox').click();
+	await form.getByRole('textbox').fill('The caption is a figure after all? No.');
+	await form.getByRole('button', { name: 'Send back' }).click();
+	await expect(row(page, 'map-003/0')).toContainText('changes requested');
+	expect(fired['vetting-d']).toEqual({
+		event: 'request_changes',
+		message: 'The caption is a figure after all? No.',
+		judge_agreed: false,
+	});
+
+	// The grid: once the Review tab has had the rest judged, one note over an item found clear and one flagged, the
+	// question left ticked: nothing is said of the flag.
+	await page.goto('/projects/vetting?tab=review');
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'Judge stand-in-judge: 2 flagged, 1 clear.',
+	);
+	await page.goto('/projects/vetting?tab=label&pass=review');
+	await cellOf(page, 'vetting-a').click();
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.getByTestId('grid-bulk-request_changes').click();
+	const gridForm = page.getByTestId('grid-send-back');
+	await expect(gridForm.getByTestId('send-back-judge')).toHaveText("The judge's flag was right");
+	await gridForm.getByRole('textbox').fill('Look again.');
+	await gridForm.getByRole('button', { name: 'Send back' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Sent back: 2 items.');
+	expect(fired['vetting-a']).toEqual({ event: 'request_changes', message: 'Look again.' });
+	expect(fired['vetting-b']).toEqual({ event: 'request_changes', message: 'Look again.' });
+});
+
+test('a manager names the project’s judge from the endpoint’s judges and clears it, and a judge the endpoint does not serve stays to be cleared', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Manager');
+	await page.goto('/projects/letters?tab=settings');
+	const judge = page.getByLabel('Judge', { exact: true });
+	const choose = async (name: string): Promise<void> => {
+		await judge.click();
+		await page.getByRole('option', { name, exact: true }).click();
+	};
+	// The models that judge labels, and no other.
+	await judge.click();
+	await expect(page.getByRole('option')).toHaveText([
+		'No judge',
+		'Stand-in that never answers (stand-in-slow)',
+		'Stand-in that fails (stand-in-failing)',
+		'Stand-in judge (stand-in-judge)',
+	]);
+	await page.keyboard.press('Escape');
+	const patched = () =>
+		page.waitForRequest(
+			(req) => req.method() === 'PATCH' && req.url().endsWith('/api/annotator/projects/letters'),
+		);
+
+	let sent = patched();
+	await choose('Stand-in judge (stand-in-judge)');
+	await page.getByTestId('settings-save').click();
+	expect((await sent).postDataJSON()).toEqual({ judge_model: 'stand-in-judge' });
+	await expect(page.getByTestId('settings-notice')).toHaveText('Saved.');
+
+	sent = patched();
+	await choose('No judge');
+	await page.getByTestId('settings-save').click();
+	expect((await sent).postDataJSON()).toEqual({ judge_model: '' });
+
+	// With no model endpoint, why is said, and the judge the project names is still offered so it can be cleared.
+	await faultOn(page, who, '/api/assist/models', 'no-endpoint');
+	await page.goto('/projects/vetting?tab=settings');
+	await expect(page.getByTestId('settings-judge-reason')).toHaveText(
+		'Assist is unavailable: this deployment names no model endpoint.',
+	);
+	await expect(judge).toHaveText('stand-in-judge (not served by the model endpoint now)');
+	await judge.click();
+	await expect(page.getByRole('option')).toHaveText([
+		'No judge',
+		'stand-in-judge (not served by the model endpoint now)',
+	]);
+});
+
 // THE BULK-LABELING GRID (`?tab=label`): the `sorting` project's items open to the reader, labelled from the keyboard.
 const grid = (page: Page) => page.getByTestId('label-grid');
 const cellOf = (page: Page, task: string) =>
@@ -1576,6 +1829,19 @@ test('a lost save another save landed on top of is reported saved, and an undo l
 	await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
+test('a model that only judges labels is never offered to ask from the grid', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	const panel = await openAsk(page);
+
+	await expect(gridModel(panel, 'stand-in-tagger')).toBeVisible();
+	await expect(gridModel(panel, 'stand-in-judge')).toHaveCount(0);
+});
+
 test('a model no selected item’s classes can hold is said not to fit and cannot be asked', async ({
 	page,
 	context,
@@ -1592,6 +1858,7 @@ test('a model no selected item’s classes can hold is said not to fit and canno
 			reads: ['image'],
 			prompts: [],
 			returns: ['polygon'],
+			assesses: [],
 			compatible: null,
 		});
 		await route.fulfill({ response: listed, json: body });

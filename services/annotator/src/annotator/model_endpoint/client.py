@@ -22,7 +22,16 @@ import httpx
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from annotator.model_endpoint.protocol import MODELS_PATH, PROPOSALS_PATH, ModelListing, ProposalsRequest, ProposalsResponse
+from annotator.model_endpoint.protocol import (
+    ASSESSMENTS_PATH,
+    MODELS_PATH,
+    PROPOSALS_PATH,
+    AssessmentRequest,
+    AssessmentResponse,
+    ModelListing,
+    ProposalsRequest,
+    ProposalsResponse,
+)
 from workbench.exceptions import DomainError, NotFoundError, ServiceUnavailableError
 
 
@@ -211,6 +220,21 @@ class ModelEndpoint(BaseModel):
             raise ModelEndpointFailed("the model endpoint's answer is outside the protocol") from exc
         if answer.model != ask.model:
             raise ModelEndpointFailed(f"the model endpoint answered as {answer.model!r}, and {ask.model!r} was asked")
+        return answer
+
+    async def assessment(self, ask: AssessmentRequest) -> AssessmentResponse:
+        """What one model disagrees with among an item's labels. Raises as `proposals` does; an answer naming a label
+        the ask did not carry is outside the protocol."""
+        read = await self._call("POST", ASSESSMENTS_PATH, timeout=self.timeout_seconds, body=ask)
+        try:
+            answer = AssessmentResponse.model_validate_json(read)
+        except ValidationError as exc:
+            raise ModelEndpointFailed("the model endpoint's assessment is outside the protocol") from exc
+        if answer.model != ask.model:
+            raise ModelEndpointFailed(f"the model endpoint answered as {answer.model!r}, and {ask.model!r} was asked")
+        asked = {label.id for label in ask.labels}
+        if any(d.label_id is not None and d.label_id not in asked for d in answer.disagreements):
+            raise ModelEndpointFailed("the model endpoint's assessment names a label it was not asked about")
         return answer
 
 

@@ -44,6 +44,7 @@
 		fireTaskEvent,
 		pageTasks,
 	} from '#lib/api/projects.api.ts';
+	import { askJudgeAfterSubmit } from '#lib/api/judge.api.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { bulkActions, targetsFor } from './bulk-events.ts';
@@ -53,6 +54,7 @@
 	import TaskGrid from './TaskGrid.svelte';
 	import { parseView, QUEUE_VIEW_KEY, type QueueView } from './queue-view.ts';
 	import QuickView from './QuickView.svelte';
+	import JudgeQuestion from './JudgeQuestion.svelte';
 	import SendBackDialog from './SendBackDialog.svelte';
 	import { afterVerdict } from './quick-view.ts';
 	import LeaseChip from './LeaseChip.svelte';
@@ -113,7 +115,13 @@
 	const query = $derived(readItemQuery(asked ?? page.url.searchParams));
 	const filter = $derived(doorParams(query, me).toString());
 	const read = $derived(
-		pageTasks({ projectId, filter, limit: query.size, offset: (query.page - 1) * query.size }),
+		pageTasks({
+			projectId,
+			filter,
+			limit: query.size,
+			offset: (query.page - 1) * query.size,
+			judge: true,
+		}),
 	);
 	const answer = $derived(read.current);
 	const listing = $derived(answer?.ok ? answer.data : null);
@@ -217,18 +225,22 @@
 	let busy = $state<string | null>(null);
 	let notice = $state<{ ok: boolean; text: string } | null>(null);
 	let changesFor = $state<TaskDetail | null>(null);
+	/** Whether the reviewer found the judge's flag on the item they send back right; yes until they say no. */
+	let flagRight = $state(true);
+	const changesFlagged = $derived((changesFor?.judgement?.flags.length ?? 0) > 0);
 	let changesOpen = $state(false);
 
 	async function fire(
 		task: TaskDetail,
 		event: string,
-		opts?: { message?: string; assignee?: string },
+		opts?: { message?: string; assignee?: string; judge_agreed?: boolean },
 	): Promise<void> {
 		if (busy) return;
 		busy = `${task.task_id}:${event}`;
 		notice = null;
 		const result = await fireTaskEvent({ taskId: task.task_id, event, ...opts });
 		busy = null;
+		if (result.ok && event === 'submit') askJudgeAfterSubmit(result.data);
 		if (result.ok) refresh();
 		else notice = { ok: false, text: result.detail };
 	}
@@ -311,7 +323,15 @@
 		if (event === 'skip' && !confirm(`Skip ${targets.length} item(s)? They leave the queue.`))
 			return;
 		const label = (EVENT_LABELS[event] ?? event).replace('…', '');
-		await eachOf(targets, (t) => fireTaskEvent({ taskId: t.task_id, event }), label);
+		await eachOf(
+			targets,
+			async (t) => {
+				const result = await fireTaskEvent({ taskId: t.task_id, event });
+				if (result.ok && event === 'submit') askJudgeAfterSubmit(result.data);
+				return result;
+			},
+			label,
+		);
 	}
 
 	async function bulkRemove(): Promise<void> {
@@ -692,6 +712,7 @@
 					disabled={busy !== null}
 					onclick={() => {
 						changesFor = task;
+						flagRight = true;
 						changesOpen = true;
 					}}
 				>
@@ -1038,15 +1059,22 @@
 	</Dialog.Content>
 </Dialog.Root>
 
+{#snippet judgeQuestion()}
+	<JudgeQuestion bind:agreed={flagRight} />
+{/snippet}
+
 <SendBackDialog
 	bind:open={changesOpen}
 	title="Send the item back"
 	description="The note travels with the item to its annotator: say what should change."
 	placeholder="The stamp in the corner is unlabelled…"
 	testid="items-send-back"
+	question={changesFlagged ? judgeQuestion : undefined}
 	onsend={(message) => {
 		const task = changesFor;
+		const wrong = changesFlagged && !flagRight;
 		changesFor = null;
-		if (task) void fire(task, 'request_changes', { message });
+		if (task)
+			void fire(task, 'request_changes', { message, ...(wrong ? { judge_agreed: false } : {}) });
 	}}
 />

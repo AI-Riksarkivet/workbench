@@ -10,9 +10,7 @@ A proposal is a person's to settle: the canvas saves it as a `prediction` row, a
 each is kept or removed (ADR 0019, `annotator.state.store`).
 """
 
-import base64
 import logging
-import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -20,28 +18,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from annotator.annotations.access import UnitKey, require_task_units
-from annotator.annotations.unit import Unit, parse_unit
-from annotator.api.dependencies import StoreDep
+from annotator.annotations.unit import parse_unit
+from annotator.api.dependencies import EndpointDep, StoreDep
 from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam, lacking, unseen_task
 from annotator.audit_actions import AnnotatorAuditAction
-from annotator.core.config import AnnotatorSettings
-from annotator.corpus import Corpus, resolve
+from annotator.corpus import resolve
 from annotator.model_endpoint import protocol
-from annotator.model_endpoint.client import NO_ENDPOINT, ModelEndpoint, ModelEndpointUnavailable, ModelRefusedAsk
+from annotator.model_endpoint.client import NO_ENDPOINT, ModelEndpointUnavailable, ModelRefusedAsk
+from annotator.model_endpoint.picture import picture_of
 from annotator.projects.models import ShapeType, Task
 from annotator.projects.ontology import LabelOntology
 from annotator.text import Text
 from workbench.exceptions import NotFoundError
 from workbench.governed.audit import AuditOutcome, audit
-from workbench.lancekit.registry import table_dataset
 from workbench.media.deps import DatasetParam, StateDep
-from workbench.media.frames import frame_row
 
 
 logger = logging.getLogger(__name__)
-
-#: A picture's media type as the protocol carries it (`protocol.ImageContent.mime`).
-IMAGE_TYPE = re.compile(protocol.IMAGE_TYPE_PATTERN)
 
 #: A proposal is a proposed write, so asking for one takes the annotating relation on the project the request names:
 #: someone who may only look at a project spends no model on it.
@@ -58,15 +51,6 @@ async def require_assist(subject: CurrentSubject, checker: CheckerDep, project: 
 
 router = APIRouter(prefix="/api", tags=["assist"], dependencies=[Depends(require_assist)])
 
-
-def _endpoint(state: StateDep) -> ModelEndpoint:
-    settings = state.settings
-    if not isinstance(settings, AnnotatorSettings):
-        raise TypeError(f"assist reads the annotator's settings, not {type(settings).__name__}")
-    return settings.model_endpoint
-
-
-EndpointDep = Annotated[ModelEndpoint, Depends(_endpoint)]
 
 FINITE = ConfigDict(allow_inf_nan=False)
 
@@ -115,6 +99,9 @@ class AssistModel(BaseModel):
     reads: list[protocol.ContentKind]
     prompts: list[protocol.PromptKind]
     returns: list[ShapeType]
+    #: The shape types of the labels it judges; empty for a model that is no judge. One that returns nothing proposes
+    #: nothing, and is offered to a project as its judge only.
+    assesses: list[ShapeType]
     #: Whether what it returns fits the task named in `?task_id=`: `null` when no task is named or its classes hold
     #: their shapes to no type, so there is nothing to judge it against.
     compatible: bool | None
@@ -184,6 +171,7 @@ async def models(store: StoreDep, endpoint: EndpointDep, project: ProjectParam, 
                 reads=model.reads,
                 prompts=model.prompts,
                 returns=list(model.returns),
+                assesses=list(model.assesses),
                 compatible=bool(set(model.returns) & allowed) if allowed else None,
             )
             for model in listing.models
@@ -191,58 +179,31 @@ async def models(store: StoreDep, endpoint: EndpointDep, project: ProjectParam, 
     )
 
 
-def _picture(corpus: Corpus, unit: Unit) -> protocol.ImageContent:
-    """The unit's picture, the one the canvas draws: its frame, or its document's thumbnail when the unit is a whole
-    document. Blocking (a scan and a blob read)."""
-    handle, declared = corpus.handle, corpus.declared
-    doc, *rest = unit.values.values()
-    if rest:
-        if not all(isinstance(value, int) for value in rest):
-            raise ModelRefusedAsk("assist shows a model a unit's frame, and this unit's key names none")
-        frame = frame_row(handle, str(doc), tuple(int(value) for value in rest), 0)
-        ds, column, row, mime = frame.ds, frame.column, frame.row, frame.mime
-    else:
-        binding = declared.document
-        if binding is None or binding.thumbnail is None:
-            raise NotFoundError("this item has no picture a model can be shown")
-        ds, column = table_dataset(handle, binding.table), binding.thumbnail
-        columns = [binding.thumbnail_mime] if binding.thumbnail_mime else []
-        found = ds.to_table(columns=columns, filter=unit.where, with_row_id=True, limit=1)
-        if found.num_rows == 0:
-            raise NotFoundError("this item has no picture a model can be shown")
-        row = int(found.column("_rowid")[0].as_py())
-        mime = (found.column(binding.thumbnail_mime)[0].as_py() if binding.thumbnail_mime else None) or "image/jpeg"
-    # The stored type without its parameters (`image/jpeg; charset=binary`), held to what the protocol carries.
-    mime = mime.partition(";")[0].strip().lower()
-    if not IMAGE_TYPE.fullmatch(mime):
-        raise ModelRefusedAsk(f"assist shows a model a picture, and this item's is {mime[:80]!r}")
-    blob = ds.take_blobs(column, ids=[row])[0]
-    if blob is None:
-        raise NotFoundError("this item has no picture a model can be shown")
-    with blob as payload:
-        size = payload.size()
-        if size > protocol.MAX_IMAGE_BYTES:
-            raise ModelRefusedAsk(f"this item's picture is {size} bytes, more than the {protocol.MAX_IMAGE_BYTES} a model is sent")
-        data = payload.read()
-    return protocol.ImageContent(mime=mime, data=base64.b64encode(data).decode("ascii"))
+def _class_takes(classes: dict[str, list[ShapeType]], proposal: protocol.Proposal) -> bool:
+    """Whether the task carries the proposal's label: it names no class, or the label is a class of its own that takes
+    the proposal's shape (a class with no tools takes any)."""
+    if not classes:
+        return True
+    tools = classes.get(proposal.label)
+    return tools is not None and (not tools or proposal.shape_type in tools)
 
 
 def _within_the_task(proposals: list[protocol.Proposal], ontology: LabelOntology) -> tuple[list[AssistProposal], list[str]]:
     """The proposals the task's classes can take, and what was refused of the rest.
 
     A model is not obliged to know a task's rules, so the mismatch is settled here, once: a shape of a type no class of
-    the task takes is refused and said, and a label that is none of the task's classes is not carried (the person picks
-    the class), since a submit would refuse either.
+    the task takes is refused and said, and a label is not carried (the person picks the class) when it is none of the
+    task's classes or names a class that does not take the proposal's shape, since a submit would refuse each.
     """
     allowed = _allowed_shapes(ontology)
-    classes = {c.name for c in ontology.classes}
+    classes = {c.name: c.tools for c in ontology.classes}
     kept: list[AssistProposal] = []
     refused: dict[str, int] = {}
     for proposal in proposals:
         if allowed and proposal.shape_type not in allowed:
             refused[proposal.shape_type] = refused.get(proposal.shape_type, 0) + 1
             continue
-        label = proposal.label if not classes or proposal.label in classes else ""
+        label = proposal.label if _class_takes(classes, proposal) else ""
         kept.append(AssistProposal(**proposal.model_dump(include=set(AssistProposal.model_fields) - {"label"}), label=label))
     dropped = [f"{count} {shape} proposal(s): this item's classes take {', '.join(sorted(allowed))}" for shape, count in sorted(refused.items())]
     return kept, dropped
@@ -274,7 +235,7 @@ async def assist(
         raise ModelRefusedAsk(f"assist shows a model a picture, and this item is {task.media.kind}")
     corpus = await run_in_threadpool(resolve, state, dataset, caller)
     unit = parse_unit(corpus.declared, corpus.handle.descriptor.tables, key)
-    picture = await run_in_threadpool(_picture, corpus, unit)
+    picture = await run_in_threadpool(picture_of, corpus, unit)
     ask = protocol.ProposalsRequest(
         model=body.model,
         item=protocol.Item(id=f"{corpus.id}/{unit.key}", content=picture),

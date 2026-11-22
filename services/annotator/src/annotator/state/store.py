@@ -47,6 +47,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 
+from annotator.judgement import Judgement, Verdict, agreed_with
 from annotator.projects.machines import (
     EDIT_PERMISSION,
     FROZEN_PROJECT_STATES,
@@ -64,6 +65,7 @@ from annotator.projects.machines import (
 )
 from annotator.projects.models import (
     PROPOSED,
+    REVIEW_ACTIONS,
     TERMINAL_TASK_STATES,
     Adjudication,
     AnnotationProject,
@@ -82,7 +84,7 @@ from annotator.projects.models import (
     new_id,
 )
 from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, membership_violation, validate_against_ontology
-from annotator.state.task_query import Contributor, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, page_of, work_of
+from annotator.state.task_query import Contributor, PageExtras, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, judgements_of, page_of, work_of
 from annotator.text import storable_json, storable_text
 from workbench.exceptions import ConflictError, DomainError
 
@@ -733,13 +735,14 @@ class AnnotatorStore:
         limit: int,
         offset: int,
         around: str | None = None,
-        contributors: bool = False,
-        work: bool = False,
+        extras: PageExtras | None = None,
     ) -> tuple[TaskIndex, TaskPage, list[Task], list[Contributor] | None]:
-        """The project's index, one filtered page of its items with their documents in the page's order, with ``work``
-        each listed item's draft revision and tags (on the page, `TaskPage.work`), and with ``contributors`` each
-        person's part, all from ONE snapshot (a repeatable-read transaction), so the page, its counts, its work and the
+        """The project's index, one filtered page of its items with their documents in the page's order, and what
+        ``extras`` asks beside them (each listed item's draft revision and tags on `TaskPage.work`, each one's verdict
+        and the filter's counts of them on `TaskPage.judgements` and `TaskPage.judged`, each person's part), all from
+        ONE snapshot (a repeatable-read transaction), so the page, its counts, its work and the
         publish precondition beside it never disagree."""
+        extras = extras or PageExtras()
         async with self._pool.connection() as raw, raw.transaction():
             conn = cast("Connection", raw)
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -750,9 +753,11 @@ class AnnotatorStore:
             rows = await (
                 await conn.execute("SELECT document, now() FROM tasks WHERE project_id = %s AND task_id = ANY(%s)", (project_id, page.task_ids))
             ).fetchall()
-            if work:
+            if extras.work:
                 page.work = await work_of(conn, page.task_ids)
-            people = await contributors_of(conn, project_id) if contributors else None
+            if extras.judge:
+                page.judgements, page.judged = await judgements_of(conn, project_id=project_id, filters=filters, task_ids=page.task_ids)
+            people = await contributors_of(conn, project_id) if extras.contributors else None
         by_id: dict[str, Task] = {}
         for document, now in rows:
             task = _task(document)
@@ -876,11 +881,13 @@ class AnnotatorStore:
         assignee: str | None = None,
         message: str = "",
         shape_ids: Iterable[str] = (),
+        judge_agreed: bool | None = None,
     ) -> Task:
         """Apply one principal's edge of `TASK_EDGES` to the task, in one transaction.
 
         ``subject_can_manage`` is the checker's answer for ``actor`` on the task's project, stated by the layer that
         asked it (`release` is "lease holder or can_manage"). Everything else is read from the rows this transaction holds.
+        ``judge_agreed`` is what a reviewer says of a judge's flags on the submission they decide (`_settle_verdict`).
         """
         async with self._transaction() as conn:
             # `reopen` leaves `accepted`, which voids any canonical pick naming the task: a write to the project.
@@ -952,12 +959,16 @@ class AnnotatorStore:
                 task.assignee, task.lease_expires_at = None, None
             elif event in {"release", "skip"}:
                 task.assignee, task.lease_expires_at = None, None
-            elif event in {"accept", "fix_and_accept", "request_changes"}:
+            elif event in REVIEW_ACTIONS:
                 task.reviewed_by, task.reviewed_at = actor, now
-                task.review_action = "accepted" if event == "accept" else event
+                task.review_action = REVIEW_ACTIONS[event]
                 if event == "request_changes":
                     # The reviewer's reason travels with the task back to the annotator (§5.2).
                     task.review_notes.append(ReviewNote(by=actor, at=now, action="request_changes", message=message, shape_ids=[str(s) for s in shape_ids]))
+            if event in REVIEW_ACTIONS:
+                await _settle_verdict(conn, task, event=event, said=judge_agreed)
+            elif judge_agreed is not None:
+                raise ConflictError(f"{event} is no review decision: only one says whether a judge's flag was right", extensions={"task": task_id})
 
             if leaving_accepted and any(pick.task_id == task_id for pick in project.adjudications.values()):
                 # A pick is void once its target leaves `accepted`: a pick surviving reopen, resubmit and re-accept would
@@ -966,6 +977,42 @@ class AnnotatorStore:
                 await self._write_project(conn, project)
             await _write_task(conn, task)
             return task
+
+    # ---------------------------------------------------------------------------------------------
+    # A judge's verdicts
+    # ---------------------------------------------------------------------------------------------
+
+    async def judgement_of(self, task_id: str, submitted_at: datetime) -> Judgement | None:
+        """The verdict on the task's submission of ``submitted_at``, or None when no judge has read it."""
+        async with self._transaction() as conn:
+            return await _judgement(conn, task_id, submitted_at)
+
+    async def record_judgement(self, verdict: Verdict) -> Judgement:
+        """Keep a judge's verdict on a submission, stamped by the database's clock, and answer the one kept: this one, or
+        the one another ask recorded first.
+
+        The task's row is locked for share and never written: a review decision holds it for update while it settles
+        the submission's verdict, so a verdict is kept either before the decision reads it or not at all, and none is
+        left that no reviewer settled.
+
+        Raises:
+            ConflictError: The task is no longer in review as that submission (it was decided, or resubmitted).
+        """
+        async with self._transaction() as conn:
+            held = await conn.execute(
+                "SELECT 1 FROM tasks WHERE task_id = %s AND state = 'in_review' AND submitted_at = %s FOR SHARE", (verdict.task_id, verdict.submitted_at)
+            )
+            if await held.fetchone() is None:
+                raise ConflictError("this item left review while its judge was asked: the verdict is not kept", extensions={"task": verdict.task_id})
+            stamped = Judgement(**verdict.model_dump(), judged_at=await _clock(conn))
+            await conn.execute(
+                "INSERT INTO judgements (task_id, submitted_at, flagged, document) VALUES (%s, %s, %s, %s) ON CONFLICT (task_id, submitted_at) DO NOTHING",
+                (stamped.task_id, stamped.submitted_at, stamped.flagged, _stored("the judgement", stamped.model_dump(mode="json"))),
+            )
+            kept = await _judgement(conn, verdict.task_id, verdict.submitted_at)
+            if kept is None:
+                raise RuntimeError(f"the verdict on task {verdict.task_id} was neither kept nor found")
+            return kept
 
     async def change_draft(
         self,
@@ -1183,6 +1230,33 @@ async def _clock(conn: Connection) -> datetime:
     if row is None:
         raise RuntimeError("the database answered no clock")
     return cast("datetime", row[0])
+
+
+async def _judgement(conn: Connection, task_id: str, submitted_at: datetime) -> Judgement | None:
+    row = await (await conn.execute("SELECT document FROM judgements WHERE task_id = %s AND submitted_at = %s", (task_id, submitted_at))).fetchone()
+    return None if row is None else Judgement.model_validate(row[0])
+
+
+async def _settle_verdict(conn: Connection, task: Task, *, event: str, said: bool | None) -> None:
+    """Record the review decision ``task`` now carries on the verdict of the submission it decided, inside the
+    transaction that decides it: who, when and which, and on a flagged one whether they agreed with the flags
+    (`agreed_with`).
+
+    Raises:
+        ConflictError: The reviewer says whether a flag was right, and the submission carries none.
+    """
+    verdict = None if task.submitted_at is None else await _judgement(conn, task.task_id, task.submitted_at)
+    flagged = verdict is not None and verdict.flagged
+    if said is not None and not flagged:
+        raise ConflictError("this item carries no judge's flag to agree or disagree with", extensions={"task": task.task_id})
+    if verdict is None:
+        return
+    verdict.settled_by, verdict.settled_at, verdict.settled_action = task.reviewed_by, task.reviewed_at, task.review_action
+    verdict.agreed = agreed_with(event, said) if verdict.flagged else None
+    await conn.execute(
+        "UPDATE judgements SET document = %s WHERE task_id = %s AND submitted_at = %s",
+        (_stored("the judgement", verdict.model_dump(mode="json")), verdict.task_id, verdict.submitted_at),
+    )
 
 
 async def _draft(conn: Connection, task_id: str) -> Draft | None:

@@ -1,6 +1,186 @@
 {
   "components": {
     "schemas": {
+      "AssessedLabel": {
+        "additionalProperties": false,
+        "description": "One label a person made or kept on the item, as the judge reads it: a proposal's geometry and words, under the\ncaller's own name for it.",
+        "properties": {
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "height": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "id": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Label",
+            "type": "string"
+          },
+          "polygon": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 20000,
+            "title": "Polygon",
+            "type": "array"
+          },
+          "shape_type": {
+            "enum": [
+              "bbox",
+              "polygon",
+              "polyline",
+              "keypoint",
+              "mask",
+              "tag",
+              "text",
+              "segment"
+            ],
+            "title": "Shape Type",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          },
+          "width": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Width",
+            "type": "number"
+          },
+          "x": {
+            "default": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "default": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "shape_type"
+        ],
+        "title": "AssessedLabel",
+        "type": "object"
+      },
+      "AssessmentRequest": {
+        "additionalProperties": false,
+        "description": "The body of ``POST /v1/assessments``: an item, and the labels people made on it.",
+        "properties": {
+          "classes": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Classes",
+            "type": "array"
+          },
+          "item": {
+            "$ref": "#/components/schemas/Item"
+          },
+          "labels": {
+            "items": {
+              "$ref": "#/components/schemas/AssessedLabel"
+            },
+            "maxItems": 2000,
+            "title": "Labels",
+            "type": "array"
+          },
+          "model": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Model",
+            "type": "string"
+          },
+          "requested_by": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Requested By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "item",
+          "labels"
+        ],
+        "title": "AssessmentRequest",
+        "type": "object"
+      },
+      "AssessmentResponse": {
+        "additionalProperties": false,
+        "description": "The answer of ``POST /v1/assessments``: the model that judged, at which version, and what it disagrees with. No\ndisagreements is an answer (\"the labels look right\"); a judge that could not answer says so by its status.",
+        "properties": {
+          "disagreements": {
+            "items": {
+              "$ref": "#/components/schemas/Disagreement"
+            },
+            "maxItems": 2000,
+            "title": "Disagreements",
+            "type": "array"
+          },
+          "model": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Model",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "version",
+          "disagreements"
+        ],
+        "title": "AssessmentResponse",
+        "type": "object"
+      },
       "Box": {
         "additionalProperties": false,
         "description": "A box on a picture, in the picture's own pixels.",
@@ -31,6 +211,49 @@
           "height"
         ],
         "title": "Box",
+        "type": "object"
+      },
+      "Disagreement": {
+        "additionalProperties": false,
+        "description": "One thing the judge disagrees with: a label of the ask, or the item as a whole (a label that is missing).",
+        "properties": {
+          "label_id": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Id"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "suggested_label": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Suggested Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "score"
+        ],
+        "title": "Disagreement",
         "type": "object"
       },
       "ImageContent": {
@@ -102,6 +325,24 @@
         "additionalProperties": false,
         "description": "One model an endpoint serves, and what it can do.",
         "properties": {
+          "assesses": {
+            "items": {
+              "enum": [
+                "bbox",
+                "polygon",
+                "polyline",
+                "keypoint",
+                "mask",
+                "tag",
+                "text",
+                "segment"
+              ],
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Assesses",
+            "type": "array"
+          },
           "name": {
             "maxLength": 128,
             "minLength": 1,
@@ -150,7 +391,6 @@
               "type": "string"
             },
             "maxItems": 16,
-            "minItems": 1,
             "title": "Returns",
             "type": "array"
           },
@@ -171,8 +411,7 @@
         "required": [
           "name",
           "version",
-          "reads",
-          "returns"
+          "reads"
         ],
         "title": "ModelInfo",
         "type": "object"
@@ -506,6 +745,130 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/assessments": {
+      "post": {
+        "description": "What one model disagrees with among the labels people made on one item.",
+        "operationId": "assess_v1_assessments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssessmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Assess"
+      }
+    },
     "/v1/models": {
       "get": {
         "description": "The models this endpoint serves and what each can do.",

@@ -8,7 +8,7 @@
  * manager's table and its quick view read too. The door still decides.
  */
 import { personName as nameIn } from '#lib/projects/people.ts';
-import { VERDICTS } from '#lib/projects/presentation.ts';
+import { sentence, VERDICTS } from '#lib/projects/presentation.ts';
 import type { TaskDetail } from '#lib/projects/types.ts';
 
 export type PanelMode =
@@ -38,9 +38,6 @@ export interface PanelState {
 function offered(task: TaskDetail, wanted: string[]): string[] {
 	return task.legal_events.filter((e) => wanted.includes(e.event)).map((e) => e.event);
 }
-
-/** The sentence's first letter upper-cased. */
-const sentence = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 export function panelState(
 	task: TaskDetail,

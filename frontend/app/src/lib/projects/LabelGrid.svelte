@@ -47,9 +47,11 @@
 		pageTasks,
 		readItem,
 	} from '#lib/api/projects.api.ts';
+	import { askJudgeAfterSubmit } from '#lib/api/judge.api.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
 	import {
 		fetchModels,
+		proposes,
 		requestAssist,
 		type AssistListing,
 		type AssistModel,
@@ -61,10 +63,11 @@
 	import { indexRows, rowFor, rowKeysFor } from './corpus-rows.ts';
 	import { itemName } from './item-name.ts';
 	import MediaThumb from './MediaThumb.svelte';
-	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant } from './presentation.ts';
+	import { ANNOTATOR_HINT, EVENT_LABELS, sentence, taskStateVariant } from './presentation.ts';
 	import { taskImageUrl } from './task-media.ts';
 	import { reauth } from '#lib/reauth.svelte.ts';
 	import { personName } from './people.ts';
+	import JudgeQuestion from './JudgeQuestion.svelte';
 	import SendBackDialog from './SendBackDialog.svelte';
 	import {
 		between,
@@ -135,6 +138,7 @@
 			limit: query.size,
 			offset: (query.page - 1) * query.size,
 			work: true,
+			judge: true,
 		}),
 	);
 	const answer = $derived(read.current);
@@ -313,7 +317,7 @@
 	let selectingAll = $state(false);
 	async function selectAllMatching(): Promise<void> {
 		selectingAll = true;
-		const result = await allMatching(projectId, filter, { work: true });
+		const result = await allMatching(projectId, filter, { work: true, judge: true });
 		selectingAll = false;
 		if (!result.ok) {
 			notice = { tone: 'error', text: result.detail, refused: [], skipped: [], left: [] };
@@ -593,7 +597,7 @@
 			redos = [];
 		}
 		if (known.size > 0) {
-			const fresh = await allMatching(projectId, filter, { work: true });
+			const fresh = await allMatching(projectId, filter, { work: true, judge: true });
 			if (fresh.ok) known = new Map(fresh.data.tasks.map((t) => [t.task_id, t]));
 		}
 		await settle();
@@ -690,14 +694,16 @@
 		});
 	}
 
-	// THE MODELS the deployment's endpoint serves, read when the person opens them: those the grid can ask about many
-	// items at once (`gridAsk`), with the one prompt of words they take, each judged against the items it would be asked
+	// THE MODELS the deployment's endpoint serves, read when the person opens them: those that propose anything and the
+	// grid can ask about many items at once (`gridAsk`), with the one prompt of words they take, each judged against the items it would be asked
 	// about (`fits`), since the items of one project may have been sent with different classes.
 	let askOpen = $state(false);
 	let models = $state.raw<AssistListing | null>(null);
 	let modelsFailure = $state<string | null>(null);
 	let askWords = $state('');
-	const askable = $derived((models?.models ?? []).filter((m) => gridAsk(m) !== null));
+	const askable = $derived(
+		(models?.models ?? []).filter((m) => proposes(m) && gridAsk(m) !== null),
+	);
 	const anyWords = $derived(askable.some((m) => gridAsk(m) === 'words'));
 	async function readModels(): Promise<void> {
 		if (models !== null) return;
@@ -784,6 +790,9 @@
 		fix_and_accept: 'Accepted with fixes',
 		request_changes: 'Sent back',
 	};
+	/** The items a send-back covers that a judge flagged, and whether the reviewer found those flags right. */
+	const flaggedReturns = $derived(returnable.filter((t) => (t.judgement?.flags.length ?? 0) > 0));
+	let flagsRight = $state(true);
 	function fireAll(event: string, message?: string): void {
 		const ids = targetsFor(selected, [...selection], event).map((t) => t.task_id);
 		const what = DONE[event] ?? (EVENT_LABELS[event] ?? event).replace('…', '');
@@ -797,11 +806,15 @@
 					const left = task.work?.proposals ?? 0;
 					if (SETTLES_PROPOSALS.has(event) && left > 0)
 						return { status: 'refused', reason: unsettledProposals(left, event) };
+					const wrong =
+						event === 'request_changes' && !flagsRight && (task.judgement?.flags.length ?? 0) > 0;
 					const result = await fireTaskEvent({
 						taskId: task.task_id,
 						event,
 						...(message ? { message } : {}),
+						...(wrong ? { judge_agreed: false } : {}),
 					});
+					if (result.ok && event === 'submit') askJudgeAfterSubmit(result.data);
 					return result.ok
 						? { status: 'done', revision: 0 }
 						: { status: 'refused', reason: result.detail };
@@ -1060,7 +1073,7 @@
 						<p class="text-muted-foreground text-xs" role="status">Reading the models…</p>
 					{:else if !models.available}
 						<p class="text-muted-foreground text-xs" data-testid="grid-assist-unavailable">
-							{models.reason.charAt(0).toUpperCase() + models.reason.slice(1)}.
+							{sentence(models.reason)}.
 						</p>
 					{:else if askable.length === 0}
 						<p class="text-muted-foreground text-xs" data-testid="grid-assist-none">
@@ -1282,7 +1295,10 @@
 						variant="outline"
 						size="sm"
 						data-testid="grid-bulk-request_changes"
-						onclick={() => (sendBackOpen = true)}
+						onclick={() => {
+							flagsRight = true;
+							sendBackOpen = true;
+						}}
 					>
 						Send back {returnable.length}
 					</Button>
@@ -1682,10 +1698,15 @@
 	</Dialog.Content>
 </Dialog.Root>
 
+{#snippet judgeQuestion()}
+	<JudgeQuestion bind:agreed={flagsRight} count={flaggedReturns.length} />
+{/snippet}
+
 <SendBackDialog
 	bind:open={sendBackOpen}
 	title="Send back {returnable.length} item{returnable.length === 1 ? '' : 's'}"
 	description="The note travels with each item to its annotator: say what should change on all of them."
 	testid="grid-send-back"
+	question={flaggedReturns.length > 0 ? judgeQuestion : undefined}
 	onsend={(note) => fireAll('request_changes', note)}
 />

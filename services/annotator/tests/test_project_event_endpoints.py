@@ -19,11 +19,10 @@ from fastapi.testclient import TestClient
 
 from annotator.api.security import current_subject, get_authorizer, get_checker
 from annotator.api.v1.endpoints import project_events as ev
-from annotator.core.config import get_annotator_settings
+from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.models import AnnotationProject, ProjectState, Task, TaskState
 from annotator.state.store import AnnotatorStore
 from tests.media_catalog import lakehouse_dir
-from workbench.media.config import MediaSettings
 from workbench.media.deps import get_state
 from workbench.media.state import AppState
 
@@ -124,7 +123,7 @@ def wired(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Callabl
             app.dependency_overrides[get_checker] = lambda: checker
             app.dependency_overrides[get_authorizer] = lambda: None
             app.dependency_overrides[current_subject] = lambda: SUBJECT
-            media = AppState(settings=MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
+            media = AppState(settings=AnnotatorSettings.model_validate({**lakehouse_dir(str(tmp_path))}))
             app.dependency_overrides[get_state] = lambda: media
             client = stack.enter_context(TestClient(app))
             return _Door(client, app, seen)

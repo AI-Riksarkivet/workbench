@@ -104,6 +104,7 @@ export const pageTasks = query(
 		details = true,
 		contributors = false,
 		work = false,
+		judge = false,
 	}: {
 		projectId: string;
 		filter?: string;
@@ -114,11 +115,14 @@ export const pageTasks = query(
 		contributors?: boolean;
 		/** With the details, each item's work as a bulk label reads it: its revision and whole-item tags. */
 		work?: boolean;
+		/** With the details, what the project's judge said of each item's submission, and the judge's state. */
+		judge?: boolean;
 	}): Promise<ApiResult<TaskListing>> => {
 		const params = new URLSearchParams(filter);
 		if (details) params.append('include', 'details');
 		if (contributors) params.append('include', 'contributors');
 		if (work) params.append('include', 'work');
+		if (judge) params.append('include', 'judge');
 		params.set('limit', String(limit));
 		params.set('offset', String(offset));
 		if (around !== undefined) params.set('around', around);
@@ -148,7 +152,7 @@ export const BULK_CAP = 1000;
 export async function allMatching(
 	projectId: string,
 	filter: string,
-	{ work = false }: { work?: boolean } = {},
+	{ work = false, judge = false }: { work?: boolean; judge?: boolean } = {},
 ): Promise<ApiResult<{ tasks: TaskDetail[]; capped: boolean }>> {
 	const tasks: TaskDetail[] = [];
 	let matched = 0;
@@ -156,6 +160,7 @@ export async function allMatching(
 		const params = new URLSearchParams(filter);
 		params.set('include', 'details');
 		if (work) params.append('include', 'work');
+		if (judge) params.append('include', 'judge');
 		params.set('limit', '200');
 		params.set('offset', String(tasks.length));
 		const result = await readJSON(
@@ -465,11 +470,15 @@ export const fireTaskEvent = command(
 		message?: string;
 		shape_ids?: string[];
 		lease_seconds?: number;
+		/** A review decision on an item a judge flagged: whether the reviewer found the flag right. Sent only for a
+		 *  flagged item, and only where it differs from what the decision says (the annotator refuses it otherwise). */
+		judge_agreed?: boolean;
 	}): Promise<ApiResult<TaskDetail>> =>
 		send('POST', `/tasks/${enc(taskId)}/events`, body, TaskDetailSchema),
 );
 
-/** Change a project's title, description, instructions, review and claim settings or consensus; only the named ones. */
+/** Change a project's title, description, instructions, review and claim settings, consensus or judge; only the named
+ *  ones. */
 export const updateProjectSettings = command(
 	(input: { projectId: string }) => `Change the settings of ${input.projectId}`,
 	'unchecked',
@@ -494,6 +503,8 @@ export interface ProjectSettings {
 	review_required?: boolean;
 	lease_seconds?: number;
 	consensus_n?: number;
+	/** The model that judges the project's submissions; empty names none. */
+	judge_model?: string;
 }
 
 /** Import annotations made elsewhere into a claimed task's draft, as an Arrow IPC stream, appended. */

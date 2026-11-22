@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from annotator.judgement import Judgement
 from annotator.projects.models import AnnotationProject, Draft, Task
 from annotator.state.task_query import Contributor, ItemWork
 
@@ -71,6 +72,21 @@ class ListedTask(TaskDetail):
     #: The item's work as a bulk label reads it, or null where the reader may not read it; absent unless asked for (the
     #: listing route excludes what it did not set).
     work: ItemWork | None = None
+    #: What the project's judge said of the item's submission of now (`include=judge`), or null where none has read it.
+    judgement: Judgement | None = None
+
+
+class JudgeState(BaseModel):
+    """A project's judge as a listing reads it (`include=judge`): the model it names, whether it can be asked and why
+    not (no judge named, or a deployment with no model endpoint), and how it has read the items the filter matches. An
+    endpoint that fails is learnt when it is asked (`POST /api/judge/...`), never here."""
+
+    model: str
+    available: bool
+    reason: str
+    flagged: int
+    clear: int
+    unread: int
 
 
 class TaskListing(BaseModel):
@@ -97,6 +113,7 @@ class TaskListing(BaseModel):
     #: The datasets the project's items come from (what the filter by dataset offers).
     datasets: list[str] = Field(default_factory=list)
     contributors: list[Contributor] = Field(default_factory=list)
+    judge: JudgeState | None = None
     #: Each principal this answer names → the name they last wrote under (`annotator.people`), where one is kept.
     people: dict[str, str] = Field(default_factory=dict)
 

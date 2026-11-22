@@ -4,6 +4,7 @@
 	import { Badge } from '@riksarkivet/ui/badge';
 	import { Button } from '@riksarkivet/ui/button';
 	import { ChevronLeft, ChevronRight } from '@lucide/svelte';
+	import type { Snippet } from 'svelte';
 
 	import { corpusRows } from '#lib/api/projects.api.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
@@ -22,6 +23,7 @@
 		onpage,
 		consensusN = 1,
 		testid,
+		aside,
 	}: {
 		tasks: readonly TaskDetail[];
 		people?: People;
@@ -33,6 +35,8 @@
 		onpage: (page: number) => void;
 		consensusN?: number;
 		testid: string;
+		/** A line under an item's row: what a screen adds of its own (the Review tab's judge). */
+		aside?: Snippet<[TaskDetail]>;
 	} = $props();
 
 	const rowReads = $derived(
@@ -79,6 +83,9 @@
 					· reviewed by <PersonName principal={task.reviewed_by} {people} />
 				{/if}
 			</span>
+			{#if aside}
+				<div class="basis-full">{@render aside(task)}</div>
+			{/if}
 		</li>
 	{:else}
 		<li class="text-muted-foreground px-3 py-6 text-center text-sm">No items match.</li>

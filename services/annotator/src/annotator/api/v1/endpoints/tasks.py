@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from annotator.api.dependencies import StoreDep, get_store
-from annotator.api.security import Checker, CheckerDep, CurrentSubject, SettingsDep, lacking, require_view, unseen_task
+from annotator.api.security import CAN_REVIEW, Checker, CheckerDep, CurrentSubject, SettingsDep, lacking, require_view, unseen_task
 from annotator.api.v1.responses import DraftImport, LegalEvent, TaskDetail
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.people import RECORDS_PERSON
@@ -88,6 +88,10 @@ class FireRequest(BaseModel):
     #: `request_changes` only — the reviewer's reason, appended as a `ReviewNote`.
     message: Annotated[Text, Field(max_length=4000)] = ""
     shape_ids: list[Id] = Field(default_factory=list, max_length=500)
+    #: A review decision on an item a judge flagged: whether the reviewer found the flag right. Absent, the decision
+    #: says it (accepting the work as it is disagrees; fixing it or sending it back agrees). 409 on an item that
+    #: carries no flag, and on an event that is no review decision.
+    judge_agreed: bool | None = None
 
 
 async def _authorize(checker: Checker, subject: str, permission: str, task: Task, what: AnnotatorAuditAction, **context: str) -> None:
@@ -131,8 +135,8 @@ async def require_work_readable(task: Task, checker: Checker, subject: str) -> N
     if reads_work(task, subject, may_review=False):
         return
     edge = Grant(user=f"project:{task.project_id}", relation="project", object=f"task:{task.task_id}")
-    if not await checker(user=subject, relation="can_review", obj=f"task:{task.task_id}", contextual=[edge]):
-        audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=f"task:{task.task_id}", relation="can_review")
+    if not await checker(user=subject, relation=CAN_REVIEW, obj=f"task:{task.task_id}", contextual=[edge]):
+        audit(AnnotatorAuditAction.ANNOTATOR_AUTHORIZE, AuditOutcome.FAILURE, subject=subject, resource=f"task:{task.task_id}", relation=CAN_REVIEW)
         raise ForbiddenError(
             "you may not read this replica's work: only its annotator, or someone who may review it",
             extensions={"principal": subject, "task": task.task_id},
@@ -210,6 +214,7 @@ async def fire_task_event(
         assignee=payload.assignee,
         message=payload.message,
         shape_ids=payload.shape_ids,
+        judge_agreed=payload.judge_agreed,
     )
 
     audit(AnnotatorAuditAction.TASK_TRANSITION, AuditOutcome.SUCCESS, event=payload.event, subject=subject, resource=task_id)

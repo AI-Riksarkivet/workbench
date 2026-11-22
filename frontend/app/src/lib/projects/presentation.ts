@@ -97,3 +97,6 @@ export function roleSummary(permissions: readonly string[]): string {
 	if (has('can_annotate')) return 'You annotate in this project: you claim items and label them.';
 	return 'You can view this project; your role does not let you change it.';
 }
+
+/** ``text`` as a sentence: its first letter upper-cased (a service's reason, written to follow a colon). */
+export const sentence = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);

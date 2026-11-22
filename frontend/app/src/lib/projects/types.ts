@@ -162,6 +162,8 @@ export const ProjectSchema = v.object({
 	publish_error: v.nullish(v.string()),
 	publish_progress: v.nullish(v.string()),
 	pending_target_namespace: v.nullish(v.string()),
+	/** The model that judges the project's submissions, as the deployment's model endpoint names it; empty: none. */
+	judge_model: v.optional(v.string(), ''),
 });
 export type Project = v.InferOutput<typeof ProjectSchema>;
 
@@ -192,6 +194,45 @@ const ReviewNoteSchema = v.object({
 	message: v.optional(v.string(), ''),
 	shape_ids: v.optional(v.array(v.string()), []),
 });
+
+/** One thing a judge disagreed with: a shape of the submission, or the item as a whole (`shape_id` null), with the class
+ *  it would have given instead where it names one. */
+const FlagSchema = v.object({
+	shape_id: v.nullable(v.string()),
+	reason: v.string(),
+	suggested_label: v.optional(v.string(), ''),
+	score: v.number(),
+});
+/** What a project's judge said of one submission (ADR 0026), and what its reviewer then decided. It decides nothing:
+ *  a reviewer accepts or sends back every item, and the verdict only orders and marks their list. */
+export const JudgementSchema = v.object({
+	task_id: v.string(),
+	submitted_at: v.string(),
+	revision: v.number(),
+	model: v.string(),
+	version: v.string(),
+	judged_at: v.string(),
+	asked_by: v.string(),
+	flags: v.array(FlagSchema),
+	settled_by: v.nullish(v.string()),
+	settled_at: v.nullish(v.string()),
+	settled_action: v.nullish(v.picklist(['accepted', 'fix_and_accept', 'request_changes'])),
+	/** Whether the reviewer agreed with the flags, once decided; null on a submission with none. */
+	agreed: v.nullish(v.boolean()),
+});
+export type Judgement = v.InferOutput<typeof JudgementSchema>;
+
+/** A project's judge as a listing reads it (`include=judge`): the model it names, whether it can be asked and why not,
+ *  and how it has read the items the filter matches. */
+const JudgeStateSchema = v.object({
+	model: v.string(),
+	available: v.boolean(),
+	reason: v.string(),
+	flagged: v.number(),
+	clear: v.number(),
+	unread: v.number(),
+});
+export type JudgeState = v.InferOutput<typeof JudgeStateSchema>;
 
 /** The full task document (the details fan-out), plus its own legal events. */
 export const TaskDetailSchema = v.object({
@@ -277,6 +318,9 @@ export const TaskDetailSchema = v.object({
 			}),
 		),
 	),
+	/** A listing's `include=judge`: the verdict on the item's submission of now, or null where no judge has read it.
+	 *  Absent unless asked for. */
+	judgement: v.optional(v.nullable(JudgementSchema)),
 });
 export type TaskDetail = v.InferOutput<typeof TaskDetailSchema>;
 
@@ -307,6 +351,8 @@ export const TaskListingSchema = v.object({
 	/** The datasets the project's items come from, for the filter by dataset. */
 	datasets: v.optional(v.array(v.string()), []),
 	contributors: v.optional(v.array(ContributorSchema), []),
+	/** With `include=judge`: the project's judge and how it has read the filter's items. */
+	judge: v.optional(JudgeStateSchema),
 	people: PeopleSchema,
 });
 export type TaskListing = v.InferOutput<typeof TaskListingSchema>;

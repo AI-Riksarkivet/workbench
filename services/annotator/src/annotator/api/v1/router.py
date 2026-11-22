@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from annotator.annotations.router import router as annotations_router
 from annotator.api.v1.endpoints.assist import router as assist_router
+from annotator.api.v1.endpoints.judge import router as judge_router
 from annotator.api.v1.endpoints.me import router as me_router
 from annotator.api.v1.endpoints.members import router as members_router
 from annotator.api.v1.endpoints.project_events import router as project_events_router
@@ -16,5 +17,5 @@ from annotator.api.v1.endpoints.tasks import router as tasks_router
 
 
 router = APIRouter()
-for r in (annotations_router, assist_router, me_router, projects_router, project_events_router, members_router, tasks_router):
+for r in (annotations_router, assist_router, judge_router, me_router, projects_router, project_events_router, members_router, tasks_router):
     router.include_router(r)

@@ -282,6 +282,19 @@
 			(t) => t.task_id !== task?.task_id,
 		),
 	);
+
+	// What the project's judge said of the item's submission, read while the item is in review: the listing's page of
+	// this one item (ADR 0026).
+	const verdictRead = $derived(
+		task?.state === 'in_review' && !elsewhere
+			? pageTasks({ projectId, around: taskId, limit: 1, judge: true })
+			: null,
+	);
+	const judgement = $derived(
+		(verdictRead?.current?.ok ? (verdictRead.current.data.details ?? []) : []).find(
+			(t) => t.task_id === taskId,
+		)?.judgement ?? null,
+	);
 </script>
 
 <!-- The tab names the item once it is read, never by its ids: a screen reader announces the title on arrival. -->
@@ -325,6 +338,7 @@
 				{exitHref}
 				{link}
 				{replicas}
+				{judgement}
 			/>
 		{/key}
 	{/if}

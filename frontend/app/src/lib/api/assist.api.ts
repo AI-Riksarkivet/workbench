@@ -10,6 +10,7 @@
  * An endpoint that is slow or fails is a refusal with the annotator's `detail`, never an empty answer.
  */
 import * as v from 'valibot';
+import { query } from '#lib/reads.svelte.ts';
 import { readJSON, writeJSON, type ApiResult } from './client.ts';
 import { serviceUrl } from './services.ts';
 
@@ -22,7 +23,11 @@ const ModelSchema = v.object({
 	reads: v.array(v.string()),
 	/** The prompts it takes: `text` (words to find), `box` (a region drawn on the picture), `points` (clicks). */
 	prompts: v.array(v.string()),
+	/** The shape types of what it proposes; empty for a model that proposes nothing, which is offered only as a
+	 *  project's judge. */
 	returns: v.array(v.string()),
+	/** The shape types of the labels it judges; empty for a model that is no judge. */
+	assesses: v.array(v.string()),
 	/** Whether what it returns fits the task's classes; null when there is nothing to judge it against. */
 	compatible: v.nullable(v.boolean()),
 });
@@ -84,12 +89,24 @@ export interface AssistAsk {
 export const takes = (model: AssistModel, prompt: 'text' | 'box' | 'points'): boolean =>
 	model.prompts.includes(prompt);
 
+/** Whether ``model`` proposes anything: a model that returns nothing is a judge only, and never offered for an ask. */
+export const proposes = (model: Pick<AssistModel, 'returns'>): boolean => model.returns.length > 0;
+
+/** Whether ``model`` can be a project's judge: it judges labels of some shape. */
+export const judges = (model: Pick<AssistModel, 'assesses'>): boolean => model.assesses.length > 0;
+
 /** The models the project can ask, each judged against the classes of its task ``task`` where one is named, or why
  *  assist is unavailable. */
 export function fetchModels(project: string, task?: string): Promise<ApiResult<AssistListing>> {
 	const query = new URLSearchParams(task === undefined ? { project } : { project, task_id: task });
 	return readJSON(serviceUrl('annotator', `/api/assist/models?${query}`), ListingSchema, UPSTREAM);
 }
+
+/** The models the project can ask, as a held read (`fetchModels` with no task): what a page that only lists them reads. */
+export const listModels = query(
+	'unchecked',
+	({ project }: { project: string }): Promise<ApiResult<AssistListing>> => fetchModels(project),
+);
 
 /** Ask a model for proposals on the unit; ``signal`` gives the ask up (the person stopped it, or left the page). */
 export function requestAssist(

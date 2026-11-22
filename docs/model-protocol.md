@@ -40,7 +40,8 @@ The models the endpoint serves and what each can do.
       "title": "Seal detector",
       "reads": ["image"],
       "prompts": ["text", "box"],
-      "returns": ["bbox"]
+      "returns": ["bbox"],
+      "assesses": []
     }
   ]
 }
@@ -53,7 +54,10 @@ The models the endpoint serves and what each can do.
 | `title` | What a person is shown; empty shows the name. |
 | `reads` | What the model reads of an item: `image`, `text`. |
 | `prompts` | What a person may add: `text` (words), `box` (a box drawn on a picture), `points` (clicks). Empty: none. |
-| `returns` | The shape types its proposals carry: `bbox`, `polygon`, `polyline`, `keypoint`, `mask`, `tag`, `text`, `segment`. |
+| `returns` | The shape types its proposals carry: `bbox`, `polygon`, `polyline`, `keypoint`, `mask`, `tag`, `text`, `segment`. Empty: it proposes nothing. |
+| `assesses` | The shape types of the labels it judges (§ `POST /v1/assessments`). Empty: it judges nothing. |
+
+A model lists at least one of `returns` and `assesses`.
 
 The shape types are the workbench's own vocabulary. A deployment maps its model's names onto them.
 
@@ -96,10 +100,52 @@ The answer:
   threshold.
 - No proposals is an answer: the model found nothing. A model that could not answer says so by its status.
 
+## `POST /v1/assessments`
+
+What one model disagrees with among the labels people made on one item: a judge (ADR 0026).
+
+```json
+{
+  "model": "judge",
+  "item": { "id": "demo~corpus/doc-1/0", "content": { "kind": "image", "mime": "image/png", "data": "<base64>" } },
+  "labels": [
+    { "id": "8c1f", "shape_type": "bbox", "x": 10, "y": 20, "width": 30, "height": 40, "polygon": [], "label": "stamp", "text": "" }
+  ],
+  "classes": ["seal", "stamp"],
+  "requested_by": "dex~08a8684b"
+}
+```
+
+- **`labels`** is every label of the item, each under the workbench's own id for it, in a proposal's geometry and
+  words. All of them are sent, so a judge can also say one is missing. Empty: the person labelled nothing.
+- `item`, `classes` and `requested_by` are an ask for proposals' own.
+
+The answer:
+
+```json
+{
+  "model": "judge",
+  "version": "2026.11-a",
+  "disagreements": [
+    { "label_id": "8c1f", "reason": "the region holds a wax seal", "suggested_label": "seal", "score": 0.8 }
+  ]
+}
+```
+
+- **`label_id`** names a label of the ask; absent, the disagreement is about the item as a whole (a label that is
+  missing). An answer naming a label the ask did not carry is outside the protocol.
+- **`reason` is required**: what the judge disagrees with, as a reviewer reads it (at most 500 characters). A flag
+  with no reason cannot be weighed.
+- `suggested_label` is the class the judge would have given, or empty. `score`, from 0 to 1, is how sure it is.
+- No disagreements is an answer: the labels look right. A judge that could not answer says so by its status.
+
+A model that lists no `assesses` refuses the ask with 422, as one that lists no `returns` refuses an ask for
+proposals.
+
 ## Errors
 
 An error is an HTTP status with an RFC 9457 problem body (`application/problem+json`), never a 200 that says it failed.
-`GET /v1/models` answers 401, 403, 429, 503 or another 5xx; `POST /v1/proposals` any status below. The OpenAPI
+`GET /v1/models` answers 401, 403, 429, 503 or another 5xx; `POST /v1/proposals` and `POST /v1/assessments` any status below. The OpenAPI
 document declares the same statuses on each door.
 
 | Status | Meaning | What the workbench tells the person |
@@ -130,11 +176,25 @@ an ask is a 503.
   keeping or removing all of an item's proposals is one action. A kept proposal still says which model made it. One a person rejected stays in the
   item's work as rejected and is not published.
 
+## What the workbench does with an assessment
+
+- A project names its judge (a setting); a project that names none has none. The judge is asked about an item in
+  review, once per submission, in the request of the person who submitted it or of someone who may review it: the
+  item's picture is read as that person, and the annotator holds no credential that reads it for nobody.
+- The verdict is kept beside the item with the model and version that gave it and the revision of the work it read. It
+  orders and marks the review list (flagged first) and changes no item's state: a reviewer accepts or sends back every
+  item (ADR 0026).
+- A reviewer's decision on a flagged item is kept with the verdict, with whether they agreed with the flag: what they
+  said, else what the decision says (accepting the work as it is disagrees; fixing it or sending it back agrees).
+- A judge that fails, is busy or does not answer is the error the asking person reads, and the item stays unjudged;
+  the review list reads as it does with no judge.
+
 ## Bounded in this version
 
 - Assist sends a picture: a unit's frame, or a whole document's thumbnail. The protocol carries text; the workbench
   does not yet ask about a text item, a recording or a video.
 - One endpoint per deployment.
+- A judge is shown a picture, as assist is, and reads an item's labels and not the links between them.
 - The stand-in accepts any bearer token and refuses a call with none. Verifying whom a token names is a real
   endpoint's.
 
@@ -179,7 +239,7 @@ a test that fails if it stops being true:
   reads that the endpoint refused the workbench's identity (401); another workload's token is refused 403, read the
   same way.
 
-Not asked of it: the listing through the annotator, an unknown model, an ask outside the protocol, the answer cap, and
+Not asked of it: an assessment (`tests/ray_model.py` serves no judge), the listing through the annotator, an unknown model, an ask outside the protocol, the answer cap, and
 a redirect. The stand-in's tests pin the annotator's side of each, which does not depend on what serves the protocol.
 
 ### Measured once, not pinned by a test
@@ -211,6 +271,9 @@ Not shown yet: a deployment on the development cluster, which has the KubeRay de
 | `stand-in-slow` | Never finishes its answer (a byte now and then): the person reads the timeout. |
 | `stand-in-failing` | Answers 500: the person reads the error. |
 | `stand-in-tagger` | Takes no prompt: one tag about the whole item, labelled with the task's first class, score 0.6. |
+| `stand-in-judge` | Proposes nothing. Disagrees with every label of the task's last class (it would say the first, score 0.8), and with an item nobody labelled (score 0.5). |
+
+`stand-in-slow` and `stand-in-failing` assess as they propose: never, and with a 500.
 
 `python -m annotator.model_endpoint.stand_in` serves it (`MODEL_STAND_IN_HOST`, `MODEL_STAND_IN_PORT`; 127.0.0.1:8120).
 `make local` runs it on port 8706, and `make deploy-dev` installs it from `deploy/fixtures/model-stand-in`.
