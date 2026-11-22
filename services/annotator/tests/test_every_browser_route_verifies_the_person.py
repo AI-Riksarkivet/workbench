@@ -11,6 +11,9 @@ tests; this walk pins authentication only.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
@@ -69,3 +72,14 @@ def test_every_route_but_the_exempt_ones_verifies_the_person() -> None:
 
     assert (open_routes, sorted(other)) == ([], [])
     assert set(EXEMPT) <= walked, f"exempt routes the app no longer serves: {sorted(set(EXEMPT) - walked)}"
+
+
+def test_every_route_a_person_calls_is_published_by_one_of_the_charts_doors() -> None:
+    values = yaml.safe_load((Path(__file__).parents[3] / "chart" / "values.yaml").read_text())
+    doors: list[str] = values["route"]["doors"]
+    # The app's own document names each route by its whole path, the prefixes of the routers that include it composed.
+    served = set(_app().openapi()["paths"]) - {path for _method, path in EXEMPT}
+
+    unpublished = sorted(path for path in served if not any(path == door or path.startswith(f"{door}/") for door in doors))
+
+    assert unpublished == [], f"the Gateway routes none of these to the annotator (chart `route.doors`: {doors})"

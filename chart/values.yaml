@@ -29,6 +29,8 @@ route:
     - /api/annotations
     # assist: the models a task may ask, and one model's proposals on a task's unit (`?project=`)
     - /api/assist
+    # the judge: what a project's judge disagrees with among a submitted item's labels (`?project=`)
+    - /api/judge
     # the project plane: projects, their members, events, adjudications, items and task listing
     - /projects
     # one task: its events (claim, submit, review, ...), its draft and imports
