@@ -4,13 +4,16 @@
 	 * A lakehouse lists them on the reader's own read, so a dataset it does not let them read is not here;
 	 * any other source lists what its catalog holds. A dataset that carries a workbench descriptor is a
 	 * media dataset; one that carries none is a plain table, shown from its schema. What could not be
-	 * listed or opened is listed too, with the reason.
+	 * listed or opened is listed too, with the reason. The list opens no dataset, so it answers in the
+	 * time the sources take to name them: a dataset the reader has not opened yet comes with only its
+	 * tables' names, and its card reads the rest at the dataset's own door (`datasetFacts`), which the
+	 * dataset's page then reuses.
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Button } from '@riksarkivet/ui/button';
-	import { fetchDatasets } from '#lib/api/datasets.api.ts';
+	import { datasetFacts, fetchDatasets, type DatasetSummary } from '#lib/api/datasets.api.ts';
 	import { listProjects } from '#lib/api/projects.api.ts';
 	import { linkWith, projectOf } from '#lib/project.ts';
 	import { titleOf } from '#lib/nav.ts';
@@ -44,8 +47,14 @@
 		`${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`;
 
 	/** A dataset's name within its source: its namespace, or, at the source's root, its tables. */
-	const nameOf = (id: string, tables: Record<string, unknown> = {}): string =>
-		datasetParts(id).namespace ?? (Object.keys(tables).sort().join(', ') || 'the root');
+	const nameOf = (id: string, tables: string[] = []): string =>
+		datasetParts(id).namespace ?? ([...tables].sort().join(', ') || 'the root');
+
+	/** A dataset's facts as its card shows them: the list's, or read at its own door when the list has none. */
+	const factsOf = (dataset: DatasetSummary) =>
+		dataset.facts === null
+			? datasetFacts(dataset.id)
+			: { current: dataset.facts, error: undefined };
 
 	const KIND_NAMES = {
 		rask: 'Lakehouse',
@@ -128,6 +137,8 @@
 						aria-label="Datasets in {source.title || source.name}"
 					>
 						{#each source.datasets as dataset (dataset.id)}
+							{@const read = factsOf(dataset)}
+							{@const facts = read.current}
 							<li>
 								<!-- The route id resolved by `pageOf`, with the reader's ?project= after it, which the rule cannot see. -->
 								<!-- eslint-disable svelte/no-navigation-without-resolve -->
@@ -139,38 +150,52 @@
 										<span class="font-mono text-sm font-medium break-all"
 											>{nameOf(dataset.id, dataset.tables)}</span
 										>
-										<span
-											class={[
-												'shrink-0 rounded px-1.5 py-0.5 text-xs',
-												dataset.stamped
-													? 'bg-primary/10 text-primary'
-													: 'bg-muted text-muted-foreground',
-											]}>{dataset.stamped ? 'media' : 'table'}</span
-										>
+										{#if facts}
+											<span
+												class={[
+													'shrink-0 rounded px-1.5 py-0.5 text-xs',
+													facts.stamped
+														? 'bg-primary/10 text-primary'
+														: 'bg-muted text-muted-foreground',
+												]}>{facts.stamped ? 'media' : 'table'}</span
+											>
+										{/if}
 									</span>
-									<span class="text-muted-foreground text-xs">
-										{counted(Object.keys(dataset.tables).length, 'table')} · {counted(
-											rows(dataset.tables),
-											'row',
-										)}
-									</span>
-									{#if dataset.capabilities.length > 0}
-										<span class="flex flex-wrap gap-1">
-											{#each dataset.capabilities as capability (capability)}
-												<span class="bg-muted rounded px-1.5 py-0.5 text-xs">{capability}</span>
-											{/each}
+									{#if facts}
+										<span class="text-muted-foreground text-xs">
+											{counted(Object.keys(facts.tables).length, 'table')} · {counted(
+												rows(facts.tables),
+												'row',
+											)}
 										</span>
-									{/if}
-									{#if dataset.problem}
+										{#if facts.capabilities.length > 0}
+											<span class="flex flex-wrap gap-1">
+												{#each facts.capabilities as capability (capability)}
+													<span class="bg-muted rounded px-1.5 py-0.5 text-xs">{capability}</span>
+												{/each}
+											</span>
+										{/if}
+										{#if facts.problem}
+											<span class="text-muted-foreground text-xs"
+												>Shown as a table: {facts.problem}</span
+											>
+										{/if}
+										{#each Object.entries(facts.unreadable) as [table, reason] (table)}
+											<span class="text-muted-foreground text-xs"
+												><span class="font-mono">{table}</span> could not be opened: {reason}</span
+											>
+										{/each}
+									{:else if read.error}
 										<span class="text-muted-foreground text-xs"
-											>Shown as a table: {dataset.problem}</span
+											>{counted(dataset.tables.length, 'table')} · could not be opened: {message(
+												read.error,
+											)}</span
+										>
+									{:else}
+										<span class="text-muted-foreground text-xs" role="status"
+											>{counted(dataset.tables.length, 'table')} · reading…</span
 										>
 									{/if}
-									{#each Object.entries(dataset.unreadable) as [table, reason] (table)}
-										<span class="text-muted-foreground text-xs"
-											><span class="font-mono">{table}</span> could not be opened: {reason}</span
-										>
-									{/each}
 								</a>
 								<!-- eslint-enable svelte/no-navigation-without-resolve -->
 							</li>

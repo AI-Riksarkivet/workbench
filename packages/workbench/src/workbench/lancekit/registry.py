@@ -65,8 +65,8 @@ CALLER_SESSIONS: Final = 64
 INDEX_CACHE_BYTES: Final = 256 * 1024 * 1024
 METADATA_CACHE_BYTES: Final = 64 * 1024 * 1024
 #: How many (caller, dataset) handles one process keeps per source. A handle holds a namespace client and a descriptor,
-#: not table bytes. One listing opens up to :data:`DISCOVERY_NAMESPACES` datasets of each source, so the cache holds
-#: several listings' worth: a listing never evicts the handles it opened itself.
+#: not table bytes. A listing finds up to :data:`DISCOVERY_NAMESPACES` datasets of each source and opens none of them;
+#: each is opened when it is read, so the cache holds several listings' worth of a person's reads.
 HANDLES_PER_SOURCE: Final = 4 * 256
 #: How long before a vend's expiry an open stops being reused.
 EXPIRY_MARGIN_S: Final = 60.0
@@ -79,7 +79,7 @@ DISCOVERY_DEPTH: Final = 8
 #: The most names one listing's pages may answer, and the most pages it reads, past which the listing is cut and says so.
 LISTING_NAMES: Final = 2000
 LISTING_PAGES: Final = 100
-#: How long one source's discovery may take, every listing and open of it together, before it is cut and says so.
+#: How long one source's discovery may take, every listing of it together, before it is cut and says so.
 DISCOVERY_DEADLINE_S: Final = 20.0
 #: What a table the catalog lists and Lance cannot find is, in words a person reads. DeclareTable reserves a name and a
 #: location and writes no data (`lance_docs/ns_catalog/namespace/supported-catalogs/lance-dir.md` § DeclareTable), so a
@@ -332,6 +332,14 @@ class Unlisted(BaseModel):
     reason: str
 
 
+class FoundDataset(BaseModel):
+    """A namespace discovery found holding tables, and the tables its ListTables named: what listing it costs, with no
+    table opened."""
+
+    id: str
+    tables: list[str]
+
+
 class SourceDiscovery(BaseModel):
     """One source as the caller sees it: the datasets (namespaces holding tables) found, what could not be listed, and
     whether the walk stopped at its bounds before seeing everything."""
@@ -339,7 +347,7 @@ class SourceDiscovery(BaseModel):
     source: str
     kind: str
     title: str
-    datasets: list[str] = Field(default_factory=list)
+    datasets: list[FoundDataset] = Field(default_factory=list)
     unlisted: list[Unlisted] = Field(default_factory=list)
     truncated: bool = False
 
@@ -401,8 +409,8 @@ def discover(
                 if not lakehouse_container:
                     tables = _list_tables(client, namespace)
                     found.truncated |= tables.truncated
-                    if _tables_of(source, tables.names):
-                        found.datasets.append(label)
+                    if names := _tables_of(source, tables.names):
+                        found.datasets.append(FoundDataset(id=label, tables=names))
                 children = _list_namespaces(client, namespace) if len(namespace) < DISCOVERY_DEPTH else Listed(names=[], truncated=True)
         except Exception as exc:
             logger.warning("namespace %s could not be listed", label, exc_info=True)
@@ -496,13 +504,23 @@ def load_dataset_descriptor(
     )
 
 
-class Survey(BaseModel):
-    """One source as a listing shows it: what discovery found, the datasets it opened, and what it could not open."""
+class ListedDataset(BaseModel):
+    """One dataset as a listing shows it: the tables discovery found in it, and its descriptor when the caller already
+    holds an open of it. A listing opens no dataset: one not yet opened has no descriptor here, and its facts are read
+    when it is (:meth:`DatasetRegistry.get`)."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    id: str
+    tables: list[str]
+    descriptor: DatasetDescriptor | None = None
+
+
+class Survey(BaseModel):
+    """One source as a listing shows it: what discovery found, each dataset with what is known of it without opening
+    it, and why the source's datasets cannot be annotated (``None`` when they can)."""
 
     discovery: SourceDiscovery
-    opened: list[DatasetDescriptor] = Field(default_factory=list)
+    read_only: str | None
+    datasets: list[ListedDataset] = Field(default_factory=list)
 
 
 #: The threads sources are surveyed on, each source on its own, so one that hangs delays and hides no other.
@@ -543,25 +561,40 @@ class DatasetRegistry:
             found = SourceDiscovery(
                 source=source.name, kind=source.kind, title=source.title, unlisted=[Unlisted(id=qualify(source, []), reason=reason_for(exc))]
             )
-        survey = Survey(discovery=found)
-        for dataset_id in found.datasets:
-            if self._clock() > deadline:
-                found.truncated = True
-                break
+        survey = Survey(discovery=found, read_only=annotatable(source))
+        for dataset in found.datasets:
             try:
-                survey.opened.append(self.get(dataset_id, caller).descriptor)
+                held = self._held(dataset.id, caller)
             except DatasetAbsentError as exc:
-                # Expected, and said where it was found (`load_dataset_descriptor`): no second line, no traceback.
-                found.unlisted.append(Unlisted(id=dataset_id, reason=reason_for(exc)))
-            except Exception as exc:
-                logger.warning("dataset %s could not be opened", dataset_id, exc_info=True)
-                found.unlisted.append(Unlisted(id=dataset_id, reason=reason_for(exc)))
+                found.unlisted.append(Unlisted(id=dataset.id, reason=reason_for(exc)))
+                continue
+            survey.datasets.append(ListedDataset(id=dataset.id, tables=dataset.tables, descriptor=held))
         return survey
+
+    def _held(self, dataset_id: str, caller: LakehouseCaller) -> DatasetDescriptor | None:
+        """The descriptor of the caller's cached handle on ``dataset_id``, or ``None`` when they hold none; nothing is
+        opened or asked of the catalog.
+
+        Raises:
+            DatasetAbsentError: The caller's last open of it found nothing to read, within :data:`ABSENT_RECHECK_S`.
+        """
+        key = (caller.subject, dataset_id)
+        with self._lock:
+            absent_until = self._absent.get(key)
+            if absent_until is not None and absent_until > self._clock():
+                raise DatasetAbsentError(f"dataset {dataset_id!r}: {LISTED_NOT_WRITTEN}")
+            handle = self._handles.get(key)
+            return None if handle is None else handle.descriptor
 
     def survey(self, caller: LakehouseCaller) -> list[Survey]:
         """The sources the caller is admitted to (``caller.admitted``), each surveyed on its own within
         :data:`DISCOVERY_DEADLINE_S`, in the declaration's order: one that cannot be read, or does not answer in time, is
-        reported as such and never hides the others."""
+        reported as such and never hides the others.
+
+        A survey lists and opens nothing: what it costs is each source's ListNamespaces and ListTables walk, whatever the
+        datasets found hold. A dataset the caller has opened is listed with its descriptor, one they have not with the
+        tables its namespace lists, and one their last open found nothing to read in is reported so.
+        """
         sources = [source for source in self._settings.sources.items if source.name in caller.admitted]
         deadline = self._clock() + DISCOVERY_DEADLINE_S
         futures: list[Future[Survey]] = []
@@ -577,7 +610,7 @@ class DatasetRegistry:
                 late = SourceDiscovery(
                     source=source.name, kind=source.kind, title=source.title, truncated=True, unlisted=[Unlisted(id=qualify(source, []), reason=reason)]
                 )
-                surveys.append(Survey(discovery=late))
+                surveys.append(Survey(discovery=late, read_only=annotatable(source)))
         return surveys
 
     def get(self, dataset_id: str, caller: LakehouseCaller) -> DatasetHandle:

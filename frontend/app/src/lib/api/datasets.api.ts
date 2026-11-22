@@ -1,6 +1,7 @@
 /**
  * The datasets the deployment's sources show the reader, and any table's rows: the viewer's
- * `GET /api/datasets` (grouped by source, with what could not be listed or opened), `GET /api/datasets/{id}`
+ * `GET /api/datasets` (grouped by source, with what could not be listed; it opens no dataset, so a
+ * dataset the reader has not opened comes without its facts), `GET /api/datasets/{id}`
  * (one dataset's facts: its source, tables, whether it carries a workbench descriptor and whether it may
  * be annotated), and the plain table's `GET /api/datasets/{id}/tables/{table}/rows` and `.../rows/{rowid}`,
  * read from the table's schema alone. A lakehouse is read as the person, whose refusal is final; any
@@ -17,15 +18,24 @@ const TableFacts = v.object({ row_count: v.number(), version: v.number(), n_colu
 
 const SOURCE_KINDS = ['rask', 'namespace', 'tables'] as const;
 
-const DatasetSummary = v.object({
-	id: v.string(),
-	source: v.string(),
+/** What opening a dataset read of it: the list carries it for a dataset the reader has opened, and
+ *  `datasetFacts` reads it for one they have not. */
+const ListedFacts = v.object({
 	stamped: v.boolean(),
 	tables: v.record(v.string(), TableFacts),
 	capabilities: v.array(v.string()),
 	problem: v.nullable(v.string()),
 	unreadable: v.record(v.string(), v.string()),
+});
+
+const DatasetSummary = v.object({
+	id: v.string(),
+	source: v.string(),
+	/** The tables its namespace lists. */
+	tables: v.array(v.string()),
 	read_only: v.nullable(v.string()),
+	/** Null until the reader opens the dataset: the listing opens none. */
+	facts: v.nullable(ListedFacts),
 });
 export type DatasetSummary = v.InferOutput<typeof DatasetSummary>;
 

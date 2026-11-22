@@ -96,43 +96,66 @@ ROWS = "/api/datasets/archive~a$b$c/tables/observations/rows"
 UNMARKED = "source 'archive' is not marked annotatable"
 
 
-def test_every_source_lists_its_datasets_whatever_their_depth(client: TestClient) -> None:
-    listed = client.get("/api/datasets").json()["sources"]
+def test_every_source_lists_its_datasets_whatever_their_depth_and_each_opens_as_it_is_read(client: TestClient) -> None:
+    """The first listing names every dataset and its tables with none opened; each then opens at its own door with its
+    tables, descriptor and views, and the next listing carries the facts of those opened."""
+    cold = client.get("/api/datasets").json()["sources"]
+    ids = [d["id"] for s in cold for d in s["datasets"]]
+    opened = {dataset_id: client.get(f"/api/datasets/{dataset_id}").json() for dataset_id in ids}
+    descriptor = client.get("/api/datasets/lake~acme$corpus/descriptor").json()
+    warm = client.get("/api/datasets").json()["sources"]
 
-    assert [(s["name"], s["kind"], [(d["id"], d["stamped"], sorted(d["tables"]), d["read_only"]) for d in s["datasets"]], s["unlisted"]) for s in listed] == [
-        ("lake", "rask", [("lake~acme$corpus", True, ["chunks"], None)], []),
-        ("archive", "namespace", [("archive~", False, ["at_root", "wide"], UNMARKED), ("archive~a$b$c", False, ["observations"], UNMARKED)], []),
-        ("scans", "tables", [("scans~", False, ["scans"], None)], []),
+    assert [(s["name"], s["kind"], [(d["id"], d["tables"], d["read_only"], d["facts"]) for d in s["datasets"]], s["unlisted"]) for s in cold] == [
+        ("lake", "rask", [("lake~acme$corpus", ["chunks"], None, None)], []),
+        ("archive", "namespace", [("archive~", ["at_root", "wide"], UNMARKED, None), ("archive~a$b$c", ["observations"], UNMARKED, None)], []),
+        ("scans", "tables", [("scans~", ["scans"], None, None)], []),
+    ]
+    assert [(d["id"], d["stamped"], sorted(d["tables"]), d["read_only"]) for d in opened.values()] == [
+        ("lake~acme$corpus", True, ["chunks"], None),
+        ("archive~", False, ["at_root", "wide"], UNMARKED),
+        ("archive~a$b$c", False, ["observations"], UNMARKED),
+        ("scans~", False, ["scans"], None),
+    ]
+    assert (descriptor["declared"]["search"]["row_table"], sorted(descriptor["tables"])) == ("chunks", ["chunks"])
+    assert [(d["id"], d["facts"]["stamped"], {t: f["row_count"] for t, f in d["facts"]["tables"].items()}) for s in warm for d in s["datasets"]] == [
+        ("lake~acme$corpus", True, {"chunks": 1}),
+        ("archive~", False, {"at_root": 1, "wide": 1}),
+        ("archive~a$b$c", False, {"observations": 4}),
+        ("scans~", False, {"scans": 2}),
     ]
 
 
 def test_a_listed_table_whose_data_is_gone_is_answered_unavailable_once_a_while_and_hides_nothing_else(
     client: TestClient, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The catalog still lists the table, its versions are gone (a table whose data was removed, as seen live): a dataset
-    holding nothing else to read is unlisted with the reason and a 404 at its door, one holding other tables is listed
-    with that table named, each said in ONE warning line with no traceback, and the next listing opens neither again."""
+    """The catalog still lists the table, its versions are gone (a table whose data was removed, as seen live): opened, a
+    dataset holding nothing else to read is a 404 with the reason and from then unlisted with it, one holding other
+    tables opens with that table named, each said in ONE warning line with no traceback, and later listings open
+    neither again."""
     archive = namespace_client(tmp_path / "archive")
     for table in (["wide"], ["a", "b", "c", "observations"]):
         uri = lance.dataset(namespace_client=archive, table_id=table).uri.removeprefix("file://")
         shutil.rmtree(Path(uri) / "_versions")
     caplog.set_level(logging.WARNING, logger="workbench.lancekit.registry")
 
-    listings = [client.get("/api/datasets").json()["sources"] for _ in range(2)]
+    cold = client.get("/api/datasets").json()["sources"]
     door = client.get("/api/datasets/archive~a$b$c")
+    root = client.get("/api/datasets/archive~").json()
+    listings = [client.get("/api/datasets").json()["sources"] for _ in range(2)]
 
     gone = "the catalog lists it, but holds no version of it to read: declared and never written, or its data removed"
     archive_listing = [(s["datasets"], s["unlisted"]) for s in listings[0] if s["name"] == "archive"]
-    assert listings[0] == listings[1]
-    assert [(s["name"], [d["id"] for d in s["datasets"]]) for s in listings[0]] == [
+    assert [(s["name"], [d["id"] for d in s["datasets"]]) for s in cold] == [
         ("lake", ["lake~acme$corpus"]),
-        ("archive", ["archive~"]),
+        ("archive", ["archive~", "archive~a$b$c"]),
         ("scans", ["scans~"]),
     ]
-    assert [([(d["id"], sorted(d["tables"]), d["unreadable"]) for d in datasets], unlisted) for datasets, unlisted in archive_listing] == [
+    assert (door.status_code, gone in door.json()["detail"]) == (404, True)
+    assert (sorted(root["tables"]), root["unreadable"]) == (["at_root"], {"wide": gone})
+    assert listings[0] == listings[1]
+    assert [([(d["id"], sorted(d["facts"]["tables"]), d["facts"]["unreadable"]) for d in datasets], unlisted) for datasets, unlisted in archive_listing] == [
         ([("archive~", ["at_root"], {"wide": gone})], [{"id": "archive~a$b$c", "reason": gone}])
     ]
-    assert (door.status_code, gone in door.json()["detail"]) == (404, True)
     assert sorted((r.getMessage(), r.exc_info) for r in caplog.records if r.name == "workbench.lancekit.registry") == [
         ("table observations of archive~a$b$c is listed but holds no version to read", None),
         ("table wide of archive~ is listed but holds no version to read", None),

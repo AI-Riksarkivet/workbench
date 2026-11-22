@@ -1,9 +1,11 @@
 """The datasets of every declared source, each one's facts and descriptor, and any table's rows.
 
 ``GET /api/datasets`` lists, source by source, every dataset the caller can see: a namespace that holds tables, at any
-depth, with its tables' facts and whether it carries a workbench descriptor; what could not be listed or opened is
-listed too, with the reason, never skipped in silence. ``GET /api/datasets/{id}`` is one dataset's facts (a dataset with
-no descriptor is shown from them, as a plain table), ``GET /api/datasets/{id}/descriptor`` the merged descriptor the
+depth, with the tables it lists; what could not be listed is listed too, with the reason, never skipped in silence. The
+listing opens no dataset, so its cost is the sources' namespace walk however many tables they hold: a dataset the caller
+has opened is listed with its facts (its tables' counts, whether it carries a workbench descriptor), and one they have
+not is listed without them (``facts`` null) until it is read. ``GET /api/datasets/{id}`` is one dataset's facts, read
+by opening it (a dataset with no descriptor is shown from them, as a plain table), ``GET /api/datasets/{id}/descriptor`` the merged descriptor the
 stamped views render from, and ``GET /api/datasets/{id}/tables/{table}/rows`` (and ``.../rows/{rowid}``) any table's
 rows from its schema alone (`viewer.services.plain_rows`).
 """
@@ -32,7 +34,7 @@ from viewer.services.plain_rows import (
 from workbench.exceptions import NotFoundError
 from workbench.lancekit.descriptor import DatasetDescriptor
 from workbench.lancekit.introspect import TableInfo
-from workbench.lancekit.registry import DatasetHandle, Survey, Unlisted
+from workbench.lancekit.registry import DatasetHandle, ListedDataset, Survey, Unlisted
 from workbench.media.deps import StateDep
 from workbench.media.state import dataset_handle
 
@@ -50,11 +52,9 @@ class TableFacts(BaseModel):
     n_columns: int
 
 
-class DatasetSummary(BaseModel):
-    """One dataset as the list shows it."""
+class ListedFacts(BaseModel):
+    """What opening a dataset read of it, as the list shows it."""
 
-    id: str
-    source: str
     #: Whether the dataset carries a workbench descriptor; without one it is shown as a plain table.
     stamped: bool
     tables: dict[str, TableFacts]
@@ -63,8 +63,20 @@ class DatasetSummary(BaseModel):
     problem: str | None = None
     #: The tables listed here that could not be opened, each with why.
     unreadable: dict[str, str] = Field(default_factory=dict)
+
+
+class DatasetSummary(BaseModel):
+    """One dataset as the list shows it."""
+
+    id: str
+    source: str
+    #: The tables its namespace lists.
+    tables: list[str]
     #: Why the dataset cannot be annotated, or ``None`` when it can.
     read_only: str | None = None
+    #: Its facts when the caller has opened it, else ``None``: the listing opens nothing, and ``GET /api/datasets/{id}``
+    #: reads them.
+    facts: ListedFacts | None = None
 
 
 class SourceListing(BaseModel):
@@ -74,7 +86,7 @@ class SourceListing(BaseModel):
     kind: str
     title: str
     datasets: list[DatasetSummary]
-    #: Namespaces (or the whole source) whose listing failed, and datasets that were listed and could not be opened.
+    #: Namespaces (or the whole source) whose listing failed, and datasets the caller's last open found nothing to read in.
     unlisted: list[Unlisted] = Field(default_factory=list)
     #: The walk stopped at its bounds before seeing every namespace.
     truncated: bool = False
@@ -111,16 +123,23 @@ def _capabilities(descriptor: DatasetDescriptor) -> list[str]:
     return [] if declared is None else [name for name in declared.capabilities if descriptor.capability_available(name)]
 
 
-def _summary(descriptor: DatasetDescriptor) -> DatasetSummary:
-    return DatasetSummary(
-        id=descriptor.id,
-        source=descriptor.source,
+def _facts(descriptor: DatasetDescriptor) -> ListedFacts:
+    return ListedFacts(
         stamped=descriptor.declared is not None,
         tables={name: TableFacts(row_count=info.row_count, version=info.version, n_columns=len(info.columns)) for name, info in descriptor.tables.items()},
         capabilities=_capabilities(descriptor),
         problem=descriptor.problem,
         unreadable=descriptor.unreadable,
-        read_only=descriptor.read_only,
+    )
+
+
+def _summary(source: str, read_only: str | None, dataset: ListedDataset) -> DatasetSummary:
+    return DatasetSummary(
+        id=dataset.id,
+        source=source,
+        tables=dataset.tables,
+        read_only=read_only,
+        facts=None if dataset.descriptor is None else _facts(dataset.descriptor),
     )
 
 
@@ -130,7 +149,7 @@ def _listing(survey: Survey) -> SourceListing:
         name=found.source,
         kind=found.kind,
         title=found.title,
-        datasets=[_summary(descriptor) for descriptor in survey.opened],
+        datasets=[_summary(found.source, survey.read_only, dataset) for dataset in survey.datasets],
         unlisted=list(found.unlisted),
         truncated=found.truncated,
     )
@@ -142,10 +161,11 @@ async def list_datasets(caller: CallerDep, state: StateDep) -> DatasetsResponse:
 
     A lakehouse read as the person lists what it lets the caller read, on their own token; any other source is listed
     only to its declared readers (`workbench.media.source_gate`), with what its catalog holds. Each source is surveyed on
-    its own, within a deadline; a dataset that cannot be opened, and a source or namespace that cannot be listed or did
-    not answer in time, is reported with a short reason.
+    its own, within a deadline; a source or namespace that cannot be listed or did not answer in time, and a dataset the
+    caller's last open found nothing to read in, is reported with a short reason. No dataset is opened here: the first
+    page after a start answers in the namespace walk's time, and each dataset's facts are read at its own door.
     """
-    # Off the loop: listing and opening are catalog calls and manifest reads, and this is the first call every page makes.
+    # Off the loop: listing is catalog calls, and this is the first call every page makes.
     surveys = await run_in_threadpool(state.registry.survey, caller)
     return DatasetsResponse(sources=[_listing(survey) for survey in surveys])
 

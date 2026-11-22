@@ -1142,36 +1142,34 @@ Bun.serve({
 				truncated: false,
 			};
 			if (who.name === 'Nobody') return json({ sources: [{ ...lake, datasets: [] }] });
+			// The viewer's listing opens no dataset: the lakehouse's come as a fresh viewer lists them, with only
+			// their tables' names (each card reads its facts at the dataset's door), and the archive's as one the
+			// reader already opened, with its facts.
 			const stamped = Object.entries(DATASETS).map(([id, d]) => ({
 				id,
 				source: 'lake',
-				stamped: true,
-				tables: Object.fromEntries(
-					Object.entries(d.tables).map(([name, t]) => [
-						name,
-						{ row_count: t.row_count, version: t.version, n_columns: t.columns.length },
-					]),
-				),
-				capabilities: d.capabilities,
-				problem: null,
-				unreadable: {},
+				tables: Object.keys(d.tables),
 				read_only: null,
+				facts: null,
 			}));
 			const plainSummary = {
 				id: PLAIN_ID,
 				source: 'archive',
-				stamped: false,
-				tables: {
-					[PLAIN_TABLE]: {
-						row_count: PLAIN_ROWS.length,
-						version: 3,
-						n_columns: PLAIN_COLUMNS.length,
-					},
-				},
-				capabilities: [],
-				problem: null,
-				unreadable: { drafts: NOT_WRITTEN },
+				tables: [PLAIN_TABLE, 'drafts'],
 				read_only: READ_ONLY,
+				facts: {
+					stamped: false,
+					tables: {
+						[PLAIN_TABLE]: {
+							row_count: PLAIN_ROWS.length,
+							version: 3,
+							n_columns: PLAIN_COLUMNS.length,
+						},
+					},
+					capabilities: [],
+					problem: null,
+					unreadable: { drafts: NOT_WRITTEN },
+				},
 			};
 			return json({
 				sources: [
