@@ -80,14 +80,15 @@ describe('the keys and items a selection produces', () => {
 });
 
 describe('what a send carries beside a sampling proposal', () => {
-	it('is every candidate without one or when the rest are asked for, else the proposed items left ticked', () => {
-		const keys = ['a/0', 'b/0', 'c/0'];
-		const ticked = new Set(['c/0', 'a/0']);
+	it('is every candidate without one, else the proposed items left ticked, and with the rest the unchosen too', () => {
+		const keys = ['a/0', 'b/0', 'c/0', 'd/0'];
+		const chosen = new Set(['a/0', 'b/0', 'c/0']);
+		const ticked = new Set(['c/0', 'b/0']);
 
 		expect([
 			keysToSend(keys, null),
-			keysToSend(keys, { ticked, everyCandidate: true }),
-			keysToSend(keys, { ticked, everyCandidate: false }),
-		]).toEqual([keys, keys, ['a/0', 'c/0']]);
+			keysToSend(keys, { chosen, ticked, everyCandidate: false }),
+			keysToSend(keys, { chosen, ticked, everyCandidate: true }),
+		]).toEqual([keys, ['b/0', 'c/0'], ['b/0', 'c/0', 'd/0']]);
 	});
 });

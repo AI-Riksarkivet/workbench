@@ -2847,23 +2847,30 @@ test('the send dialog proposes N items by the strategy, the person unticks one, 
 	await expect(dialog.getByTestId('send-proposal-summary')).toHaveText(
 		'Sampling proposes 2 of 3 items',
 	);
+	// Each proposed item by its name, as the search's rows are named, its key the tooltip.
 	const proposed = dialog.getByTestId('send-proposed');
 	await expect(proposed).toHaveText([
-		/letter-001\/1\s*Least sure · doubt 0\.83/,
-		/map-003\/0\s*Least sure · doubt 0\.62/,
+		/^\s*A letter from the harbour · part 2\s+Least sure · doubt 0\.83$/,
+		/^\s*A map of the harbour · part 1\s+Least sure · doubt 0\.62$/,
 	]);
-	await proposed.filter({ hasText: 'map-003/0' }).getByRole('checkbox').click();
+	await expect(proposed.first().getByTitle('letter-001/1')).toBeVisible();
+	// The person unticks one, and asks for the items sampling did not choose too: the unticked one is still not sent.
+	await dialog.getByRole('checkbox', { name: 'Send A map of the harbour · part 1' }).click();
+	await dialog.getByTestId('send-every-candidate').getByRole('switch').click();
 	const posted = page.waitForRequest((req) => req.url().endsWith('/projects/triage/items'));
 
-	await dialog.getByRole('button', { name: 'Send 1 item', exact: true }).click();
+	await dialog.getByRole('button', { name: 'Send 2 items', exact: true }).click();
 
 	const sent = (await posted).postDataJSON() as {
 		items: { source: { keys: string[] } }[];
 		proposal: string;
 	};
-	expect(sent.items.map((item) => item.source.keys[0])).toEqual(['letter-001/1']);
+	expect(sent.items.map((item) => item.source.keys[0]).sort()).toEqual([
+		'letter-001/0',
+		'letter-001/1',
+	]);
 	expect(sent.proposal).toMatch(/^proposal-/);
-	await expect(dialog.getByTestId('send-done')).toHaveText(/Sent 1 item\./);
+	await expect(dialog.getByTestId('send-done')).toHaveText(/Sent 2 items\./);
 });
 
 test('a manager chooses the sampling strategy and a model that proposes, and both are saved', async ({

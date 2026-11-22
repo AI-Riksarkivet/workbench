@@ -12,7 +12,8 @@
 	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
 	import { GatedAction } from '@riksarkivet/ui/gated-action';
 	import { sendGate } from '#lib/explore/pane-capabilities.ts';
-	import { selectionKeys } from '#lib/projects/send.ts';
+	import { itemName } from '#lib/projects/item-name.ts';
+	import { namesByKey, selectionKeys } from '#lib/projects/send.ts';
 	import { projectOf } from '#lib/project.ts';
 	import {
 		Inbox,
@@ -71,6 +72,13 @@
 	/** Why this dataset's rows cannot be sent to a project (`sendGate`), shown on the disabled control. */
 	const sendBlocked = $derived(sendGate(page.data.facts ?? null));
 	const sendKeys = $derived(selectionKeys(hits, (h) => ds.keyPath(h)));
+	const sendNames = $derived(
+		namesByKey(
+			hits,
+			(h) => ds.keyPath(h),
+			(h) => itemName(ds, h),
+		),
+	);
 	const sendTotal = $derived(explore.mapSelection?.points ?? hits.length);
 	const orgs = $derived((page.data.me?.orgs ?? []).map((o: { org: string }) => o.org));
 
@@ -623,6 +631,7 @@
 <SendToProjectDialog
 	bind:open={sendOpen}
 	keys={sendKeys}
+	names={sendNames}
 	total={sendTotal}
 	from={{ dataset: ds.id, version: ds.rowTableVersion, mediaKind: ds.mediaKind }}
 	origin={explore.mapSelection ? 'atlas' : browseRows ? 'rows' : 'search'}

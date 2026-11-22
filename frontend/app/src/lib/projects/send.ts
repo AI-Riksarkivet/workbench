@@ -68,12 +68,29 @@ export function sendItemsFor(keys: readonly string[], from: SendSource, label: s
 	}));
 }
 
-/** The keys a send carries while a sampling proposal is shown: the proposed ones the person left ticked, or every
- *  candidate when they asked to send the rest too; with no proposal, every candidate. */
+/** The keys a send carries while a sampling proposal is shown: the proposed ones the person left ticked, and with
+ *  ``everyCandidate`` the candidates the proposal did not choose too; a proposed item the person unticked is never sent.
+ *  With no proposal, every candidate. */
 export function keysToSend(
 	keys: readonly string[],
-	proposal: { ticked: ReadonlySet<string>; everyCandidate: boolean } | null,
+	proposal: {
+		chosen: ReadonlySet<string>;
+		ticked: ReadonlySet<string>;
+		everyCandidate: boolean;
+	} | null,
 ): string[] {
-	if (proposal === null || proposal.everyCandidate) return [...keys];
-	return keys.filter((key) => proposal.ticked.has(key));
+	if (proposal === null) return [...keys];
+	return keys.filter(
+		(key) => proposal.ticked.has(key) || (proposal.everyCandidate && !proposal.chosen.has(key)),
+	);
+}
+
+/** What each row of a selection is called, by its key path joined as `selectionKeys` joins it: the names a dialog
+ *  shows its candidates by in place of their keys. */
+export function namesByKey<T>(
+	rows: readonly T[],
+	keyPath: (row: T) => string[],
+	name: (row: T) => string,
+): Map<string, string> {
+	return new Map(rows.map((row) => [keyPath(row).join('/'), name(row)]));
 }

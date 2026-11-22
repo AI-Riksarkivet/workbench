@@ -33,6 +33,7 @@
 		origin,
 		orgs,
 		project = null,
+		names = new Map(),
 	}: {
 		open?: boolean;
 		/** The selection's key paths (`doc/…`), as the dataset's descriptor joins them. */
@@ -46,6 +47,8 @@
 		orgs: string[];
 		/** The project the page works in (`?project=`), offered first. */
 		project?: string | null;
+		/** What each candidate is called, by its key (`namesByKey`); a key with no name is shown as itself. */
+		names?: ReadonlyMap<string, string>;
 	} = $props();
 
 	// Only the projects the reader may send items to, as the store answers it (`?can=can_send_items`).
@@ -101,7 +104,14 @@
 	/** Whether the send carries every candidate after all, beside what sampling chose. */
 	let everyCandidate = $state(false);
 	let proposing = $state(false);
-	const sendKeys = $derived(keysToSend(keys, proposal ? { ticked, everyCandidate } : null));
+	const sendKeys = $derived(
+		keysToSend(
+			keys,
+			proposal
+				? { chosen: new Set(proposal.chosen.map((c) => c.key)), ticked, everyCandidate }
+				: null,
+		),
+	);
 
 	async function propose(): Promise<void> {
 		if (!chosen || proposing) return;
@@ -317,6 +327,7 @@
 						{#if proposal.chosen.length > 0}
 							<ul class="flex max-h-48 flex-col gap-1 overflow-y-auto">
 								{#each proposal.chosen as c (c.key)}
+									{@const name = names.get(c.key) ?? c.key}
 									<li>
 										<label
 											class="flex items-center gap-2 text-xs"
@@ -326,9 +337,9 @@
 											<Checkbox
 												checked={ticked.has(c.key)}
 												onCheckedChange={(on) => (on ? ticked.add(c.key) : ticked.delete(c.key))}
-												aria-label={`Send ${c.key}`}
+												aria-label={`Send ${name}`}
 											/>
-											<span class="font-mono break-all">{c.key}</span>
+											<span class="min-w-0 break-words" title={c.key}>{name}</span>
 											<span class="text-muted-foreground ml-auto shrink-0"
 												>{reasonText(c.kind, c.score)}</span
 											>

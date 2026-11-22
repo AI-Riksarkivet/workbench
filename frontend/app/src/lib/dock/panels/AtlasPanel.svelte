@@ -27,7 +27,8 @@
 	import SendToProjectDialog from '#lib/projects/SendToProjectDialog.svelte';
 	import { GatedAction } from '@riksarkivet/ui/gated-action';
 	import { sendGate } from '#lib/explore/pane-capabilities.ts';
-	import { selectionKeys } from '#lib/projects/send.ts';
+	import { itemName } from '#lib/projects/item-name.ts';
+	import { namesByKey, selectionKeys } from '#lib/projects/send.ts';
 
 	const view = activeView();
 	const maximized = $derived(dockControl.maximized === 'atlas');
@@ -243,6 +244,11 @@
 <SendToProjectDialog
 	bind:open={sendOpen}
 	keys={selectionKeys(rows, (h) => view.keyPath(h))}
+	names={namesByKey(
+		rows,
+		(h) => view.keyPath(h),
+		(h) => itemName(view, h),
+	)}
 	total={selected}
 	from={{ dataset: view.id, version: view.rowTableVersion, mediaKind: view.mediaKind }}
 	origin="atlas"
