@@ -39,11 +39,16 @@ os.environ.setdefault("WORKBENCH_INSECURE_ALLOW_UNAUTHENTICATED", "true")
 # this once, when it is first imported, so it is set here, before any test module imports it.
 os.environ.setdefault("RAY_ENABLE_UV_RUN_RUNTIME_ENV", "0")
 
-# respx's bare `@respx.mock` is a module-level router built with `_assert_all_called = False`, unlike the `respx_mock`
-# fixture and the called decorator form, so a route registered for a call the code no longer makes would pass silently.
-# Flipping the one instance makes every bare use strict. To assert a call is not made, register no route for it
-# (`assert_all_mocked` already raises on an unregistered call) or assert over `respx.calls`.
-respx.mock._assert_all_called = True
+
+@pytest.fixture
+def respx_mock() -> Iterator[respx.MockRouter]:
+    """A respx router every route of which must be called and every unrouted call refused, for one test.
+
+    Overrides respx's own `respx_mock` fixture, which without a `respx` marker hands out the module-level router built
+    with `assert_all_called=False`, so a route registered for a call the code never makes would pass silently.
+    """
+    with respx.mock(assert_all_called=True, assert_all_mocked=True) as router:  # noqa: TID251 - the one strict router
+        yield router
 
 
 @pytest.fixture(scope="session")

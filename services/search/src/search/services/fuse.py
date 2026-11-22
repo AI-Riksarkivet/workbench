@@ -46,9 +46,8 @@ def _identity(hit: dict[str, Any], key_fields: Sequence[str]) -> tuple[Any, ...]
       same material at different granularities, so a document both rank highly is genuine agreement —
       and that agreement is exactly what fusion exists to reward.
 
-    Including `_table` here (the first version of this) makes nothing ever compound, which quietly
-    degenerates RRF into rank-interleaving — the option that was explicitly NOT chosen. Two tests
-    caught it.
+    Including `_table` here would make nothing ever compound, which quietly degenerates RRF into
+    rank-interleaving — the option that was explicitly NOT chosen.
     """
     return (hit.get("_dataset"), *(hit.get(f) for f in key_fields))
 

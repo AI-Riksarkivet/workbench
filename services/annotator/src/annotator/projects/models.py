@@ -71,8 +71,7 @@ REVIEW_ACTIONS: Final[dict[str, ReviewAction]] = {"accept": "accepted", "fix_and
 #: publish. The distinction is the whole reason this field exists.
 DraftOrigin = Literal["human", "model", "propagated", "import"]
 #: `text` is a first-class modality: the document IS the canvas (token classification, NER over
-#: transcriptions). It was absent here while the zone already shipped a text viewer — so an honest
-#: text task 422'd at send and `kind=text` stayed a hand-edited URL no queue link could produce.
+#: transcriptions), sent and opened like any other kind.
 MediaKind = Literal["image", "audio", "video", "text"]
 
 
@@ -234,10 +233,7 @@ class Draft(BaseModel):
     project_id: str
     author: str
     shapes: list[Shape] = Field(default_factory=list)
-    #: The links drawn between those shapes. Absent from this model until 2026-08-04, which made an
-    #: ontology declaring a REQUIRED relation unsatisfiable: the submit check read an always-empty
-    #: list, so every submission that could ever be made was refused. Declared, enforced, and
-    #: impossible — the worst of the three, and invisible because nothing errored on the way in.
+    #: The links drawn between those shapes: what the submit check reads to satisfy an ontology's REQUIRED relation.
     links: list[Link] = Field(default_factory=list)
     revision: int = 0
     updated_at: datetime | None = None
@@ -278,9 +274,8 @@ class PublishRecord(BaseModel):
 
 #: The bound on a task's two append-only histories.
 #:
-#: They used to have none, and the whole document is re-serialised on every write — so the cost of
-#: an event was proportional to how many events preceded it, with the ceiling set by how long the
-#: task lived. `claim`/`release` is a legal loop with nothing rate-limiting it above, and a review
+#: The whole document is re-serialised on every write, so without a bound the cost of an event would be
+#: proportional to how many events preceded it, with the ceiling set by how long the task lived. `claim`/`release` is a legal loop with nothing rate-limiting it above, and a review
 #: can request changes and be re-submitted any number of times.
 #:
 #: The trail is kept, not discarded: the NEWEST rows survive (that is what a reader is asking for),
@@ -313,14 +308,12 @@ class Task(BaseModel):
     #: to provide.
     review_required: bool = True
     #: Also captured from the project at send time (§4.1 `lease_seconds`). The claim path reads THIS
-    #: when the request names no duration — before the capture existed the project setting was
-    #: stored and never read, and every claim ran on the client's default.
+    #: when the request names no duration, so a claim runs on the project's setting, not the client's default.
     lease_seconds: int = 1800
     #: Captured from the project at send (like `review_required`/`lease_seconds`): the ontology the
     #: SUBMIT is validated against, in the store's transition, for any caller. Capturing it is what makes the
     #: closed-set label check possible at all — enforcement happens here, so the taxonomy has to be
-    #: HERE. It used to capture the `template` and leave the taxonomy on the project, which is why
-    #: `label="asdf"` submitted and published.
+    #: HERE, or a label outside it would submit and publish.
     ontology: LabelOntology = Field(default_factory=LabelOntology)
     #: PRE-ANNOTATIONS attached at send — Label Studio's "prediction", and deliberately not a draft.
     #: A bulk action ("label these five hundred pages as `letter`") produces suggestions, not work:

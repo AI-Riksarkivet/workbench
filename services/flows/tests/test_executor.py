@@ -89,9 +89,8 @@ async def test_image_node_is_refused_server_side(client: httpx.AsyncClient) -> N
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_model_node_posts_the_upstream_payload_to_the_serve_app(client: httpx.AsyncClient) -> None:
-    route = respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text="<alto/>"))
+async def test_model_node_posts_the_upstream_payload_to_the_serve_app(client: httpx.AsyncClient, respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text="<alto/>"))
     node = FlowNode(id="m", kind="model", config={"app": "htrflow", "name": "page-7"})
 
     async with client:
@@ -124,12 +123,11 @@ async def test_model_node_without_an_upstream_says_so(client: httpx.AsyncClient)
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_a_405_from_serve_names_the_real_cause(client: httpx.AsyncClient) -> None:
+async def test_a_405_from_serve_names_the_real_cause(client: httpx.AsyncClient, respx_mock: respx.MockRouter) -> None:
     """`make serve-up` deploys `transcribe`, whose __call__ takes list[Image] and is reachable only
     over a DeploymentHandle — so a perfectly healthy Serve answers 405 to every POST. "405" alone
     sends the operator looking at the wrong thing."""
-    respx.post(f"{SERVE}/transcribe").mock(return_value=httpx.Response(405))
+    respx_mock.post(f"{SERVE}/transcribe").mock(return_value=httpx.Response(405))
     node = FlowNode(id="m", kind="model", config={"app": "transcribe"})
     async with client:
         with pytest.raises(NodeError, match="no HTTP ingress"):
@@ -137,9 +135,8 @@ async def test_a_405_from_serve_names_the_real_cause(client: httpx.AsyncClient) 
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_an_unreachable_serve_names_the_configured_address_not_the_resolved_one(client: httpx.AsyncClient) -> None:
-    respx.post(f"{SERVE}/htrflow").mock(side_effect=httpx.ConnectError("nope"))
+async def test_an_unreachable_serve_names_the_configured_address_not_the_resolved_one(client: httpx.AsyncClient, respx_mock: respx.MockRouter) -> None:
+    respx_mock.post(f"{SERVE}/htrflow").mock(side_effect=httpx.ConnectError("nope"))
     node = FlowNode(id="m", kind="model", config={"app": "htrflow"})
     async with client:
         with pytest.raises(NodeError, match=r"serve unreachable at http://serve\.test:8000/htrflow \(ConnectError\)"):
@@ -147,15 +144,14 @@ async def test_an_unreachable_serve_names_the_configured_address_not_the_resolve
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_a_transient_serve_failure_is_retried_with_one_key_and_a_refusal_is_not(waits: list[float]) -> None:
+async def test_a_transient_serve_failure_is_retried_with_one_key_and_a_refusal_is_not(waits: list[float], respx_mock: respx.MockRouter) -> None:
     """A dropped connection, a 502/503/504 or a 429 is Serve not answering YET: the call is made again, up to
     `SERVE_ATTEMPTS`, after 2 s and then twice as long each time, or after the 429's Retry-After, with the same
     Idempotency-Key on every attempt. A 4xx is Serve refusing the request, which no retry changes."""
-    flaky = respx.post(f"{SERVE}/flaky").mock(
+    flaky = respx_mock.post(f"{SERVE}/flaky").mock(
         side_effect=[httpx.ConnectError("reset"), httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, text="read")]
     )
-    refused = respx.post(f"{SERVE}/refuses").mock(return_value=httpx.Response(400))
+    refused = respx_mock.post(f"{SERVE}/refuses").mock(return_value=httpx.Response(400))
 
     async with httpx.AsyncClient() as client:
         answered = await run_node(_model_job("flaky"), client=client, idempotency_key="run-1:m")
@@ -183,8 +179,7 @@ async def test_inspect_node_concatenates_its_upstreams_in_edge_order(client: htt
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_a_payload_past_its_own_ceiling_is_cut_loudly() -> None:
+async def test_a_payload_past_its_own_ceiling_is_cut_loudly(respx_mock: respx.MockRouter) -> None:
     """The value `run_node` returns is the one a run stores as the step's payload and reads back as the input of
     every dependent node, so an unbounded payload is an unbounded row.
 
@@ -195,7 +190,7 @@ async def test_a_payload_past_its_own_ceiling_is_cut_loudly() -> None:
     the whole document.
     """
     oversize = "x" * (MAX_PAYLOAD_CHARS + 5_000)
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=oversize))
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=oversize))
     job = NodeJob(node=FlowNode(id="m", kind="model", config={"app": "htrflow"}), inputs=["seed"], serve_url=SERVE, serve_token_file=TOKEN_FILE)
 
     async with httpx.AsyncClient() as client:
@@ -210,12 +205,11 @@ async def test_a_payload_past_its_own_ceiling_is_cut_loudly() -> None:
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_a_payload_under_the_ceiling_is_untouched() -> None:
+async def test_a_payload_under_the_ceiling_is_untouched(respx_mock: respx.MockRouter) -> None:
     """The cap is a ceiling, not a transform: every real payload passes through byte-for-byte, so a
     marker in a downstream input always means something."""
     body = '<TextLine><String CONTENT="Anno"/></TextLine>'
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=body))
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=body))
     job = NodeJob(node=FlowNode(id="m", kind="model", config={"app": "htrflow"}), inputs=["seed"], serve_url=SERVE, serve_token_file=TOKEN_FILE)
 
     async with httpx.AsyncClient() as client:

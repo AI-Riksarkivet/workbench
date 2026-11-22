@@ -1,7 +1,6 @@
 """Frame → row-table join family: vector + FTS search over a frame table.
 
-Ported from ``backend.search.frames``, keyed on the descriptor's identity
-fields: ranks the frame table (by an image/caption vector, or BM25 over the
+Keyed on the descriptor's identity fields: ranks the frame table (by an image/caption vector, or BM25 over the
 caption text), dedups to one best frame per row key, then fetches the matching
 row-table payload rows and re-orders them to the frame ranking. Backs visual /
 scene / scene_fts search and the frame legs of ``all``. A join that fails on the CALLER'S predicate
@@ -47,17 +46,12 @@ def _ranked_or_fallback(rank: Callable[..., list[dict[str, Any]]], *, scoped: bo
     frame table lacks (a metadata filter, which stays on the row-table join),
     retry unscoped. A failing UNSCOPED rank is an OUTAGE and is raised.
 
-    IT USED TO RETURN ``[]`` THERE, defended as "no vector/FTS index yet" — and that justification is
-    empirically false. Measured against lancedb at HEAD: an FTS query with no FTS index does NOT
-    raise (flat scan), and a vector search with no ANN index does NOT raise (flat search, rows
-    returned). Absence never reaches this function at all — the callers' guard
-    (``vec is None or frame_tbl is None or column not in frame_tbl.schema.names``) has already
-    answered ``[]`` for it.
-
-    So the only thing that ``except`` ever caught was a genuine failure — a store outage, a timeout,
-    a malformed query — and every one of them was rendered to the caller as "no hits". An empty 200
-    says "this corpus has nothing to show you", which is a different claim from "search is down", and
-    the search plane is half of what this estate is for.
+    A missing index is not a reason to answer ``[]``: measured against lancedb, an FTS query with no FTS index does
+    NOT raise (flat scan), and a vector search with no ANN index does NOT raise (flat search, rows returned). Absence
+    never reaches this function at all — the callers' guard
+    (``vec is None or frame_tbl is None or column not in frame_tbl.schema.names``) has already answered ``[]`` for it.
+    So what an unscoped rank raises is a genuine failure — a store outage, a timeout, a malformed query — and an
+    empty 200 would say "this corpus has nothing to show you", a different claim from "search is down".
 
     The scoped→unscoped retry stays, because THAT case is real and verified: a prefilter naming a
     non-frame column raises ``Invalid user input: Schema error: No field named ...``, and retrying
@@ -139,8 +133,7 @@ def frame_fts_search(
     ``scope_where`` prefilters to an upstream scope (see :func:`frame_search`).
     Returns ``[]`` when the corpus declares no caption column — the guard below, not an ``except``.
     A MISSING FTS INDEX IS NOT THAT CASE: measured against lancedb, an FTS query with no index does
-    not raise, it flat-scans. This docstring used to claim the index case was handled by degrading to
-    ``[]``, which is how a real ranker failure came to look like "no hits".
+    not raise, it flat-scans, so a ranker failure is raised rather than read as "no hits".
     """
     if not query or frame_tbl is None or column not in frame_tbl.schema.names:
         return []

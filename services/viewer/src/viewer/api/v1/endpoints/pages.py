@@ -16,10 +16,9 @@ correct for single-row serving (``ids=[rowid]``, where an empty result IS the nu
 ``large_binary`` payload has neither a take-path nor a descriptor; both routes decide that shape from
 ``ds.schema`` (see ``_page_rows`` / ``_take_page``).
 
-READS MUST BE BOUNDED BY THE REQUEST, NOT BY THE DATASET. Both routes used to run one
-unfiltered, unbounded ``read_aligned_table`` at ``blob_handling="all_binary"``, which materialises
-EVERY row's bytes: serving one page cost the whole corpus, and the listing's ``limit`` was applied
-only after the scan, so the listing's memory was bounded by the volume. A blob
+READS MUST BE BOUNDED BY THE REQUEST, NOT BY THE DATASET. An unfiltered ``read_aligned_table`` at
+``blob_handling="all_binary"`` materialises EVERY row's bytes, so serving one page would cost the whole corpus, and a
+``limit`` applied after the scan bounds nothing. A blob
 column scanned at DEFAULT ``blob_handling`` yields ``struct<kind, position, size, blob_id,
 blob_uri>`` and reads no object bytes at all, so ``size`` and ``has_payload`` are answerable for
 free; the bytes are fetched for one row, by row id, only on the route that serves them. A PLAIN

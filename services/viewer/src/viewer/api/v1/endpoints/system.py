@@ -1,7 +1,6 @@
 """System endpoints — the health badge, filterable columns, documents gallery.
 
-Ported from the pre-split ``backend/system/router.py`` onto the descriptor:
-DB facts come from the resolved dataset handle, filterable columns are the
+Descriptor-driven: DB facts come from the resolved dataset handle, filterable columns are the
 discovered scalar columns of the declared row table (vector, blob, and
 alignments columns excluded), and the gallery projects the doc-level fields
 the descriptor declares (metadata + doc key + duration) that actually exist
@@ -119,8 +118,7 @@ def _health(caller: LakehouseCaller, state: AppState, dataset: str | None) -> He
 def _column_kind(arrow_type: str) -> ColumnKind | None:
     """Friendly filter kind for a discovered Arrow type (None = not filterable).
 
-    Works on the stringified type carried by :class:`ColumnInfo` — the same
-    buckets the old pyarrow-based check used; list/struct/binary/json fall
+    Works on the stringified type carried by :class:`ColumnInfo`; list/struct/binary/json fall
     through to None because they can't appear in a SQL filter anyway.
     """
     if arrow_type == "bool":
@@ -165,12 +163,8 @@ def columns(caller: CallerDep, state: StateDep, dataset: DatasetParam = None) ->
 
 
 class DocumentsPage(Page[dict[str, Any]]):
-    """The shared envelope plus the key this route used to send.
-
-    `docs` is DEPRECATED and mirrors `items`. It stays for one release because a rename is a wire
-    change and the web pods roll separately from this service — `annotator`'s `DataSelection.svelte`
-    reads `docsPage.docs`, so an un-rolled pod talking to a new viewer would render an empty gallery.
-    Remove it once the zones are known to be past this version.
+    """The shared page envelope plus `docs`, which mirrors `items`: the app's Results panel
+    (`#lib/dock/panels/ResultsPanel.svelte`) and the old annotator app's `DataSelection.svelte` read it.
     """
 
     @computed_field

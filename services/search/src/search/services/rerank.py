@@ -1,7 +1,6 @@
 """Cross-encoder head rerank: re-score the top ``rerank_n`` hits, keep the tail.
 
-Ported from ``backend.search.rerank``; the scored text column now comes from the
-descriptor's ``display.body`` instead of a hardcoded name. Pure: no Lance, no
+The scored text column is the descriptor's ``display.body``. Pure: no Lance, no
 exceptions. The reranker getter (passed in) is the only dependency, and that
 getter owns its own 503 mapping (see :mod:`search.services.clients`).
 """

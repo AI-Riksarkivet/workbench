@@ -83,5 +83,5 @@ class FlowsSettings(GovernedAuthSettings, Settings):
 
 
 def build_flows_settings() -> FlowsSettings:
-    """Read once, at startup, from the process's environment, as `workbench.build_settings` reads the shared ones."""
+    """Read once, at startup, from the process's environment, as `workbench.app.build_settings` reads the shared ones."""
     return FlowsSettings.model_validate({})

@@ -1,7 +1,6 @@
 """Media endpoints + blob/key primitives — descriptor-driven Blob V2 serving.
 
-Ported from the pre-split ``backend/media/{blobs,router}.py`` with every table
-and column name resolved from the dataset descriptor at request time: the
+Every table and column name is resolved from the dataset descriptor at request time: the
 document table/blob/mime/thumbnail bindings come from ``declared.document``,
 the frames table from the ``visual`` vector binding (else the ``frames``
 capability), and the doc-key whitelist pattern from ``declared.identity`` —
@@ -99,12 +98,11 @@ def stream_blob_range(ds: lance.LanceDataset, column: str, rowid: int, *, start:
     """Yield bytes of the inclusive ``[start, end]`` range from a blob column."""
     blob = ds.take_blobs(column, ids=[rowid])[0]
     if blob is None:
-        # THIS NO LONGER RAISES, and that is the fix. `payload_size` has already refused a null
-        # payload with a 404, before any response object existed. Reaching here means that guard was
-        # bypassed — and by now the headers are on the wire, so an exception cannot become a status:
-        # raising is what produced a 200 with `Content-Length: 0` followed by an unhandled-ASGI
-        # traceback. An empty body is the only outcome that cannot contradict what was already sent,
-        # so the violation is reported where it can still be acted on: the log.
+        # NOT A RAISE. `payload_size` has already refused a null payload with a 404, before any response
+        # object existed. Reaching here means that guard was bypassed — and by now the headers are on the
+        # wire, so an exception cannot become a status, only an unhandled-ASGI traceback after a 200. An
+        # empty body is the only outcome that cannot contradict what was already sent, so the violation is
+        # reported where it can still be acted on: the log.
         logger.error("null payload reached the stream for rowid %s in %r — the route guard was bypassed", rowid, column)
         return
     with blob as f:
@@ -181,10 +179,8 @@ class RangeVerdict(Enum):
     unrecognized unit or an unsupported form must not become a 416); UNSATISFIABLE
     means a well-formed single ``bytes=`` range the body cannot satisfy (→ 416).
 
-    An enum plus :class:`ByteRange` rather than the old ``tuple | str-sentinel |
-    None``: three anonymous shapes forced the caller to decode the answer
-    by rebinding its header variable, and a string sentinel is one typo away from
-    a header value.
+    An enum plus :class:`ByteRange` rather than ``tuple | str-sentinel | None``: three anonymous shapes would force
+    the caller to decode the answer, and a string sentinel is one typo away from a header value.
     """
 
     IGNORE = "ignore"
@@ -230,20 +226,11 @@ def parse_range(header: str, total: int) -> ByteRange | RangeVerdict:
 def payload_size(ds: lance.LanceDataset, column: str, rowid: int) -> int:
     """Probe a blob's size without reading its contents; refuse a row that has no payload.
 
-    ONE PROBE, ONE DECISION, and that is the fix rather than an optimisation. This was `blob_size`,
-    which returned 0 for a null payload under a comment calling zero "the honest answer" — while its
-    sibling `stream_blob_range` raised `NotFoundError` for the same value under a comment calling 404
-    "the honest answer and the one every other absence on this path already gives". The non-range
-    branch of `media()` called both, in that order, so a null-payload document got `total = 0`, fell
-    through to a `StreamingResponse`, and then raised on the generator's FIRST step — after starlette
-    had already sent `http.response.start` with a 200 and `Content-Length: 0`. By then the exception
-    handlers are out of reach: the caller received a 200 with an empty body where every sibling
-    absence gives a 404 problem+json, and the server logged an unhandled-ASGI traceback each time.
-
-    So the question is answered once, here, where a status can still be chosen — and answered the way
-    the rest of the path answers it. Merged into the size probe rather than added beside it because
-    `take_blobs` is object-store IO on a media route, and a separate guard would have doubled it while
-    leaving this function's zero branch unreachable from its only caller.
+    ONE PROBE, ONE DECISION. A null payload is a 404 problem+json, like every other absence on this path, and it must
+    be decided here, before a `StreamingResponse` sends a 200: once `http.response.start` is out, the exception
+    handlers are out of reach and a raise from the body's generator becomes a 200 with an empty body and an
+    unhandled-ASGI traceback. Merged into the size probe rather than added beside it because `take_blobs` is
+    object-store IO on a media route, and a separate guard would double it.
     """
     blob = ds.take_blobs(column, ids=[rowid])[0]
     # pylance 10.0.0 puts `None` in a null payload's slot; 9.0.0 omitted the row entirely.

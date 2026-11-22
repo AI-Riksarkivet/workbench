@@ -52,7 +52,7 @@ def _captured(logger_name: str, level: int = logging.WARNING, *, monkeypatch: py
     for name in ("core", "backends"):
         logging.getLogger(name).handlers = []
 
-    setup_logging()
+    setup_logging("INFO")
 
     logging.getLogger(logger_name).log(level, "canary-%s", logger_name)
     for handler in root.handlers:
@@ -74,7 +74,7 @@ def test_a_service_module_logger_REACHES_a_handler(name: str, monkeypatch: pytes
 def test_the_root_logger_is_configured_at_or_below_INFO() -> None:
     """`log.info` is load-bearing here — `ray_stage_job_submitted` and `transform_spec_set` are INFO,
     and they are how an operator sees that work started at all."""
-    setup_logging()
+    setup_logging("INFO")
     root = logging.getLogger()
 
     assert root.level <= logging.INFO, f"root is at {logging.getLevelName(root.level)}; INFO-level operational logs are discarded"
@@ -83,9 +83,9 @@ def test_the_root_logger_is_configured_at_or_below_INFO() -> None:
 
 def test_setup_is_IDEMPOTENT_so_repeated_app_builds_do_not_duplicate_lines() -> None:
     """`make_service_app` runs it per app, and a test process may build several."""
-    setup_logging()
+    setup_logging("INFO")
     first = len(logging.getLogger().handlers)
-    setup_logging()
-    setup_logging()
+    setup_logging("INFO")
+    setup_logging("INFO")
 
     assert len(logging.getLogger().handlers) == first, "handlers accumulated — each log line would be emitted N times"

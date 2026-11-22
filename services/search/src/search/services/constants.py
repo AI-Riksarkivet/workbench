@@ -1,10 +1,8 @@
 """IVF_PQ recall knobs + reserved column names for the search layer.
 
 These are algorithmic constants (not env-varying), so they stay module
-constants, not :class:`~workbench.media.config.Settings`. Unlike the old
-``backend.search.constants``, the hit projection is no longer a constant — it
-is derived per dataset from the descriptor (see
-:func:`search.services.target.hit_columns`).
+constants, not :class:`~workbench.media.config.Settings`. The hit projection is not one of them: it is derived per
+dataset from the descriptor (see :func:`search.services.target.hit_columns`).
 """
 
 from __future__ import annotations
@@ -18,8 +16,8 @@ VECTOR_NPROBES = 20
 # Adaptive probing: scan VECTOR_NPROBES partitions, extending toward all of them
 # only when a *selective* prefilter leaves the first pass short of `limit`. Pinning
 # nprobes (min == max) instead makes a selective scope silently drop rows — the
-# index probes too few partitions to contain them (a 20-chunk scope returned 1/20
-# before this). 0 = uncapped, cheap here (~35 IVF partitions at 145k rows → worst
+# index probes too few partitions to contain them (measured: a 20-chunk scope returned 1/20
+# with pinned nprobes). 0 = uncapped, cheap here (~35 IVF partitions at 145k rows → worst
 # case a full-index scan of a few ms); cap it if the corpus grows ~100x.
 VECTOR_MAX_NPROBES = 0
 VECTOR_REFINE_FACTOR = 3

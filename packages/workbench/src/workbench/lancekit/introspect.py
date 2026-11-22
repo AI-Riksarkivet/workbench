@@ -56,8 +56,8 @@ def _column_info(field: pa.Field) -> ColumnInfo:
 def _index_type(type_url: str) -> str:
     """Index kind from the proto type_url tail (`/lance.table.BTreeIndexDetails` → `BTree`).
 
-    Vector indexes collapse to the generic `Vector` (the new API no longer names the
-    algorithm, e.g. IVF_PQ) — display-only downstream, validated as an opaque string.
+    Vector indexes collapse to the generic `Vector` (the type URL does not name the algorithm, e.g. IVF_PQ) —
+    display-only downstream, validated as an opaque string.
     """
     return type_url.rsplit(".", 1)[-1].removesuffix("IndexDetails") or "?"
 

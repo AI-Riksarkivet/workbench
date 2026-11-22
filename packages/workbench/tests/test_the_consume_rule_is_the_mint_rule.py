@@ -17,6 +17,7 @@ _UNMINTABLE = [
     pytest.param("ACME", id="uppercase"),
     pytest.param("acme_bronze", id="underscore"),
     pytest.param("ab", id="two-chars-below-the-floor"),
+    pytest.param("a" * 64, id="sixty-four-chars-over-the-ceiling"),
     pytest.param("acme-", id="trailing-hyphen"),
 ]
 
@@ -26,9 +27,15 @@ def test_an_id_the_catalog_could_not_mint_is_not_consumed(value: str) -> None:
     assert is_safe_project(value) is False
 
 
-@pytest.mark.parametrize("value", ["acme-bronze", "a" * 63])
-def test_a_real_registered_id_still_passes(value: str) -> None:
-    """The control. Without it, a rule that refused everything would pass above."""
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("acme-bronze", id="hyphenated"),
+        pytest.param("abc", id="three-chars-the-floor"),
+        pytest.param("a" * 63, id="sixty-three-chars-the-ceiling"),
+    ],
+)
+def test_an_id_of_the_mint_rule_is_accepted(value: str) -> None:
     assert is_safe_project(value) is True
 
 

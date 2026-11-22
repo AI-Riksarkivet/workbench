@@ -68,6 +68,7 @@ extend-select = ["TID251", "FAST001"]
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses.dataclass".msg = "Structured values are pydantic BaseModel (CLAUDE.md, writing-python)."
 "boto3".msg = "No raw S3 client: data is reached through lance-namespace, on the storage options the catalog vends."
+"respx.mock".msg = "Take the `respx_mock` fixture (root conftest.py): the bare decorator's router lets an uncalled route pass."
 "signal.signal".msg = "SIGTERM is taken only by workbench.draining; a second handler replaces the drain."
 "pyarrow.ipc.open_stream".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."
 "pyarrow.ipc.open_file".msg = "Decode an Arrow IPC body only through workbench.arrow_ipc: it bounds and validates what a caller sends."

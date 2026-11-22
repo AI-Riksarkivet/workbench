@@ -75,11 +75,8 @@ class BodySizeLimitMiddleware:
             await self._reject(send)
 
     async def _reject(self, send: Send) -> None:
-        # Through the SHARED builder, so this envelope carries the spec's required `code` and `error`.
-        # A generated Lance-Namespace client validates `ErrorResponse` with `code` as a REQUIRED,
-        # no-default field, so the four-key body this used to emit made the client raise rather than
-        # read the refusal. This middleware cannot raise its way to the handler — it is pure ASGI and
-        # must answer before the body is buffered — so the shape comes from `ns_errors` instead.
+        # Through the shared builder, so a 413 has the envelope the problem handlers answer with. This middleware
+        # cannot raise its way to a handler: it is pure ASGI and must answer before the body is buffered.
         body = json.dumps(
             problem_body(
                 ErrorCode.INVALID_INPUT,

@@ -1,25 +1,9 @@
-"""An `http://` issuer must fail at STARTUP, not as a 401 on every request.
+"""Settings no bearer could pass are refused when they are built, and an http URL met at verify time is logged.
 
-The defect: "An `http://` OIDC issuer in production surfaces as an opaque 401 on every
-request, and the 'logged distinctly' the code promises does not exist".
-
-`_require_https` refuses at VERIFY time, so an operator who ships `WORKBENCH_OIDC_ISSUER=http://…` without
-`WORKBENCH_OIDC_ALLOW_INSECURE` gets a pod that reports healthy and then refuses every bearer, valid or not,
-from the first request on.
-
-THE COMMENT CLAIMED OTHERWISE. It said the failure is "surfaced at verify time as an opaque auth
-failure but logged distinctly", and `oidc.py` imported no logging at all. A comment asserting a
-behaviour the code does not have is worse than none: it is what an operator reads instead of the logs
-that were never written.
-
-WHERE IT BELONGS. `GovernedAuthSettings._validate_governed_auth` already exists to "fail fast at
-construction rather than fail open at request time", and already validates the adjacent invariants —
-issuer and audience present when OIDC is on, OIDC on when FGA is on. A scheme is knowable at exactly
-the same moment.
-
-`_require_https` STAYS as the runtime backstop: `jwks_uri` comes from discovery, so the settings
-cannot see it, and that path can still only be caught at verify time. It gets the log line its comment
-always promised.
+`GovernedAuthSettings._validate_governed_auth` fails fast at construction rather than fail open at request time: an
+`http://` issuer without `WORKBENCH_OIDC_ALLOW_INSECURE`, a missing audience or idp id, an idp id no principal can carry,
+and the other combinations below. `_require_https` stays as the runtime backstop for the `jwks_uri` discovery names,
+which the settings cannot see, and logs `oidc_insecure_url` when it refuses.
 """
 
 from __future__ import annotations
@@ -55,8 +39,8 @@ def _settings(**over: object) -> _Governed:
     return _Governed.model_validate({**base, **over})
 
 
-def test_the_dev_escape_hatch_still_works() -> None:
-    """A local provider over http is the case the flag exists for; this must not become a hard ban."""
+def test_an_http_issuer_declared_insecure_is_accepted() -> None:
+    """A local provider over http is accepted when the settings declare it insecure."""
     settings = _settings(WORKBENCH_OIDC_ISSUER="http://keycloak.local:8080/realms/dev", WORKBENCH_OIDC_ALLOW_INSECURE=True)
     assert settings.oidc_issuer == "http://keycloak.local:8080/realms/dev"
 
@@ -107,14 +91,11 @@ def test_settings_no_bearer_could_pass_are_refused_at_construction(over: dict[st
         _settings(**over)
 
 
-def test_the_runtime_backstop_logs_what_its_comment_promises(caplog: pytest.LogCaptureFixture) -> None:
-    """`jwks_uri` comes from DISCOVERY, so settings cannot see it and only verify time can catch it.
-    That path keeps the check — and now actually logs, which is what the comment always claimed."""
+def test_the_runtime_backstop_refuses_an_http_url_and_logs_it(caplog: pytest.LogCaptureFixture) -> None:
+    """`jwks_uri` comes from DISCOVERY, so settings cannot see it and only verify time can catch it."""
     from workbench.governed import oidc
 
     with caplog.at_level(logging.WARNING), pytest.raises(Exception, match="HTTPS"):
         oidc._require_https("http://idp.internal/jwks", label="jwks_uri", allow_insecure=False)
 
-    assert "oidc_insecure_url" in caplog.text, (
-        "the comment says the failure is 'logged distinctly' and nothing was logged — a Lance door's 503 redacts it, so only the log names the setting"
-    )
+    assert [record.getMessage() for record in caplog.records] == ["oidc_insecure_url"]

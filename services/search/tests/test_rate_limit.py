@@ -1,26 +1,13 @@
-"""Unmetered expensive routes, and the per-pod assumption that makes in-memory limiting honest.
+"""Search's per-route limiter: the key it counts a caller by, the 429 it refuses with, and the probes it never limits.
 
-The audit's sharpest theme: nothing in the workbench rate-limits anything — `grep slowapi|Limiter` over
-the tree returned zero. `GET /api/explorer/search` drives GPU embedding plus a cross-encoder rerank
-per request, with an unbounded query string and a cache a varied `q` always misses.
-
-OWNER RULING 2026-08-26: slowapi, PER ROUTE, in-memory storage. Per-route rather than global is the
-reference's own rule and it is not stylistic — one number cannot be right for both `/search` and
-`/livez`, and rate-limiting a probe route makes k8s cycle pods under load, turning a limiter into an
-outage.
-
-IN-MEMORY IS CORRECT TODAY AND THE REASON IS MEASURABLE: every service carrying these limits runs
-`replicas: 1`, so per-pod state IS the global state. It stops being correct the moment one scales —
-N pods give N times the limit, silently. That is exactly the failure `rate-limiting.md` files under
-"in-process defaultdict rate limiter", and the workbench's own values.yaml anticipates scaling
-("stateless — scale freely in prod").
-
-So the assumption is GATED rather than commented: if a rate-limited service's replica count goes
-above one, the test below fails and names Redis as the fix. A limitation nobody can trip over
-silently is a different thing from a limitation written in a docstring.
+`search.core.rate_limit` limits each search entry point per route, on slowapi's in-memory backend. These tests pin the
+key (the authenticated subject, else the client address), the refusal (the shared problem+json envelope with a
+`Retry-After` a client can pace itself by), and that a route carrying no limit, a probe above all, is never refused.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -28,35 +15,22 @@ from fastapi.testclient import TestClient
 from search.core.rate_limit import by_subject, make_limiter, register_rate_limiting
 
 
-def test_the_key_function_falls_back_to_IP_for_an_anonymous_caller() -> None:
-    """ "Always include an `ip:` fallback so unauthenticated requests can't bypass the limit by
-    omitting the header" — the reference's rule, and the whole point on an anonymous route."""
+def _request(state: dict[str, Any]) -> Request:
+    """A real request from client 10.0.0.7 whose `request.state` holds `state`."""
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": [], "client": ("10.0.0.7", 51000), "state": state})
 
-    class _Client:
-        host = "10.0.0.7"
 
-    req = type("R", (), {"state": type("S", (), {})(), "client": _Client(), "headers": {}})()
-    assert by_subject(req) == "ip:10.0.0.7"  # ty: ignore[invalid-argument-type]
+def test_the_key_function_falls_back_to_the_client_address_for_an_anonymous_caller() -> None:
+    """Without the `ip:` fallback an anonymous caller would escape the limit by presenting no credential."""
+    assert by_subject(_request({})) == "ip:10.0.0.7"
 
 
 def test_the_key_function_prefers_the_authenticated_subject() -> None:
-    """Keying by IP on an authenticated route is the corporate-NAT defect: thousands of users behind
-    one address share a bucket and all get blocked together."""
-
-    class _Client:
-        host = "10.0.0.7"
-
-    state = type("S", (), {"subject": "alice@example.com"})()
-    req = type("R", (), {"state": state, "client": _Client(), "headers": {}})()
-    assert by_subject(req) == "user:alice@example.com"  # ty: ignore[invalid-argument-type]
+    """Keyed by address on an authenticated route, everyone behind one NAT would share one bucket."""
+    assert by_subject(_request({"subject": "alice@example.com"})) == "user:alice@example.com"
 
 
-def test_a_429_is_problem_json_with_Retry_After() -> None:
-    """The refusal has to be actionable and shaped like every other error in the workbench.
-
-    "Returning a plain 429 with no headers → clients can't self-throttle, retry storms hammer the API
-    back into 429."
-    """
+def test_a_429_is_the_shared_problem_envelope_with_retry_after() -> None:
     limiter = make_limiter()
     app = FastAPI()
     register_rate_limiting(app, limiter)
@@ -70,20 +44,17 @@ def test_a_429_is_problem_json_with_Retry_After() -> None:
         assert client.get("/expensive").status_code == 200
         resp = client.get("/expensive")
 
-    assert resp.status_code == 429
-    assert resp.headers["content-type"].startswith("application/problem+json")
-    assert "Retry-After" in resp.headers
-    body = resp.json()
-    assert body["status"] == 429
-    assert body["title"] == "Too Many Requests"
+    assert (resp.status_code, resp.headers["content-type"], resp.headers["retry-after"]) == (429, "application/problem+json", "60")
+    assert resp.json() == {
+        "type": "about:blank#rate-limited",
+        "title": "Too Many Requests",
+        "status": 429,
+        "detail": "rate limit exceeded: 1 per 1 minute",
+    }
 
 
-def test_probe_routes_are_never_limited() -> None:
-    """ "Rate-limiting health checks → k8s probes fail under load → pods cycle → real outage."
-
-    Asserted because the tempting shape of this change — a global middleware — breaks exactly this,
-    and it is the reason the reference forbids one.
-    """
+def test_a_route_with_no_limit_is_never_refused() -> None:
+    """A limited probe would fail the kubelet's checks under load and cycle the pods; a probe carries no limit."""
     limiter = make_limiter()
     app = FastAPI()
     register_rate_limiting(app, limiter)
@@ -93,5 +64,4 @@ def test_probe_routes_are_never_limited() -> None:
         return {"status": "ok"}
 
     with TestClient(app) as client:
-        for _ in range(50):
-            assert client.get("/livez").status_code == 200
+        assert [client.get("/livez").status_code for _ in range(50)] == [200] * 50

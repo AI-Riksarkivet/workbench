@@ -9,7 +9,6 @@ routers, its lifespan, its readiness check and the response headers a browser ma
 
 import asyncio
 import logging
-import os
 import sys
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -30,41 +29,37 @@ from workbench.probes import ReadyCheck, make_probes_router
 from workbench.slash import SlashToleranceMiddleware
 
 
-def setup_logging() -> None:
-    """Send application logs to stdout, configured on the ROOT logger, so every module inherits it.
+def setup_logging(level: str) -> None:
+    """Send application logs to stdout at ``level``, configured on the ROOT logger, so every module inherits it.
 
     Every module logs through ``logging.getLogger(__name__)``, so a handler on any narrower logger name would leave the
     records of every module outside it propagating to a root logger with no handler, and discarded: a best-effort
     branch that reports a failure with a WARNING would then report it nowhere.
 
-    ``WORKBENCH_LOG_LEVEL`` is the volume lever (default INFO). Root-level INFO makes chatty third-party libraries
-    audible too; that is the trade against losing an application log, and one variable turns it down.
+    ``level`` is the volume lever (`Settings.log_level`, ``WORKBENCH_LOG_LEVEL``, default INFO). Root-level INFO makes
+    chatty third-party libraries audible too; that is the trade against losing an application log, and one variable
+    turns it down.
     """
-    level = os.environ.get("WORKBENCH_LOG_LEVEL", "INFO").upper()
     root = logging.getLogger()
-    root.setLevel(level)
+    root.setLevel(level.upper())
     # Idempotent by handler NAME, not by count: `make_service_app` runs this per app, and a duplicate
     # handler emits every line twice.
     if not any(h.get_name() == "workbench-stdout" for h in root.handlers):
         handler = logging.StreamHandler(sys.stdout)
         handler.set_name("workbench-stdout")
-        # THE REQUEST ID JOINS EVERY RECORD HERE. `RequestIDMiddleware` mints one and echoes it to the
-        # caller; until this filter existed nothing read it, so a user could quote an id from a failed
-        # request and an operator had nothing to grep for.
+        # THE REQUEST ID AND THE TRACE ID JOIN EVERY RECORD HERE, so an operator can grep stdout for the id a caller
+        # quotes (`RequestIDMiddleware` echoes it) and for the trace id a dashboard shows.
         #
         # A FILTER on the one handler, not a `LoggingMiddleware`: a middleware annotates only the
         # records it writes itself, while this covers every module in every service — libraries
         # included — with no per-service edit. Outside a request it renders `-`, which is why the
         # context var defaults to a visible placeholder rather than an empty string that would read
         # like a formatting bug.
+        #
+        # The trace id comes from the filter too, not from `LoggingInstrumentor(set_logging_format=True)`: that reaches
+        # `logging.basicConfig(format=...)`, which does nothing once a root handler exists, as this one does. So this
+        # format string is also safe on a record that never met OpenTelemetry.
         handler.addFilter(CorrelationFilter())
-        # THE TRACE ID JOINS IT, and this is the tier that was missing one. `LoggingInstrumentor`
-        # attaches `otelTraceID` to every record, but the only way it ever reached a LINE was
-        # `set_logging_format=True` → `logging.basicConfig(format=...)`, which no-ops because this
-        # handler already exists. So the id rode on every record and printed on none of them: the
-        # OTLP copy in GreptimeDB could be joined to a trace and `kubectl logs` — the copy an
-        # operator reads first — could not. Both fields come from the filter, so this format string
-        # is safe on a record that never met OpenTelemetry.
         # `DiagnosticFormatter`, not `Formatter`: the correlation fields have slots in this string, and
         # everything the caller recorded in `extra=` follows the message. A format string cannot do the
         # second half — it names fixed fields, and the diagnostics differ at every call site.
@@ -93,6 +88,59 @@ async def _nothing_to_open(app: FastAPI) -> AsyncGenerator[None]:
     yield
 
 
+def _factory_lifespan(settings: Settings, service_lifespan: Lifespan, installed: Sequence[Telemetry]) -> Lifespan:
+    """The lifespan the factory gives every app: the service's own inside it, the lifecycle flags and the drain around
+    it, and the telemetry in ``installed`` closed last.
+
+    THE LIFECYCLE IS THE FACTORY'S, for every app: started once the service's own lifespan has opened what it serves
+    with (never before, which would announce a half-built app), draining from SIGTERM (the drain hands the signal on to
+    uvicorn) or from the lifespan's end, whichever comes first, and in a `finally`, so a lifespan that raises on the way
+    out still leaves the process unready. What else `/readyz` asks is the service's `ready_check`, answered from the
+    state of what it opened. ``installed`` is filled after the app exists, since the instrumentation wraps the app this
+    lifespan belongs to.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        app.state.settings = settings
+        try:
+            async with service_lifespan(app):
+                mark_started(app)
+                disarm = arm_drain_on_sigterm(app)
+                try:
+                    yield
+                finally:
+                    mark_draining(app)
+                    disarm()
+        finally:
+            # Last, after the service has closed what it opened, so what its teardown logged is sent too; off the event
+            # loop, and within `TELEMETRY_CLOSE_S` whatever the gateway does.
+            for telemetry_handle in installed:
+                if not await asyncio.to_thread(telemetry_handle.close_within, TELEMETRY_CLOSE_S):
+                    logging.getLogger(__name__).warning("telemetry_not_sent_at_shutdown", extra={"waited_s": TELEMETRY_CLOSE_S})
+
+    return lifespan
+
+
+def _mount_routes(app: FastAPI, *, prefix: str, routers: Sequence[APIRouter], root_routers: Sequence[APIRouter], ready_check: ReadyCheck | None) -> None:
+    """Mount the probes and the service's routers, and resolve the other trailing-slash spelling in-process.
+
+    THE OPERATIONAL PROBES are root-mounted for every app: one drain-aware `/livez` + `/readyz` pair. ROOT, not under
+    ``prefix``, because a kubelet does not know a service's prefix. `ready_check` is the optional half, for a service
+    that reports the state of what its lifespan opened. ``routers`` go under ``prefix``, ``root_routers`` at the paths
+    they name themselves.
+    """
+    app.include_router(make_probes_router(ready_check))
+    for router in routers:
+        app.include_router(router, prefix=prefix)
+    for router in root_routers:
+        app.include_router(router)
+    # Resolve the other trailing-slash spelling in-process instead of a
+    # 307 redirect that would leak the service's in-pod address (see slash.py).
+    app.router.redirect_slashes = False
+    app.add_middleware(SlashToleranceMiddleware, routes_provider=lambda: app.router.routes)
+
+
 def make_service_app(
     *,
     title: str,
@@ -119,49 +167,20 @@ def make_service_app(
     handlers and the routers.
 
     `settings` IS INJECTABLE, and omitting it builds one from the environment: every caller builds its app at MODULE
-    level, so the object passed is the one configuration the router prefix, the docs URLs, the middleware,
-    `app.state.settings` and the telemetry all see.
+    level, so the object passed is the one configuration the log level, the router prefix, the docs URLs, the
+    middleware, `app.state.settings` and the telemetry all see.
     """
-    setup_logging()
-    # `build_settings()` is still the DEFAULT, not a fallback for a bad argument: `setup_logging()`
-    # must run first either way, so a Settings validation failure is loggable rather than silent.
     settings = build_settings() if settings is None else settings
+    setup_logging(settings.log_level)
     # THE AUDIT TRAIL IS ARMED HERE, for every app this factory builds (`Settings.audit_enabled`), so no service
-    # inherits it from `WORKBENCH_LOG_LEVEL` instead of deciding it. Immediately after `setup_logging`, which sets the
+    # inherits it from the log level instead of deciding it. Immediately after `setup_logging`, which sets the
     # root level this must override in both directions.
     configure_audit(enabled=settings.audit_enabled)
-    base: Lifespan = lifespan if lifespan is not None else _nothing_to_open
-    # Filled once the app exists: the instrumentation wraps the app the lifespan below belongs to.
     installed: list[Telemetry] = []
-
-    @asynccontextmanager
-    async def wrapped(app: FastAPI) -> AsyncGenerator[None]:
-        # THE LIFECYCLE IS THE FACTORY'S, for every app: started once the service's own lifespan has opened what it
-        # serves with (never before, which would announce a half-built app), draining from SIGTERM (the drain hands
-        # the signal on to uvicorn) or from the lifespan's end, whichever comes first, and in a `finally`, so a
-        # lifespan that raises on the way out still leaves the process unready. What else `/readyz` asks is the
-        # service's `ready_check`, answered from the state of what it opened.
-        app.state.settings = settings
-        try:
-            async with base(app):
-                mark_started(app)
-                disarm = arm_drain_on_sigterm(app)
-                try:
-                    yield
-                finally:
-                    mark_draining(app)
-                    disarm()
-        finally:
-            # Last, after the service has closed what it opened, so what its teardown logged is sent too; off the event
-            # loop, and within `TELEMETRY_CLOSE_S` whatever the gateway does.
-            for telemetry_handle in installed:
-                if not await asyncio.to_thread(telemetry_handle.close_within, TELEMETRY_CLOSE_S):
-                    logging.getLogger(__name__).warning("telemetry_not_sent_at_shutdown", extra={"waited_s": TELEMETRY_CLOSE_S})
-
     app = FastAPI(
         title=title,
         version="0.1.0",
-        lifespan=wrapped,
+        lifespan=_factory_lifespan(settings, lifespan if lifespan is not None else _nothing_to_open, installed),
         # Opt-IN. See `Settings.docs_enabled` for why the default is closed rather than open.
         docs_url=f"{settings.api_prefix}/docs" if settings.docs_enabled else None,
         redoc_url=f"{settings.api_prefix}/redoc" if settings.docs_enabled else None,
@@ -170,28 +189,12 @@ def make_service_app(
     register_handlers(app)
     # The rest of every service's answers: a validation error (422), a framework 404 or 405, an unexpected exception
     # (500, or 503 for a store that did not answer), and a lance-namespace error a door lets through, mapped by its
-    # code. Installed with the domain handlers, so every error body a service answers has one shape.
+    # code. Installed after the domain handlers, so every error body a service answers comes from one of the two.
     install_problem_handlers(app, logging.getLogger(__name__))
     register_middleware(app, settings, expose_headers=expose_headers)
-
-    # THE OPERATIONAL PROBES, root-mounted, for every app this factory builds: one drain-aware `/livez` + `/readyz`
-    # pair. ROOT, not under `api_prefix`, because a kubelet does not know a service's prefix. `ready_check` is the
-    # optional half, for a service that reports the state of what its lifespan opened.
-    app.include_router(make_probes_router(ready_check))
-
-    for router in routers:
-        app.include_router(router, prefix=settings.api_prefix)
-    for router in root_routers:
-        app.include_router(router)
-
-    # Resolve the other trailing-slash spelling in-process instead of a
-    # 307 redirect that would leak the service's in-pod address (see slash.py).
-    app.router.redirect_slashes = False
-    app.add_middleware(SlashToleranceMiddleware, routes_provider=lambda: app.router.routes)
-
+    _mount_routes(app, prefix=settings.api_prefix, routers=routers, root_routers=root_routers, ready_check=ready_check)
     telemetry_handle = setup_otel(app, service_name=title, settings=settings, sinks=telemetry)
     app.state.telemetry = telemetry_handle
     if telemetry_handle is not None:
         installed.append(telemetry_handle)
-
     return app

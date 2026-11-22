@@ -1,7 +1,6 @@
 """Diarization endpoint — serve a recording's speaker turns for the player timeline.
 
-Port of the old ``backend/diarization/router.py``: the turns table name now
-comes from the descriptor's ``diarization`` capability, the dataset from the
+The turns table name comes from the descriptor's ``diarization`` capability, the dataset from the
 optional ``dataset`` query param, and the ``doc_id`` whitelist from the
 descriptor's ``identity.doc_key_pattern``. The table is read on demand per
 request (never cached at startup) so a diarization rebuild is picked up

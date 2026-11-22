@@ -10,7 +10,6 @@ Driven over HTTP at the boundary with the SAME problem+json handlers the service
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -25,24 +24,23 @@ from workbench.media.deps import get_state
 from workbench.media.state import AppState
 
 
-class _DeadEncoders:
+def _refuse(request: httpx.Request) -> httpx.Response:
     """The default encoder posture: nothing deployed, so every ping refuses, as httpx says it."""
-
-    def get(self, url: str, timeout: float = 0.0) -> Any:
-        raise httpx.ConnectError(f"All connection attempts failed to {url}")
+    raise httpx.ConnectError(f"All connection attempts failed to {request.url}", request=request)
 
 
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     """The default dataset names a namespace an empty directory catalog does not hold — an un-seeded corpus."""
     settings = MediaSettings.model_validate({**lakehouse_dir(str(tmp_path)), "WORKBENCH_DEFAULT_DATASET": "lake~acme$corpus"})
-    state = AppState(settings=settings, http=_DeadEncoders())
-    app = FastAPI()
-    register_handlers(app)
-    app.include_router(system_router)
-    app.dependency_overrides[get_state] = lambda: state
-    with TestClient(app) as c:
-        yield c
+    with httpx.Client(transport=httpx.MockTransport(_refuse)) as encoders:
+        state = AppState(settings=settings, http=encoders)
+        app = FastAPI()
+        register_handlers(app)
+        app.include_router(system_router)
+        app.dependency_overrides[get_state] = lambda: state
+        with TestClient(app) as c:
+            yield c
 
 
 def test_health_is_200_with_no_dataset_loaded_and_tells_no_internal_detail(client: TestClient) -> None:

@@ -1,7 +1,6 @@
 """Document-chunk endpoints — a document's ordered chunks + per-chunk alignments.
 
-Ported from the two body/alignment endpoints of the pre-split ``backend/search/
-router.py``, with the row table, identity keys, time columns, body column, and
+The row table, identity keys, time columns, body column, and
 alignments column all resolved from the dataset descriptor: rows come from
 ``declared.search.row_table``, ordering is by ``declared.time.start`` (identity
 keys as tiebreaker), the body column is ``declared.display.body``, and the

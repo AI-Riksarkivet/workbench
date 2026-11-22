@@ -14,7 +14,6 @@ from fastapi import FastAPI
 from search.api.v1.router import router as api_router
 from search.core.config import SearchSettings, get_search_settings
 from search.core.rate_limit import limiter, register_rate_limiting
-from workbench.app import setup_logging
 from workbench.media.app import build_media_app
 from workbench.media.config import MediaSettings
 from workbench.media.lifespan import make_media_lifespan
@@ -26,11 +25,6 @@ from workbench.otel import TelemetrySinks
 logger = logging.getLogger(__name__)
 
 configure_app_logging(packages=("search", "workbench"))  # INFO audit/lifecycle logs reach OTLP (lance-ns obs contract)
-
-# Application logging, before the app exists — every module here uses getLogger(__name__), and
-# without this they propagate to a root logger with no handlers and are DISCARDED
-# (see workbench.app.setup_logging).
-setup_logging()
 
 
 def _settings() -> MediaSettings:
@@ -60,9 +54,8 @@ def _with_rate_limiting(app: FastAPI) -> FastAPI:
 
     Applied here rather than inside `build_media_app` because it is the search plane's alone: slowapi
     reads `app.state.limiter` by that exact name for its header injection, and the problem+json 429
-    replaces slowapi's default so a refusal is shaped like every other error a service answers. It runs
-    AFTER the shared handlers for the same reason it always did — its 429 handler is the last word on
-    that status.
+    replaces slowapi's default so a refusal has the shared problem envelope. Its handler is registered for
+    `RateLimitExceeded` itself, which Starlette prefers to the shared `HTTPException` handler for that class.
     """
     register_rate_limiting(app, limiter)
     return app

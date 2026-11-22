@@ -170,9 +170,7 @@ class RunRefused(BaseModel):
 
     DOCUMENTATION ONLY: this is what `create_run` declares under `responses={422: ...}` so the
     OpenAPI describes the refusal. The body itself is produced by the one problem handler
-    from `RunRefusedError` below — the route used to build this model and return it as a
-    `JSONResponse`, which made this service the only one with a second error plane
-    (FLOWS-422-BYPASSES-HIERARCHY).
+    from `RunRefusedError` below, so this service has no second error plane.
     """
 
     type: str = FLOW_INVALID_TYPE

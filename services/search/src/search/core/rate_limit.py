@@ -16,15 +16,17 @@ replicas allow N times the rate; shared storage is what scaling search out needs
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
+from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
+
+from workbench.exceptions import DomainError, problem_response
 
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
 
 
 def by_subject(request: Request) -> str:
@@ -51,35 +53,35 @@ limiter = make_limiter()
 SEARCH_LIMIT = "30/minute"
 SEARCH_SCOPE = "search"
 
+#: The `Retry-After` a 429 carries when slowapi's own exception names none: the length of `SEARCH_LIMIT`'s window.
+DEFAULT_RETRY_AFTER_SECONDS: Final = "60"
+
+
+class RateLimited(DomainError):
+    """The caller sent more than the route's limit allows in its window."""
+
+    status_code = 429
+    title = "Too Many Requests"
+    problem_type = "about:blank#rate-limited"
+
 
 def register_rate_limiting(app: FastAPI, limiter: Limiter) -> None:
     """Attach the limiter and a problem+json 429 that keeps `Retry-After`.
 
     `app.state.limiter` is the attribute slowapi's own header injection reads. A 429 without `Retry-After` gives a
     client nothing to pace itself by, so retries hammer the route back into 429; slowapi also sends `X-RateLimit-*` on
-    an allowed response, so a client can slow down before it is refused.
+    an allowed response, so a client can slow down before it is refused. The body is a domain error's
+    (`workbench.exceptions.problem_response`), whose `type` the app reads a refusal's kind from.
     """
-    from fastapi.responses import JSONResponse
-
     app.state.limiter = limiter
-
-    async def _rate_limited(_request: Request, exc: Exception) -> JSONResponse:
-        retry_after = "60"
-        detail = "rate limit exceeded"
-        if isinstance(exc, RateLimitExceeded):
-            detail = f"rate limit exceeded: {exc.detail}"
-            headers = getattr(exc, "headers", None) or {}
-            retry_after = str(headers.get("Retry-After", retry_after))
-        return JSONResponse(
-            status_code=429,
-            content={
-                "type": "about:blank#ratelimitexceeded",
-                "title": "Too Many Requests",
-                "status": 429,
-                "detail": detail,
-            },
-            headers={"Retry-After": retry_after},
-            media_type="application/problem+json",
-        )
-
     app.add_exception_handler(RateLimitExceeded, _rate_limited)
+
+
+async def _rate_limited(_request: Request, exc: Exception) -> JSONResponse:
+    retry_after = DEFAULT_RETRY_AFTER_SECONDS
+    detail = "rate limit exceeded"
+    if isinstance(exc, RateLimitExceeded):
+        detail = f"rate limit exceeded: {exc.detail}"
+        headers = getattr(exc, "headers", None) or {}
+        retry_after = str(headers.get("Retry-After", retry_after))
+    return problem_response(RateLimited(detail, headers={"Retry-After": retry_after}))

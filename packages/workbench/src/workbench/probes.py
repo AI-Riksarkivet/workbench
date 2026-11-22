@@ -1,19 +1,13 @@
 """The ONE operational-probe router: ``/livez`` (dependency-free) + ``/readyz`` (state-gated).
 
-Separate from the frontend-facing ``/api/health`` badge (whose body is a service-specific
-contract). These two are for a process supervisor / load balancer: livez proves the event
-loop is responsive, readyz reports lifecycle gating off ``app.state`` plus — optionally —
-one service-specific hard-dependency check.
+Separate from a service's ``/api/health`` (whose body is a service-specific contract). These two are for a process
+supervisor / load balancer: livez proves the event loop is responsive, readyz reports lifecycle gating off
+``app.state`` plus — optionally — one service-specific check. One home, one shape (drain first, then startup, then the
+check; the ``Readiness`` body), and ``async def``: a sync handler would put liveness on the blocking threadpool, where
+it queues behind heavy Arrow/Lance work and fails exactly when the pod is busiest.
 
-Before this module the same twenty lines lived, hand-rolled, in six places and had already drifted
-three ways: the gate order (shutdown-first vs startup-first), the body shape (a bare
-``{"status": ...}`` dict vs the ``Readiness`` model), and — in one copy — a sync ``def``
-handler, which puts liveness on the blocking threadpool where it queues behind heavy Arrow/Lance
-work and fails exactly when the pod is busiest. One home, one shape, ``async def``.
-
-Mount the module-level :data:`router` when readiness is pure lifecycle gating; call
-:func:`make_probes_router` with a ``ready_check`` when the service has a hard dependency
-(lineage's feed, read through the catalog) or a fact worth reporting (the catalog's resolved namespace id).
+``workbench.app.make_service_app`` mounts :func:`make_probes_router` on every app, with the service's ``ready_check``
+when it has a fact worth reporting (a media service's components, the annotator's state store).
 """
 
 from __future__ import annotations
@@ -65,7 +59,3 @@ def make_probes_router(ready_check: ReadyCheck | None = None) -> APIRouter:
         return _serve(await ready_check(request))
 
     return probes
-
-
-#: The lifecycle-only probe router — mount this unless the service has a hard dependency to check.
-router = make_probes_router()

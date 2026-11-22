@@ -60,7 +60,26 @@ ALLOW_ALL: Final[FgaChecker] = _allow_all
 ANONYMOUS_CALLER: Final = LakehouseCaller(subject=ANONYMOUS_SUBJECT)
 
 
-def _public_url(request: Request, settings: Any) -> str:
+class AuthDepsSettings(Protocol):
+    """What these dependencies read of every service's settings: `GovernedAuthSettings`, structurally.
+
+    The lakehouse settings (`lakehouse_audience`, `reads_lakehouse`, `reads_lakehouse_as_person`) are read with
+    ``getattr`` and a default, because a service that reads no lakehouse (flows) does not mix them in.
+    """
+
+    @property
+    def oidc_enabled(self) -> bool: ...
+    @property
+    def dpop_required(self) -> bool: ...
+    @property
+    def fga_enabled(self) -> bool: ...
+    @property
+    def public_url(self) -> str | None: ...
+    @property
+    def public_mount(self) -> str: ...
+
+
+def _public_url(request: Request, settings: AuthDepsSettings) -> str:
     """The URL a proof's `htu` must name: the configured public URL plus the path below the gateway's rewrite, or the
     request's own URL when none is configured.
 
@@ -69,10 +88,10 @@ def _public_url(request: Request, settings: Any) -> str:
     so a dataset id like ``acme%24letters`` would never match. The comparison normalises both sides (`dpop`)."""
     raw: bytes | None = request.scope.get("raw_path")
     path = raw.decode("ascii", "replace") if raw is not None else request.url.path
-    public_url: str | None = getattr(settings, "public_url", None)
+    public_url = settings.public_url
     if not public_url:
         return str(request.url.replace(path=path, query=""))
-    mount: str = getattr(settings, "public_mount", "")
+    mount = settings.public_mount
     if mount and (path == mount or path.startswith(f"{mount.rstrip('/')}/")):
         path = path[len(mount.rstrip("/")) :]
     return f"{public_url.rstrip('/')}{path}"
@@ -82,7 +101,7 @@ def _public_url(request: Request, settings: Any) -> str:
 SERVICE_SUBJECT: Final = "workbench-service"
 
 
-def _passed_on(settings: Any, caller: Caller, people: PersonTokens) -> LakehouseCaller:
+def _passed_on(settings: AuthDepsSettings, caller: Caller, people: PersonTokens) -> LakehouseCaller:
     """The person's own token, passed on unchanged: only one that names the lakehouse's audience, so the lakehouse is
     handed nothing wider than the person's sign-in already asked for, and only one bound to no key (RFC 9449 § 7.1).
 
@@ -107,7 +126,7 @@ def _passed_on(settings: Any, caller: Caller, people: PersonTokens) -> Lakehouse
     return LakehouseCaller(subject=subject, token=lambda: people.latest(subject, issuer=issuer).token)
 
 
-def lakehouse_service_caller(request: Request, settings: Any) -> LakehouseCaller:
+def lakehouse_service_caller(request: Request, settings: AuthDepsSettings) -> LakehouseCaller:
     """This service as the lakehouse reads it: its own client-credentials token (`LakehouseTokens.for_service`), or no
     token where no lakehouse catalog is read over its REST door. No person's token is held or used.
 
@@ -216,14 +235,14 @@ def make_auth_deps(settings_dep: Any) -> AuthDeps:
         """The one-question checker over the store, or one that allows everything with authorization off."""
         return ALLOW_ALL if authz is None else authz.check
 
-    def _as_lakehouse_caller(request: Request, settings: Any, caller: Caller | None) -> LakehouseCaller:
+    def _as_lakehouse_caller(request: Request, settings: AuthDepsSettings, caller: Caller | None) -> LakehouseCaller:
         person = _as_person(request, settings, caller)
         own: LakehouseTokens | None = getattr(request.app.state, "lakehouse_tokens", None)
         # The workbench's own token rides beside the person's, for a lakehouse source the deployment reads as the
         # workbench (`workbench.sources.SourceIdentity.SERVICE`); a source of any other kind is sent neither.
         return person if own is None else person.model_copy(update={"service": own.for_service})
 
-    def _as_person(request: Request, settings: Any, caller: Caller | None) -> LakehouseCaller:
+    def _as_person(request: Request, settings: AuthDepsSettings, caller: Caller | None) -> LakehouseCaller:
         if caller is None:
             return ANONYMOUS_CALLER
         issuer = caller.claims.iss.rstrip("/")

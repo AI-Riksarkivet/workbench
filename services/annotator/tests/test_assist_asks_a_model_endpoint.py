@@ -296,11 +296,12 @@ def test_an_ask_in_a_deployment_with_no_endpoint_is_refused_as_unavailable(clien
     assert (answer.status_code, answer.json()["type"], answer.json()["detail"]) == (503, "about:blank#no-model-endpoint", UNAVAILABLE)
 
 
-@respx.mock
-def test_an_endpoint_that_answers_more_than_the_workbench_reads_is_an_error_and_its_answer_is_not_held(client_for: Build) -> None:
+def test_an_endpoint_that_answers_more_than_the_workbench_reads_is_an_error_and_its_answer_is_not_held(client_for: Build, respx_mock: respx.MockRouter) -> None:
     client = client_for("http://models.test")
     # The length the endpoint declares is past the cap: the answer is refused before a byte of it is read.
-    respx.post("http://models.test/v1/proposals").mock(return_value=httpx.Response(200, headers={"content-length": str(MAX_ANSWER_BYTES + 1)}, content=b"{}"))
+    respx_mock.post("http://models.test/v1/proposals").mock(
+        return_value=httpx.Response(200, headers={"content-length": str(MAX_ANSWER_BYTES + 1)}, content=b"{}")
+    )
 
     answer = _ask(client, stand_in.DETECTOR, prompt="a seal")
 

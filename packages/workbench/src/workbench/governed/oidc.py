@@ -58,7 +58,7 @@ import threading
 import time
 from collections.abc import Callable, Collection
 from pathlib import Path
-from typing import Annotated, Any, Final, NamedTuple
+from typing import Annotated, Any, Final
 from urllib.parse import urlsplit
 
 import httpx
@@ -219,12 +219,10 @@ class _Discovery(BaseModel):
     id_token_signing_alg_values_supported: list[str] = []
 
 
-class _Provider(NamedTuple):
-    """A resolved provider: its discovery doc, where its key set is read from, and the safe algorithm set.
+class _Provider(BaseModel):
+    """A resolved provider: its discovery doc, where its key set is read from, and the safe algorithm set. Immutable."""
 
-    An internal value bundle (not boundary input), so a ``NamedTuple`` is the right
-    container — no per-construction validation, just an immutable typed triple.
-    """
+    model_config = ConfigDict(frozen=True)
 
     spec: _Discovery
     jwks_uri: str
@@ -389,8 +387,10 @@ class _RefreshPace:
             return 0.0 if self._began is None else max(0.0, self._began + UNKNOWN_KID_REFRESH_INTERVAL_SECONDS - self._clock())
 
 
-class _Keys(NamedTuple):
+class _Keys(BaseModel):
     """A key set an issuer served: where from, its signing keys, and when its fetch ENDED. Immutable, replaced whole."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     uri: str
     keys: tuple[jwt.PyJWK, ...]
@@ -627,7 +627,7 @@ class OIDCVerifier:
         # The discovery document's own ``issuer`` is authoritative for token validation;
         # it must match what we configured (defends against a tampered discovery doc).
         #
-        # A 503, not a 401, and that is the deliberate half of this change: the check compares the
+        # A 503, not a 401, deliberately: the check compares the
         # DOCUMENT against this deployment's configuration, so a caller whose bearer is perfectly
         # good is told their credential is bad. The honest statement is that this service cannot
         # currently trust its own issuer. `_provider_for`'s "Unrecognized token issuer" stays a 401 —

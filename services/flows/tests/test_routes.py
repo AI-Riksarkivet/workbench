@@ -97,11 +97,10 @@ def test_validate_refuses_a_cycle_and_says_why(client: TestClient) -> None:
 # ---- runs ------------------------------------------------------------------------------------
 
 
-@respx.mock
-def test_a_run_is_accepted_driven_to_its_end_and_readable_afterwards(client: TestClient) -> None:
+def test_a_run_is_accepted_driven_to_its_end_and_readable_afterwards(client: TestClient, respx_mock: respx.MockRouter) -> None:
     """202 with the run as recorded, then the run driven in the background and read back from its rows, each step's
     outcome on its node."""
-    serve = respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
+    serve = respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
 
     started = _start(client, CHAIN)
     run = ended(client, "p1", started["run_id"])
@@ -115,11 +114,10 @@ def test_a_run_is_accepted_driven_to_its_end_and_readable_afterwards(client: Tes
     assert serve.calls.last.request.headers["idempotency-key"] == f"{run['run_id']}:m"
 
 
-@respx.mock
-def test_a_failing_model_node_blocks_its_dependents(client: TestClient) -> None:
+def test_a_failing_model_node_blocks_its_dependents(client: TestClient, respx_mock: respx.MockRouter) -> None:
     """A 502 from Serve fails the model node; `alto` and `inspect` are recorded blocked and never executed. The run
     ends `failed`, with every node painted: a sandbox that hid its red node would leave the builder nothing to paint."""
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(502))
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(502))
 
     run = ended(client, "p1", _start(client, CHAIN)["run_id"])
 
@@ -132,13 +130,12 @@ def test_a_failing_model_node_blocks_its_dependents(client: TestClient) -> None:
     assert nodes["a"]["ms"] is None
 
 
-@respx.mock
-def test_a_downstream_node_receives_the_full_payload_not_the_display_truncation(client: TestClient) -> None:
+def test_a_downstream_node_receives_the_full_payload_not_the_display_truncation(client: TestClient, respx_mock: respx.MockRouter) -> None:
     """`NodeRunState.output_text` is capped for display at 4 000 characters; the payload a step hands its dependents is
     stored whole (up to its own, far higher, ceiling) and read back as their input. Feeding the display copy downstream
     would hand an alto node a document cut mid-element."""
     long_alto = "<TextLine>" + "".join(f'<String CONTENT="w{i}"/>' for i in range(1200)) + "</TextLine>"
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=long_alto))
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=long_alto))
 
     run = ended(client, "p1", _start(client, CHAIN)["run_id"])
 
@@ -162,12 +159,11 @@ def test_a_graph_that_does_not_validate_is_refused_with_the_problem_LIST(client:
     assert resp.json()["problems"] == ["unknown node kind: quantum (node a)"]
 
 
-@respx.mock
-def test_the_same_idempotency_key_resolves_to_the_same_run_and_executes_once(client: TestClient) -> None:
+def test_the_same_idempotency_key_resolves_to_the_same_run_and_executes_once(client: TestClient, respx_mock: respx.MockRouter) -> None:
     """A retried start with the caller's key finds the run the first one recorded and starts nothing, and says it is a
     replay (`Idempotent-Replayed: true`, 200 rather than the fresh accept's 202); the same key on a different request is
     refused with 422 rather than answered with the other run (draft-ietf-httpapi-idempotency-key-header § 2.7)."""
-    serve = respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
+    serve = respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
 
     first = client.post("/api/flows/projects/p1/runs", json=CHAIN, headers={"Idempotency-Key": "page-7"})
     ended(client, "p1", first.json()["run_id"])
@@ -231,11 +227,10 @@ def test_a_step_whose_output_the_run_store_cannot_keep_fails_with_its_reason(cli
     assert "NUL" in (run["nodes"].get("x") or {}).get("error", ""), run
 
 
-@respx.mock
-def test_a_key_less_post_still_gets_a_fresh_run_each_time(client: TestClient) -> None:
+def test_a_key_less_post_still_gets_a_fresh_run_each_time(client: TestClient, respx_mock: respx.MockRouter) -> None:
     """No key means nothing to converge ON. Inventing one would make every retry a new run while
     pretending otherwise, so the randomness stays in the key and the id derivation stays single."""
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text=ALTO))
 
     ids = {_start(client, CHAIN)["run_id"] for _ in range(3)}
 

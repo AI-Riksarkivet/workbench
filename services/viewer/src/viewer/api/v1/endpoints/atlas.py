@@ -1,9 +1,7 @@
 """Atlas endpoints — serve the precomputed 2-D projection for the map view.
 
-Ported from the pre-split ``backend/atlas/router.py`` onto the descriptor: the
-projection spaces come from ``declared.atlas`` (each naming its x/y/cluster
-columns and source table), so the wire surface is unchanged while nothing here
-knows the corpus:
+The projection spaces come from ``declared.atlas`` (each naming its x/y/cluster
+columns and source table), so nothing here knows the corpus:
 
 * ``GET /status?space=`` — which declared spaces are built (x column has
   non-null rows), and how many rows carry the requested one.
@@ -95,7 +93,7 @@ def atlas_status(caller: CallerDep, state: StateDep, space: SpaceParam = None, d
 
     ``spaces`` always reports every declared space's built-ness (so the UI can
     gate its toggle); ``projected``/``rows`` reflect the requested ``space``
-    (back-compatible with the old single-space shape).
+    (the single-space fields beside the per-space map).
     """
     handle = dataset_handle(state, dataset, caller)
     declared = handle.declared
@@ -270,7 +268,7 @@ def _attach_frame_captions(handle: DatasetHandle, rows: list[dict[str, Any]]) ->
         for start in range(0, len(rows), _FRAME_CAPTION_BATCH_SIZE):
             batch = rows[start : start + _FRAME_CAPTION_BATCH_SIZE]
             # One `doc IN (...)` scan, not a per-hit OR-of-ANDs: IN is a hash-
-            # membership scan (~2.4x faster, verified on the old corpus). We
+            # membership scan (~2.4x faster, measured). We
             # over-fetch the matched docs' frame-0 rows and pick out the exact
             # chunks in Python. frame_idx=0 = the representative caption frame.
             docs = {str(r[identity.doc_key]) for r in batch}

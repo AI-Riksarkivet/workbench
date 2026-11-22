@@ -1,7 +1,6 @@
 """Atlas ``/points`` payload builder — the Arrow IPC serialization behind the map.
 
-Ported from the pre-split ``backend/atlas/points.py`` onto the descriptor: the
-space's x/y/cluster columns and source table come from ``declared.atlas``, the
+Descriptor-driven: the space's x/y/cluster columns and source table come from ``declared.atlas``, the
 per-point keys from ``declared.identity``, the categorical colour channels from
 ``declared.search.filterable`` (those that exist on the space's table), and the
 per-doc labels (``docFiles`` metadata) from the first ``declared.display.title``

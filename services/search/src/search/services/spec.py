@@ -1,8 +1,6 @@
 """Normalized search request — pure validation, no Lance/HTTP/embedding deps.
 
-Ported from ``backend.search.spec`` with the corpus-specific filter fields
-removed: metadata filters are now read dynamically from the request against the
-descriptor's ``search.filterable`` list (see :mod:`search.services.filters`),
+Metadata filters are read from the request against the descriptor's ``search.filterable`` list (see :mod:`search.services.filters`),
 so this model carries only the schema-agnostic knobs. ``mode`` is a ``StrEnum``
 so FastAPI validates it at the route boundary (422 on an unknown mode); the
 numeric fields clamp rather than reject, so the GET/POST handlers construct

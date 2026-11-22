@@ -1,27 +1,10 @@
-"""An unhandled exception must answer problem+json, and a governed error must not read as a crash.
+"""An unhandled exception answers problem+json with no internals, and a lance-namespace outage answers 503.
 
-The defect: "Four fleet apps install no catch-all, so any unhandled exception answers
-text/plain — a third error envelope no client can parse".
-
-TWO THINGS, and the second is the load-bearing one.
-
-**The catch-all.** `register_handlers` mapped exactly two classes — `DomainError` and
-`RequestValidationError` — so anything else fell through to starlette's default: a `text/plain` 500
-reading "Internal Server Error". That is the framework default for any app with no `Exception`
-handler, so on its own it is not a rask choice. It is still a third envelope on services whose every
-other error is RFC 9457, and the fix is one handler in the place the whole fleet already shares.
-
-**The one that actually misreports.** An app built by `make_service_app` alone cannot map
-`lance_namespace` errors at all — and the shared governed kernel it calls RAISES them: `governed/fga.py`
-raises `ServiceUnavailableError("authorization service unavailable")` under a docstring promising
-"outage → ServiceUnavailableError → 503". Without the handlers this file pins, that contract silently
-does not hold on such an app. It still fails CLOSED — the refusal happens, nothing is disclosed, no door
-opens — so this is a misreported outage, not an exposure. But one function can then answer the same
-class of failure two different ways: a `workbench.exceptions.ServiceUnavailableError` becomes a 503
-problem+json while the one `fga.batch_check` raises becomes a text/plain 500.
-
-The factory installs both handler sets, because a denial must be a 403, not a 500. Doing it in the factory rather than
-per app also keeps every app's error bodies one shape, so no app's 422 differs from another's.
+`register_handlers`' catch-all answers any exception that is no `DomainError` with a fixed problem body, the
+exception's text in the log only. `make_service_app` also installs `workbench.ns_errors`' handlers, so a
+`lance_namespace.ServiceUnavailableError` the governed kernel raises (`governed/fga.py`: "outage →
+ServiceUnavailableError → 503") reads as a dependency being down, not as this service being broken. And a refusal the
+code chose is one log line, while a fault keeps its traceback.
 """
 
 from __future__ import annotations
@@ -46,7 +29,7 @@ def _client(app: FastAPI) -> TestClient:
 
 
 def test_the_catch_all_leaks_no_internals() -> None:
-    """The reference is explicit: internals leak via logs only, never the body."""
+    """Internals reach the logs only, never the body."""
     app = FastAPI()
     register_handlers(app)
 
@@ -70,8 +53,8 @@ def _factory_app(exc: Exception) -> FastAPI:
 
 
 def test_an_fga_outage_reads_as_503_not_500() -> None:
-    """The contract `governed/fga.py` documents — "outage → ServiceUnavailableError → 503" — must
-    actually hold in the apps that call it, or an outage is indistinguishable from a crash."""
+    """The contract `governed/fga.py` documents — "outage → ServiceUnavailableError → 503" — holds on a factory app,
+    so monitoring can tell a dependency being down from a crash."""
     response = _client(_factory_app(NsServiceUnavailableError("authorization service unavailable"))).get("/raise")
     assert response.status_code == 503, (
         f"an FGA outage answered {response.status_code}; monitoring cannot tell a dependency being down from this service being broken"
@@ -79,7 +62,7 @@ def test_an_fga_outage_reads_as_503_not_500() -> None:
 
 
 #: A detail carrying an upstream's own text, with a newline that would start a forged log line if written raw.
-FORGING_DETAIL = "voiceprint runner refused the embed (502): bad gateway\n2026-11-20 12:00:00,000 ERROR   forged — line"
+FORGING_DETAIL = "the model endpoint refused the ask (502): bad gateway\n2026-11-20 12:00:00,000 ERROR   forged — line"
 
 
 def _chosen() -> Exception:

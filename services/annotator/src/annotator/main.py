@@ -21,7 +21,6 @@ from annotator.api.v1.router import router as api_router
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.projects.lakehouse import PublishRunner
 from annotator.state.store import AnnotatorStore
-from workbench.app import setup_logging
 from workbench.media.app import build_media_app
 from workbench.media.config import MediaSettings
 from workbench.media.lifespan import make_media_lifespan
@@ -76,12 +75,6 @@ async def _close_state(app: FastAPI) -> None:
     store: AnnotatorStore | None = getattr(app.state, "store", None)
     if store is not None:
         await store.close()
-
-
-# Application logging, before the app exists — every module here uses getLogger(__name__), and
-# without this they propagate to a root logger with no handlers and are DISCARDED
-# (see workbench.app.setup_logging).
-setup_logging()
 
 
 async def _state_ready(request: Request) -> Readiness:

@@ -1,7 +1,6 @@
 """Single-column cosine vector search over the row table.
 
-Ported from ``backend.search.vector``; the hit projection now arrives from the
-descriptor-derived target instead of a module constant. A search that fails on
+The hit projection arrives from the descriptor-derived target. A search that fails on
 the CALLER'S query raises a domain :class:`ValidationError` (HTTP 400, stable
 message) with the real Lance error logged, never interpolated; anything else —
 an unreachable store, an expired credential, a corrupt manifest — propagates

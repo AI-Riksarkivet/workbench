@@ -14,7 +14,6 @@ from fastapi import FastAPI
 from viewer.api.v1.router import router as api_router
 from viewer.core.config import ViewerSettings, get_viewer_settings
 from viewer.services.signed_media import ServiceReads
-from workbench.app import setup_logging
 from workbench.media.app import build_media_app
 from workbench.media.config import MediaSettings
 from workbench.media.lifespan import make_media_lifespan, make_media_state
@@ -26,11 +25,6 @@ from workbench.otel import TelemetrySinks
 logger = logging.getLogger(__name__)
 
 configure_app_logging(packages=("viewer", "workbench"))  # INFO audit/lifecycle logs reach OTLP (lance-ns obs contract)
-
-# Application logging, before the app exists — every module here uses getLogger(__name__), and
-# without this they propagate to a root logger with no handlers and are DISCARDED
-# (see workbench.app.setup_logging).
-setup_logging()
 
 
 def _settings() -> MediaSettings:
@@ -51,14 +45,13 @@ def create_viewer_state(settings: MediaSettings) -> AppState:
     return state
 
 
-#: `closes` names the resources THIS service opens and must therefore close. `AppState` carries slots
-#: for the whole media plane; the viewer fills the http pool and (lazily, on first use) the two model
-#: clients, and closing a slot it never filled would read as ownership it does not have.
+#: `closes` names the resources THIS service opens and must therefore close: the media plane's HTTP pool. The model
+#: client slots of `AppState` are search's, which the viewer never fills.
 lifespan = make_media_lifespan(
     _settings,
     service="viewer",
     make_state=create_viewer_state,
-    closes=lambda state: (state.http, state.embedder, state.reranker),
+    closes=lambda state: (state.http,),
 )
 
 

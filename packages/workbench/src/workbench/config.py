@@ -54,14 +54,13 @@ class Settings(BaseSettings):
     #: The origins besides the app's own a browser may call from: a JSON list or a comma-separated string; none by default.
     cors_origins: StringList = Field(default_factory=list, alias="WORKBENCH_CORS_ORIGINS")
 
+    #: The root log level every app built by `make_service_app` logs at (`workbench.app.setup_logging`): the volume
+    #: lever. Root-level INFO makes chatty third-party libraries audible too, the trade against losing an application log.
+    log_level: str = Field(default="INFO", alias="WORKBENCH_LOG_LEVEL")
+
     #: Whether this app serves `/docs`, `/redoc` and `/openapi.json`. OFF by default, and the default
-    #: is the whole point.
-    #:
-    #: Four services already carried a `docs_enabled` flag before this one existed — and it defaulted
-    #: to True, with no deployment path setting it either way (`grep -rn DOCS chart/ .docker/ scripts/`
-    #: matched nothing). A flag nobody sets IS the default, so all four shipped their schemas openly
-    #: while looking configurable. A security default that every deployment must remember to turn off
-    #: is one nobody turns off.
+    #: is the whole point: a security default every deployment must remember to turn off is one nobody turns off, and a
+    #: flag no deployment path sets IS its default.
     #:
     #: What this closes is a route table, parameter names and request/response schemas — not data, and
     #: every documented route stays individually auth-gated.
@@ -71,22 +70,17 @@ class Settings(BaseSettings):
     #: it gates is evidence: a deployment that wants none says so, and one that forgets still has it.
     #:
     #: THE FLAG EXISTS SO THE TRAIL IS DECIDED RATHER THAN INHERITED. `governed/audit.py` gates the
-    #: stream by the dedicated logger's LEVEL, and a service that never sets it leaves `workbench.audit`
-    #: at NOTSET — inheriting the root level `setup_logging` takes from `WORKBENCH_LOG_LEVEL`. Measured
-    #: 2026-09-09 across the ten services holding `audit()` call sites: three set it and seven
-    #: inherited, so for those seven `WORKBENCH_LOG_LEVEL=WARNING` — the documented volume lever — deleted
-    #: the compliance trail, and this flag could not turn it off. `make_service_app` now applies it,
-    #: for the same reason it applies the readiness flags: a convention most apps did not hold up is
-    #: not a convention. Pinned by
+    #: stream by the dedicated logger's LEVEL, and a logger nobody sets stays at NOTSET, inheriting the root level
+    #: `log_level` sets: `WORKBENCH_LOG_LEVEL=WARNING` would then delete the trail. Measured 2026-09-09 across the ten
+    #: services then holding `audit()` call sites: three set the level and seven inherited it. `make_service_app` applies
+    #: this flag to every app it builds. Pinned by
     #: `test_the_audit_trail_is_armed_by_configuration_not_by_the_log_level.py`.
     audit_enabled: bool = Field(default=True, alias="WORKBENCH_AUDIT_ENABLED")
 
     #: The request-body ceiling every app built by `make_service_app` enforces (`body_limit.py`).
     #:
-    #: A DoS BOUND, not a business rule. It exists so a multi-GB body cannot reach a buffer — five
-    #: apps had no ceiling at all until 2026-08-26. Generous on purpose: a route that wants a real limit states its own,
-    #: and the catalog sets 256 MiB explicitly for Arrow-IPC writes (it builds its own app, so it is
-    #: not double-capped).
+    #: A DoS BOUND, not a business rule. It exists so a multi-GB body cannot reach a buffer. Generous on purpose: a
+    #: service that takes larger or smaller bodies sets its own (the viewer and search 32 MiB, the annotator 16 MiB).
     max_body_bytes: int = Field(default=64 * 1024 * 1024, alias="WORKBENCH_MAX_BODY_BYTES")
 
     #: Whether this app exports its traces, metrics and logs over OTLP/HTTP, to the endpoint the SDK's own

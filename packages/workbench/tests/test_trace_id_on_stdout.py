@@ -1,30 +1,10 @@
-"""The stdout tier is the copy an operator reads first, and it carried no trace id.
+"""Every stdout line carries its trace id and the diagnostics its caller recorded in `extra=`, and nothing else.
 
-The defect: "`setup_otel` passes `logger_provider=` to `LoggingInstrumentor`, which the
-installed 0.65b0 ignores — and `set_logging_format=True` is a no-op, so fleet stdout carries no trace
-id".
-
-THREE LEGS WERE FILED AND ONLY THE MIDDLE ONE IS A DEFECT, which the finding says itself. Read in the
-installed `LoggingInstrumentor._instrument`:
-
-* **`logger_provider=` really is dropped** — the method calls `get_logger_provider()` and never reads
-  that kwarg. But `set_logger_provider(logger_provider)` runs two lines above the instrument call, so
-  the global IS the provider we built. The bug is a FALSE COMMENT claiming a race protection that does
-  not exist, not a behavioural fault. Fixed by deleting the sentence and asserting the binding.
-* **`set_logging_format=True` is the real defect.** It reaches `logging.basicConfig(format=...)`,
-  which NO-OPS when the root logger already has a handler — and `setup_logging` installed the named
-  `workbench-stdout` handler long before. So the record factory attaches `otelTraceID` to every record and
-  the one formatter that exists never prints it.
-* **The `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED` leg is refuted by a recorded decision** and
-  is not touched here.
-
-Blast radius is narrow and the finding is careful about it: the OTLP copy of every log already carries
-trace/span context, so only the raw `kubectl logs` tier was blind.
-
-THE FORMATTER MUST NOT DEPEND ON OTEL BEING ON. A formatter naming `%(otelTraceID)s` raises on any
-record that lacks the attribute — which is every record in dev, in tests, and in any service where
-`setup_otel` returned False. That would turn a correlation aid into a crash, so the attribute is
-guaranteed by the same filter that already guarantees `request_id`.
+`setup_logging`'s handler formats with `DiagnosticFormatter`: the request id and the trace id have slots of their own,
+fed by `CorrelationFilter` (so a record that never met OpenTelemetry still formats, `-` in each), an all-zero trace id
+outside a span prints as `-`, and whatever the caller put in `extra=` follows the message. The fields a library stamps
+on every record (`LoggingInstrumentor`'s `otel*`, Ray's `_ray_timestamp_ns`, uvicorn's `color_message`) are not
+diagnostics and are left out.
 """
 
 from __future__ import annotations
@@ -41,16 +21,13 @@ from workbench.app import setup_logging
 
 @pytest.fixture
 def stdout_lines() -> Iterator[io.StringIO]:
-    """The real `workbench-stdout` handler, redirected so the FORMATTED line can be read.
-
-    Asserted on the formatted output rather than on the record, because the whole defect is that the
-    attribute was present on the record and absent from the line.
-    """
+    """The real `workbench-stdout` handler, redirected so the FORMATTED line can be read: what reaches an operator is
+    the line, not the record."""
     root = logging.getLogger()
     previous = list(root.handlers)
     for handler in previous:
         root.removeHandler(handler)
-    setup_logging()
+    setup_logging("INFO")
     handler = next(h for h in root.handlers if h.get_name() == "workbench-stdout")
     # Narrowed, not asserted away: `setup_logging` builds a StreamHandler, and this fixture only works
     # because it is one — swapping the stream is how the FORMATTED line becomes readable.
@@ -75,7 +52,7 @@ def instrumented() -> Iterator[None]:
     Its trace-context injection only: the OTLP handler it would also attach binds to whatever logger provider the
     process holds, and after `test_otel.py` shut its provider down in this process that handler answers every record
     with a second line, `Shutdown called, ignoring Log.` (measured: `test_otel.py` then
-    `test_a_record_carrying_NOTHING_extra_gains_no_trailing_noise` in one process failed it). These tests read the
+    `test_a_record_carrying_nothing_extra_gains_no_trailing_noise` in one process failed it). These tests read the
     stdout line, which that handler never writes.
     """
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
@@ -91,22 +68,20 @@ def instrumented() -> Iterator[None]:
         instrumentor.uninstrument()
 
 
-def test_a_record_written_inside_a_span_PRINTS_its_trace_id(stdout_lines: io.StringIO, instrumented: None) -> None:
-    """The finding: the id rides on the record and never reaches the line an operator greps."""
+def test_a_record_written_inside_a_span_prints_its_trace_id(stdout_lines: io.StringIO, instrumented: None) -> None:
     from opentelemetry.sdk.trace import TracerProvider
 
     tracer = TracerProvider().get_tracer(__name__)
     with tracer.start_as_current_span("unit") as span:
         expected = format(span.get_span_context().trace_id, "032x")
-        logging.getLogger("annotator.projects.saga").error("lineage_event_invalid")
+        logging.getLogger("annotator.projects.saga").error("publish_step_failed")
 
     line = stdout_lines.getvalue()
     assert expected in line, f"the stdout line carries no trace id, so an operator holding one from a dashboard cannot grep for it: {line!r}"
 
 
-def test_a_record_written_OUTSIDE_a_span_still_formats(stdout_lines: io.StringIO, instrumented: None) -> None:
-    """Outside a span the instrumentor sets the id to '0'. Printing `[0]` on every line is noise; the
-    line must render a visible placeholder the way `request_id` already does."""
+def test_a_record_written_outside_a_span_prints_no_trace_id(stdout_lines: io.StringIO, instrumented: None) -> None:
+    """Outside a span the instrumentor sets the id to zero; the line shows the placeholder instead."""
     logging.getLogger("catalog.api.v1.endpoints.tables").warning("no span here")
 
     line = stdout_lines.getvalue()
@@ -114,13 +89,8 @@ def test_a_record_written_OUTSIDE_a_span_still_formats(stdout_lines: io.StringIO
     assert "0" * 32 not in line, f"an all-zero trace id was printed as though it were real: {line!r}"
 
 
-def test_the_formatter_SURVIVES_otel_never_having_run(stdout_lines: io.StringIO) -> None:
-    """No `instrumented` fixture — no `otelTraceID` on the record at all.
-
-    This is the failure mode a naive `%(otelTraceID)s` introduces: `logging` raises on a missing
-    attribute and the handler prints a traceback instead of the line. Dev, tests, and every service
-    where `setup_otel` returned False are all in this state.
-    """
+def test_a_record_formats_when_otel_never_ran(stdout_lines: io.StringIO) -> None:
+    """No `instrumented` fixture, so no `otelTraceID` on the record: the line is still written, with no logging error."""
     logging.getLogger("viewer.services.peaks").info("otel is off")
 
     line = stdout_lines.getvalue()
@@ -128,21 +98,10 @@ def test_the_formatter_SURVIVES_otel_never_having_run(stdout_lines: io.StringIO)
     assert "Traceback" not in line and "--- Logging error ---" not in line, f"the formatter raised on a record with no otel attributes: {line!r}"
 
 
-def test_a_record_PRINTS_the_diagnostics_it_carries_in_extra(stdout_lines: io.StringIO) -> None:
-    """The workbench records causes in `extra=` — 626 call sites — and the stdout line printed none of them.
-
-    Measured 2026-09-10 while chasing `lineage_outbox_event_stranded`: the handler that strands an
-    outbox event logs the cause in `extra`, the OTLP copy carries it to GreptimeDB, and `kubectl logs`
-    showed the event NAME and nothing else. Three warnings that night (`cascade_lag_edge_unreadable`,
-    `ingest_run_mutation_denied`, `lineage_outbox_event_stranded`) each had their cause recorded and
-    each had to be reverse-engineered from source instead of read.
-
-    This is the same class as the trace id above and worse: a trace id can be recovered from the OTLP
-    copy, while an operator reading a crash loop has only this tier and the diagnostic was written
-    FOR them.
-    """
+def test_a_record_prints_the_diagnostics_it_carries_in_extra(stdout_lines: io.StringIO) -> None:
+    """What a caller records in `extra=`, a string or not, follows the message on the line an operator reads."""
     logging.getLogger("search.services.service").warning(
-        "lineage_outbox_event_stranded",
+        "result_cache_entry_dropped",
         extra={"reason": "graph write refused", "checked": 350},
     )
 
@@ -151,28 +110,21 @@ def test_a_record_PRINTS_the_diagnostics_it_carries_in_extra(stdout_lines: io.St
     assert "350" in line, f"a non-string diagnostic never reached the line: {line!r}"
 
 
-def test_a_record_carrying_NOTHING_extra_gains_no_trailing_noise(stdout_lines: io.StringIO, instrumented: None) -> None:
-    """The `instrumented` fixture is the point: `LoggingInstrumentor` stamps `otelTraceID`,
-    `otelSpanID`, `otelServiceName` and `otelTraceSampled` on EVERY record in a live service.
-
-    Those are record attributes exactly like an `extra` is, so a formatter that renders "whatever is
-    not standard" appends four fields to every line in the fleet — one of them a second copy of the
-    trace id the format string already prints. The correlation fields have their own slots; the
-    diagnostics tail is for what a caller deliberately recorded.
-    """
+def test_a_record_carrying_nothing_extra_gains_no_trailing_noise(stdout_lines: io.StringIO, instrumented: None) -> None:
+    """`LoggingInstrumentor` stamps `otelTraceID`, `otelSpanID`, `otelServiceName` and `otelTraceSampled` on every
+    record, as record attributes like an `extra`; none of them follows the message, since the correlation fields have
+    their own slots."""
     logging.getLogger(f"{__name__}.bare").info("plain line")
 
     line = stdout_lines.getvalue().rstrip("\n")
     assert line.endswith("plain line"), f"a bare record grew a diagnostics tail: {line!r}"
 
 
-def test_a_LIBRARYS_ambient_record_field_is_not_a_diagnostic(stdout_lines: io.StringIO) -> None:
+def test_a_librarys_ambient_record_field_is_not_a_diagnostic(stdout_lines: io.StringIO) -> None:
     """Two libraries in the workbench stamp their own fields on records, and neither is a diagnostic.
 
-    `_ray_timestamp_ns` is not hypothetical: importing Ray installs a log record factory that puts it
-    on EVERY record in the process (`ray/_private/log.py:71-88`), which covers any process
-    that imports Ray. It was caught here by this test failing in the full suite while passing alone —
-    the first version of the formatter appended a nanosecond integer to every line.
+    Importing Ray installs a log record factory that puts `_ray_timestamp_ns` on EVERY record in the process
+    (`ray/_private/log.py:71-88`).
 
     uvicorn's `color_message` is the second: an ANSI-escaped copy of the same message, for uvicorn's own
     formatter to substitute (`uvicorn/logging.py:61`). Rendering it prints every startup line in the
@@ -186,9 +138,8 @@ def test_a_LIBRARYS_ambient_record_field_is_not_a_diagnostic(stdout_lines: io.St
     # every record (`ray/_private/log.py:71-88`), and passing the same key through `extra=` is both
     # unfaithful and order-dependent: once anything in the run has actually imported Ray, the factory
     # has already set the attribute and `logging` refuses the overwrite with
-    # `KeyError: Attempt to overwrite '_ray_timestamp_ns' in LogRecord`. Measured — this test passed
-    # alone and failed in the full suite for exactly that reason. Installing the factory reproduces
-    # production and is immune to whether Ray is imported.
+    # `KeyError: Attempt to overwrite '_ray_timestamp_ns' in LogRecord` (measured in the full suite).
+    # Installing the factory reproduces production and is immune to whether Ray is imported.
     previous_factory = logging.getLogRecordFactory()
 
     def _ray_shaped_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:

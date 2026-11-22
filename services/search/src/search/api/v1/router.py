@@ -1,15 +1,10 @@
 """Search endpoints — GET (query string) and POST (multipart, image upload).
 
-Ported from ``backend.search.router`` (minus the doc-chunks /
-chunk-alignments sub-resources, which belong to the media group). Both handlers
-build a :class:`SearchSpec`, short-circuit empty input, and delegate to the
-framework-free :func:`run_search`. The wire shape is unchanged — same paths,
-params, and hit shape — plus one addition: an OPTIONAL ``dataset`` query param
-selecting the Lance DB (``None`` → the default dataset). Metadata filter params
-are no longer hardcoded fields: whatever names the dataset's descriptor lists
-under ``search.filterable`` are read dynamically from the query string / form,
-so ``?language=sv`` keeps working against the default corpus without this
-module knowing the name.
+Both handlers build a :class:`SearchSpec`, short-circuit empty input, and delegate to the framework-free
+:func:`run_search`. An OPTIONAL ``dataset`` query param selects the dataset (``None`` → the default dataset). Metadata
+filter params are not fields of their own: whatever names the dataset's descriptor lists under ``search.filterable``
+are read from the query string / form, so ``?language=sv`` filters a corpus that declares ``language`` without this
+module knowing the name. A document's chunks and alignments are the viewer's.
 
 GET stays sync (threadpooled); POST is async to await the upload, then offloads
 the blocking vLLM + Lance work. No ``from __future__ import annotations`` here:
@@ -110,7 +105,7 @@ def _spec_from_query(request: Request) -> SearchSpec:
     request happily, so no in-process test can see it. Isolated by driving the identical app object
     through both paths inside the running pod. ``SearchSpec`` already owns validation, clamping and
     ``extra="ignore"`` (filters + ``corpus`` ride the same query string), so binding is one call; a
-    type error (``n=abc``) surfaces as the same clean 422 problem body the old wire shape promised.
+    type error (``n=abc``) surfaces as a clean problem body.
     """
     try:
         return SearchSpec.model_validate(dict(request.query_params))

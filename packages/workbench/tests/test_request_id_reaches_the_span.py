@@ -1,21 +1,10 @@
-"""The request id the workbench hands the caller must reach the trace.
+"""The request id reaches the request's span, and no other header does.
 
-The defect: "No `server_request_hook` anywhere: `X-Request-ID` is minted, echoed to the
-client, and joined to no span and no log".
-
-`RequestIDMiddleware` mints an id, stores it on `request.state` and echoes it in the response header;
-without a hook on the instrumentation that id reaches no span, and a caller holding an `X-Request-ID`
-from a failed call has a value that correlates with nothing. The hook is the join, and it belongs in
-`setup_otel` rather than in another middleware: it runs INSIDE the instrumentation and buffers
-nothing, so it is safe on a streamed body such as a 206 Range response, where a `BaseHTTPMiddleware` layer
-fully buffers the body and cannot be used.
-
-THE HOOK'S REACH IS EVERY SERVICE: it is a Python callable `setup_otel` passes to
-`FastAPIInstrumentor.instrument_app`, and every service is built by `make_service_app`, which calls it.
-
-PII STAYS OFF THE SPAN. The reference is explicit: "Don't put PII (email, raw user id, auth tokens) in
-span attributes — those go to the trace backend forever." The workbench is clean there today and this
-must not be the change that stops it, so the hook is pinned to the header set it may read.
+`setup_otel` passes `server_request_hook` to `FastAPIInstrumentor.instrument_app`, so every app `make_service_app`
+builds puts the `X-Request-ID` it echoes on its server span as `request.id`, the join between an id a caller quotes and
+the trace. The hook runs inside the instrumentation and buffers nothing, so it is safe on a streamed body such as a 206
+Range response. It reads that one header only: a credential such as `Authorization` never reaches a span attribute,
+which the trace backend keeps.
 """
 
 from __future__ import annotations
@@ -81,7 +70,7 @@ def test_the_hook_survives_a_request_with_no_id() -> None:
 
 
 def test_the_hook_is_a_no_op_on_a_non_recording_span() -> None:
-    """The reference's own guard: `if not (span and span.is_recording()): return`."""
+    """A span that does not record, or no span, is left alone."""
     from workbench.otel import server_request_hook
 
     class _Span:
@@ -101,9 +90,8 @@ def test_the_hook_is_a_no_op_on_a_non_recording_span() -> None:
 
 
 @pytest.mark.parametrize("header", ["authorization"])
-def test_the_hook_reads_no_PII_header(header: str) -> None:
-    """ "Don't put PII (email, raw user id, auth tokens) in span attributes — those go to the trace
-    backend forever." The workbench is clean today; this must not be the change that ends that."""
+def test_the_hook_reads_no_credential_header(header: str) -> None:
+    """A credential header never reaches a span attribute."""
     from workbench.otel import server_request_hook
 
     class _Span:

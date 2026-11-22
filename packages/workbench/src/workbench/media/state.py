@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from workbench.lancekit.registry import DatasetRegistry
@@ -26,6 +27,16 @@ if TYPE_CHECKING:
     from workbench.lancekit.registry import DatasetHandle
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class ModelClient(Protocol):
+    """A model server's client as the media plane holds it: what the shared lifespan calls on it at shutdown.
+
+    Search fills the slots with its own clients (`search.services.clients`) and reads them as their own types.
+    """
+
+    def close(self) -> None: ...
 
 
 class AppState(BaseModel):
@@ -44,10 +55,10 @@ class AppState(BaseModel):
     settings: MediaSettings
     #: The dataset registry, the one resolution path, built with the state from its settings: building it opens no source.
     registry: DatasetRegistry = Field(default_factory=lambda fields: DatasetRegistry(fields["settings"]))
-    embedder: Any | None = None  # search.services.encoders.embedding.VLLMEmbeddingClient
-    reranker: Any | None = None  # search.services.encoders.reranker.VLLMReranker
+    embedder: ModelClient | None = None
+    reranker: ModelClient | None = None
     # One HTTP connection pool per process (health pings) — never per-request.
-    http: Any | None = None  # httpx.Client
+    http: httpx.Client | None = None
     # Memoized /points payloads keyed on (space, dataset version) — per-app, not
     # module-global, so two app instances (e.g. tests) can't cross-contaminate.
     # Writes are idempotent (same input → same bytes), so a plain dict suffices.

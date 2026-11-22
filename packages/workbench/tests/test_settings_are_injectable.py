@@ -1,14 +1,9 @@
-"""`make_service_app` builds its own `Settings` at IMPORT time and offers no way in.
+"""`make_service_app(settings=...)` builds the app from the settings it is given.
 
-A factory caller that invokes `make_service_app(...)` at module level makes `build_settings()` —
-a full `Settings.model_validate({})` off the process environment — run as a
-side effect of importing its module. A test, a script or a second app in the same process cannot say
-what the settings are; it can only mutate the environment before the import and hope nothing imported
-first.
-
-The seam is a parameter. `settings=` supplied ⇒ that object IS the app's settings, reaching
-`app.state.settings`, the router prefix, the docs URLs, the middleware and the lifespan factory.
-Omitted ⇒ `build_settings()` exactly as before, so no caller changes.
+The object passed IS the app's settings: it reaches `app.state.settings`, the router prefix, the docs URLs, the
+middleware and the service's lifespan, so a test, a script or a second app in the same process says what the settings
+are instead of mutating the environment before an import. Omitted, the factory reads them from the environment
+(`workbench.app.build_settings`).
 """
 
 from collections.abc import AsyncGenerator

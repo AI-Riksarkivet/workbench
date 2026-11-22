@@ -63,8 +63,7 @@ async def media_lifespan(
 
     1. Build ``AppState`` onto ``app.state.resources`` (its registry with it) — the shape every media router reads
        through ``StateDep``.
-    2. ``attach_auth``. Every part defaults OFF and the service behaves exactly as it always did when
-       they are. Built here, never at import — an ``OIDCVerifier`` fetches discovery, so module scope
+    2. ``attach_auth``: the verifier and the authorization client the settings name. Built here, never at import — an ``OIDCVerifier`` fetches discovery, so module scope
        would make importing a main do I/O. A failure to BUILD is logged and non-fatal: the dependency
        then finds no verifier/client on ``app.state`` and answers 503, and the readiness check
        (`workbench.media.app.media_readiness`) reports the pod unready. Falling back to a permissive checker would

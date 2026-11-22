@@ -124,8 +124,7 @@ class RequestIDMiddleware:
 
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         request_id = headers.get(_REQUEST_ID_HEADER.lower()) or uuid.uuid4().hex
-        # `scope["state"]` is what `request.state` reads, so existing `request.state.request_id`
-        # consumers keep working without knowing this middleware changed shape.
+        # `scope["state"]` is what `request.state` reads, so a handler finds it as `request.state.request_id`.
         scope.setdefault("state", {})["request_id"] = request_id
 
         async def _send(message: Message) -> None:
@@ -136,8 +135,8 @@ class RequestIDMiddleware:
             await send(message)
 
         # PUBLISHED TO THE CONTEXT, so code that does not take `request` — a log record, a repository
-        # method, a background helper — can read it without plumbing. Before this the id was minted,
-        # echoed and read by nothing: a caller could quote it and an operator had nothing to grep.
+        # method, a background helper — can read it without plumbing, and an operator can grep for the id a caller
+        # quotes.
         token = request_id_ctx.set(request_id)
         try:
             await self.app(scope, receive, _send)

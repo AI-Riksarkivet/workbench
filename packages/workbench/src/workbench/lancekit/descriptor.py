@@ -88,13 +88,9 @@ class FtsBinding(BaseModel):
 class Search(BaseModel):
     """One SEARCHABLE table, with the bindings that make it searchable.
 
-    Named, and a corpus may declare several. It was a single object, which meant a corpus could
-    expose exactly one searchable table no matter how many it held — you could pick a DATASET but
-    never a table within it.
-
-    The shape mirrors `atlas`, which solved the same problem first: a named list, each entry bound to
-    its own table. Display fields, fts and vector bindings are all per-TABLE, so they had to travel
-    with the table rather than sit beside a single privileged one.
+    Named, and a corpus may declare several, so each searchable table of a dataset can be picked, not only the
+    dataset. The shape mirrors `atlas`: a named list, each entry bound to its own table. Display fields, fts and vector
+    bindings are all per-TABLE, so they travel with the table rather than sit beside a single privileged one.
     """
 
     #: Stable key the UI and the `table=` selector use. `default` for a corpus that declares one,

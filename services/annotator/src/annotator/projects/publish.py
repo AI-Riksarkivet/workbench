@@ -91,18 +91,16 @@ PUBLISHED_LABELS_SCHEMA: Final[pa.Schema] = pa.schema(
         ("label", pa.string()),
         ("text", pa.string()),
         # The TEXTUAL facet — a span INTO another published row's `text` (token classification,
-        # the value half of KIE). Validated at submit since the facet landed, and DROPPED here
-        # until 2026-08: a published NER dataset carried the substrings but not the anchors, which
-        # is not a dataset a trainer can consume. `parent_id` addresses the row by annotation_id.
+        # the value half of KIE). Published with its anchors: substrings without them are not a dataset a trainer can
+        # consume. `parent_id` addresses the row by annotation_id.
         ("parent_id", pa.string()),
         ("char_start", pa.int32()),
         ("char_end", pa.int32()),
         # The ontology declares per-class attributes with REAL types (free/int/enum/bool), enforces
-        # them at submit and publishes them — and while this was `pa.string()` no downstream consumer
-        # could filter on one. Declared, enforced, unqueryable. `pa.json_()` makes
+        # them at submit and publishes them, so they are published as JSON a consumer can filter on: `pa.json_()` makes
         # `json_get_int(attributes, 'order') > 3` a Lance filter.
         #
-        # Verified end to end before changing it: the extension type survives Arrow IPC (the hop to
+        # Verified end to end: the extension type survives Arrow IPC (the hop to
         # the catalog, which is what actually writes Lance here) and `lance.write_dataset` preserves
         # it. `_json_attributes` already emits `{}` rather than "" for a shapeless row, which matters
         # because an empty string is not valid JSON.

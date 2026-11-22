@@ -1,6 +1,6 @@
 """Decoupled search business logic — the mode-aware retrieval core.
 
-Ported from ``backend.search.service``, descriptor-driven: ``run_search`` takes
+Descriptor-driven: ``run_search`` takes
 a :class:`~workbench.lancekit.registry.DatasetHandle`, resolves it to a
 :class:`~search.services.target.SearchTarget` once, and routes a
 :class:`~search.services.spec.SearchSpec` across the seven modes
@@ -203,7 +203,7 @@ def _search_vector_mode(ctx: SearchContext) -> list[dict[str, Any]]:
 
 def _search_vector_fts_mode(ctx: SearchContext) -> list[dict[str, Any]]:
     """BM25 over a vector space's ``caption_source`` text (mode ``<key>_fts``),
-    joined back to the row table — generalises the old ``scene_fts``."""
+    joined back to the row table."""
     key = ctx.spec.mode[: -len("_fts")]
     binding = ctx.target.binding(key)
     if binding is None or not binding.caption_source:

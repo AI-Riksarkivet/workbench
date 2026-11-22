@@ -258,18 +258,16 @@ def _extract(node: FlowNode, inputs: list[Payload]) -> Payload:
     return Payload(text=value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False))
 
 
-#: The regex arm's subject-length cap. It bounds MEMORY and nothing else — the comment here used to
-#: claim it was the load-bearing defence against backtracking, reasoning that a nested-quantifier
-#: pattern is "O(2^N) in the subject". That reasoning was wrong: the blow-up is exponential in the
-#: PATTERN, not the subject. Measured on `(a+)+$` against `"a"*n + "X"`, `re` took 0.30s at n=22,
+#: The regex arm's subject-length cap. It bounds MEMORY and nothing else — it is no defence against
+#: backtracking, whose blow-up is exponential in the PATTERN-matched run, not the subject's length.
+#: Measured on `(a+)+$` against `"a"*n + "X"`, `re` took 0.30s at n=22,
 #: 4.86s at n=26 and 76.5s at n=30 — roughly 16x per four PATTERN-matched characters, at a subject
-#: length of thirty. A 256 KiB cap is irrelevant to that. Kept because it is cheap and a real memory
-#: bound; it is simply not the reason the stall cannot happen any more.
+#: length of thirty. A 256 KiB cap is irrelevant to that; it is kept because it is cheap and a real memory bound.
 _REGEX_MAX_SUBJECT = 256 * 1024
 
 #: Wall-clock budget for one regex arm. A BACKSTOP, not the primary defence: `regex` is not a naive
-#: backtracker and answered the measurement above in 0.0003s at every n, so the engine swap is what
-#: closes FLOWS-REDOS-ON-LOOP. This bounds whatever it does not optimise, turning a stall into an
+#: backtracker and answered the measurement above in 0.0003s at every n, so the engine is what keeps a
+#: nested-quantifier pattern from stalling the loop. This bounds whatever it does not optimise, turning a stall into an
 #: ordinary node failure the builder can see instead of a wedged pod.
 _REGEX_BUDGET_SECONDS = 2.0
 

@@ -1,7 +1,6 @@
 """Lazy vLLM query-encoder accessors bound to :class:`~workbench.media.state.AppState`.
 
-Ported from ``backend.clients`` onto the vendored encoders: each accessor
-returns the cached client if present, else constructs it on first use and
+Each accessor returns the cached client if present, else constructs it on first use and
 writes it back onto the same ``AppState`` (so subsequent requests reuse it),
 mapping any failure to a ``ServiceUnavailableError`` (HTTP 503). The URLs come
 from ``state.settings``; the embedding client's ``expected_dim`` comes from the
@@ -14,7 +13,7 @@ monkeypatch (the symbol must resolve at call time, not import time).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from search.services.spec import SearchMode
 from workbench.exceptions import ServiceUnavailableError
@@ -49,15 +48,16 @@ def _default_embed_dim(state: AppState, caller: LakehouseCaller) -> int:
 def ensure_embedder(state: AppState, caller: LakehouseCaller) -> EmbeddingClient:
     """Return the app's embedding client, connecting on first use (503 on failure)."""
     if state.embedder is not None:
-        return state.embedder
+        # Only this accessor fills the slot, with an `EmbeddingClient`; the shared state types it by what it closes.
+        return cast("EmbeddingClient", state.embedder)
     try:
         from search.services.encoders.embedding import VLLMEmbeddingClient
 
-        # Constructed with the real kwargs, unconditionally (a signature-introspecting
-        # helper here existed to accommodate param-less test fakes, which meant a drifted real
-        # signature dropped kwargs silently). A double that cannot take these fails loudly.
-        state.embedder = VLLMEmbeddingClient(state.settings.embed_url, expected_dim=_default_embed_dim(state, caller))
-        return state.embedder
+        # Constructed with the real kwargs, unconditionally, so a drifted signature fails here rather than dropping a
+        # kwarg silently; a double that cannot take these fails loudly.
+        embedder = VLLMEmbeddingClient(state.settings.embed_url, expected_dim=_default_embed_dim(state, caller))
+        state.embedder = embedder
+        return embedder
     except Exception as e:
         logger.exception("failed to initialize embedding client")
         raise ServiceUnavailableError("embedding service unavailable") from e
@@ -66,12 +66,14 @@ def ensure_embedder(state: AppState, caller: LakehouseCaller) -> EmbeddingClient
 def ensure_reranker(state: AppState) -> VLLMReranker:
     """Return the app's reranker client, connecting on first use (503 on failure)."""
     if state.reranker is not None:
-        return state.reranker
+        # Only this accessor fills the slot, with a `VLLMReranker`; the shared state types it by what it closes.
+        return cast("VLLMReranker", state.reranker)
     try:
         from search.services.encoders.reranker import VLLMReranker
 
-        state.reranker = VLLMReranker(state.settings.rerank_url)
-        return state.reranker
+        reranker = VLLMReranker(state.settings.rerank_url)
+        state.reranker = reranker
+        return reranker
     except Exception as e:
         logger.exception("failed to initialize reranker client")
         raise ServiceUnavailableError("rerank service unavailable") from e

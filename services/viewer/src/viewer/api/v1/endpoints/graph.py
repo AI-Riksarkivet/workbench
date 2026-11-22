@@ -1,6 +1,6 @@
 """Knowledge-graph endpoints — lance-graph Cypher over the ``kg_*`` Lance tables.
 
-Port of the old ``backend/graph/router.py``: the entities table now comes from
+The entities table comes from
 the descriptor's ``graph`` capability (its value IS the entities table name);
 the three sibling tables are derived by replacing its ``entities`` suffix with
 ``chunks`` / ``mentions`` / ``relationships`` (the KG adapter's naming
@@ -124,11 +124,9 @@ class GraphPresets(BaseModel):
 def _enforce_limit(query: str, cap: int) -> str:
     """Guarantee the query returns at most ``cap`` rows.
 
-    Clamps a user-supplied trailing ``LIMIT n`` down to ``cap`` (the old code
-    only *appended* a cap when the word ``limit`` was textually absent, so
-    ``LIMIT 999999`` — or any query merely containing the substring "limit",
-    e.g. in a string literal — escaped the cap entirely and could pull the
-    whole table). Appends ``LIMIT cap`` when no trailing LIMIT is present.
+    Clamps a user-supplied trailing ``LIMIT n`` down to ``cap``, so neither ``LIMIT 999999`` nor a query merely
+    containing the substring "limit" (in a string literal, say) escapes the cap and pulls the whole table. Appends
+    ``LIMIT cap`` when no trailing LIMIT is present.
     """
     trailing = _TRAILING_LIMIT.search(query)
     if trailing is None:
@@ -194,21 +192,18 @@ type _CacheKey = tuple[str, tuple[int, ...]]
 class _GraphCache:
     """One app's KG engines, bounded, with SINGLE-FLIGHT PER KEY.
 
-    Two things were wrong with the module-global dict this replaces.
+    *Per app*, not per module: ``create_viewer_app`` can build several apps over different ``AppState``s — the
+    composition seam the codebase deliberately has — and a module-global cache would make them contend for one
+    ``_CACHE_MAX`` budget while nothing released the ~370 MB engines when an app was torn down.
 
-    *It was shared by every app in the process.* ``create_viewer_app`` can build several apps over
-    different ``AppState``s — the composition seam the codebase deliberately has — and they all
-    contended for one ``_CACHE_MAX`` budget while nothing released the ~370 MB engines when an app
-    was torn down. A cache is per-app state, so it lives beside the app, not beside the module.
-
-    *Its lock wrapped the BUILD.* One global lock around a ~20 s ``_build_resources`` meant that a
-    cold build for dataset A blocked every ``/api/graph/*`` request for dataset B — including the
-    cheap ``GET /status`` — for that whole window, each waiter holding a threadpool thread. With 40
-    workers, a handful of cold graph requests starve every sync route in the process.
+    *Its lock never wraps the BUILD*: one lock around a ~20 s ``_build_resources`` would make a cold build for dataset
+    A block every ``/api/graph/*`` request for dataset B — including the cheap ``GET /status`` — for that whole window,
+    each waiter holding a threadpool thread. With 40 workers, a handful of cold graph requests would starve every sync
+    route in the process.
 
     So: a short guard around the dict operations ONLY, plus one lock per cache key. Concurrent first
-    requests for the SAME key still collapse into one build (the thundering-herd guarantee the old
-    lock did provide, and the reason a plain ``setdefault`` is not enough); a build for another key
+    requests for the SAME key still collapse into one build (the thundering-herd guarantee, and the reason a plain
+    ``setdefault`` is not enough); a build for another key
     runs in parallel.
     """
 

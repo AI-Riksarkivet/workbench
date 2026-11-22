@@ -3,8 +3,8 @@
 Routes raise these; never ``HTTPException`` directly. Each subclass maps to a status
 code via the registered handler — one place to change the response shape.
 
-This is the ONE copy: one ``_problem`` builder and one pair of handler bodies, bound into
-``make_service_app`` and shared by every caller that raises a domain error, so two copies cannot drift.
+This is the ONE copy: one ``_problem`` builder and its handlers, bound into ``make_service_app`` and shared by every
+caller that raises a domain error, so two copies cannot drift.
 
 ``DomainError`` subclasses :class:`fastapi.HTTPException` because it is load-bearing: importing the exception class does NOT pull in the FastAPI
 app/router/DI machinery, so non-web service/client modules import these freely, and a
@@ -19,8 +19,9 @@ EXTENSION MEMBERS — ``raise Refused("2 problem(s)", extensions={"problems": [.
 subclass that wants to NAME its failure sets ``problem_type``. Both exist so a domain never has to
 build a problem body beside this module.
 
-The ``lance_namespace`` errors the auth plane raises are answered by
-:func:`workbench.ns_errors.install_problem_handlers`, in the same envelope with the spec's numeric ``code``.
+The ``lance_namespace`` errors the auth plane raises, a validation error and an unexpected exception are answered by
+:func:`workbench.ns_errors.install_problem_handlers`, which ``make_service_app`` installs after these, in the envelope of
+``workbench.problem.problem_body``.
 """
 
 import logging
@@ -62,17 +63,12 @@ class DomainError(HTTPException):
         # meaningful, stable problem body.
         #
         # `headers` exists because `Retry-After` is part of what a 503 or a 429 MEANS — a refusal
-        # that cannot say when to come back is a refusal the caller can only guess at. It was
-        # missing, and the failure mode was nasty: `HTTPException` accepts headers, this did not
-        # forward them, so writing the correct thing raised a TypeError AT RAISE TIME and the 503
-        # became a 500. Invisible until the refusal path runs, which for a saturation refusal is
-        # precisely when nobody is watching. Keyword-only and optional, so every existing raise site
-        # is unchanged.
+        # that cannot say when to come back is a refusal the caller can only guess at.
         #
         # `extensions` are RFC 9457 §3.2 EXTENSION MEMBERS — additional keys on the problem body,
-        # which the spec explicitly allows and tells consumers to ignore when unrecognised. Without
-        # them a refusal whose substance is STRUCTURED could not use this hierarchy, since `_problem`
-        # would flatten it to one `detail` string. They can never shadow a standard member (`_problem`).
+        # which the spec explicitly allows and tells consumers to ignore when unrecognised. They let a refusal whose
+        # substance is STRUCTURED use this hierarchy rather than flatten it to one `detail` string. They can never shadow
+        # a standard member (`_problem`).
         super().__init__(status_code=self.status_code, detail=detail or self.title, headers=headers)
         self.extensions: dict[str, Any] = dict(extensions or {})
 
@@ -128,6 +124,12 @@ def _problem(exc: DomainError) -> dict[str, Any]:
     return body
 
 
+def problem_response(exc: DomainError) -> JSONResponse:
+    """The problem+json answer of a domain error: its body, its status and the headers set where it was raised (a
+    `Retry-After` is part of what a 503 or a 429 means, and a response built without it never carries one)."""
+    return JSONResponse(status_code=exc.status_code, content=_problem(exc), media_type=PROBLEM_JSON, headers=exc.headers)
+
+
 def route_template(request: Request) -> str | None:
     """The template of the route a request matched (``/api/signed-media/{token}``), or None where none matched: what a
     log line names a request by, never its path, which can carry a credential (a signed media URL's token)."""
@@ -166,17 +168,7 @@ def register_handlers(app: FastAPI) -> None:
             )
         elif exc.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
             log.exception("domain error", exc_info=exc, extra={"method": request.method, "route": route_template(request)})
-        # `headers=` is not optional politeness. This handler builds its own response, so a
-        # `Retry-After` set at the raise site was dropped here silently — the exception carried it
-        # and the client never saw it. Both halves of that are independently invisible: without the
-        # constructor change the raise TypeErrors, without this one the refusal simply says nothing.
-        # `exc.headers` is None for every existing raise site, which JSONResponse accepts.
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=_problem(exc),
-            media_type=PROBLEM_JSON,
-            headers=exc.headers,
-        )
+        return problem_response(exc)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -200,10 +192,8 @@ def register_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
-        """The CATCH-ALL. Without it anything that is not a `DomainError` fell through to starlette's
-        default — a `text/plain` 500 reading "Internal Server Error" — which is a third error envelope
-        on services whose every other answer is RFC 9457, and one no client parsing problem+json can
-        read.
+        """The CATCH-ALL, so anything that is not a `DomainError` is answered as problem+json too, never as
+        starlette's `text/plain` 500, which no client parsing problem+json can read.
 
         A FIXED body, never the exception. The reference is explicit that internals reach logs only:
         the traceback goes to `log.exception` (inside the active OTel span), and the caller gets a

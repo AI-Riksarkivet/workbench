@@ -1,7 +1,6 @@
 """Topics endpoint — serve the precomputed topic hierarchy for the Tree page.
 
-Port of the old ``backend/topics/router.py``: the topics table (and its JSONB
-hierarchy column) now come from the descriptor's ``topics`` capability
+The topics table (and its JSONB hierarchy column) come from the descriptor's ``topics`` capability
 (``table.column``), the dataset from the optional ``dataset`` query param.
 The table is one tiny row, read on demand per request so a topics rebuild is
 picked up without restarting the server; an undeclared capability or absent

@@ -79,11 +79,10 @@ def audit_read(
 ) -> None:
     """Record that a subject READ data — the question a lakehouse buyer expects answered (§ J1).
 
-    The estate already authorizes every read and then forgot it happened, so "was this table ever read
-    by that subject" had no answer even though allowing it was a deliberate decision. That is a
-    zero-trust gap as much as a feature one.
+    Every read is authorized, and without a record of it "was this table ever read by that subject" has no
+    answer even though allowing it was a deliberate decision.
 
-    NOT A MIDDLEWARE, which is what § J1 first proposed. A middleware sees the path and the principal
+    NOT A MIDDLEWARE. A middleware sees the path and the principal
     and nothing else, and `version` + `columns` are what make a read record worth keeping: only the
     route knows which version it served and which columns it returned. So the doors call this, and this
     fixes the action name and the field set — the part that makes the resulting log queryable.

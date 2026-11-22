@@ -44,9 +44,8 @@ async def _run_in_a_span(job: NodeJob) -> tuple[str, InMemorySpanExporter]:
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_a_FAILING_node_marks_its_span_and_names_itself() -> None:
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(503, text="serve is down"))
+async def test_a_FAILING_node_marks_its_span_and_names_itself(respx_mock: respx.MockRouter) -> None:
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(503, text="serve is down"))
 
     status, exporter = await _run_in_a_span(_job("ocr-1"))
 
@@ -58,9 +57,8 @@ async def test_a_FAILING_node_marks_its_span_and_names_itself() -> None:
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_a_SUCCEEDING_node_names_itself_but_is_not_marked_an_error() -> None:
-    respx.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text="Anno 1723"))
+async def test_a_SUCCEEDING_node_names_itself_but_is_not_marked_an_error(respx_mock: respx.MockRouter) -> None:
+    respx_mock.post(f"{SERVE}/htrflow").mock(return_value=httpx.Response(200, text="Anno 1723"))
 
     status, exporter = await _run_in_a_span(_job("ocr-2"))
 

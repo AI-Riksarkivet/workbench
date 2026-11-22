@@ -1,30 +1,18 @@
 """The labeling task's ONE definition — taxonomy, tools, attributes and relations together.
 
-WHY THIS REPLACES TWO OBJECTS. A project used to carry `label_schema` (classes, each with a
-`colour` and a `shape_types` list) *and* `template` (a `kind`, an allowed `tools` list, a
-`required_labels` list of bare strings, and typed `attributes`). Nothing cross-checked them, and
-they disagreed in ways the annotator then acted on:
+ONE DOCUMENT IS THE WHOLE TASK DEFINITION, so the taxonomy, the tools, what is required and the attributes cannot
+disagree: a class list and a separate enforcement template that nothing cross-checks would accept a project whose
+taxonomy says polygon while its enforcement refuses every polygon, stamp a published table with one class list while
+submit enforces another, and leave the closed set of classes out of scope where a submit is judged. The closed set is
+the reason a class list is a first-class object in CVAT, Encord and SuperAnnotate.
 
-* No validator existed between them, so `Shape kind = polygon` + `Task type = bbox-detection` was
-  an accepted 201 — a project whose taxonomy says polygon and whose enforcement refuses every
-  polygon at submit.
-* The published table stamped its class list from `label_schema` while enforcement read `template`,
-  so one lineage facet carried two independent class lists nothing kept in agreement.
-* The closed-set property — the entire reason a class list is a first-class object in CVAT, Encord
-  and SuperAnnotate — was absent: a submit could carry `label="asdf"` and publish it, because the
-  send capture copied the template onto the task and NOT the taxonomy, so the class list was not
-  even in scope where enforcement happens.
+It is the property Label Studio has, without its transport. We keep it as a structured Pydantic object rather than an
+XML DSL because in Label Studio the semantics are NOT in the document — a tool is the tag CLASS name, hardcoded in the
+implementation, so reproducing it means shipping ~60 tag classes to express what `ShapeType` already says in six. A
+text projection can be generated from this model later; the reverse is not true.
 
-The fix is the property Label Studio actually has, without its transport: ONE document is the whole
-task definition. We keep it as a structured Pydantic object rather than an XML DSL because in Label
-Studio the semantics are NOT in the document — a tool is the tag CLASS name, hardcoded in the
-implementation, so reproducing it means shipping ~60 tag classes to express what `ShapeType` already
-says in six. A text projection can be generated from this model later; the reverse is not true.
-
-`kind` IS NOT AN ENUM, deliberately. The old `TemplateKind` was a closed `Literal` of seven names
-that enforced nothing — its only uses were interpolation into error strings and one table property,
-so choosing `doc-qa` over `object-detection` changed no behaviour, and an eighth task type meant
-editing Python. The verified position across the ecosystem is that a task-type name buys a shared
+`kind` IS NOT AN ENUM, deliberately. A closed set of task-type names would enforce nothing (a name changes no
+behaviour) while a new task type would mean editing Python. The verified position across the ecosystem is that a task-type name buys a shared
 VOCABULARY, not a contract: Hugging Face's 57 pipeline ids exist (their own header says so) for
 widget selection, endpoint routing and search facets, and only 31 of them carry any JSON Schema at
 all. So `kind` is a free string, aligned with those ids by convention, and the enforceable contract
@@ -78,23 +66,20 @@ class OutputAttr(BaseModel):
 class LabelClass(BaseModel):
     """One class in the taxonomy — and the ONLY place its tools and attributes are declared.
 
-    `required` is EXPLICIT here, per class. It used to be a project-level `required_labels` list that
-    the create dialog derived from "every class name", which silently made every class mandatory on
-    every item the moment a third class was added. A taxonomy is an ALLOWED set; being mandatory is a
-    separate, per-class property. None of the five researched products conflates them.
+    `required` is EXPLICIT here, per class. A taxonomy is an ALLOWED set; being mandatory is a separate, per-class
+    property, so adding a class never makes another one mandatory. None of the five researched products conflates
+    them.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: Annotated[Text, Field(min_length=1, max_length=128)]
-    #: Rendered by the canvas and the sidebar. Optional, but no longer silently dropped.
+    #: Rendered by the canvas and the sidebar. Optional.
     colour: Text | None = None
     #: Which primitives this class may be drawn with. Empty = any (an unconstrained class).
     tools: list[ShapeType] = Field(default_factory=list)
     #: This class's regions CARRY TRANSCRIBED TEXT (the row's `text` facet) — an OCR paragraph
-    #: does, a detection box does not. Previously undeclarable: the workspace offered the text
-    #: editor on every row of every task, so "is transcription an attribute?" had no answer in
-    #: the model at all. It is neither a tool (a span INTO text is; this is text ON a region)
+    #: does, a detection box does not. It is neither a tool (a span INTO text is; this is text ON a region)
     #: nor an attribute (typed side-fields; this is the primary content column). Like `colour`,
     #: it configures the workspace rather than gating submit: the inspector offers transcription
     #: only where it is declared, once an ontology declares classes at all.
@@ -138,11 +123,9 @@ class RelationClass(BaseModel):
 class LabelOntology(BaseModel):
     """The whole task definition, as ONE object.
 
-    There is no `enforce` boolean. It used to be a document-wide kill switch that voided explicitly
-    authored declarations — a project could declare required labels, typed attributes and a tool
-    restriction and have every one ignored because one flag was false. Here the ontology IS the
-    contract: an ontology with no classes constrains nothing (which is exactly the pre-ontology
-    behaviour), and every declaration that IS present is applied. Nothing is declared and ignored.
+    There is no `enforce` boolean: a document-wide switch would let one flag void every declaration a project
+    authored. The ontology IS the contract: an ontology with no classes constrains nothing, and every declaration
+    that IS present is applied. Nothing is declared and ignored.
     """
 
     model_config = ConfigDict(extra="forbid")

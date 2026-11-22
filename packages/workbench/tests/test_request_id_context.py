@@ -1,25 +1,9 @@
-"""The minted request id must reach a log record, or it correlates nothing.
+"""The request id reaches every log record of its request, and no other request's.
 
-The defect: "RequestIDMiddleware mints a correlation id that nothing reads: no ContextVar,
-no logging middleware, no log field".
-
-The middleware set `request.state.request_id` and echoed `X-Request-ID` back, and no module read
-either. So a user could quote the id from a failed request and an operator had nothing to grep — two
-lines of `BaseHTTPMiddleware` writing a value nothing consumes.
-
-WHAT WAS NOT BROKEN, because the audit is careful and this gate should not overstate it: correlation
-was never ABSENT. `LoggingInstrumentor` already injects `otelTraceID`/`otelSpanID` into every record
-and ships them to GreptimeDB. The residual was a DEAD id, not an observability outage, which is why
-this is low — and why finishing the chain is cheap rather than urgent.
-
-`production-patterns.md` gives the shape exactly: a `ContextVar` set in the middleware, reset in a
-`finally`, and read anywhere downstream "without plumbing". The reset is the half the reference marks
-critical — without it an id leaks into the NEXT request on a reused worker, which is worse than no id
-at all: it correlates the wrong things while looking correct.
-
-A `logging.Filter` rather than a `LoggingMiddleware`, deliberately: the filter reaches every module in
-every service through `setup_logging`'s single formatter, while a middleware only ever sees the
-records it writes itself.
+`RequestIDMiddleware` echoes or mints `X-Request-ID` and publishes it to a `ContextVar`, reset when the response is
+done, so a reused worker never labels the next request with the previous caller's id. `setup_logging`'s stdout handler
+carries `CorrelationFilter`, which stamps the id (and the trace id) on every record, so an operator can grep for the id
+a caller quotes.
 """
 
 from __future__ import annotations
@@ -32,12 +16,8 @@ from fastapi.testclient import TestClient
 from workbench.middleware import RequestIDMiddleware
 
 
-def test_the_id_does_NOT_leak_into_the_next_request() -> None:
-    """The `finally: reset(token)` the reference marks critical.
-
-    Without it the value survives on a reused worker and correlates the NEXT request to the previous
-    caller's id — worse than no id, because it looks right.
-    """
+def test_the_id_does_not_leak_into_the_next_request() -> None:
+    """Each request sees its own id, and none survives its response on the worker."""
     from workbench.context import current_request_id
 
     seen: list[str] = []
@@ -58,7 +38,7 @@ def test_the_id_does_NOT_leak_into_the_next_request() -> None:
 
 
 def test_a_log_record_carries_the_request_id() -> None:
-    """The point of the whole chain: an operator can grep for what the caller quoted."""
+    """The filter stamps the context's id on the record."""
     from workbench.context import CorrelationFilter, request_id_ctx
 
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "msg", None, None)
@@ -68,17 +48,11 @@ def test_a_log_record_carries_the_request_id() -> None:
     finally:
         request_id_ctx.reset(token)
 
-    assert record.request_id == "deadbeef"  # ty: ignore[unresolved-attribute]
+    assert getattr(record, "request_id", None) == "deadbeef"
 
 
 def test_setup_logging_installs_the_filter() -> None:
-    """A filter nobody installs is the same dead end this finding is about.
-
-    ASKED OF THE HANDLER, not of the source text. This read
-    `"RequestIdFilter" in inspect.getsource(setup_logging)`, which passes for a filter that is named
-    and never added, and fails for one that is added under a different name — it broke on exactly
-    that rename. What matters is that the handler `setup_logging` installs stamps the field.
-    """
+    """The handler `setup_logging` installs stamps `request_id` and `trace_id` on a record, `-` outside a request."""
     from workbench.app import setup_logging
 
     root = logging.getLogger()
@@ -86,7 +60,7 @@ def test_setup_logging_installs_the_filter() -> None:
     for handler in previous:
         root.removeHandler(handler)
     try:
-        setup_logging()
+        setup_logging("INFO")
         stdout_handler = next(h for h in root.handlers if h.get_name() == "workbench-stdout")
         record = logging.LogRecord("x", logging.INFO, __file__, 1, "msg", None, None)
         for log_filter in stdout_handler.filters:
