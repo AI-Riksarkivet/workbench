@@ -77,6 +77,36 @@ class VectorBinding(BaseModel):
     dim: int
     query_encoder: str  # "text" | "image" — which encoder embeds the query
     caption_source: str | None = None  # FTS-able text column in the same space, if any
+    #: The model that made the column's vectors, as its writer names it. Vectors of two models are never compared, so
+    #: what is measured on them records it.
+    model: str | None = None
+
+
+class ScoreBinding(BaseModel):
+    """A column a pipeline wrote a model's confidence in each row to: a number from 0 (it cannot tell) to 1 (it is
+    sure), null where it scored none. A project that samples by ``model`` reads its items' scores from it, and asks no
+    model for them."""
+
+    table: str
+    column: str
+    model: str
+
+
+class EmbeddingBinding(BaseModel):
+    """A vector column rows are compared in, and the model that made its vectors, as its writer names it. Unlike a
+    search's vector binding it offers no search mode, so it needs no query encoder."""
+
+    table: str
+    column: str
+    model: str | None = None
+
+
+class SamplingBinding(BaseModel):
+    """What a corpus holds for choosing which rows are labelled next: a score column, and the embeddings rows are told
+    apart by. A corpus that declares no embeddings here is compared in its default search's first vector binding."""
+
+    scores: ScoreBinding | None = None
+    embeddings: EmbeddingBinding | None = None
 
 
 class FtsBinding(BaseModel):
@@ -139,6 +169,18 @@ class Declared(BaseModel):
     #: Every searchable table this corpus exposes, in declaration order. The FIRST is the default.
     searches: list[Search] = Field(default_factory=list)
     atlas: list[AtlasSpace] = Field(default_factory=list)
+    #: What the corpus holds for sampling (a score column, embeddings), if anything.
+    sampling: SamplingBinding | None = None
+
+    @property
+    def embeddings(self) -> EmbeddingBinding | None:
+        """The vectors this corpus's rows are compared in: the ones it declares for sampling, else its default search's
+        first vector binding; None for a corpus with neither."""
+        if self.sampling is not None and self.sampling.embeddings is not None:
+            return self.sampling.embeddings
+        first = next(iter(self.search.vectors.values()), None) if self.search else None
+        return None if first is None else EmbeddingBinding(table=first.table, column=first.column, model=first.model)
+
     capabilities: dict[str, str] = Field(default_factory=dict)  # capability → table/column it needs
 
     @model_validator(mode="before")
@@ -279,6 +321,24 @@ def validate_descriptor(declared: Declared, tables: dict[str, TableInfo]) -> lis
             info = tables.get(search.fts.table)
             if info is None or info.column(search.fts.column) is None:
                 problems.append(f"fts binding: {search.fts.table}.{search.fts.column} missing")
+
+    sampling = declared.sampling
+    for role, binding in (("scores", sampling.scores), ("embeddings", sampling.embeddings)) if sampling else ():
+        if binding is None:
+            continue
+        info = tables.get(binding.table)
+        column = info.column(binding.column) if info else None
+        if info is None or column is None:
+            problems.append(f"sampling.{role}: {binding.table}.{binding.column} missing")
+            continue
+        if role == "scores" and column.arrow_type not in ("float", "double", "halffloat"):
+            problems.append(f"sampling.scores: {binding.table}.{binding.column} is {column.arrow_type}, not a number from 0 to 1")
+        if role == "embeddings" and column.vector_dim is None:
+            problems.append(f"sampling.embeddings: {binding.table}.{binding.column} is {column.arrow_type}, not a vector column")
+        # Rows are found by the corpus's identity, so the table must name a row by it.
+        problems.extend(
+            f"sampling.{role}: identity field {key!r} missing from {binding.table!r}" for key in declared.identity.key_fields if info.column(key) is None
+        )
 
     for space in declared.atlas:
         info = tables.get(space.table)

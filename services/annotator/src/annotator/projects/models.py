@@ -288,8 +288,39 @@ DESCRIPTION_MAX: Final = 4_000
 INSTRUCTIONS_MAX: Final = 20_000
 LEASE_MAX_SECONDS: Final = 7 * 24 * 3600
 MAX_REVIEW_NOTES: Final = 50
-#: A judge's name, as the model protocol names a model, or nothing.
-JUDGE_MODEL_PATTERN: Final = rf"^(?:{NAME_PATTERN})?$"
+#: A model a project names (its judge, the model it samples by), as the model protocol names a model, or nothing.
+MODEL_PATTERN: Final = rf"^(?:{NAME_PATTERN})?$"
+
+
+class SamplingStrategy(StrEnum):
+    """Which items a project's queue serves first (ADR 0027, ADR 0034): an order, never captured on an item.
+
+    `least_sure` puts first the items its sampling model is least sure about; `least_alike` those least like the items
+    already labelled; `mix` interleaves the two.
+    """
+
+    OFF = "off"
+    LEAST_SURE = "least_sure"
+    LEAST_ALIKE = "least_alike"
+    MIX = "mix"
+
+
+class SampleReason(StrEnum):
+    """Why sampling put an item where it is: its model is unsure of it, or it is unlike the labelled items."""
+
+    LEAST_SURE = "least_sure"
+    LEAST_ALIKE = "least_alike"
+
+
+class Chosen(BaseModel):
+    """Who chose an item for its project, written by the server at send: the project's sampling, with the reason, the
+    number behind it (the model's doubt, or the distance from the nearest labelled or already chosen item) and the model
+    that number comes from; or the person who sent it."""
+
+    by: Literal["sampling", "person"]
+    kind: SampleReason | None = None
+    score: float | None = None
+    model: str | None = None
 
 
 class Task(BaseModel):
@@ -325,6 +356,9 @@ class Task(BaseModel):
     #: THIS project's taxonomy before seeding anything and stamps `source`, so a sender can neither
     #: invent a class nor forge human provenance.
     prediction: list[Shape] = Field(default_factory=list)
+    #: Who chose the item for the project (ADR 0027), stamped by the send from the proposal it names and never taken
+    #: from the sender; None on an item sent before sends recorded it.
+    chosen: Chosen | None = None
     #: Consensus v1: the replica GROUP this item belongs to (the group id shared by its siblings),
     #: or None for an ordinary item. Sibling ids are deterministic (`{group}-r{k}`), which is what
     #: lets the one-replica-per-annotator guard find them without an index.
@@ -381,7 +415,10 @@ class ProjectSettings(BaseModel):
     lease_seconds: int | None = Field(default=None, gt=0, le=LEASE_MAX_SECONDS)
     consensus_n: int | None = Field(default=None, ge=1, le=5)
     #: The model that judges this project's submissions, as the deployment's endpoint names it; empty names none.
-    judge_model: Annotated[str, Field(max_length=128, pattern=JUDGE_MODEL_PATTERN)] | None = None
+    judge_model: Annotated[str, Field(max_length=128, pattern=MODEL_PATTERN)] | None = None
+    sampling: SamplingStrategy | None = None
+    #: The model whose proposals score how sure it is of each item, as the deployment's endpoint names it; empty names none.
+    sampling_model: Annotated[str, Field(max_length=128, pattern=MODEL_PATTERN)] | None = None
 
 
 def publish_warehouse_of(project: Mapping[str, object]) -> str:
@@ -425,7 +462,13 @@ class AnnotationProject(BaseModel):
     #: The model that judges this project's submissions (ADR 0026), as the deployment's model endpoint names it; empty:
     #: the project has no judge. Read when a judge is asked, never captured on an item: a verdict records the model and
     #: version that gave it.
-    judge_model: str = Field(default="", max_length=128, pattern=JUDGE_MODEL_PATTERN)
+    judge_model: str = Field(default="", max_length=128, pattern=MODEL_PATTERN)
+    #: Which items the queue serves first (ADR 0027, ADR 0034). Read when a listing is ordered and a score is asked, never
+    #: captured on an item, so it changes until a publish starts.
+    sampling: SamplingStrategy = SamplingStrategy.OFF
+    #: The model whose proposals score how sure it is of each item, as the deployment's model endpoint names it; empty:
+    #: none. A score records the model that gave it, and one by another model than this counts as no score.
+    sampling_model: str = Field(default="", max_length=128, pattern=MODEL_PATTERN)
     #: Consensus v1's merge step: replica group id → the manager's canonical pick. Pre-publish
     #: metadata (re-pickable while the project is adjudicable); the publish validates every pick
     #: still names an ACCEPTED replica and stamps the map into the run facet.

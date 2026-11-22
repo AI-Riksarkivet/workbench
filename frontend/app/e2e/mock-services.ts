@@ -56,6 +56,7 @@ import {
 	permissionsOn,
 	changeWorkElsewhere,
 	judgeDoor,
+	samplingDoor,
 	moveElsewhere,
 	reclaimElsewhere,
 	projectsDoor,
@@ -1695,6 +1696,13 @@ Bun.serve({
 			endpoint,
 		});
 		if (judge) return judge;
+		const sampled = await samplingDoor(req, url, {
+			sub: who.sub,
+			record: ok,
+			fault: fault === 'fail' ? fault : undefined,
+			endpoint,
+		});
+		if (sampled) return sampled;
 		const projects = await projectsDoor(req, url, {
 			sub: who.sub,
 			record: ok,

@@ -3,7 +3,14 @@
  * a selection's rows capped while it reports the true size, and sending the listed half reports success.
  */
 import { describe, expect, it } from 'vitest';
-import { predictionFor, SEND_TASK_CAP, selectionKeys, sendItemsFor, sendRefusal } from './send.ts';
+import {
+	keysToSend,
+	predictionFor,
+	SEND_TASK_CAP,
+	selectionKeys,
+	sendItemsFor,
+	sendRefusal,
+} from './send.ts';
 
 describe('the label a selection gets', () => {
 	it('is one whole-item tag, trimmed, with no source', () => {
@@ -69,5 +76,18 @@ describe('the keys and items a selection produces', () => {
 				prediction: [{ shape_type: 'tag', label: 'letter' }],
 			},
 		]);
+	});
+});
+
+describe('what a send carries beside a sampling proposal', () => {
+	it('is every candidate without one or when the rest are asked for, else the proposed items left ticked', () => {
+		const keys = ['a/0', 'b/0', 'c/0'];
+		const ticked = new Set(['c/0', 'a/0']);
+
+		expect([
+			keysToSend(keys, null),
+			keysToSend(keys, { ticked, everyCandidate: true }),
+			keysToSend(keys, { ticked, everyCandidate: false }),
+		]).toEqual([keys, keys, ['a/0', 'c/0']]);
 	});
 });

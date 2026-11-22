@@ -14,6 +14,10 @@
 	// Alt+R) by the annotator's own door, and an item holding one is not sent to be submitted or accepted: the grid names
 	// it instead, in the annotator's words (ADR 0019).
 	//
+	// SAMPLING (ADR 0034): while the project's strategy is on, the items are listed in its order unless the person asks
+	// for item order, each with why it stands where it does; once a visit, the listed items with no number yet are read
+	// and scored (`SamplingTopUp`), and more on the person's word.
+	//
 	// role="grid": the cells are laid out in rows and columns and the keys move in both (arrows, Home/End, Page Up/Down),
 	// with a cell's own link to the canvas inside it, which the grid pattern allows and a listbox's options do not.
 	import { goto, replaceState } from '$app/navigation';
@@ -49,6 +53,7 @@
 		readItem,
 	} from '#lib/api/projects.api.ts';
 	import { askJudgeAfterSubmit } from '#lib/api/judge.api.ts';
+	import { itemsLacking, readSamples, requestSampling, READ_BATCH } from '#lib/api/sampling.api.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
 	import { requestAssist, type AssistModel, type AssistUnit } from '#lib/api/assist.api.ts';
 	import { formatClock } from '#lib/media/time/timeline.ts';
@@ -63,6 +68,9 @@
 	import { reauth } from '#lib/reauth.svelte.ts';
 	import { personName } from './people.ts';
 	import JudgeQuestion from './JudgeQuestion.svelte';
+	import SamplingReason from './SamplingReason.svelte';
+	import { diverse, samplingLine, unaskedLine } from './sampling.ts';
+	import { SamplingTopUp } from './sampling-top-up.svelte.ts';
 	import SendBackDialog from './SendBackDialog.svelte';
 	import {
 		between,
@@ -99,18 +107,21 @@
 		type Run,
 		type Written,
 	} from './label-run.ts';
-	import type { TaskDetail } from './types.ts';
+	import type { SamplingStrategy, TaskDetail } from './types.ts';
 
 	let {
 		projectId,
 		permissions,
 		me,
 		classes,
+		sampling = 'off',
 		onchanged,
 	}: {
 		projectId: string;
 		permissions: readonly string[];
 		me: string | null;
+		/** The project's sampling strategy: whether the grid lists in its order and shows each item's reason. */
+		sampling?: SamplingStrategy;
 		/** The project's classes: which a grid labels, and which are labelled on the canvas. */
 		classes: readonly {
 			name: string;
@@ -126,7 +137,8 @@
 	// THE ADDRESS IS THE VIEW: the pass, the filters, the page and the item the focus is on (`label-grid.ts`).
 	let asked = $state.raw<URLSearchParams | null>(null);
 	const query = $derived(readGridQuery(asked ?? page.url.searchParams));
-	const filter = $derived(gridDoorParams(query, me).toString());
+	const samples = $derived(sampling !== 'off');
+	const filter = $derived(gridDoorParams(query, me, samples).toString());
 	const read = $derived(
 		pageTasks({
 			projectId,
@@ -135,6 +147,7 @@
 			offset: (query.page - 1) * query.size,
 			work: true,
 			judge: true,
+			sampling: samples,
 		}),
 	);
 	const answer = $derived(read.current);
@@ -180,6 +193,25 @@
 	const gridNames = $derived(new Set(labels.map((c) => c.name)));
 	const mayReview = $derived(permissions.includes('can_review'));
 	const mayAnnotate = $derived(permissions.includes('can_annotate'));
+
+	// SAMPLING'S LINE AND ITS TOP-UP: what the listing says of the project's sampling, and the round that reads and scores
+	// the listed items with no number yet, once a visit for someone who may annotate whether or not the listing says the
+	// strategy orders any of them yet (a round may be what makes it), and again on their word. It stops when the grid
+	// goes.
+	const samplingState = $derived(samples ? (listing?.sampling ?? null) : null);
+	const samplingSaid = $derived(samplingState ? samplingLine(samplingState) : null);
+	const topUp = new SamplingTopUp({
+		strategy: () => sampling,
+		lacking: (lane, offset, signal) => itemsLacking(projectId, filter, lane, offset, signal),
+		reads: (ids, signal) => readSamples(projectId, ids, signal),
+		ask: (task, signal) => requestSampling(task, signal),
+		reread: async () => read.refresh(),
+	});
+	$effect(() => () => topUp.stop());
+	$effect(() => {
+		if (!samples || !mayAnnotate || listing === null) return;
+		untrack(() => topUp.start());
+	});
 
 	// NAMES AND WORDS: each item's row and its dataset's declaration, for its name, a text's excerpt and a recording's
 	// length. Decoration: an unreachable viewer costs them, never the grid.
@@ -1018,6 +1050,28 @@
 				</Button>
 			{/if}
 		</div>
+		{#if samples}
+			<div class="flex items-center gap-1" role="group" aria-label="Order">
+				<Button
+					variant={query.queue === 'sampling' ? 'secondary' : 'ghost'}
+					size="sm"
+					aria-pressed={query.queue === 'sampling'}
+					data-testid="grid-order-sampling"
+					onclick={() => showList({ ...query, queue: 'sampling', page: 1 })}
+				>
+					Sampling order
+				</Button>
+				<Button
+					variant={query.queue === 'plain' ? 'secondary' : 'ghost'}
+					size="sm"
+					aria-pressed={query.queue === 'plain'}
+					data-testid="grid-order-plain"
+					onclick={() => showList({ ...query, queue: 'plain', page: 1 })}
+				>
+					Plain order
+				</Button>
+			</div>
+		{/if}
 		{#if (listing?.datasets.length ?? 0) > 1 || query.dataset}
 			<Select
 				value={query.dataset ?? ''}
@@ -1052,6 +1106,56 @@
 			{matched.toLocaleString()} item{matched === 1 ? '' : 's'}
 		</span>
 	</div>
+
+	{#if samplingState && samplingSaid}
+		{@const unasked = unaskedLine(samplingState)}
+		<div class="flex flex-col gap-1 text-xs" data-testid="grid-sampling">
+			<div class="flex flex-wrap items-center gap-2">
+				<p
+					class={samplingSaid.warn ? 'text-warning text-sm' : 'text-sm'}
+					data-testid="grid-sampling-line"
+				>
+					{samplingSaid.text}{topUp.running ? ' Scoring…' : ''}
+				</p>
+				{#if mayAnnotate && !topUp.running && topUp.canContinue(samplingState)}
+					<Button
+						variant="outline"
+						size="xs"
+						data-testid="grid-sampling-more"
+						onclick={() => void topUp.round()}
+					>
+						Score more
+					</Button>
+				{/if}
+				{#if mayAnnotate && !topUp.running && diverse(samplingState.strategy) && tasks.length > 0}
+					<Button
+						variant="ghost"
+						size="xs"
+						data-testid="grid-sampling-measure"
+						onclick={() => void topUp.measure(tasks.slice(0, READ_BATCH).map((t) => t.task_id))}
+					>
+						Measure again
+					</Button>
+				{/if}
+			</div>
+			{#if topUp.failure !== null}
+				<p class="text-warning" role="alert" data-testid="grid-sampling-failure">
+					The sampling model could not answer: {topUp.failure}
+				</p>
+			{/if}
+			{#if topUp.refused !== null}
+				<p class="text-destructive" role="alert" data-testid="grid-sampling-failure">
+					Sampling could not read the items: {topUp.refused}
+				</p>
+			{/if}
+			{#if unasked !== null && !topUp.running}
+				<p class="text-muted-foreground" data-testid="grid-sampling-unasked">{unasked}</p>
+			{/if}
+			{#each topUp.notes as note (note)}
+				<p class="text-muted-foreground" data-testid="grid-sampling-note">{note}</p>
+			{/each}
+		</div>
+	{/if}
 
 	{#if labels.length > 0}
 		<div
@@ -1429,6 +1533,13 @@
 									</a>
 									<!-- eslint-enable svelte/no-navigation-without-resolve -->
 								</div>
+								{#if samples}
+									<SamplingReason
+										sampling={task.sampling}
+										strategy={sampling}
+										chosen={task.chosen}
+									/>
+								{/if}
 								<div
 									class="flex min-h-5 flex-wrap items-center gap-1"
 									data-testid="grid-cell-labels"

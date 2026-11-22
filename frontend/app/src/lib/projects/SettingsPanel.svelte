@@ -2,7 +2,8 @@
 	// A project's settings, each with when it may still change said beside it (the annotator's rule,
 	// `AnnotatorStore.update_settings`; the door decides): the title, description and instructions; whether review is
 	// required and how long a claim lasts; the consensus; the judge, a model of the deployment's endpoint that judges
-	// labels (ADR 0026). Saved together, only what changed is sent.
+	// labels (ADR 0026); the sampling strategy that orders the queue and the model whose doubt it reads (ADR 0034). Saved
+	// together, only what changed is sent.
 	import { untrack } from 'svelte';
 	import { Button } from '@riksarkivet/ui/button';
 	import { Input } from '@riksarkivet/ui/input';
@@ -10,10 +11,11 @@
 	import { Switch } from '@riksarkivet/ui/switch';
 	import { Textarea } from '@riksarkivet/ui/textarea';
 
-	import { judges, listModels } from '#lib/api/assist.api.ts';
+	import { judges, listModels, proposes } from '#lib/api/assist.api.ts';
 	import { updateProjectSettings, type ProjectSettings } from '#lib/api/projects.api.ts';
 	import { sentence } from './presentation.ts';
-	import type { Project } from './types.ts';
+	import { STRATEGY_LABELS } from './sampling.ts';
+	import type { Project, SamplingStrategy } from './types.ts';
 
 	let {
 		project,
@@ -37,6 +39,8 @@
 		lease_minutes: Math.round((project.lease_seconds ?? 1800) / 60),
 		consensus_n: project.consensus_n ?? 1,
 		judge_model: project.judge_model ?? '',
+		sampling: project.sampling ?? 'off',
+		sampling_model: project.sampling_model ?? '',
 	}));
 	let title = $state(initial.title);
 	let description = $state(initial.description);
@@ -45,6 +49,8 @@
 	let leaseMinutes = $state(initial.lease_minutes);
 	let consensus = $state(initial.consensus_n);
 	let judgeModel = $state(initial.judge_model);
+	let strategy = $state<SamplingStrategy>(initial.sampling);
+	let samplingModel = $state(initial.sampling_model);
 	let busy = $state(false);
 	let notice = $state<{ ok: boolean; text: string } | null>(null);
 
@@ -74,6 +80,26 @@
 		return [...offered, { value: named, label }];
 	});
 
+	// THE MODELS SAMPLING MAY ASK: those that propose something, whose confidence on an item is what its doubt is read
+	// from. One the project names that the endpoint does not list stays offered, as the judge does.
+	const samplerOptions = $derived.by(() => {
+		const offered = (models?.models ?? [])
+			.filter(proposes)
+			.map((m) => ({ value: m.name, label: m.title ? `${m.title} (${m.name})` : m.name }));
+		const named = project.sampling_model ?? '';
+		if (!named || offered.some((o) => o.value === named)) return offered;
+		const label = models !== null ? `${named} (not served by the model endpoint now)` : named;
+		return [...offered, { value: named, label }];
+	});
+	/** What each strategy does, said beside the choice. */
+	const STRATEGY_SAID: Record<SamplingStrategy, string> = {
+		off: 'The queue is in item order.',
+		least_sure: 'The items the sampling model is least sure about come first.',
+		least_alike:
+			'The items least like those already labelled come first, by the dataset’s embeddings.',
+		mix: 'The least sure and the least alike, taken in turn.',
+	};
+
 	const changes = $derived.by<ProjectSettings>(() => {
 		const out: ProjectSettings = {};
 		if (title !== (project.title ?? '')) out.title = title;
@@ -84,6 +110,8 @@
 			out.lease_seconds = leaseMinutes * 60;
 		if (consensus !== (project.consensus_n ?? 1)) out.consensus_n = consensus;
 		if (judgeModel !== (project.judge_model ?? '')) out.judge_model = judgeModel;
+		if (strategy !== (project.sampling ?? 'off')) out.sampling = strategy;
+		if (samplingModel !== (project.sampling_model ?? '')) out.sampling_model = samplingModel;
 		return out;
 	});
 	const dirty = $derived(Object.keys(changes).length > 0);
@@ -213,6 +241,46 @@
 				The model endpoint serves no model that judges labels.
 			</p>
 		{/if}
+	</div>
+
+	<div class="flex flex-col gap-2 border-t pt-3">
+		<div class="flex flex-col gap-1 text-sm" data-testid="settings-sampling">
+			Sampling
+			<span class="text-muted-foreground text-xs">
+				The order the Items and Label tabs serve the queue in, and what the send dialog proposes. It
+				decides nothing: anyone may still label in any order.
+			</span>
+			<Select
+				bind:value={() => strategy, (v) => (strategy = v as SamplingStrategy)}
+				ariaLabel="Sampling"
+				disabled={!editable}
+				options={(Object.keys(STRATEGY_LABELS) as SamplingStrategy[]).map((s) => ({
+					value: s,
+					label: STRATEGY_LABELS[s],
+				}))}
+			/>
+			<span class="text-muted-foreground text-xs" data-testid="settings-sampling-said"
+				>{STRATEGY_SAID[strategy]}</span
+			>
+		</div>
+		<div class="flex flex-col gap-1 text-sm">
+			Sampling model
+			<span class="text-muted-foreground text-xs">
+				A model that proposes labels: how unsure it is of an item is what least sure orders by.
+			</span>
+			<Select
+				bind:value={samplingModel}
+				ariaLabel="Sampling model"
+				disabled={!editable}
+				options={[{ value: '', label: 'No model' }, ...samplerOptions]}
+			/>
+		</div>
+		{#if models !== null && !models.available}
+			<p class="text-muted-foreground text-xs" data-testid="settings-sampling-reason">
+				{sentence(models.reason)}, so least sure orders only the items their dataset scores.
+			</p>
+		{/if}
+		<p class="text-muted-foreground text-xs">Sampling changes until a publish starts.</p>
 	</div>
 
 	{#if editable}

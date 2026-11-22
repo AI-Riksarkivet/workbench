@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Iterator, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 
@@ -30,6 +30,8 @@ from starlette.types import Message, Receive, Scope, Send
 from annotator.annotations.router import router as annotations_router
 from annotator.api.v1.endpoints import assist, project_events, projects, tasks
 from annotator.api.v1.endpoints.judge import router as judge_router
+from annotator.api.v1.endpoints.sampling import project_router as sampling_project_router
+from annotator.api.v1.endpoints.sampling import router as sampling_router
 from annotator.core.config import AnnotatorSettings, get_annotator_settings
 from annotator.model_endpoint.stand_in import create_stand_in
 from annotator.projects.lakehouse import PublishRunner
@@ -37,7 +39,7 @@ from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, T
 from annotator.projects.ontology import LabelClass, LabelOntology
 from annotator.state.store import AnnotatorStore
 from tests.media_catalog import write_table
-from tests.model_item import DATASET, DOC, PICTURE, SOURCE, UNIT, Build, StandIn
+from tests.model_item import DATASET, DOC, EMBEDDER, PICTURE, SOURCE, UNIT, Build, StandIn
 from tests.postgres import StateDatabase
 from workbench.exceptions import register_handlers
 from workbench.media.state import AppState
@@ -182,14 +184,16 @@ def asks(running_stand_in: StandIn, endpoint: str) -> list[dict[str, object]]:
 
 @pytest.fixture
 def client_for(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Build]:
-    """The assist, annotations and task doors over the store, on a dataset whose unit has a frame; project p1 holds task
+    """The assist, judge, sampling, annotations, project and task doors over the store, on a dataset whose unit has a frame; project p1 holds task
     t1 (the unit, claimed by the local person, labelling with the classes `seal` and `stamp`). ``endpoint`` names the
     model endpoint, or none; ``presents`` is the token the annotator presents to it, ``picture`` the unit's frame, and
-    ``judge`` the model the project names as its judge; ``tools_of`` gives a class tools of its own."""
+    ``judge`` the model the project names as its judge; ``tools_of`` gives a class tools of its own; each of
+    ``more_docs`` is a document of its own whose unit `<doc>/0/19` is the item of one more task, unassigned (t2, t3, …).
+    ``vectors`` gives each document an embedding the dataset declares (made by `EMBEDDER`), for sampling or with
+    ``searchable`` as a vector binding of its search, and ``confidences`` a score column it declares as ``scored_by``'s,
+    null for a document it leaves out. With ``default_dataset`` the dataset is the deployment's default and t1 names
+    none, as an item sent with no `where` does."""
     key_fields = ["doc_id", "speech_id", "chunk_id"]
-    descriptor = {"identity": {"key_fields": key_fields}, "capabilities": {"frames": "frames.frame"}}
-    keys = {"doc_id": [DOC], "speech_id": pa.array([0], pa.int64()), "chunk_id": pa.array([19], pa.int64())}
-    write_table(tmp_path, ["acme", "proj1", "chunks"], pa.table(keys), descriptor=descriptor)
     schema = pa.schema(
         [
             ("doc_id", pa.string()),
@@ -212,9 +216,39 @@ def client_for(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Bu
         picture: bytes = PICTURE,
         judge: str = "",
         tools_of: dict[str, Sequence[str]] | None = None,
+        more_docs: Sequence[str] = (),
+        vectors: Mapping[str, Sequence[float]] | None = None,
+        confidences: Mapping[str, float] | None = None,
+        scored_by: str = "",
+        searchable: bool = False,
+        default_dataset: bool = False,
     ) -> TestClient:
+        docs = [DOC, *more_docs]
+        keys = {"doc_id": docs, "speech_id": pa.array([0] * len(docs), pa.int64()), "chunk_id": pa.array([19] * len(docs), pa.int64())}
+        descriptor: dict[str, object] = {"identity": {"key_fields": key_fields}, "capabilities": {"frames": "frames.frame"}}
+        columns: dict[str, object] = dict(keys)
+        sampling: dict[str, object] = {}
+        if vectors is not None:
+            dim = len(next(iter(vectors.values())))
+            columns["embedding"] = pa.array([vectors[doc] for doc in docs], pa.list_(pa.float32(), dim))
+            binding = {"table": "chunks", "column": "embedding", "model": EMBEDDER}
+            if searchable:
+                descriptor["search"] = {"row_table": "chunks", "vectors": {"image": binding | {"dim": dim, "query_encoder": "image"}}}
+            else:
+                sampling["embeddings"] = binding
+        if confidences is not None:
+            columns["model_score"] = pa.array([confidences.get(doc) for doc in docs], pa.float32())
+            sampling["scores"] = {"table": "chunks", "column": "model_score", "model": scored_by}
+        if sampling:
+            descriptor["sampling"] = sampling
+        write_table(tmp_path, ["acme", "proj1", "chunks"], pa.table(columns), descriptor=descriptor)
         frames = pa.table(
-            {**keys, "frame_idx": pa.array([0], pa.int64()), "frame_mime": ["image/png; charset=binary"], "frame": blob_array([picture])},
+            {
+                **keys,
+                "frame_idx": pa.array([0] * len(docs), pa.int64()),
+                "frame_mime": ["image/png; charset=binary"] * len(docs),
+                "frame": blob_array([picture] * len(docs)),
+            },
             schema=schema,
         )
         write_table(tmp_path, ["acme", "proj1", "frames"], frames)
@@ -223,9 +257,13 @@ def client_for(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Bu
             "WORKBENCH_SOURCES": [{"kind": "namespace", "name": SOURCE, "impl": "dir", "properties": {"root": str(tmp_path)}, "annotatable": True}],
             "ANNOTATOR_MODEL_ENDPOINT_TIMEOUT_SECONDS": timeout,
         }
+        if default_dataset:
+            values["WORKBENCH_DEFAULT_DATASET"] = DATASET
         if endpoint is not None:
             values |= {"ANNOTATOR_MODEL_ENDPOINT_URL": endpoint, "ANNOTATOR_MODEL_ENDPOINT_TOKEN_FILE": str(token)}
-        app = state_app(assist.router, judge_router, annotations_router, tasks.router, projects.router, project_events.router)
+        app = state_app(
+            assist.router, judge_router, sampling_router, sampling_project_router, annotations_router, tasks.router, projects.router, project_events.router
+        )
         app.state.resources = AppState(settings=AnnotatorSettings.model_validate(values))
         client = clients.enter_context(TestClient(app))
         store, portal = app.state.store, client.portal
@@ -239,11 +277,22 @@ def client_for(state_app: Callable[..., FastAPI], tmp_path: Path) -> Iterator[Bu
             project_id="p1",
             state=TaskState.CLAIMED,
             assignee="anon",
-            source=ItemSource(kind="chunks", keys=[UNIT], where=DATASET),
+            source=ItemSource(kind="chunks", keys=[UNIT], where=None if default_dataset else DATASET),
             media=MediaRef(kind="image"),
             ontology=ontology,
         )
-        portal.call(store.send_tasks, "p1", [task])
+        more = [
+            task.model_copy(
+                update={
+                    "task_id": f"t{n}",
+                    "state": TaskState.UNASSIGNED,
+                    "assignee": None,
+                    "source": ItemSource(kind="chunks", keys=[f"{doc}/0/19"], where=DATASET),
+                }
+            )
+            for n, doc in enumerate(more_docs, start=2)
+        ]
+        portal.call(store.send_tasks, "p1", [task, *more])
         return client
 
     with clients:

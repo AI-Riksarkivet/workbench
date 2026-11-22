@@ -329,6 +329,8 @@ export interface GridQuery {
 	size: number;
 	/** The item the focus is on, kept so a reload comes back to it. */
 	at: string | null;
+	/** While the project samples, the items in its strategy's order (`sampling`) or in item order (`plain`). */
+	queue: 'sampling' | 'plain';
 }
 
 export const DEFAULT_GRID: GridQuery = {
@@ -338,9 +340,10 @@ export const DEFAULT_GRID: GridQuery = {
 	page: 1,
 	size: 50,
 	at: null,
+	queue: 'sampling',
 };
 
-const GRID_KEYS = ['pass', 'dataset', 'label', 'page', 'size', 'at'] as const;
+const GRID_KEYS = ['pass', 'dataset', 'label', 'page', 'size', 'at', 'queue'] as const;
 /** The longest value the address's text names take, as the annotator bounds its filters. */
 const MAX_TEXT = 512;
 /** The deepest page the address may name: the annotator reads at most 100,000 items deep. */
@@ -364,6 +367,7 @@ export function readGridQuery(params: Params): GridQuery {
 		page: Number.isInteger(page) && page >= 1 && (page - 1) * sized <= MAX_OFFSET ? page : 1,
 		size: sized,
 		at: text(params.get('at')),
+		queue: params.get('queue') === 'plain' ? 'plain' : 'sampling',
 	};
 }
 
@@ -378,6 +382,7 @@ export function writeGridQuery(query: GridQuery, base: Params): URLSearchParams 
 		['page', String(query.page), '1'],
 		['size', String(query.size), String(DEFAULT_GRID.size)],
 		['at', query.at, null],
+		['queue', query.queue, DEFAULT_GRID.queue],
 	];
 	for (const [key, value, fallback] of fields)
 		if (value !== null && value !== fallback) out.set(key, value);
@@ -385,8 +390,13 @@ export function writeGridQuery(query: GridQuery, base: Params): URLSearchParams 
 }
 
 /** The annotator's listing parameters for the grid: the items open to ``me``'s labeling (their claims and the items
- *  nobody holds, `open_to`), or the work in review someone other than ``me`` submitted. */
-export function gridDoorParams(query: GridQuery, me: string | null): URLSearchParams {
+ *  nobody holds, `open_to`), or the work in review someone other than ``me`` submitted; in the strategy's order while
+ *  the project ``samples`` and the person has not asked for item order. */
+export function gridDoorParams(
+	query: GridQuery,
+	me: string | null,
+	samples = false,
+): URLSearchParams {
 	const out = new URLSearchParams();
 	if (query.pass === 'review') {
 		out.append('state', 'in_review');
@@ -396,7 +406,7 @@ export function gridDoorParams(query: GridQuery, me: string | null): URLSearchPa
 		for (const state of ['unassigned', 'claimed', 'changes_requested']) out.append('state', state);
 	if (query.dataset !== null) out.set('dataset', query.dataset);
 	if (query.label !== null) out.set('label', query.label);
-	out.set('sort', 'item');
+	out.set('sort', samples && query.queue === 'sampling' ? 'sampling' : 'item');
 	out.set('order', 'asc');
 	return out;
 }

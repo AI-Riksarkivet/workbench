@@ -3,7 +3,7 @@ and judge tests through the fixtures of `services/annotator/tests/conftest.py` (
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from fastapi.testclient import TestClient
@@ -18,6 +18,8 @@ QUERY = {"project": "p1", "dataset": DATASET}
 WORK = {"project": "p1", "task": "t1", "dataset": DATASET}
 #: The unit's frame: what a model is sent, byte for byte.
 PICTURE = b"\x89PNG\r\n\x1a\n-a-picture"
+#: The model a dataset built with `vectors` says made its embeddings.
+EMBEDDER = "stand-in-embedder"
 
 
 class StandIn(BaseModel):
@@ -40,4 +42,10 @@ class Build(Protocol):
         picture: bytes = PICTURE,
         judge: str = "",
         tools_of: dict[str, Sequence[str]] | None = None,
+        more_docs: Sequence[str] = (),
+        vectors: Mapping[str, Sequence[float]] | None = None,
+        confidences: Mapping[str, float] | None = None,
+        scored_by: str = "",
+        searchable: bool = False,
+        default_dataset: bool = False,
     ) -> TestClient: ...

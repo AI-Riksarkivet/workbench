@@ -195,10 +195,13 @@ describe('the grid’s view in the address', () => {
 			page: 3,
 			size: 100,
 			at: 't-9',
+			queue: 'plain' as const,
 		};
 		const written = writeGridQuery(query, new URLSearchParams({ tab: 'label', size: '7' }));
 
-		expect(written.toString()).toBe('tab=label&pass=review&label=map&page=3&size=100&at=t-9');
+		expect(written.toString()).toBe(
+			'tab=label&pass=review&label=map&page=3&size=100&at=t-9&queue=plain',
+		);
 		expect(readGridQuery(written)).toEqual(query);
 	});
 
@@ -229,6 +232,14 @@ describe('the grid’s view in the address', () => {
 		],
 	] as const)('%s', (_name, pass, me, expected) => {
 		expect(gridDoorParams({ ...DEFAULT_GRID, pass }, me).toString()).toBe(expected);
+	});
+
+	it('lists in the strategy’s order while the project samples, unless item order is asked for', () => {
+		expect(
+			[DEFAULT_GRID, { ...DEFAULT_GRID, queue: 'plain' as const }].map((query) =>
+				gridDoorParams(query, 'me', true).get('sort'),
+			),
+		).toEqual(['sampling', 'item']);
 	});
 });
 

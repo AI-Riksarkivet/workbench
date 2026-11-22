@@ -232,6 +232,40 @@ CREATE TABLE IF NOT EXISTS judgements (
     PRIMARY KEY (task_id, submitted_at)
 );
 
+-- A sampling score on one item (`annotator.sampling`, ADR 0034): what the model a project samples by said of it, read
+-- from its dataset's score column or asked of the model endpoint, in a person's request. A row of its own, written
+-- beside the task and never to it: no item moves, is claimed or has its draft changed because of a score. One per task,
+-- replaced when a model other than the one that gave it scores the item again; a row of a model other than the
+-- project's `sampling_model` of now is read as no score (`task_query`).
+CREATE TABLE IF NOT EXISTS samplings (
+    task_id  text PRIMARY KEY REFERENCES tasks (task_id) ON DELETE CASCADE,
+    model    text NOT NULL,
+    -- How unsure the model is of the item, 1 less its confidence: what least-sure orders by. NULL where it proposed
+    -- nothing the item's classes take.
+    doubt    real,
+    document jsonb NOT NULL
+);
+
+-- How unlike the project's labelled items one item is (`annotator.sampling`, ADR 0034): the cosine distance from its
+-- embedding to the nearest labelled item's, measured in a person's request. What least-alike orders by. One per task,
+-- replaced each time the item is measured again; written beside the task and never to it, as a score is.
+CREATE TABLE IF NOT EXISTS novelties (
+    task_id  text PRIMARY KEY REFERENCES tasks (task_id) ON DELETE CASCADE,
+    novelty  real NOT NULL,
+    document jsonb NOT NULL
+);
+
+-- What sampling proposed one person to send to a project (`annotator.sampling.Proposal`, ADR 0035): the send that names
+-- it stamps each item from this row. A day's worth is kept; an older one is removed when the project's next is written.
+CREATE TABLE IF NOT EXISTS sampling_proposals (
+    proposal_id text PRIMARY KEY,
+    project_id  text NOT NULL REFERENCES projects (project_id) ON DELETE CASCADE,
+    proposed_by text NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    document    jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sampling_proposals_by_project ON sampling_proposals (project_id, created_at);
+
 -- Each task's state as a reader sees it: a claim past its expiry is unassigned. `annotator.projects.machines.lapse_expired_claim`
 -- is the same rule on a document, and `annotator.state.task_query` the same rule over the listing's columns. The clock is
 -- the transaction's (`now()`), so every statement of one repeatable-read answer reads a lapse at one instant.

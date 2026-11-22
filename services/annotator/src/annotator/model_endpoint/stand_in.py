@@ -11,6 +11,9 @@ same answer. Each way an endpoint can behave is a model of its own, so a person 
 - ``stand-in-tagger``: takes no prompt; one tag about the whole item, labelled with the task's first class.
 - ``stand-in-judge``: proposes nothing and assesses labels: it disagrees with every label of the task's last class
   (suggesting the first), and with an item nobody labelled.
+- ``stand-in-scorer``: takes no prompt; a tag about the whole item and a box, each labelled with the task's first class
+  (so classes that take either keep one), both at one score, a fixed function of the item's id (`score_of`), so a
+  project that samples by it sees a stable least-sure order.
 
 The slow and the failing model assess as they propose: never, and with a 500.
 
@@ -23,6 +26,7 @@ It accepts any bearer token and refuses a call with none (401): who a token name
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -62,6 +66,7 @@ SLOW: Final = "stand-in-slow"
 FAILING: Final = "stand-in-failing"
 TAGGER: Final = "stand-in-tagger"
 JUDGE: Final = "stand-in-judge"
+SCORER: Final = "stand-in-scorer"
 
 #: Every shape type: what the stand-ins that assess take.
 ANY_SHAPE: Final[tuple[ProposalShape, ...]] = get_args(ProposalShape)
@@ -75,6 +80,7 @@ MODELS: Final[tuple[ModelInfo, ...]] = (
     ModelInfo(name=FAILING, version=VERSION, title="Stand-in that fails", reads=["image"], prompts=["text", "box"], returns=["bbox"], assesses=list(ANY_SHAPE)),
     ModelInfo(name=TAGGER, version=VERSION, title="Stand-in tagger", reads=["image"], prompts=[], returns=["tag"]),
     ModelInfo(name=JUDGE, version=VERSION, title="Stand-in judge", reads=["image"], assesses=list(ANY_SHAPE)),
+    ModelInfo(name=SCORER, version=VERSION, title="Stand-in scorer", reads=["image"], prompts=[], returns=["tag", "bbox"]),
 )
 
 #: The box the detector proposes when the person drew none, and the side of the patch grown around a click.
@@ -91,6 +97,9 @@ SCORE_CEILING: Final = 0.95
 JUDGE_SCORE: Final = 0.8
 UNLABELLED_SCORE: Final = 0.5
 UNLABELLED: Final = "nothing is labelled on this item"
+#: The scorer's scores run from `SCORER_FLOOR` to `SCORER_FLOOR + SCORER_STEPS / 100`, a hundredth apart.
+SCORER_FLOOR: Final = 0.05
+SCORER_STEPS: Final = 91
 #: How often the slow model sends a byte and looks whether its caller is still there.
 SLOW_POLL_SECONDS: Final = 0.05
 
@@ -157,6 +166,21 @@ def _segment(ask: ProposalsRequest) -> list[Proposal]:
 
 def _tag(ask: ProposalsRequest) -> list[Proposal]:
     return [Proposal(shape_type="tag", label=_label(ask), score=TAGGER_SCORE)]
+
+
+def score_of(item_id: str) -> float:
+    """The scorer's score on the item ``item_id`` names: from the SHA-256 of the id, in [0.05, 0.95], two decimals."""
+    step = int.from_bytes(hashlib.sha256(item_id.encode()).digest()[:8], "big") % SCORER_STEPS
+    return round(SCORER_FLOOR + step / 100, 2)
+
+
+def _score(ask: ProposalsRequest) -> list[Proposal]:
+    label, score = _label(ask), score_of(ask.item.id)
+    x, y, width, height = DEFAULT_BOX
+    return [
+        Proposal(shape_type="tag", label=label, score=score),
+        Proposal(shape_type="bbox", x=x, y=y, width=width, height=height, label=label, score=score),
+    ]
 
 
 def doubt(label: str, instead: str) -> str:
@@ -241,7 +265,7 @@ def create_stand_in() -> FastAPI:
             return StreamingResponse(_drip_until_the_caller_leaves(request), media_type="application/json")
         if model.name == FAILING:
             raise _Refused(HTTPStatus.INTERNAL_SERVER_ERROR, f"{FAILING} fails every ask")
-        answer = {SEGMENTER: _segment, TAGGER: _tag}.get(model.name, _detect)
+        answer = {SEGMENTER: _segment, TAGGER: _tag, SCORER: _score}.get(model.name, _detect)
         proposals = answer(ask)
         return ProposalsResponse(model=model.name, version=model.version, proposals=proposals)
 

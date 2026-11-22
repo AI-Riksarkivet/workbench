@@ -254,7 +254,7 @@ async def update_project_settings(
     subject: CurrentSubject,
     store: StoreDep,
 ) -> AnnotationProject:
-    """Change a project's title, description, instructions, review and claim settings, or its consensus.
+    """Change a project's title, description, instructions, review and claim settings, consensus, judge or sampling.
 
     403 without `can_manage`; 404 for no such project; 409 when the project's state, or the items it already holds, keep a
     setting fixed (`AnnotatorStore.update_settings` names which). Only the fields the body names change.

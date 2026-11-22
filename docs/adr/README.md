@@ -60,3 +60,5 @@ in issues #1, #7, #9 and #10, their comments, and the commit messages named in e
 | [0031](0031-a-project-may-accept-confident-proposals-with-a-sample-checked-by-a-person.md) | A project may accept confident proposals, with a sample checked by a person | 2026-11-20 | accepted; amends 0019 |
 | [0032](0032-a-model-backend-is-a-ray-serve-deployment-that-speaks-the-protocol.md) | A model backend is a Ray Serve deployment that speaks the protocol | 2026-11-20 | accepted; replaces the adapter part of 0030 |
 | [0033](0033-a-judge-is-asked-in-a-persons-request.md) | A judge is asked in a person's request, once per submission | 2026-11-22 | accepted; refines 0026 |
+| [0034](0034-a-sampling-number-is-read-or-asked-in-a-persons-request.md) | A sampling number is read or asked in a person's request, and kept beside the task | 2026-11-22 | accepted; refines 0027 |
+| [0035](0035-a-send-proposal-is-the-servers-and-each-item-records-who-chose-it.md) | A send's proposal is the server's, and each item records who chose it | 2026-11-22 | accepted; refines 0027 |

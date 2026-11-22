@@ -2694,6 +2694,222 @@ test('the app’s navigation and the grid’s pager are two landmarks of their o
 /** A service's own refusal of the session: a 401 that challenges the credential. This is the one a viewer read answers
  *  when the person's session to the lakehouse must be renewed (`token_exchange.SESSION_TO_RENEW`: no unexpired token of
  *  theirs to pass on, or the exchange of it refused), and the door's own carries the same challenge. */
+// SAMPLING (ADR 0034): `triage` samples the least sure by the stand-in tagger; the letters dataset's score column scores
+// four of its five open items (doubts 0.83, 0.62, 0.47, 0.21) and the tagger, asked about the fifth, answers 0.4.
+// `blended` and `fresh` sample the least alike in the letters dataset's embeddings, against one labelled item and none;
+// `unscored` mixes the two over the maps dataset, which declares neither (`e2e/mock-projects.ts`).
+const samplingAsks = async (page: Page, who: MockIdentity): Promise<Call[]> =>
+	(await annotatorCalls(page, who)).filter(
+		(c) => c.method === 'POST' && c.path.startsWith('/api/sampling/'),
+	);
+const gridOrder = (page: Page) =>
+	grid(page)
+		.getByRole('gridcell')
+		.evaluateAll((cells) => cells.map((c) => c.getAttribute('data-task')));
+
+test('with least sure on, the Label and Items tabs list the items doubted most first, each saying why, and plain order restores item order', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await page.goto('/projects/triage?tab=label');
+
+	// The visit's round read the score column, asked the model about the one item it does not score, and read the list
+	// again in the strategy's order.
+	await expect(page.getByTestId('grid-sampling-line')).toHaveText(
+		'Least sure by stand-in-tagger: 5 scored, 0 not yet.',
+	);
+	expect((await samplingAsks(page, who)).map((c) => [c.path, c.status])).toEqual([
+		['/api/sampling/letter-004/0', 200],
+	]);
+	await expect
+		.poll(() => gridOrder(page))
+		.toEqual(['triage-01', 'triage-03', 'triage-02', 'triage-04', 'triage-00']);
+	await expect(cellOf(page, 'triage-01').getByTestId('sampling-reason')).toHaveText(
+		'Least sure · doubt 0.83',
+	);
+	await expect(cellOf(page, 'triage-01').getByTestId('sampling-chosen')).toHaveText(
+		'Chosen by sampling: least sure (0.83)',
+	);
+	await expect(cellOf(page, 'triage-04').getByTestId('sampling-reason')).toHaveText(
+		'Least sure · doubt 0.40',
+	);
+	// The detail is the chip's accessible name, and its tooltip.
+	const chip = cellOf(page, 'triage-03').getByTestId('sampling-reason');
+	await expect(chip).toHaveAccessibleName(
+		/^Least sure · doubt 0\.62\. Doubt 0\.62: stand-in-tagger pages\.confidence at version 3, asked by /,
+	);
+	await chip.hover();
+	await expect(page.getByTestId('sampling-detail')).toContainText(
+		'Doubt 0.62: stand-in-tagger pages.confidence at version 3',
+	);
+	await expect(page.getByTestId('grid-sampling-more')).toHaveCount(0);
+
+	await page.getByTestId('grid-order-plain').click();
+
+	await expect(page).toHaveURL(/queue=plain/);
+	await expect
+		.poll(() => gridOrder(page))
+		.toEqual(['triage-00', 'triage-01', 'triage-02', 'triage-03', 'triage-04']);
+	await expect(cellOf(page, 'triage-00').getByTestId('sampling-reason')).toHaveText(
+		'Least sure · doubt 0.21',
+	);
+	// A visit scores once: switching the order asked no model again.
+	expect(await samplingAsks(page, who)).toHaveLength(1);
+
+	// The Items tab serves the same order when its address names no sort.
+	await page.goto('/projects/triage?tab=items');
+	await expect(page.getByRole('row').nth(1).locator('[title^="letter-001/1 ·"]')).toHaveCount(1);
+	await expect(page.getByRole('row').nth(1).getByTestId('sampling-reason')).toHaveText(
+		'Least sure · doubt 0.83',
+	);
+});
+
+test('a project with no model endpoint and no embeddings has no sampling, and says why', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await faultOn(page, who, '/api/assist/models', 'no-endpoint');
+	await page.goto('/projects/unscored?tab=label');
+
+	await expect(page.getByTestId('grid-sampling-line')).toHaveText(
+		'Sampling cannot order this list: this deployment names no model endpoint, and no item is measured against the labelled items yet',
+	);
+	await expect(page.getByTestId('grid-sampling-note')).toHaveText([
+		'lake~acme$maps declares no embeddings, so diversity is unavailable for its items',
+		'this deployment names no model endpoint, so 2 item(s) of lake~acme$maps with no score by stand-in-tagger in their dataset stay unscored',
+	]);
+	await expect(page.getByTestId('grid-sampling-unasked')).toHaveText(
+		'No model can be asked about the 2 items their dataset does not score.',
+	);
+	await expect(grid(page).getByTestId('sampling-reason')).toHaveText(
+		Array(2).fill('Not scored yet'),
+	);
+	// Nothing a further round could reach: no Score more, and no model asked.
+	await expect(page.getByTestId('grid-sampling-more')).toHaveCount(0);
+	expect(await samplingAsks(page, who)).toEqual([]);
+});
+
+test('with least alike on, the items least like the labelled ones come first with their distance, are measured again on asking, and a project with nothing labelled says so', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/blended?tab=label');
+
+	await expect(page.getByTestId('grid-sampling-line')).toHaveText(
+		'Least alike: 3 measured, 0 not yet.',
+	);
+	await expect.poll(() => gridOrder(page)).toEqual(['blended-03', 'blended-02', 'blended-01']);
+	await expect(grid(page).getByTestId('sampling-reason')).toHaveText([
+		'Least alike · 2.00',
+		'Least alike · 1.00',
+		'Least alike · 0.20',
+	]);
+	await expect(cellOf(page, 'blended-02').getByTestId('sampling-reason')).toHaveAccessibleName(
+		/from the nearest of 1 labelled item, by pages\.embedding \(stand-in-embedder\)/,
+	);
+	const measured = page.waitForRequest((req) =>
+		req.url().endsWith('/projects/blended/sampling/reads'),
+	);
+
+	await page.getByTestId('grid-sampling-measure').click();
+
+	expect(((await measured).postDataJSON() as { task_ids: string[] }).task_ids).toEqual([
+		'blended-03',
+		'blended-02',
+		'blended-01',
+	]);
+
+	await page.goto('/projects/fresh?tab=label');
+	await expect(page.getByTestId('grid-sampling-line')).toHaveText(
+		'Sampling cannot order this list: no item is measured against the labelled items yet',
+	);
+	await expect(page.getByTestId('grid-sampling-note')).toHaveText(
+		'no item of lake~acme$letters is labelled yet, so there is nothing to measure its items against',
+	);
+	await expect(page.getByTestId('grid-sampling-more')).toHaveCount(0);
+});
+
+test('the send dialog proposes N items by the strategy, the person unticks one, and the send carries the proposal and the items left', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const dialog = await sendDialog(page);
+	await expect(dialog.getByTestId('send-propose')).toHaveCount(0);
+	await dialog.getByTestId('send-project').selectOption('triage');
+	await dialog.getByTestId('send-propose-count').fill('2');
+
+	await dialog.getByRole('button', { name: 'Propose 2 by sampling' }).click();
+
+	await expect(dialog.getByTestId('send-proposal-summary')).toHaveText(
+		'Sampling proposes 2 of 3 items',
+	);
+	const proposed = dialog.getByTestId('send-proposed');
+	await expect(proposed).toHaveText([
+		/letter-001\/1\s*Least sure · doubt 0\.83/,
+		/map-003\/0\s*Least sure · doubt 0\.62/,
+	]);
+	await proposed.filter({ hasText: 'map-003/0' }).getByRole('checkbox').click();
+	const posted = page.waitForRequest((req) => req.url().endsWith('/projects/triage/items'));
+
+	await dialog.getByRole('button', { name: 'Send 1 item', exact: true }).click();
+
+	const sent = (await posted).postDataJSON() as {
+		items: { source: { keys: string[] } }[];
+		proposal: string;
+	};
+	expect(sent.items.map((item) => item.source.keys[0])).toEqual(['letter-001/1']);
+	expect(sent.proposal).toMatch(/^proposal-/);
+	await expect(dialog.getByTestId('send-done')).toHaveText(/Sent 1 item\./);
+});
+
+test('a manager chooses the sampling strategy and a model that proposes, and both are saved', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Manager');
+	await page.goto('/projects/letters?tab=settings');
+	const strategy = page.getByLabel('Sampling', { exact: true });
+	const model = page.getByLabel('Sampling model', { exact: true });
+	await strategy.click();
+	await page.getByRole('option', { name: 'Least sure', exact: true }).click();
+	await expect(page.getByTestId('settings-sampling-said')).toHaveText(
+		'The items the sampling model is least sure about come first.',
+	);
+	// The models that propose, and no judge alone.
+	await model.click();
+	await expect(page.getByRole('option')).toHaveText([
+		'No model',
+		'Stand-in detector (stand-in-detector)',
+		'Stand-in segmenter (stand-in-segmenter)',
+		'Stand-in tagger (stand-in-tagger)',
+		'Stand-in that never answers (stand-in-slow)',
+		'Stand-in that fails (stand-in-failing)',
+	]);
+	await page.getByRole('option', { name: 'Stand-in tagger (stand-in-tagger)' }).click();
+	const patched = page.waitForRequest(
+		(req) => req.method() === 'PATCH' && req.url().endsWith('/api/annotator/projects/letters'),
+	);
+
+	await page.getByTestId('settings-save').click();
+
+	expect((await patched).postDataJSON()).toEqual({
+		sampling: 'least_sure',
+		sampling_model: 'stand-in-tagger',
+	});
+	await expect(page.getByTestId('settings-notice')).toHaveText('Saved.');
+
+	// With no model endpoint, what least sure can still order is said beside it.
+	await faultOn(page, who, '/api/assist/models', 'no-endpoint');
+	await page.reload();
+	await expect(page.getByTestId('settings-sampling-reason')).toHaveText(
+		'Assist is unavailable: this deployment names no model endpoint, so least sure orders only the items their dataset scores.',
+	);
+});
+
 const CHALLENGE = {
 	'www-authenticate':
 		'Bearer, DPoP error="invalid_token", error_description="the session must be renewed", algs="ES256"',

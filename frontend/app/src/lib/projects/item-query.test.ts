@@ -19,6 +19,20 @@ describe('the item query in the address', () => {
 		expect(readItemQuery(written)).toEqual(query);
 	});
 
+	it('reads an address naming no sort in the order given for it, and writes item order out where that is not it', () => {
+		const written = writeItemQuery(
+			{ ...DEFAULT_QUERY, sort: 'item' },
+			new URLSearchParams(),
+			'sampling',
+		);
+
+		expect([
+			readItemQuery(new URLSearchParams(), 'sampling').sort,
+			written.toString(),
+			readItemQuery(written, 'sampling').sort,
+		]).toEqual(['sampling', 'sort=item', 'item']);
+	});
+
 	it.each([
 		['state=lost&state=claimed', { states: ['claimed'] }],
 		['sort=assignee%3B+drop&order=sideways', { sort: 'item', order: 'asc' }],

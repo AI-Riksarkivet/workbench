@@ -9,6 +9,9 @@
 	// now (their role, and the identity rules: no verdict on their own submission, no holder's event on another's
 	// claim), the one rule the quick view and the canvas's panel read too. A denial is still the door's 403 or 409,
 	// shown as it is; a disabled button is never the gate.
+	//
+	// SAMPLING (ADR 0034): while the project's strategy is on, the table is in its order unless the address names another
+	// sort (a column's header), and each item says why it stands where it does and who chose it to be sent.
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -55,6 +58,7 @@
 	import { parseView, QUEUE_VIEW_KEY, type QueueView } from './queue-view.ts';
 	import QuickView from './QuickView.svelte';
 	import JudgeQuestion from './JudgeQuestion.svelte';
+	import SamplingReason from './SamplingReason.svelte';
 	import SendBackDialog from './SendBackDialog.svelte';
 	import { afterVerdict } from './quick-view.ts';
 	import LeaseChip from './LeaseChip.svelte';
@@ -73,7 +77,14 @@
 		type ItemQuery,
 		type Sort,
 	} from './item-query.ts';
-	import type { Adjudication, Contributor, People, TaskDetail, TaskState } from './types.ts';
+	import type {
+		Adjudication,
+		Contributor,
+		People,
+		SamplingStrategy,
+		TaskDetail,
+		TaskState,
+	} from './types.ts';
 
 	let {
 		projectId,
@@ -85,6 +96,7 @@
 		consensusN = 1,
 		adjudications = {},
 		droppable = false,
+		sampling = 'off',
 		onchanged,
 	}: {
 		projectId: string;
@@ -104,6 +116,8 @@
 		adjudications?: Record<string, Adjudication>;
 		/** Whether this project can still have items removed (draft/labeling). The door re-checks. */
 		droppable?: boolean;
+		/** The project's sampling strategy: whether the table offers its order and each item's reason. */
+		sampling?: SamplingStrategy;
 		/** Fired after any action that changed items, so the page reads the project again, and this tab (`reload`). */
 		onchanged: () => void;
 	} = $props();
@@ -112,7 +126,10 @@
 	// so a second change made before the first lands (a date field picked, then a day typed) builds on the first rather
 	// than on the address the first is replacing.
 	let asked = $state.raw<URLSearchParams | null>(null);
-	const query = $derived(readItemQuery(asked ?? page.url.searchParams));
+	// The strategy orders the queue: while it is on, an address that names no sort is in sampling order, and any other
+	// sort is written into the address.
+	const defaultSort = $derived<Sort>(sampling === 'off' ? 'item' : 'sampling');
+	const query = $derived(readItemQuery(asked ?? page.url.searchParams, defaultSort));
 	const filter = $derived(doorParams(query, me).toString());
 	const read = $derived(
 		pageTasks({
@@ -121,6 +138,7 @@
 			limit: query.size,
 			offset: (query.page - 1) * query.size,
 			judge: true,
+			sampling: sampling !== 'off',
 		}),
 	);
 	const answer = $derived(read.current);
@@ -139,7 +157,7 @@
 			rowSelection = {};
 			known = new Map();
 		}
-		const address = writeItemQuery(next, asked ?? page.url.searchParams);
+		const address = writeItemQuery(next, asked ?? page.url.searchParams, defaultSort);
 		asked = address;
 		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the same path, its query changed
 		void goto(`?${address}`, { reset: false }).finally(() => {
@@ -398,7 +416,15 @@
 		iso ? new Date(iso).toLocaleDateString() : '';
 
 	// The table, sorted and paged by the annotator: TanStack renders one page and reports what the person asked for.
-	const SORTABLE: readonly Sort[] = ['item', 'state', 'assignee', 'submitted', 'reviewed', 'sent'];
+	const SORTABLE: readonly Sort[] = [
+		'item',
+		'state',
+		'assignee',
+		'submitted',
+		'reviewed',
+		'sent',
+		'sampling',
+	];
 	const sorting = $derived<SortingState>([{ id: query.sort, desc: query.order === 'desc' }]);
 	const pagination = $derived<PaginationState>({
 		pageIndex: query.page - 1,
@@ -411,6 +437,7 @@
 		label: tasks.some((t) => t.prediction.length > 0),
 		corpus: (listing?.datasets.length ?? 0) > 1,
 		media: new Set(tasks.map((t) => t.media.kind)).size > 1,
+		sampling: sampling !== 'off',
 	});
 
 	const columns: ColumnDef<TaskDetail>[] = [
@@ -442,6 +469,13 @@
 			enableSorting: false,
 			accessorFn: mediaText,
 			meta: { cellClass: 'text-xs' },
+		},
+		{
+			id: 'sampling',
+			// The value TanStack needs to offer the sort; the annotator does the sorting, in the strategy's order.
+			accessorFn: (t) => t.sampling?.score?.score ?? t.sampling?.novelty?.novelty ?? -1,
+			header: sortableHeader('sampling'),
+			cell: ({ row }) => renderSnippet(samplingCell, row.original),
 		},
 		{
 			id: 'state',
@@ -633,6 +667,10 @@
 			</details>
 		{/if}
 	{/if}
+{/snippet}
+
+{#snippet samplingCell(task: TaskDetail)}
+	<SamplingReason sampling={task.sampling} strategy={sampling} chosen={task.chosen} />
 {/snippet}
 
 {#snippet labelCell(task: TaskDetail)}
@@ -989,6 +1027,7 @@
 		{people}
 		busy={busy !== null}
 		onfire={(task, event) => void fireFromQuick(task, event)}
+		{sampling}
 		{canvasHref}
 		{canvasVerb}
 		nameOf={called}

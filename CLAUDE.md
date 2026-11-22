@@ -319,6 +319,22 @@ Two language-pure planes, as in rask; never blur them.
     and claimed by any replica's re-drive (about every 30 s) once its run stopped renewing; a run holds no connection
     between store calls, and a replica drives at most `ANNOTATOR_PUBLISH_CONCURRENCY` at once. Its tests run
     on a real PostgreSQL (`tests/postgres.py`, `state_database`; `services/annotator/tests/conftest.py`'s `state_app`).
+  - **Sampling** (ADR 0027, 0034, 0035; `annotator.sampling`, `annotator.sampling_reads`, `api/v1/endpoints/sampling.py`):
+    a project's `sampling` (`off`, `least_sure`, `least_alike`, `mix`) and `sampling_model` order its queue
+    (`GET /projects/{id}/tasks?sort=sampling&include=sampling`, the filters `scored=false` and `measured=false` for the
+    items lacking a number) and are read when a list is ordered, never captured on an item. A score (the doubt, 1 less a model's
+    confidence) and a novelty (the cosine distance to the nearest labelled item of the same dataset, the latest 500)
+    are rows of their own beside the task (`samplings`, `novelties`), written by doors that touch no task, claim or
+    draft, in a person's own request: `POST /projects/{id}/sampling/reads` reads up to 50 items' scores from their
+    dataset's score column (`Declared.sampling.scores`, a column and its model) and measures them in the embeddings
+    the dataset declares (`sampling.embeddings`, else the default search's first vector binding), asks no model, and
+    says in `notes` what a dataset lacks; `POST /api/sampling/<unit key>` asks the endpoint about one item no column
+    scored. A score by another model than the project names now reads as none. `POST /projects/{id}/sampling/proposals`
+    ranks the candidates a sender has in hand (at most 1000; doubt from the score column only, k-center greedy over
+    the embeddings seeded with the labelled items) and keeps the proposal a day; a send naming it
+    (`SendItemsRequest.proposal`) stamps each item's `chosen` (by sampling with its reason, or by the person), which a
+    sender cannot state. The demo page corpus carries a score column by the stand-in's `stand-in-scorer` and an
+    embedding per page (`scripts/seed_demo_corpus.py`, added in place to a volume seeded before).
   - The viewer answers a document's waveform (`GET /api/datasets/{id}/documents/{doc}/peaks`, `viewer.services.peaks`):
     its media blob streamed through PyAV (FFmpeg's demuxers and decoders as a library, no ffmpeg binary), resampled to
     8 kHz mono and reduced to each bucket's min and max as signed bytes, at most 360,000 buckets (100 a second up to an

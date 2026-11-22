@@ -28,7 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from annotator.api.dependencies import EndpointDep, PublishRunnerDep, StoreDep
 from annotator.api.security import CAN_REVIEW, AuthorizerDep, CallerDep, Checker, CheckerDep, CurrentSubject, lacking, require_view, unseen_project
 from annotator.api.v1.endpoints.tasks import caller_facts, reads_work
-from annotator.api.v1.responses import DropReceipt, JudgeState, SendReceipt, TaskListing
+from annotator.api.v1.responses import DropReceipt, JudgeState, SamplingState, SendReceipt, TaskListing
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.core.config import get_annotator_settings
 from annotator.corpus import input_tables, not_annotatable, unheld_versions
@@ -38,14 +38,29 @@ from annotator.people import RECORDS_PERSON
 from annotator.projects.machines import (
     PROJECT_EDGES,
     PROJECT_SEND_STATES,
+    CallerFacts,
     caller_events,
     project_transition,
 )
-from annotator.projects.models import AnnotationProject, ItemSource, MediaRef, SentSource, Shape, ShapeType, Task, TaskState, new_id
+from annotator.projects.models import AnnotationProject, Chosen, ItemSource, MediaRef, SamplingStrategy, SentSource, Shape, ShapeType, Task, TaskState, new_id
 from annotator.projects.ontology import ShapeLike, membership_violation
 from annotator.projects.publish import publish_namespace, require_in_warehouse
+from annotator.sampling import SAMPLING_OFF, SCORED, NoSuchProposal, why_unavailable
 from annotator.state.store import AnnotatorStore
-from annotator.state.task_query import MAX_FILTER, MAX_OFFSET, DateField, ItemWork, JudgeCounts, PageExtras, SortOrder, TaskFilter, TaskSort, principals_in
+from annotator.state.task_query import (
+    MAX_FILTER,
+    MAX_OFFSET,
+    DateField,
+    ItemWork,
+    JudgeCounts,
+    PageExtras,
+    SamplingCounts,
+    SortOrder,
+    TaskFilter,
+    TaskPage,
+    TaskSort,
+    principals_in,
+)
 from annotator.text import MAX_MASK, MAX_TEXT, Id, Name, Text
 from workbench.exceptions import ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from workbench.governed.audit import AuditOutcome, audit
@@ -145,6 +160,9 @@ class SendItemsRequest(BaseModel):
     """Send items into a project as tasks (§5.1: legal in draft/labeling, state unchanged)."""
 
     items: list[SendItem] = Field(min_length=1, max_length=SEND_CAP)
+    #: The proposal this send follows (`POST /projects/{id}/sampling/proposals`), or none: each item the proposal chose
+    #: is recorded as sampling's choice, and every other as the sender's.
+    proposal: Id | None = None
 
 
 async def _check(checker: Checker, subject: str, relation: str, obj: str, what: AnnotatorAuditAction, **context: str) -> None:
@@ -358,6 +376,27 @@ def _validated_predictions(project: AnnotationProject, payload: SendItemsRequest
     return out
 
 
+async def _chosen(store: AnnotatorStore, project_id: str, payload: SendItemsRequest, subject: str, *, default: str | None) -> list[Chosen]:
+    """Who chose each item, positionally aligned with ``payload.items``: sampling, for an item the proposal the send
+    names chose (with its reason, read from the proposal the server kept), and the sender for every other.
+
+    Raises:
+        NoSuchProposal: The send names a proposal that is not one the sender was given for this project.
+    """
+    by_person = Chosen(by="person")
+    if payload.proposal is None:
+        return [by_person] * len(payload.items)
+    proposal = await store.proposal_of(project_id, payload.proposal, subject)
+    if proposal is None:
+        raise NoSuchProposal(project_id, payload.proposal)
+    proposed = {item.key: item for item in proposal.chosen}
+    chosen: list[Chosen] = []
+    for item in payload.items:
+        pick = proposed.get(item.source.keys[0]) if item.source.keys and (item.source.where or default) == proposal.dataset else None
+        chosen.append(by_person if pick is None else Chosen(by="sampling", kind=pick.kind, score=pick.score, model=pick.model))
+    return chosen
+
+
 @router.post("/{project_id}/items", status_code=status.HTTP_201_CREATED)
 async def send_items(
     caller: CallerDep,
@@ -398,6 +437,7 @@ async def send_items(
     # Every prediction validated against the project's taxonomy and stamped BEFORE anything is written: a half-applied
     # bulk action is worse than a refused one. The store judges them again against the ontology it holds.
     predictions = _validated_predictions(project, payload)
+    chosen = await _chosen(store, project_id, payload, subject, default=state.settings.default_dataset)
 
     # One task per item, built from the two client-supplied descriptive fields. Every provenance and state field takes its
     # model default, so a sender cannot pre-set `state=accepted` or name another annotator; what the task captures from
@@ -409,7 +449,9 @@ async def send_items(
         table = tables.get(item.source.where or "")
         source = ItemSource.model_validate(item.source.model_dump() | {"table": table, "dataset_version": item.source.dataset_version if table else None})
         # Every replica of a group gets the SAME suggestion: consensus asks several people the same question.
-        tasks.append(Task(task_id=item.task_id or new_id(), project_id=project_id, source=source, media=item.media, prediction=predictions[index]))
+        tasks.append(
+            Task(task_id=item.task_id or new_id(), project_id=project_id, source=source, media=item.media, prediction=predictions[index], chosen=chosen[index])
+        )
 
     created = await store.send_tasks(project_id, tasks, cap=SEND_CAP)
 
@@ -439,6 +481,9 @@ class TaskInclude(StrEnum):
     #: With `details`, what the project's judge said of each listed item's submission (`annotator.judgement`), the
     #: filter's counts of them, and whether a judge can be asked (ADR 0026).
     JUDGE = "judge"
+    #: With `details`, the score the project's sampling model gave each listed item (`annotator.sampling`), the filter's
+    #: counts of them, and whether the project's strategy can be followed (ADR 0034).
+    SAMPLING = "sampling"
 
 
 #: The most principals one answer names (`people`): a page of 200 items names a few people in practice.
@@ -455,6 +500,42 @@ def _judge_of(project: AnnotationProject | None, endpoint: ModelEndpoint, counts
     if not endpoint.configured:
         return JudgeState(model=model, available=False, reason=NO_ENDPOINT, **counts.model_dump())
     return JudgeState(model=model, available=True, reason="", **counts.model_dump())
+
+
+def _sampling_of(project: AnnotationProject | None, endpoint: ModelEndpoint, counts: SamplingCounts) -> SamplingState:
+    """The project's strategy and model, whether the strategy can be followed and why not, and how its model has read
+    the listed filter."""
+    if project is None:
+        return SamplingState(strategy=SamplingStrategy.OFF, model="", available=False, reason=SAMPLING_OFF, asks=False, **counts.model_dump())
+    reason = why_unavailable(project, endpoint, scored=counts.scored, measured=counts.measured)
+    asks = project.sampling in SCORED and bool(project.sampling_model) and endpoint.configured
+    return SamplingState(
+        strategy=project.sampling, model=project.sampling_model, available=reason is None, reason=reason or "", asks=asks, **counts.model_dump()
+    )
+
+
+def _details(tasks: list[Task], facts: list[CallerFacts], page: TaskPage, *, subject: str, includes: set[TaskInclude]) -> list[dict[str, Any]]:
+    """Each listed item as the listing answers it: its document, what the caller may fire on it, and what ``includes``
+    asks beside it."""
+    details: list[dict[str, Any]] = []
+    for task, mine in zip(tasks, facts, strict=True):
+        detail = {**task.model_dump(mode="json"), "legal_events": caller_events(task, mine)}
+        # The work doors' own rule (`tasks.reads_work`), `can_review` read off the facts: a task's relations are its
+        # project's. A verdict says what the item's labels are, so it is read by who reads the work and no one else.
+        readable = reads_work(task, subject, may_review=CAN_REVIEW in mine.held)
+        if TaskInclude.WORK in includes:
+            # An item with no draft yet is at revision 0 with no tags.
+            work = page.work.get(task.task_id, ItemWork(revision=0, tags=[], tags_cut=False, proposals=0))
+            detail["work"] = work.model_dump(mode="json") if readable else None
+        if TaskInclude.JUDGE in includes:
+            verdict = page.judgements.get(task.task_id) if readable else None
+            detail["judgement"] = verdict.model_dump(mode="json") if verdict else None
+        if TaskInclude.SAMPLING in includes:
+            # Neither number says anything of anyone's labels: whoever may view the item reads them.
+            known = page.samplings.get(task.task_id)
+            detail["sampling"] = known.model_dump(mode="json") if known else None
+        details.append(detail)
+    return details
 
 
 # `exclude_unset`: the plain listing publishes FOUR keys; each `include` adds its own.
@@ -478,6 +559,8 @@ async def list_project_tasks(
     group: TextFilter = None,
     replicas: bool = False,
     has_work: bool | None = None,
+    scored: bool | None = None,
+    measured: bool | None = None,
     date: DateField = DateField.UPDATED,
     since: AwareDatetime | None = None,
     until: AwareDatetime | None = None,
@@ -514,6 +597,8 @@ async def list_project_tasks(
         group=group,
         replicas=replicas,
         has_work=has_work,
+        scored=scored,
+        measured=measured,
         date_field=date,
         since=since,
         until=until,
@@ -530,6 +615,7 @@ async def list_project_tasks(
         extras=PageExtras(
             work=details_asked and TaskInclude.WORK in includes,
             judge=details_asked and TaskInclude.JUDGE in includes,
+            sampling=details_asked and TaskInclude.SAMPLING in includes,
             contributors=TaskInclude.CONTRIBUTORS in includes,
         ),
     )
@@ -541,20 +627,7 @@ async def list_project_tasks(
         # (the rows moving before the click) and an `assign` whose recipient worked another replica are still the door's.
         project = await store.get_project(project_id)
         facts = await caller_facts(store, checker, subject, project, tasks)
-        details: list[dict[str, Any]] = []
-        for task, mine in zip(tasks, facts, strict=True):
-            detail = {**task.model_dump(mode="json"), "legal_events": caller_events(task, mine)}
-            # The work doors' own rule (`tasks.reads_work`), `can_review` read off the facts: a task's relations are its
-            # project's. A verdict says what the item's labels are, so it is read by who reads the work and no one else.
-            readable = reads_work(task, subject, may_review=CAN_REVIEW in mine.held)
-            if TaskInclude.WORK in includes:
-                # An item with no draft yet is at revision 0 with no tags.
-                work = page.work.get(task.task_id, ItemWork(revision=0, tags=[], tags_cut=False, proposals=0))
-                detail["work"] = work.model_dump(mode="json") if readable else None
-            if TaskInclude.JUDGE in includes:
-                verdict = page.judgements.get(task.task_id) if readable else None
-                detail["judgement"] = verdict.model_dump(mode="json") if verdict else None
-            details.append(detail)
+        details = _details(tasks, facts, page, subject=subject, includes=includes)
         found = {d["task_id"] for d in details}
         listing |= {
             "details": details,
@@ -567,6 +640,8 @@ async def list_project_tasks(
         }
         if TaskInclude.JUDGE in includes and page.judged is not None:
             listing["judge"] = _judge_of(project, endpoint, page.judged).model_dump(mode="json")
+        if TaskInclude.SAMPLING in includes and page.sampled is not None:
+            listing["sampling"] = _sampling_of(project, endpoint, page.sampled).model_dump(mode="json")
         named |= principals_in(details)
     if contributors is not None:
         listing["contributors"] = [c.model_dump() for c in contributors]

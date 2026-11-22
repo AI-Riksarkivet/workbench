@@ -45,13 +45,16 @@ MAX_DETAIL: Final = 500
 MAX_ANSWER_BYTES: Final = 32 * 1024 * 1024
 
 
+NO_ENDPOINT: Final = "assist is unavailable: this deployment names no model endpoint"
+
+
 class ModelEndpointUnavailable(ServiceUnavailableError):
-    """This deployment names no model endpoint."""
+    """This deployment names no model endpoint: ``detail`` says what is unavailable for it."""
 
     problem_type = "about:blank#no-model-endpoint"
 
-    def __init__(self) -> None:
-        super().__init__(NO_ENDPOINT)
+    def __init__(self, detail: str = NO_ENDPOINT) -> None:
+        super().__init__(detail)
 
 
 class ModelEndpointBusy(ServiceUnavailableError):
@@ -84,7 +87,6 @@ class ModelRefusedAsk(DomainError):
     problem_type = "about:blank#model-refused-ask"
 
 
-NO_ENDPOINT: Final = "assist is unavailable: this deployment names no model endpoint"
 TOO_LARGE: Final = "the model endpoint answered more than the workbench reads"
 
 

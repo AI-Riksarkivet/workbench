@@ -22,7 +22,8 @@ from psycopg import AsyncConnection, sql
 from pydantic import AwareDatetime, BaseModel, Field
 
 from annotator.judgement import Judgement
-from annotator.projects.models import TaskState
+from annotator.projects.models import SampleReason, SamplingStrategy, TaskState
+from annotator.sampling import ItemSampling, Novelty, Sampling
 
 
 type Connection = AsyncConnection[tuple[Any, ...]]
@@ -60,6 +61,11 @@ class TaskSort(StrEnum):
     #: What a judge said of each item's submission (ADR 0026): the flagged first, then those no judge has read, then
     #: those it found nothing in; within each, the longest waiting first.
     JUDGE = "judge"
+    #: The project's sampling strategy (ADR 0034): under `least_sure` the items its sampling model is least sure about
+    #: first, then those it proposed nothing on, then those it has not scored; under `least_alike` the items least like
+    #: the labelled ones first, then those not measured; under `mix` the two orders interleaved, doubt's first. Items
+    #: with nothing to order by, and every item while sampling is off, are in item order.
+    SAMPLING = "sampling"
 
 
 class SortOrder(StrEnum):
@@ -102,6 +108,9 @@ _DATE_COLUMN: Final = {
     DateField.REVIEWED: sql.SQL("reviewed_at"),
 }
 
+#: The model the project samples by now: a score another model gave reads as none.
+_SAMPLED_BY: Final = "(SELECT p.document ->> 'sampling_model' FROM projects p WHERE p.project_id = {project})"
+
 #: A project's items as a reader sees them, one row each: a lapsed claim is unassigned and held by nobody. The clock is
 #: the transaction's (`now()`, the start of the snapshot every number of one answer is read in), which is STABLE: a
 #: volatile clock would make Postgres materialise this whole subquery for each statement rather than fold the filter,
@@ -114,12 +123,29 @@ _ITEMS: Final = sql.SQL(
     "t.sent_at, t.submitted_at, t.reviewed_at, t.updated_at, "
     # Whether a judge flagged the item's submission of now; NULL where none has read it. A statement that does not name
     # the column never runs the subquery.
-    "(SELECT j.flagged FROM judgements j WHERE j.task_id = t.task_id AND j.submitted_at = t.submitted_at) AS flagged "
+    "(SELECT j.flagged FROM judgements j WHERE j.task_id = t.task_id AND j.submitted_at = t.submitted_at) AS flagged, "
+    # The doubt of the project's sampling model of now on the item (NULL: it proposed nothing the item takes, or has not
+    # scored it), and whether it scored it; read only by a statement that names them, as `flagged` is.
+    f"(SELECT s.doubt FROM samplings s WHERE s.task_id = t.task_id AND s.model = {_SAMPLED_BY}) AS doubt, "
+    f"EXISTS (SELECT 1 FROM samplings s WHERE s.task_id = t.task_id AND s.model = {_SAMPLED_BY}) AS scored, "
+    # How unlike the labelled items the item was when it was last measured; NULL until it is.
+    "(SELECT n.novelty FROM novelties n WHERE n.task_id = t.task_id) AS novelty "
     "FROM tasks t WHERE t.project_id = {project}"
 )
 
 #: Where an item sits in the judge's order: flagged, unread, clear.
 _JUDGE_RANK: Final = sql.SQL("CASE WHEN flagged THEN 0 WHEN flagged IS NULL THEN 1 ELSE 2 END")
+#: Where an item sits in the least-sure order: scored with a doubt, scored with none (the model proposed nothing), unscored.
+_DOUBT_RANK: Final = sql.SQL("CASE WHEN doubt IS NOT NULL THEN 0 WHEN scored THEN 1 ELSE 2 END")
+#: Where an item sits in the least-alike order: measured, not measured.
+_NOVELTY_RANK: Final = sql.SQL("CASE WHEN novelty IS NOT NULL THEN 0 ELSE 1 END")
+#: An item's place in the mixed order among the items a filter matches: the doubt order takes the odd places and the
+#: novelty order the even ones, and an item in both stands at the earlier. NULL for an item with neither number.
+_MIX_PLACE: Final = sql.SQL(
+    "LEAST("
+    "CASE WHEN doubt IS NOT NULL THEN 2 * row_number() OVER (PARTITION BY doubt IS NOT NULL ORDER BY doubt DESC, task_id) - 1 END, "
+    "CASE WHEN novelty IS NOT NULL THEN 2 * row_number() OVER (PARTITION BY novelty IS NOT NULL ORDER BY novelty DESC, task_id) END)"
+)
 
 
 class TaskFilter(BaseModel):
@@ -148,6 +174,12 @@ class TaskFilter(BaseModel):
     #: through labeled work, and an item claimed and never drawn on has none); with false, only the items whose work holds
     #: nothing (no draft, or one emptied again); unset, both.
     has_work: bool | None = None
+    #: With false, only the items the project's sampling model of now has not scored (what a visit reads a score
+    #: column for and asks the model about); with true, only those it has; unset, both.
+    scored: bool | None = None
+    #: With false, only the items not measured against the labelled ones (what a visit measures); with true, only those
+    #: that are; unset, both.
+    measured: bool | None = None
     date_field: DateField = DateField.UPDATED
     since: AwareDatetime | None = None
     until: AwareDatetime | None = None
@@ -181,6 +213,10 @@ class TaskFilter(BaseModel):
         if self.has_work is not None:
             worked = sql.SQL("EXISTS (SELECT 1 FROM drafts d WHERE d.task_id = items.task_id AND d.has_work)")
             parts.append(worked if self.has_work else sql.SQL("NOT {}").format(worked))
+        if self.scored is not None:
+            parts.append(sql.SQL("scored" if self.scored else "NOT scored"))
+        if self.measured is not None:
+            parts.append(sql.SQL("novelty IS NOT NULL" if self.measured else "novelty IS NULL"))
         column = _DATE_COLUMN[self.date_field]
         if self.since is not None:
             parts.append(sql.SQL("{} >= {}").format(column, sql.Literal(self.since)))
@@ -210,14 +246,21 @@ class TaskPage(BaseModel):
     #: read is absent. And how many of the items the filter matches are flagged, clear and unread.
     judgements: dict[str, Judgement] = Field(default_factory=dict)
     judged: JudgeCounts | None = None
+    #: What sampling knows of each listed item, by task id, when the read asked for it; an item with neither a score by
+    #: the project's sampling model of now nor a novelty is absent. And how many of the items the filter matches have each.
+    samplings: dict[str, ItemSampling] = Field(default_factory=dict)
+    sampled: SamplingCounts | None = None
+    #: Which number placed each listed item in a listing ordered by the strategy, by task id.
+    placed: dict[str, SampleReason] = Field(default_factory=dict)
 
 
 class PageExtras(BaseModel):
-    """What a page carries beside its items: each listed item's work, each one's verdict with the filter's counts of
-    them, and each person's part in the project."""
+    """What a page carries beside its items: each listed item's work, each one's verdict and each one's sampling score
+    with the filter's counts of them, and each person's part in the project."""
 
     work: bool = False
     judge: bool = False
+    sampling: bool = False
     contributors: bool = False
 
 
@@ -248,6 +291,45 @@ async def judgements_of(conn: Connection, *, project_id: str, filters: TaskFilte
     ).fetchall()
     by_rank = {int(rank): int(count) for rank, count in counted}
     return {v.task_id: v for v in verdicts}, JudgeCounts(flagged=by_rank.get(0, 0), unread=by_rank.get(1, 0), clear=by_rank.get(2, 0))
+
+
+class SamplingCounts(BaseModel):
+    """Of the items a filter matches, how many the project's sampling model of now has scored and not, and how many are
+    measured against the labelled items and not."""
+
+    scored: int = 0
+    unscored: int = 0
+    measured: int = 0
+    unmeasured: int = 0
+
+
+async def samplings_of(
+    conn: Connection, *, project_id: str, filters: TaskFilter, task_ids: list[str], placed: dict[str, SampleReason]
+) -> tuple[dict[str, ItemSampling], SamplingCounts]:
+    """What sampling knows of each of ``task_ids`` (its score by the project's sampling model of now, its novelty, and
+    which of them ``placed`` it), and the counts over everything ``filters`` matches."""
+    by = sql.SQL(_SAMPLED_BY).format(project=sql.Literal(project_id))
+    scored = await (
+        await conn.execute(sql.SQL("SELECT s.document FROM samplings s WHERE s.task_id = ANY({}) AND s.model = {}").format(sql.Literal(task_ids), by))
+    ).fetchall()
+    measured = await (await conn.execute("SELECT document FROM novelties WHERE task_id = ANY(%s)", (task_ids,))).fetchall()
+    known = {task_id: ItemSampling(placed_by=reason) for task_id, reason in placed.items()}
+    for (document,) in scored:
+        score = Sampling.model_validate(document)
+        known.setdefault(score.task_id, ItemSampling()).score = score
+    for (document,) in measured:
+        novelty = Novelty.model_validate(document)
+        known.setdefault(novelty.task_id, ItemSampling()).novelty = novelty
+    items = _ITEMS.format(project=sql.Literal(project_id))
+    counted = await (
+        await conn.execute(
+            sql.SQL(
+                "WITH items AS ({}) SELECT count(*) FILTER (WHERE scored), count(*) FILTER (WHERE novelty IS NOT NULL), count(*) FROM items WHERE {}"
+            ).format(items, filters.clauses())
+        )
+    ).fetchone()
+    with_score, with_novelty, total = (int(n) for n in counted) if counted else (0, 0, 0)
+    return known, SamplingCounts(scored=with_score, unscored=total - with_score, measured=with_novelty, unmeasured=total - with_novelty)
 
 
 #: The most whole-item tags one item's work answers in a listing (`ItemWork.tags`): a bulk label reads an item's tags to
@@ -317,9 +399,33 @@ class Contributor(BaseModel):
 _OPEN_STATES: Final = frozenset({TaskState.UNASSIGNED, TaskState.CLAIMED, TaskState.CHANGES_REQUESTED})
 
 
-def _order(sort: TaskSort, order: SortOrder) -> sql.Composed:
+#: Each sampling strategy's order over `listed` (`page_of`): the rank that groups the items, and their order within a
+#: group. A strategy absent here lists items in item order.
+_SAMPLING_ORDER: Final = {
+    SamplingStrategy.LEAST_SURE: (_DOUBT_RANK, sql.SQL("doubt DESC NULLS LAST")),
+    SamplingStrategy.LEAST_ALIKE: (_NOVELTY_RANK, sql.SQL("novelty DESC NULLS LAST")),
+    SamplingStrategy.MIX: (sql.SQL("CASE WHEN mix_place IS NOT NULL THEN 0 ELSE 1 END"), sql.SQL("mix_place ASC NULLS LAST")),
+}
+#: Which number placed an item, under each strategy.
+_PLACED_BY: Final = {
+    SamplingStrategy.LEAST_SURE: sql.SQL("CASE WHEN doubt IS NOT NULL THEN 'least_sure' END"),
+    SamplingStrategy.LEAST_ALIKE: sql.SQL("CASE WHEN novelty IS NOT NULL THEN 'least_alike' END"),
+    SamplingStrategy.MIX: sql.SQL("CASE WHEN mix_place % 2 = 1 THEN 'least_sure' WHEN mix_place % 2 = 0 THEN 'least_alike' END"),
+}
+
+
+async def _strategy_of(conn: Connection, project_id: str) -> SamplingStrategy:
+    """The project's sampling strategy, read in the listing's own snapshot."""
+    row = await (await conn.execute("SELECT document ->> 'sampling' FROM projects WHERE project_id = %s", (project_id,))).fetchone()
+    return SamplingStrategy(row[0]) if row is not None and row[0] is not None else SamplingStrategy.OFF
+
+
+def _order(sort: TaskSort, order: SortOrder, strategy: SamplingStrategy) -> sql.Composed:
     direction = sql.SQL("DESC") if order is SortOrder.DESC else sql.SQL("ASC")
-    if sort is TaskSort.ITEM:
+    if sort is TaskSort.SAMPLING and strategy in _SAMPLING_ORDER:
+        rank, within = _SAMPLING_ORDER[strategy]
+        return sql.SQL("{} {}, {}, task_id ASC").format(rank, direction, within)
+    if sort in (TaskSort.ITEM, TaskSort.SAMPLING):
         return sql.SQL("task_id {}").format(direction)
     if sort is TaskSort.JUDGE:
         return sql.SQL("{} {}, submitted_at ASC NULLS LAST, task_id ASC").format(_JUDGE_RANK, direction)
@@ -346,7 +452,14 @@ async def page_of(
     """
     items = _ITEMS.format(project=sql.Literal(project_id))
     where = filters.clauses()
-    ordering = _order(sort, order)
+    strategy = await _strategy_of(conn, project_id) if sort is TaskSort.SAMPLING else SamplingStrategy.OFF
+    ordering = _order(sort, order, strategy)
+    # The items the filter matches, each with its place in the mixed order where the listing is ordered by it: a place
+    # counts over the matched items, so it is worked out after the filter and before the page is cut.
+    listed = sql.SQL("SELECT items.*, {} AS mix_place FROM items WHERE {}").format(
+        _MIX_PLACE if strategy is SamplingStrategy.MIX else sql.SQL("NULL::bigint"), where
+    )
+    placed_by = _PLACED_BY.get(strategy, sql.SQL("NULL"))
     matched_row = await (await conn.execute(sql.SQL("WITH items AS ({}) SELECT count(*) FROM items WHERE {}").format(items, where))).fetchone()
     matched = int(matched_row[0]) if matched_row else 0
     counts_rows = await (
@@ -362,8 +475,9 @@ async def page_of(
         found = await (
             await conn.execute(
                 sql.SQL(
-                    "WITH items AS ({}) SELECT pos FROM (SELECT task_id, row_number() OVER (ORDER BY {}) - 1 AS pos FROM items WHERE {}) x WHERE task_id = {}"
-                ).format(items, ordering, where, sql.Literal(around))
+                    "WITH items AS ({}), listed AS ({}) "
+                    "SELECT pos FROM (SELECT task_id, row_number() OVER (ORDER BY {}) - 1 AS pos FROM listed) x WHERE task_id = {}"
+                ).format(items, listed, ordering, sql.Literal(around))
             )
         ).fetchone()
         if found is not None:
@@ -371,8 +485,8 @@ async def page_of(
             offset = max(0, position - limit // 2)
     rows = await (
         await conn.execute(
-            sql.SQL("WITH items AS ({}) SELECT task_id FROM items WHERE {} ORDER BY {} LIMIT {} OFFSET {}").format(
-                items, where, ordering, sql.Literal(limit), sql.Literal(offset)
+            sql.SQL("WITH items AS ({}), listed AS ({}) SELECT task_id, {} FROM listed ORDER BY {} LIMIT {} OFFSET {}").format(
+                items, listed, placed_by, ordering, sql.Literal(limit), sql.Literal(offset)
             )
         )
     ).fetchall()
@@ -384,6 +498,7 @@ async def page_of(
         offset=offset,
         position=position,
         datasets=[str(r[0]) for r in datasets],
+        placed={str(r[0]): SampleReason(r[1]) for r in rows if r[1] is not None},
     )
 
 
@@ -436,6 +551,7 @@ __all__ = [
     "ItemWork",
     "JudgeCounts",
     "PageExtras",
+    "SamplingCounts",
     "SortOrder",
     "TaskFilter",
     "TaskPage",
@@ -445,5 +561,6 @@ __all__ = [
     "judgements_of",
     "page_of",
     "principals_in",
+    "samplings_of",
     "work_of",
 ]

@@ -66,6 +66,14 @@ async def _task_unit(store: AnnotatorStore, task: str, project: str, key: str, d
     return current
 
 
+async def viewed_unit(
+    task: TaskParam, project: ProjectParam, key: UnitKey, subject: CurrentSubject, checker: CheckerDep, store: StoreDep, dataset: DatasetParam = None
+) -> Task:
+    """A unit read for what it shows, not for anyone's work on it: the reader may view the project and the task, and the
+    unit is the task's. Answers the task's record."""
+    return await _task_unit(store, task, project, key, dataset, subject, checker)
+
+
 async def readable_unit(
     task: TaskParam, project: ProjectParam, key: UnitKey, subject: CurrentSubject, checker: CheckerDep, store: StoreDep, dataset: DatasetParam = None
 ) -> Task:
@@ -96,5 +104,6 @@ async def editable_task(task: TaskParam, project: ProjectParam, subject: Current
 
 
 EditableTask = Annotated[Task, Depends(editable_task)]
+ViewedUnit = Annotated[Task, Depends(viewed_unit)]
 ReadableUnit = Annotated[Task, Depends(readable_unit)]
 EditableUnit = Annotated[Task, Depends(editable_unit)]

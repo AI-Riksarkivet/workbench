@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import lance
 import lance_namespace
 from lance_namespace import DropNamespaceRequest, DropTableRequest
 
@@ -88,6 +89,7 @@ def test_a_volume_an_earlier_seeder_filled_gets_the_datasets_it_lacks_and_keeps_
     assert sorted(path.name for path in (volume / ".seeded.d").iterdir()) == [
         "archive",
         "lakehouse-corpus",
+        "lakehouse-corpus-sampling",
         "lakehouse-films",
         "lakehouse-letters",
         "lakehouse-recordings",
@@ -105,12 +107,39 @@ def test_two_seeds_at_once_write_each_dataset_once(tmp_path: Path) -> None:
 
     assert [r.returncode for r in runs] == [0, 0], [r.stderr for r in runs]
     written = sorted(line for r in runs for line in r.stdout.splitlines() if line.startswith("seeded"))
-    assert len(written) == 6 and len(set(written)) == 6, written
+    assert len(written) == 7 and len(set(written)) == 7, written
     assert sorted(path.name for path in (volume / ".seeded.d").iterdir()) == [
         "archive",
         "lakehouse-corpus",
+        "lakehouse-corpus-sampling",
         "lakehouse-films",
         "lakehouse-letters",
         "lakehouse-recordings",
         "loose",
     ]
+
+
+def test_a_corpus_an_earlier_seeder_wrote_gains_its_sampling_columns_in_place(tmp_path: Path) -> None:
+    """A volume whose page corpus was written before the seeder gave it a score column and embeddings: the next run adds
+    the two columns to the rows that are there, as new versions of the same table, and rewrites no other file."""
+    volume = tmp_path / "demo"
+    assert _seed_once(volume).returncode == 0
+    lakehouse = lance_namespace.connect("dir", {"root": str(volume / "lakehouse")})
+    chunks = lance.dataset(namespace_client=lakehouse, table_id=["demo", "corpus", "chunks"])
+    pages = chunks.to_table(columns=["doc_id", "chunk_id"]).to_pylist()
+    chunks.drop_columns(["model_score", "embedding"])
+    (volume / ".seeded.d" / "lakehouse-corpus-sampling").unlink()
+    before = chunks.version
+    kept = {name: stat for name, stat in _files(volume).items() if "corpus$chunks" not in name and not name.startswith((".seeded", ".seeding"))}
+
+    run = _seed_once(volume)
+
+    after = lance.dataset(namespace_client=lakehouse, table_id=["demo", "corpus", "chunks"])
+    rows = after.to_table(columns=["doc_id", "chunk_id", "model_score", "embedding"]).to_pylist()
+    assert (run.returncode, run.stdout.strip()) == (0, "seeded lakehouse demo$corpus sampling columns (added to its rows)")
+    assert [{"doc_id": r["doc_id"], "chunk_id": r["chunk_id"]} for r in rows] == pages
+    assert all(len(r["embedding"]) == 16 for r in rows)
+    # Every fourth page of a volume is one a pipeline has not scored.
+    assert [r["model_score"] is None for r in rows] == [r["chunk_id"] % 4 == 3 for r in rows]
+    assert after.version > before
+    assert {name: stat for name, stat in _files(volume).items() if name in kept} == kept

@@ -31,6 +31,8 @@ route:
     - /api/assist
     # the judge: what a project's judge disagrees with among a submitted item's labels (`?project=`)
     - /api/judge
+    # sampling: how sure the model a project samples by is of one item, kept as its score (`?project=`)
+    - /api/sampling
     # the project plane: projects, their members, events, adjudications, items and task listing
     - /projects
     # one task: its events (claim, submit, review, ...), its draft and imports

@@ -43,6 +43,7 @@ import {
 	type ProjectDetail,
 	type ProjectList,
 	type SendItem,
+	type SamplingStrategy,
 	type SendReceipt,
 	type TaskDetail,
 	type TaskListing,
@@ -105,6 +106,7 @@ export const pageTasks = query(
 		contributors = false,
 		work = false,
 		judge = false,
+		sampling = false,
 	}: {
 		projectId: string;
 		filter?: string;
@@ -117,12 +119,15 @@ export const pageTasks = query(
 		work?: boolean;
 		/** With the details, what the project's judge said of each item's submission, and the judge's state. */
 		judge?: boolean;
+		/** With the details, what sampling knows of each item, and the project's sampling state. */
+		sampling?: boolean;
 	}): Promise<ApiResult<TaskListing>> => {
 		const params = new URLSearchParams(filter);
 		if (details) params.append('include', 'details');
 		if (contributors) params.append('include', 'contributors');
 		if (work) params.append('include', 'work');
 		if (judge) params.append('include', 'judge');
+		if (sampling) params.append('include', 'sampling');
 		params.set('limit', String(limit));
 		params.set('offset', String(offset));
 		if (around !== undefined) params.set('around', around);
@@ -170,7 +175,11 @@ export const BULK_CAP = 1000;
 export async function allMatching(
 	projectId: string,
 	filter: string,
-	{ work = false, judge = false }: { work?: boolean; judge?: boolean } = {},
+	{
+		work = false,
+		judge = false,
+		sampling = false,
+	}: { work?: boolean; judge?: boolean; sampling?: boolean } = {},
 ): Promise<ApiResult<{ tasks: TaskDetail[]; capped: boolean }>> {
 	const tasks: TaskDetail[] = [];
 	let matched = 0;
@@ -179,6 +188,7 @@ export async function allMatching(
 		params.set('include', 'details');
 		if (work) params.append('include', 'work');
 		if (judge) params.append('include', 'judge');
+		if (sampling) params.append('include', 'sampling');
 		params.set('limit', '200');
 		params.set('offset', String(tasks.length));
 		const result = await readJSON(
@@ -361,7 +371,8 @@ export const updateProjectOntology = command(
 	},
 );
 
-/** Send items into the project; each becomes a claimable task (times the project's consensus). */
+/** Send items into the project; each becomes a claimable task (times the project's consensus). A send that names a
+ *  sampling `proposal` has the annotator record which of its items sampling chose and which a person added. */
 export const sendItems = command(
 	(input: { projectId: string; items: SendItem[] }) =>
 		`Send ${input.items.length} item${input.items.length === 1 ? '' : 's'} to ${input.projectId}`,
@@ -369,11 +380,18 @@ export const sendItems = command(
 	({
 		projectId,
 		items,
+		proposal,
 	}: {
 		projectId: string;
 		items: SendItem[];
+		proposal?: string;
 	}): Promise<ApiResult<SendReceipt>> =>
-		send('POST', `/projects/${enc(projectId)}/items`, { items }, SendReceiptSchema),
+		send(
+			'POST',
+			`/projects/${enc(projectId)}/items`,
+			{ items, ...(proposal ? { proposal } : {}) },
+			SendReceiptSchema,
+		),
 );
 
 /** Name one accepted replica of a group canonical. */
@@ -495,8 +513,8 @@ export const fireTaskEvent = command(
 		send('POST', `/tasks/${enc(taskId)}/events`, body, TaskDetailSchema),
 );
 
-/** Change a project's title, description, instructions, review and claim settings, consensus or judge; only the named
- *  ones. */
+/** Change a project's title, description, instructions, review and claim settings, consensus, judge or sampling; only
+ *  the named ones. */
 export const updateProjectSettings = command(
 	(input: { projectId: string }) => `Change the settings of ${input.projectId}`,
 	'unchecked',
@@ -523,6 +541,10 @@ export interface ProjectSettings {
 	consensus_n?: number;
 	/** The model that judges the project's submissions; empty names none. */
 	judge_model?: string;
+	/** How the project's queue is ordered. */
+	sampling?: SamplingStrategy;
+	/** The model whose doubt the queue is ordered by; empty names none. */
+	sampling_model?: string;
 }
 
 /** Import annotations made elsewhere into a claimed task's draft, as an Arrow IPC stream, appended. */

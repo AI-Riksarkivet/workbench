@@ -98,6 +98,8 @@ export interface Task {
 	transitions?: Transition[];
 	/** The ontology captured onto the task at send, which the canvas reads its rules from. */
 	ontology?: Record<string, unknown>;
+	/** Why the item was sent, where its send named a sampling proposal (`Task.chosen`). */
+	chosen?: Chosen;
 }
 
 /** One annotation row of a task's work, as the canvas sends and reads it. */
@@ -248,6 +250,42 @@ interface Project {
 	publish_progress: string | null;
 	pending_target_namespace: string | null;
 	judge_model: string;
+	sampling: Strategy;
+	sampling_model: string;
+}
+
+/** A project's sampling strategy, and what sampling keeps of an item (`annotator.sampling`). */
+type Strategy = 'off' | 'least_sure' | 'least_alike' | 'mix';
+interface Sampling {
+	task_id: string;
+	kind: 'least_sure' | 'proposed_nothing';
+	score: number | null;
+	model: string;
+	version: string;
+	asked_by: string;
+	scored_at: string;
+}
+interface Novelty {
+	task_id: string;
+	novelty: number;
+	against: number;
+	vectors: string;
+	model: string | null;
+	asked_by: string;
+	measured_at: string;
+}
+interface Chosen {
+	by: 'sampling' | 'person';
+	kind: 'least_sure' | 'least_alike' | null;
+	score: number | null;
+	model: string | null;
+}
+/** A proposal sampling made for one sender and project (`annotator.sampling.Proposal`): the keys it chose and why. */
+interface Proposal {
+	sub: string;
+	project_id: string;
+	dataset: string;
+	chosen: Map<string, Chosen>;
 }
 
 /** A judge's verdict on one submission, as the annotator keeps it (`annotator.judgement.Judgement`). */
@@ -276,6 +314,12 @@ interface World {
 	people: Map<string, string>;
 	/** Each submission's verdict, by task and the instant it was submitted (`annotator.state.store`'s `judgements`). */
 	judgements: Map<string, Judgement>;
+	/** Each item's score by a sampling model, by task (`annotator.state.store`'s `samplings`). */
+	samplings: Map<string, Sampling>;
+	/** Each item's novelty, by task. */
+	novelties: Map<string, Novelty>;
+	/** The proposals sampling made, by id. */
+	proposals: Map<string, Proposal>;
 }
 
 /** The names the seeded people wrote under, as the annotator would have kept them from their tokens. `user:gone` never
@@ -306,6 +350,100 @@ const doubt = (label: string, instead: string): string =>
 /** A submission's key among the verdicts: its task and the instant it was submitted. */
 const verdictKey = (t: Pick<Task, 'task_id' | 'submitted_at'>): string =>
 	`${t.task_id}@${t.submitted_at ?? ''}`;
+/** The model the sampling projects name: the stand-in tagger, which proposes one tag of the task's first class at a
+ *  fixed score (`stand_in.TAGGER_SCORE`, 0.6) on every item it is shown, so each item it scores has the same doubt. */
+const SAMPLER = 'stand-in-tagger';
+const TAGGER_DOUBT = 1 - 0.6;
+/** What each dataset declares for sampling (`Declared.sampling.scores`, `Declared.embeddings`): a score column a
+ *  pipeline wrote, by a named model, with each key's confidence; and the vectors each key has, by a named model. A
+ *  dataset absent here declares neither. */
+interface Declared {
+	scores?: { model: string; column: string; confidence: Record<string, number> };
+	embeddings?: { vectors: string; model: string; of: Record<string, number[]> };
+}
+const SAMPLING_DECLARED: Record<string, Declared> = {
+	'lake~acme$letters': {
+		scores: {
+			model: SAMPLER,
+			column: 'pages.confidence',
+			confidence: {
+				'letter-001/0': 0.79,
+				'letter-001/1': 0.17,
+				'letter-002/0': 0.53,
+				'map-003/0': 0.38,
+			},
+		},
+		embeddings: {
+			vectors: 'pages.embedding',
+			model: 'stand-in-embedder',
+			of: {
+				'letter-001/0': [1, 0],
+				'letter-001/1': [0.8, 0.6],
+				'letter-002/0': [0, 1],
+				'map-003/0': [-1, 0],
+				'letter-004/0': [0.6, -0.8],
+			},
+		},
+	},
+};
+/** The doubt a dataset's score column states of each of ``keys`` by ``model`` (`sampling_reads.confidences`), or null
+ *  when it declares no score column by that model. */
+function columnDoubts(dataset: string, model: string, keys: string[]): Map<string, number> | null {
+	const column = SAMPLING_DECLARED[dataset]?.scores;
+	if (!column || !model || column.model !== model) return null;
+	return new Map(
+		keys.flatMap((key) => {
+			const confidence = column.confidence[key];
+			return confidence === undefined
+				? []
+				: [[key, 1 - Math.min(1, Math.max(0, confidence))] as const];
+		}),
+	);
+}
+/** The cosine distance between two vectors. */
+function distance(a: number[], b: number[]): number {
+	const dot = a.reduce((n, x, i) => n + x * (b[i] ?? 0), 0);
+	const norm = (v: number[]): number => Math.hypot(...v) || 1;
+	return 1 - dot / (norm(a) * norm(b));
+}
+/** What the annotator says when sampling cannot order a list (`annotator.sampling`). */
+const SAMPLING_OFF = 'sampling is off for this project';
+const NO_SAMPLING_MODEL = 'this project names no model to score its items';
+const NO_SAMPLING_ENDPOINT = 'this deployment names no model endpoint';
+const NOTHING_MEASURED = 'no item is measured against the labelled items yet';
+const noEmbeddings = (dataset: string): string =>
+	`${dataset} declares no embeddings, so diversity is unavailable for its items`;
+const SCORED_STRATEGIES: readonly Strategy[] = ['least_sure', 'mix'];
+const DIVERSE_STRATEGIES: readonly Strategy[] = ['least_alike', 'mix'];
+/** Why ``p``'s strategy orders none of the listed items, or null (`sampling.why_unavailable`). */
+function whyUnsampled(
+	p: Project,
+	endpoint: boolean,
+	scored: number,
+	measured: number,
+): string | null {
+	if (p.sampling === 'off') return SAMPLING_OFF;
+	const byDoubt = SCORED_STRATEGIES.includes(p.sampling);
+	if (byDoubt && !p.sampling_model) return NO_SAMPLING_MODEL;
+	const noScore = byDoubt && scored === 0 && !endpoint ? NO_SAMPLING_ENDPOINT : null;
+	const noMeasure =
+		DIVERSE_STRATEGIES.includes(p.sampling) && measured === 0 ? NOTHING_MEASURED : null;
+	if (p.sampling === 'mix') return noScore && noMeasure ? `${noScore}, and ${noMeasure}` : null;
+	return noScore ?? noMeasure;
+}
+/** The unit keys of a project's labelled items of ``dataset``: submitted, in review or accepted (`labelled_units`). */
+const labelledKeys = (world: World, projectId: string, dataset: string): string[] =>
+	[...world.tasks.values()]
+		.filter(
+			(t) =>
+				t.project_id === projectId &&
+				t.source.where === dataset &&
+				['in_review', 'accepted'].includes(t.state) &&
+				!!t.submitted_at,
+		)
+		.map((t) => t.source.keys[0] ?? '')
+		.filter(Boolean);
+
 /** A lease an hour from the seed, as a claim takes one. */
 const later = (): string => new Date(Date.now() + 3600_000).toISOString();
 
@@ -358,6 +496,8 @@ function project(id: string, over: Partial<Project>): Project {
 		publish_progress: null,
 		pending_target_namespace: null,
 		judge_model: '',
+		sampling: 'off',
+		sampling_model: '',
 		...over,
 	};
 }
@@ -777,6 +917,74 @@ function seed(sub: string): World {
 			ontology: vettingOntology,
 		}),
 	);
+	// Projects sampling orders (ADR 0034). `triage` samples the least sure by the stand-in tagger: four of its five open
+	// items are scored by the letters dataset's score column (doubts 0.21, 0.83, 0.47, 0.62), the fifth names a page the
+	// column does not score, which the tagger is asked about (doubt 0.4); its `triage-01` was sent on a proposal.
+	// `blended` samples the least alike in the letters dataset's embeddings, against its one labelled item; `fresh` has
+	// none labelled; `unscored` mixes the two over the maps dataset, which declares neither a score column nor
+	// embeddings.
+	const triageKeys = ['letter-001/0', 'letter-001/1', 'letter-002/0', 'map-003/0', 'letter-004/0'];
+	projects.set(
+		'triage',
+		project('triage', {
+			title: 'Triage',
+			ontology: sortingOntology,
+			sampling: 'least_sure',
+			sampling_model: SAMPLER,
+		}),
+	);
+	triageKeys.forEach((key, i) => {
+		const id = `triage-0${i}`;
+		tasks.set(
+			id,
+			task('triage', id, 'unassigned', key, {
+				ontology: sortingOntology,
+				...(id === 'triage-01'
+					? { chosen: { by: 'sampling', kind: 'least_sure', score: 0.83, model: SAMPLER } }
+					: {}),
+			}),
+		);
+	});
+	for (const [pid, title] of [
+		['blended', 'Blended'],
+		['fresh', 'Fresh'],
+	] as const) {
+		projects.set(pid, project(pid, { title, ontology: sortingOntology, sampling: 'least_alike' }));
+		['letter-001/1', 'letter-002/0', 'map-003/0'].forEach((key, i) =>
+			tasks.set(
+				`${pid}-0${i + 1}`,
+				task(pid, `${pid}-0${i + 1}`, 'unassigned', key, { ontology: sortingOntology }),
+			),
+		);
+	}
+	tasks.set(
+		'blended-00',
+		task('blended', 'blended-00', 'accepted', 'letter-001/0', {
+			submitted_by: 'user:alpha',
+			submitted_at: '2026-11-20T09:00:00Z',
+			reviewed_by: 'user:reviewer-x',
+			holders: ['user:alpha'],
+			ontology: sortingOntology,
+		}),
+	);
+	projects.set(
+		'unscored',
+		project('unscored', {
+			title: 'Unscored',
+			ontology: sortingOntology,
+			sampling: 'mix',
+			sampling_model: SAMPLER,
+		}),
+	);
+	['map-003/0', 'letter-001/0'].forEach((key, i) =>
+		tasks.set(
+			`unscored-0${i}`,
+			task('unscored', `unscored-0${i}`, 'unassigned', key, {
+				source: { kind: 'chunks', keys: [key], where: 'lake~acme$maps', dataset_version: 1 },
+				ontology: sortingOntology,
+			}),
+		),
+	);
 	const grants = new Map<string, { user: string; relation: string }[]>();
 	for (const id of projects.keys())
 		grants.set(id, role ? [{ user: sub.replace(/^user:/, ''), relation: role }] : []);
@@ -868,6 +1076,9 @@ function seed(sub: string): World {
 		drafts,
 		people: new Map(Object.entries(SEEDED_NAMES)),
 		judgements,
+		samplings: new Map(),
+		novelties: new Map(),
+		proposals: new Map(),
 	};
 }
 
@@ -1214,6 +1425,19 @@ export async function projectsDoor(
 				...t.prediction.map((s) => s.label),
 			];
 			const holder = q.get('holder');
+			// What sampling keeps of an item (`task_query.samplings_of`): its score by the project's current sampling model,
+			// and its novelty; `scored` and `measured` filter by whether it has each.
+			const strategy: Strategy = p?.sampling ?? 'off';
+			const scoreOf = (t: Task): Sampling | undefined => {
+				const kept = world.samplings.get(t.task_id);
+				return kept && kept.model === p?.sampling_model ? kept : undefined;
+			};
+			const noveltyOf = (t: Task): Novelty | undefined => world.novelties.get(t.task_id);
+			const has = (name: 'scored' | 'measured', t: Task): boolean => {
+				const asked = q.get(name);
+				if (asked === null) return true;
+				return (name === 'scored' ? !!scoreOf(t) : !!noveltyOf(t)) === (asked === 'true');
+			};
 			// A date range on one of an item's instants (`date`), as the service reads it: an item with no such instant
 			// falls outside every range.
 			const instantOf = (t: Task): string | null | undefined =>
@@ -1256,6 +1480,8 @@ export async function projectsDoor(
 						(world.drafts.get(t.task_id)?.rows.length ?? 0) +
 							(world.drafts.get(t.task_id)?.links.length ?? 0) >
 							0) &&
+				has('scored', t) &&
+				has('measured', t) &&
 				inRange(t);
 			// An item's work as a bulk label reads it (`task_query.ItemWork`): its revision and whole-item tags, at most 64, or
 			// null where the reader may not read it (`tasks.reads_work`).
@@ -1329,6 +1555,87 @@ export async function projectsDoor(
 					}
 					return a.task_id.localeCompare(b.task_id);
 				});
+			// The strategy's order (`task_query._SAMPLING_ORDER`): a rank that groups the items, which `order=desc` flips, and
+			// an order within the group. Least sure: a doubt, then scored with none (the model proposed nothing), then
+			// unscored, by doubt; least alike: measured, then not, by novelty; mix: an item's place is the earlier of its
+			// odd place in the doubt order and its even place in the novelty order, over the matched items (`_MIX_PLACE`),
+			// and an item with neither number is in the last group. Ties by task id. Which number placed it: `_PLACED_BY`.
+			const placed = new Map<string, 'least_sure' | 'least_alike'>();
+			if (sort === 'sampling' && strategy !== 'off') {
+				const doubt = (t: Task): number | null => scoreOf(t)?.score ?? null;
+				const novelty = (t: Task): number | null => noveltyOf(t)?.novelty ?? null;
+				const rankedBy = (value: (t: Task) => number | null): Map<string, number> =>
+					new Map(
+						matched
+							.filter((t) => value(t) !== null)
+							.sort(
+								(a, b) => (value(b) ?? 0) - (value(a) ?? 0) || a.task_id.localeCompare(b.task_id),
+							)
+							.map((t, i) => [t.task_id, i + 1]),
+					);
+				const [byDoubt, byNovelty] = [rankedBy(doubt), rankedBy(novelty)];
+				const mixPlace = (t: Task): number | null => {
+					const places = [
+						byDoubt.has(t.task_id) ? 2 * (byDoubt.get(t.task_id) ?? 0) - 1 : null,
+						byNovelty.has(t.task_id) ? 2 * (byNovelty.get(t.task_id) ?? 0) : null,
+					].filter((n): n is number => n !== null);
+					return places.length > 0 ? Math.min(...places) : null;
+				};
+				const groupOf = (t: Task): number =>
+					strategy === 'least_sure'
+						? doubt(t) !== null
+							? 0
+							: scoreOf(t)
+								? 1
+								: 2
+						: strategy === 'least_alike'
+							? novelty(t) !== null
+								? 0
+								: 1
+							: mixPlace(t) !== null
+								? 0
+								: 1;
+				const within = (t: Task): number =>
+					strategy === 'least_sure'
+						? -(doubt(t) ?? Number.NEGATIVE_INFINITY)
+						: strategy === 'least_alike'
+							? -(novelty(t) ?? Number.NEGATIVE_INFINITY)
+							: (mixPlace(t) ?? Number.POSITIVE_INFINITY);
+				matched.sort(
+					(a, b) =>
+						(groupOf(a) - groupOf(b)) * (desc ? -1 : 1) ||
+						(within(a) === within(b) ? 0 : within(a) < within(b) ? -1 : 1) ||
+						a.task_id.localeCompare(b.task_id),
+				);
+				for (const t of matched) {
+					const place = strategy === 'mix' ? mixPlace(t) : null;
+					const by =
+						strategy === 'least_sure'
+							? doubt(t) !== null
+								? 'least_sure'
+								: null
+							: strategy === 'least_alike'
+								? novelty(t) !== null
+									? 'least_alike'
+									: null
+								: place === null
+									? null
+									: place % 2 === 1
+										? 'least_sure'
+										: 'least_alike';
+					if (by !== null) placed.set(t.task_id, by);
+				}
+			}
+			const samplingOf = (t: Task) => {
+				const [score, novelty] = [scoreOf(t), noveltyOf(t)];
+				return score || novelty
+					? {
+							score: score ?? null,
+							novelty: novelty ?? null,
+							placed_by: placed.get(t.task_id) ?? null,
+						}
+					: null;
+			};
 			const limit = Number(q.get('limit') ?? 100);
 			let offset = Number(q.get('offset') ?? 0);
 			const around = q.get('around');
@@ -1395,6 +1702,7 @@ export async function projectsDoor(
 								...(include.includes('judge')
 									? { judgement: mayReadWork(t, sub, perms) ? (verdictOf(t) ?? null) : null }
 									: {}),
+								...(include.includes('sampling') ? { sampling: samplingOf(t) } : {}),
 							})),
 							missing: [],
 							matched: matched.length,
@@ -1415,6 +1723,27 @@ export async function projectsDoor(
 											unread: matched.filter((t) => rankOf(t) === 1).length,
 										},
 									}
+								: {}),
+							...(include.includes('sampling') && p
+								? (() => {
+										const scored = matched.filter((t) => scoreOf(t)).length;
+										const measured = matched.filter((t) => noveltyOf(t)).length;
+										const why = whyUnsampled(p, endpoint, scored, measured);
+										return {
+											sampling: {
+												strategy,
+												model: p.sampling_model,
+												available: why === null,
+												reason: why ?? '',
+												asks:
+													endpoint && !!p.sampling_model && SCORED_STRATEGIES.includes(strategy),
+												scored,
+												unscored: matched.length - scored,
+												measured,
+												unmeasured: matched.length - measured,
+											},
+										};
+									})()
 								: {}),
 						}
 					: {}),
@@ -1459,6 +1788,8 @@ export async function projectsDoor(
 				'lease_seconds',
 				'consensus_n',
 				'judge_model',
+				'sampling',
+				'sampling_model',
 			] as const)
 				if (b[key] !== undefined) (p as unknown as Record<string, unknown>)[key] = b[key];
 			return answer(withCounts(world, p));
@@ -1517,6 +1848,218 @@ export async function projectsDoor(
 					t.ontology = p.ontology;
 			return answer(withCounts(world, p));
 		}
+		// A refusal of a sampling door as the annotator words it (`problem+json`).
+		const problem = (type: string, status: number, detail: string): Response => {
+			record(status);
+			return new Response(JSON.stringify({ type: `about:blank#${type}`, status, detail }), {
+				status,
+				headers: { 'content-type': 'application/problem+json' },
+			});
+		};
+		if (rest === '/sampling/reads' && req.method === 'POST') {
+			// `endpoints.sampling.read_samples`: per dataset, the score column's doubt of each item the project's model has
+			// not scored, each item's distance from the labelled ones (measured again), the items a model is still to be
+			// asked about, and what could not be read. It asks no model; it refuses only a project whose sampling is off.
+			const refused = unseen() ?? gate('can_annotate');
+			if (refused) return refused;
+			if (!p) return answer({ detail: `annotation project ${id} does not exist` }, 404);
+			if (p.sampling === 'off') return problem('no-sampling', 409, SAMPLING_OFF);
+			const ids = ((await body()).task_ids ?? []) as string[];
+			if (!Array.isArray(ids) || ids.length < 1 || ids.length > 50)
+				return answer({ detail: 'task_ids takes 1 to 50 items' }, 422);
+			const read = ids
+				.map((tid) => world.tasks.get(tid))
+				.filter(
+					(t): t is Task =>
+						t !== undefined && t.project_id === id && !!t.source.where && !!t.source.keys[0],
+				);
+			const byDoubt = SCORED_STRATEGIES.includes(p.sampling);
+			const byDiversity = DIVERSE_STRATEGIES.includes(p.sampling);
+			const keyOf = (t: Task): string => t.source.keys[0] ?? '';
+			const unscored = new Set(
+				read
+					.filter((t) => {
+						const kept = world.samplings.get(t.task_id);
+						return byDoubt && !(kept && kept.model === p.sampling_model);
+					})
+					.map((t) => t.task_id),
+			);
+			const out = {
+				scored: [] as Sampling[],
+				measured: [] as Novelty[],
+				ask: [] as string[],
+				notes: [] as string[],
+			};
+			const groups = [...Map.groupBy(read, (t) => t.source.where ?? '')].sort(([a], [b]) =>
+				a.localeCompare(b),
+			);
+			for (const [dataset, held] of groups) {
+				const fromColumn = new Set<string>();
+				const doubts = byDoubt
+					? columnDoubts(
+							dataset,
+							p.sampling_model,
+							held.filter((t) => unscored.has(t.task_id)).map(keyOf),
+						)
+					: null;
+				for (const t of held)
+					if (unscored.has(t.task_id) && doubts?.has(keyOf(t))) {
+						const score: Sampling = {
+							task_id: t.task_id,
+							kind: 'least_sure',
+							score: doubts.get(keyOf(t)) ?? null,
+							model: p.sampling_model,
+							version: `${SAMPLING_DECLARED[dataset]?.scores?.column} at version 3`,
+							asked_by: sub,
+							scored_at: new Date().toISOString(),
+						};
+						world.samplings.set(t.task_id, score);
+						out.scored.push(score);
+						fromColumn.add(t.task_id);
+					}
+				if (byDiversity) {
+					const vectors = SAMPLING_DECLARED[dataset]?.embeddings;
+					const labelled = labelledKeys(world, id, dataset).filter((key) => vectors?.of[key]);
+					if (!vectors) out.notes.push(noEmbeddings(dataset));
+					else if (labelled.length === 0)
+						out.notes.push(
+							`no item of ${dataset} is labelled yet, so there is nothing to measure its items against`,
+						);
+					else
+						for (const t of held) {
+							const mine = vectors.of[keyOf(t)];
+							const others = labelled.filter((key) => key !== keyOf(t));
+							if (!mine || others.length === 0) continue;
+							const novelty: Novelty = {
+								task_id: t.task_id,
+								novelty: Math.min(...others.map((key) => distance(mine, vectors.of[key] ?? []))),
+								against: others.length,
+								vectors: vectors.vectors,
+								model: vectors.model,
+								asked_by: sub,
+								measured_at: new Date().toISOString(),
+							};
+							world.novelties.set(t.task_id, novelty);
+							out.measured.push(novelty);
+						}
+				}
+				if (byDoubt) {
+					const left = held.filter((t) => unscored.has(t.task_id) && !fromColumn.has(t.task_id));
+					const said: string[] = [];
+					if (left.length > 0 && !p.sampling_model) said.push(NO_SAMPLING_MODEL);
+					else if (left.length > 0 && !endpoint)
+						said.push(
+							`${NO_SAMPLING_ENDPOINT}, so ${left.length} item(s) of ${dataset} with no score by ${p.sampling_model} in their dataset stay unscored`,
+						);
+					else if (left.length > 0) {
+						const pictured = left.filter((t) => t.media.kind === 'image');
+						out.ask.push(...pictured.map((t) => t.task_id));
+						if (pictured.length < left.length)
+							said.push(
+								`a sampling model is shown a picture, so ${left.length - pictured.length} item(s) of ${dataset} that are none stay unscored`,
+							);
+					}
+					out.notes.push(...said.filter((note) => !out.notes.includes(note)));
+				}
+			}
+			return answer(out);
+		}
+		if (rest === '/sampling/proposals' && req.method === 'POST') {
+			// `endpoints.sampling.propose_items`: least sure from the dataset's score column by the project's model alone
+			// (no model is asked at send), diversity from its embeddings (k-center greedy against the labelled and the
+			// chosen), taken in turn; a project that ranks by doubt on a dataset with no such column ranks by diversity.
+			const refused = unseen() ?? gate('can_send_items');
+			if (refused) return refused;
+			if (!p) return answer({ detail: `annotation project ${id} does not exist` }, 404);
+			if (p.sampling === 'off') return problem('no-sampling', 409, SAMPLING_OFF);
+			const b = (await body()) as { dataset?: string; keys?: string[]; count?: number };
+			const keys = [...new Set(b.keys ?? [])];
+			const count = Number(b.count ?? 0);
+			if (keys.length < 1 || keys.length > 1000 || !(count >= 1 && count <= 1000))
+				return answer({ detail: 'keys takes 1 to 1000, count 1 to 1000' }, 422);
+			const dataset = String(b.dataset ?? '');
+			const notes: string[] = [];
+			const byDoubt = SCORED_STRATEGIES.includes(p.sampling);
+			const doubts = byDoubt ? columnDoubts(dataset, p.sampling_model, keys) : null;
+			if (byDoubt && doubts === null)
+				notes.push(
+					`${p.sampling_model ? `${dataset} carries no score by ${p.sampling_model}` : NO_SAMPLING_MODEL}: least sure orders these items once they are in the project, and they are proposed by how unlike the labelled items they are`,
+				);
+			const declared = SAMPLING_DECLARED[dataset]?.embeddings;
+			if (!declared) notes.push(noEmbeddings(dataset));
+			const vectors = new Map(
+				keys.flatMap((key) => (declared?.of[key] ? [[key, declared.of[key]] as const] : [])),
+			);
+			const labelled = labelledKeys(world, id, dataset).flatMap((key) =>
+				declared?.of[key] ? [declared.of[key]] : [],
+			);
+			const lanes: ('least_sure' | 'least_alike')[] = doubts !== null ? ['least_sure'] : [];
+			if (DIVERSE_STRATEGIES.includes(p.sampling) || doubts === null) lanes.push('least_alike');
+			const chosen: {
+				key: string;
+				kind: 'least_sure' | 'least_alike';
+				score: number;
+				model: string | null;
+			}[] = [];
+			const taken = new Set<string>();
+			const byDoubtOrder = [...(doubts ?? new Map<string, number>())].sort(
+				(x, y) => y[1] - x[1] || x[0].localeCompare(y[0]),
+			);
+			const nearest = (key: string): number => {
+				const from = [
+					...labelled,
+					...[...taken].flatMap((k) => (vectors.get(k) ? [vectors.get(k) ?? []] : [])),
+				];
+				const mine = vectors.get(key) ?? [];
+				return from.length === 0 ? 1 : Math.min(...from.map((v) => distance(mine, v)));
+			};
+			const next = (lane: 'least_sure' | 'least_alike') => {
+				if (lane === 'least_sure') {
+					const hit = byDoubtOrder.find(([key]) => !taken.has(key));
+					return hit ? { key: hit[0], kind: lane, score: hit[1], model: p.sampling_model } : null;
+				}
+				const open = [...vectors.keys()].filter((key) => !taken.has(key));
+				if (open.length === 0) return null;
+				const far = open
+					.map((key) => [key, nearest(key)] as const)
+					.sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0];
+				return far
+					? { key: far[0], kind: lane, score: far[1], model: declared?.model ?? null }
+					: null;
+			};
+			const open = [...lanes];
+			while (open.length > 0 && chosen.length < count)
+				for (const lane of open.slice()) {
+					if (chosen.length >= count) break;
+					const item = next(lane);
+					if (item === null) open.splice(open.indexOf(lane), 1);
+					else {
+						taken.add(item.key);
+						chosen.push(item);
+					}
+				}
+			const proposalId = `proposal-${crypto.randomUUID().slice(0, 8)}`;
+			world.proposals.set(proposalId, {
+				sub,
+				project_id: id,
+				dataset,
+				chosen: new Map(
+					chosen.map((c) => [
+						c.key,
+						{ by: 'sampling', kind: c.kind, score: c.score, model: c.model },
+					]),
+				),
+			});
+			return answer({
+				proposal_id: proposalId,
+				project_id: id,
+				dataset,
+				proposed_by: sub,
+				strategy: p.sampling,
+				chosen,
+				notes,
+			});
+		}
 		if (rest === '/items' && req.method === 'POST') {
 			const refused = unseen() ?? gate('can_send_items');
 			if (refused) return refused;
@@ -1528,13 +2071,23 @@ export async function projectsDoor(
 					},
 					409,
 				);
-			const { items } = (await body()) as {
+			const { items, proposal: proposalId } = (await body()) as {
 				items: {
 					source: Task['source'];
 					media: { kind: string };
 					prediction?: { shape_type: string; label: string }[];
 				}[];
+				proposal?: string;
 			};
+			// Each item is stamped with who chose it (`project_events._chosen`): sampling, for an item the proposal the send
+			// names chose, and the sender for every other (`sampling.NoSuchProposal` for a proposal not the sender's here).
+			const proposal = proposalId === undefined ? undefined : world.proposals.get(proposalId);
+			if (proposalId !== undefined && (proposal?.sub !== sub || proposal.project_id !== id))
+				return problem(
+					'no-such-proposal',
+					409,
+					`nothing was sent: ${proposalId} is not a proposal you were given for this project, or it is more than a day old. Ask for the proposal again`,
+				);
 			const created: string[] = [];
 			for (const item of items) {
 				const tid = `${id}-${crypto.randomUUID().slice(0, 8)}`;
@@ -1548,6 +2101,14 @@ export async function projectsDoor(
 						},
 						media: { kind: item.media.kind, image_url: null, media_url: null },
 						prediction: (item.prediction ?? []).map((s) => ({ ...s, source: 'bulk' })),
+						chosen: (item.source.where === proposal?.dataset
+							? proposal?.chosen.get(item.source.keys[0] ?? '')
+							: undefined) ?? {
+							by: 'person',
+							kind: null,
+							score: null,
+							model: null,
+						},
 					}),
 				);
 				created.push(tid);
@@ -1874,6 +2435,72 @@ export async function judgeDoor(
 	};
 	world.judgements.set(verdictKey(t), verdict);
 	return answer(verdict);
+}
+
+/** Answer one call to the sampling door (`POST /api/sampling/<unit key>`, `endpoints.sampling.sample`), or null when
+ *  the path is not that door. It refuses in the service's order: the item unseen or not this unit's (404), a caller who
+ *  may not annotate (403), a strategy that ranks by no score or names no model (409 `no-sampling`), then an item the
+ *  model already scored answers its kept score, then no model endpoint (503), an item that is no picture (422), and the
+ *  endpoint's own failure (a unit a spec planted `fail` on). The stand-in tagger proposes a tag of the task's first
+ *  class at 0.6 on every item, so an item whose first class takes a tag has doubt 0.4, and any other none. */
+export async function samplingDoor(
+	req: Request,
+	url: URL,
+	{ sub, record, fault, endpoint }: CallOf<'fail'>,
+): Promise<Response | null> {
+	if (!url.pathname.startsWith('/api/sampling/') || req.method !== 'POST') return null;
+	const answer = (body: unknown, status = 200): Response => {
+		record(status);
+		return new Response(JSON.stringify(body), {
+			status,
+			headers: { 'content-type': status < 400 ? 'application/json' : 'application/problem+json' },
+		});
+	};
+	const problem = (type: string, status: number, detail: string): Response =>
+		answer({ type: `about:blank#${type}`, status, detail }, status);
+	const world = worldOf(sub);
+	const id = url.searchParams.get('task') ?? '';
+	const t = world.tasks.get(id);
+	const perms = t ? held(world, sub, t.project_id) : [];
+	if (!t || t.project_id !== url.searchParams.get('project') || !perms.includes('can_view'))
+		return answer({ detail: `No task ${id} that you can see` }, 404);
+	const key = decodeURIComponent(url.pathname.slice('/api/sampling/'.length));
+	if (t.source.keys[0] !== key || t.source.where !== url.searchParams.get('dataset'))
+		return answer({ detail: `unit ${key} is not this item's` }, 404);
+	if (!perms.includes('can_annotate')) {
+		record(403);
+		return refuse(sub, 'can_annotate', `project:${t.project_id}`);
+	}
+	const p = world.projects.get(t.project_id);
+	if (!p || !SCORED_STRATEGIES.includes(p.sampling))
+		return problem('no-sampling', 409, SAMPLING_OFF);
+	if (!p.sampling_model) return problem('no-sampling', 409, NO_SAMPLING_MODEL);
+	const kept = world.samplings.get(id);
+	if (kept && kept.model === p.sampling_model) return answer(kept);
+	if (!endpoint) return problem('no-model-endpoint', 503, NO_SAMPLING_ENDPOINT);
+	if (t.media.kind !== 'image')
+		return problem(
+			'model-refused-ask',
+			422,
+			`a sampling model is shown a picture, and this item is ${t.media.kind}`,
+		);
+	if (fault === 'fail')
+		return problem('model-endpoint-failed', 502, 'the model endpoint failed (500)');
+	const first = (t.ontology?.classes as { tools?: string[] }[] | undefined)?.[0];
+	const takesTag =
+		first !== undefined &&
+		((first.tools ?? []).length === 0 || (first.tools ?? []).includes('tag'));
+	const score: Sampling = {
+		task_id: id,
+		kind: takesTag ? 'least_sure' : 'proposed_nothing',
+		score: takesTag ? TAGGER_DOUBT : null,
+		model: p.sampling_model,
+		version: JUDGE_VERSION,
+		asked_by: sub,
+		scored_at: new Date().toISOString(),
+	};
+	world.samplings.set(id, score);
+	return answer(score);
 }
 
 /** The names of a task's classes, as its captured ontology lists them. */

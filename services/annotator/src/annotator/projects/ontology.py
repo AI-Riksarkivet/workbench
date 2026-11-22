@@ -192,6 +192,25 @@ class LabelOntology(BaseModel):
     def klass(self, name: str | None) -> LabelClass | None:
         return next((c for c in self.classes if c.name == name), None)
 
+    @property
+    def allowed_shapes(self) -> set[str]:
+        """The shape types the classes take; empty when they hold shapes to no type."""
+        return set(self.tools) if self.constrains else set()
+
+    def class_takes(self, label: str, shape_type: ShapeType) -> bool:
+        """Whether a class carries ``label`` on a ``shape_type``: the ontology names no class, or the label is a class of
+        its own that takes the shape (a class with no tools takes any)."""
+        if not self.classes:
+            return True
+        klass = self.klass(label)
+        return klass is not None and (not klass.tools or shape_type in klass.tools)
+
+    def takes(self, label: str, shape_type: ShapeType) -> bool:
+        """Whether an item of this ontology takes a proposed ``shape_type`` labelled ``label`` as it is: a shape type its
+        classes take, under a class that carries it. What a model proposes outside it is a proposal the item cannot keep."""
+        allowed = self.allowed_shapes
+        return (not allowed or shape_type in allowed) and self.class_takes(label, shape_type)
+
 
 #: What one ontology a request brings may hold. A stored ontology is read as it was written, so these bound only what
 #: comes in: the request classes below are the stored ones with the bounds added, and Pydantic names the field past one.

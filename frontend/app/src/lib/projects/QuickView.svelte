@@ -22,7 +22,8 @@
 	import { neighbours } from './quick-view.ts';
 	import { taskImageUrl } from './task-media.ts';
 	import PersonName from './PersonName.svelte';
-	import type { People, TaskDetail } from './types.ts';
+	import SamplingReason from './SamplingReason.svelte';
+	import type { People, SamplingStrategy, TaskDetail } from './types.ts';
 
 	let {
 		open = $bindable(false),
@@ -34,6 +35,7 @@
 		canvasVerb,
 		people = {},
 		nameOf,
+		sampling = 'off',
 	}: {
 		open?: boolean;
 		/** Which task is open. Bindable so prev/next move it without the parent mediating. */
@@ -53,6 +55,8 @@
 		canvasVerb: (task: TaskDetail) => string;
 		/** What the item is called, as the table calls it (its document's title and where in it). */
 		nameOf: (task: TaskDetail) => string;
+		/** The project's sampling strategy: whether the item says why sampling placed it where it is. */
+		sampling?: SamplingStrategy;
 	} = $props();
 
 	const nav = $derived(neighbours(tasks, taskId));
@@ -181,6 +185,15 @@
 						<Badge variant="secondary">{label}</Badge>
 					{/each}
 				</div>
+			{/if}
+
+			{#if sampling !== 'off'}
+				<SamplingReason
+					sampling={task.sampling}
+					strategy={sampling}
+					chosen={task.chosen}
+					detailed
+				/>
 			{/if}
 
 			{#if task.review_notes.length > 0}

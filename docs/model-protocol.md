@@ -272,6 +272,7 @@ Not shown yet: a deployment on the development cluster, which has the KubeRay de
 | `stand-in-failing` | Answers 500: the person reads the error. |
 | `stand-in-tagger` | Takes no prompt: one tag about the whole item, labelled with the task's first class, score 0.6. |
 | `stand-in-judge` | Proposes nothing. Disagrees with every label of the task's last class (it would say the first, score 0.8), and with an item nobody labelled (score 0.5). |
+| `stand-in-scorer` | Takes no prompt: a tag about the whole item and a box, each labelled with the task's first class (classes that take either keep one), both scored by one fixed function of the item's `id` (from its SHA-256, in [0.05, 0.95], two decimals: `stand_in.score_of`), so a project that samples by it sees a stable least-sure order. |
 
 `stand-in-slow` and `stand-in-failing` assess as they propose: never, and with a 500.
 

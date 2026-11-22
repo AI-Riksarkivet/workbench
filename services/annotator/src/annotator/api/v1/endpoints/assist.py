@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from annotator.annotations.access import UnitKey, require_task_units
 from annotator.annotations.unit import parse_unit
 from annotator.api.dependencies import EndpointDep, StoreDep
-from annotator.api.security import READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam, lacking, unseen_task
+from annotator.api.security import CAN_ANNOTATE, READS_DATASET, CallerDep, CheckerDep, CurrentSubject, ProjectParam, lacking, unseen_task
 from annotator.audit_actions import AnnotatorAuditAction
 from annotator.corpus import resolve
 from annotator.model_endpoint import protocol
@@ -36,17 +36,14 @@ from workbench.media.deps import DatasetParam, StateDep
 
 logger = logging.getLogger(__name__)
 
-#: A proposal is a proposed write, so asking for one takes the annotating relation on the project the request names:
-#: someone who may only look at a project spends no model on it.
-ANNOTATE = "can_annotate"
-
 
 async def require_assist(subject: CurrentSubject, checker: CheckerDep, project: ProjectParam) -> None:
-    """The door of every assist route: the caller annotates the project the request names (`?project=`)."""
+    """The door of every assist route: the caller annotates the project the request names (`?project=`). A proposal is
+    a proposed write, so someone who may only look at a project spends no model on it."""
     obj = f"project:{project}"
-    if not await checker(user=subject, relation=ANNOTATE, obj=obj):
-        audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.DENY, subject=subject, resource=obj, relation=ANNOTATE)
-        raise lacking(subject, ANNOTATE, obj)
+    if not await checker(user=subject, relation=CAN_ANNOTATE, obj=obj):
+        audit(AnnotatorAuditAction.ANNOTATOR_ASSIST, AuditOutcome.DENY, subject=subject, resource=obj, relation=CAN_ANNOTATE)
+        raise lacking(subject, CAN_ANNOTATE, obj)
 
 
 router = APIRouter(prefix="/api", tags=["assist"], dependencies=[Depends(require_assist)])
@@ -148,17 +145,12 @@ async def _task(store: StoreDep, project: str, task_id: str) -> Task:
     return task
 
 
-def _allowed_shapes(ontology: LabelOntology) -> set[str]:
-    """The shape types the task's classes take; empty when they hold shapes to no type."""
-    return set(ontology.tools) if ontology.constrains else set()
-
-
 @router.get("/assist/models")
 async def models(store: StoreDep, endpoint: EndpointDep, project: ProjectParam, task_id: str | None = None) -> AssistModels:
     """The models the deployment's endpoint serves, and whether each fits the task."""
     if not endpoint.configured:
         return AssistModels(available=False, reason=NO_ENDPOINT, models=[])
-    allowed = _allowed_shapes((await _task(store, project, task_id)).ontology) if task_id else set()
+    allowed = (await _task(store, project, task_id)).ontology.allowed_shapes if task_id else set()
     listing = await endpoint.models()
     return AssistModels(
         available=True,
@@ -179,15 +171,6 @@ async def models(store: StoreDep, endpoint: EndpointDep, project: ProjectParam, 
     )
 
 
-def _class_takes(classes: dict[str, list[ShapeType]], proposal: protocol.Proposal) -> bool:
-    """Whether the task carries the proposal's label: it names no class, or the label is a class of its own that takes
-    the proposal's shape (a class with no tools takes any)."""
-    if not classes:
-        return True
-    tools = classes.get(proposal.label)
-    return tools is not None and (not tools or proposal.shape_type in tools)
-
-
 def _within_the_task(proposals: list[protocol.Proposal], ontology: LabelOntology) -> tuple[list[AssistProposal], list[str]]:
     """The proposals the task's classes can take, and what was refused of the rest.
 
@@ -195,15 +178,14 @@ def _within_the_task(proposals: list[protocol.Proposal], ontology: LabelOntology
     the task takes is refused and said, and a label is not carried (the person picks the class) when it is none of the
     task's classes or names a class that does not take the proposal's shape, since a submit would refuse each.
     """
-    allowed = _allowed_shapes(ontology)
-    classes = {c.name: c.tools for c in ontology.classes}
+    allowed = ontology.allowed_shapes
     kept: list[AssistProposal] = []
     refused: dict[str, int] = {}
     for proposal in proposals:
         if allowed and proposal.shape_type not in allowed:
             refused[proposal.shape_type] = refused.get(proposal.shape_type, 0) + 1
             continue
-        label = proposal.label if _class_takes(classes, proposal) else ""
+        label = proposal.label if ontology.class_takes(proposal.label, proposal.shape_type) else ""
         kept.append(AssistProposal(**proposal.model_dump(include=set(AssistProposal.model_fields) - {"label"}), label=label))
     dropped = [f"{count} {shape} proposal(s): this item's classes take {', '.join(sorted(allowed))}" for shape, count in sorted(refused.items())]
     return kept, dropped

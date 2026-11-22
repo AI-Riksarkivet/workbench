@@ -19,7 +19,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from annotator.judgement import Judgement
-from annotator.projects.models import AnnotationProject, Draft, Task
+from annotator.projects.models import AnnotationProject, Draft, SamplingStrategy, Task
+from annotator.sampling import ItemSampling
 from annotator.state.task_query import Contributor, ItemWork
 
 
@@ -74,6 +75,9 @@ class ListedTask(TaskDetail):
     work: ItemWork | None = None
     #: What the project's judge said of the item's submission of now (`include=judge`), or null where none has read it.
     judgement: Judgement | None = None
+    #: What sampling knows of the item (`include=sampling`): its score by the project's sampling model of now, its
+    #: novelty, and in a listing ordered by the strategy which placed it; null where it knows nothing.
+    sampling: ItemSampling | None = None
 
 
 class JudgeState(BaseModel):
@@ -87,6 +91,24 @@ class JudgeState(BaseModel):
     flagged: int
     clear: int
     unread: int
+
+
+class SamplingState(BaseModel):
+    """A project's sampling as a listing reads it (`include=sampling`): its strategy and the model it scores by, whether
+    the strategy can be followed and why not (`annotator.sampling.why_unavailable`), whether a model can be asked for a
+    score (the project names one and the deployment an endpoint), and of the items the filter matches how many that
+    model has scored and how many are measured against the labelled items. What a dataset lacks is learnt when it is
+    read (`POST /projects/<id>/sampling/reads`), and an endpoint that fails when it is asked."""
+
+    strategy: SamplingStrategy
+    model: str
+    available: bool
+    reason: str
+    asks: bool
+    scored: int
+    unscored: int
+    measured: int
+    unmeasured: int
 
 
 class TaskListing(BaseModel):
@@ -114,6 +136,7 @@ class TaskListing(BaseModel):
     datasets: list[str] = Field(default_factory=list)
     contributors: list[Contributor] = Field(default_factory=list)
     judge: JudgeState | None = None
+    sampling: SamplingState | None = None
     #: Each principal this answer names → the name they last wrote under (`annotator.people`), where one is kept.
     people: dict[str, str] = Field(default_factory=dict)
 

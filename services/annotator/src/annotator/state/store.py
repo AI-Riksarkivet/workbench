@@ -84,9 +84,22 @@ from annotator.projects.models import (
     new_id,
 )
 from annotator.projects.ontology import LabelOntology, LinkLike, ShapeLike, membership_violation, validate_against_ontology
-from annotator.state.task_query import Contributor, PageExtras, SortOrder, TaskFilter, TaskPage, TaskSort, contributors_of, judgements_of, page_of, work_of
+from annotator.sampling import KEPT_PROPOSALS, Measure, Novelty, Proposal, Sampling, Score
+from annotator.state.task_query import (
+    Contributor,
+    PageExtras,
+    SortOrder,
+    TaskFilter,
+    TaskPage,
+    TaskSort,
+    contributors_of,
+    judgements_of,
+    page_of,
+    samplings_of,
+    work_of,
+)
 from annotator.text import storable_json, storable_text
-from workbench.exceptions import ConflictError, DomainError
+from workbench.exceptions import ConflictError, DomainError, NotFoundError
 
 
 if TYPE_CHECKING:
@@ -757,6 +770,8 @@ class AnnotatorStore:
                 page.work = await work_of(conn, page.task_ids)
             if extras.judge:
                 page.judgements, page.judged = await judgements_of(conn, project_id=project_id, filters=filters, task_ids=page.task_ids)
+            if extras.sampling:
+                page.samplings, page.sampled = await samplings_of(conn, project_id=project_id, filters=filters, task_ids=page.task_ids, placed=page.placed)
             people = await contributors_of(conn, project_id) if extras.contributors else None
         by_id: dict[str, Task] = {}
         for document, now in rows:
@@ -1014,6 +1029,118 @@ class AnnotatorStore:
                 raise RuntimeError(f"the verdict on task {verdict.task_id} was neither kept nor found")
             return kept
 
+    # ---------------------------------------------------------------------------------------------
+    # Sampling scores
+    # ---------------------------------------------------------------------------------------------
+
+    async def sampling_of(self, task_id: str, model: str) -> Sampling | None:
+        """The score ``model`` gave the task's item, or None when it has given none."""
+        async with self._transaction() as conn:
+            return await _sampling(conn, task_id, model)
+
+    async def record_sampling(self, score: Score) -> Sampling:
+        """Keep a model's score on an item, stamped by the database's clock, and answer the one kept: this one, or the one
+        another ask of the same model recorded first. A score another model gave the item is replaced.
+
+        The task's row is locked for share and never written, so a score is kept only for a task that is still there.
+
+        Raises:
+            NotFoundError: The task was dropped while its score was asked.
+        """
+        async with self._transaction() as conn:
+            held = await conn.execute("SELECT 1 FROM tasks WHERE task_id = %s FOR SHARE", (score.task_id,))
+            if await held.fetchone() is None:
+                raise NotFoundError(f"task {score.task_id} was dropped while its score was asked")
+            await _keep_sampling(conn, score, await _clock(conn))
+            kept = await _sampling(conn, score.task_id, score.model)
+            if kept is None:
+                raise RuntimeError(f"the score on task {score.task_id} was neither kept nor found")
+            return kept
+
+    async def scored_among(self, task_ids: list[str], model: str) -> set[str]:
+        """Which of ``task_ids`` carry a score by ``model``."""
+        async with self._transaction() as conn:
+            rows = await (await conn.execute("SELECT task_id FROM samplings WHERE task_id = ANY(%s) AND model = %s", (task_ids, model))).fetchall()
+            return {str(row[0]) for row in rows}
+
+    async def record_samplings(self, scores: list[Score]) -> list[Sampling]:
+        """Keep each of ``scores`` as `record_sampling` keeps one, in one transaction, and answer those kept, in the
+        order given. A score of a task that was dropped meanwhile is left out."""
+        async with self._transaction() as conn:
+            now = await _clock(conn)
+            kept: list[Sampling] = []
+            # In task order, so two reads naming overlapping items wait on one another rather than deadlock.
+            for score in sorted(scores, key=lambda s: s.task_id):
+                held = await conn.execute("SELECT 1 FROM tasks WHERE task_id = %s FOR SHARE", (score.task_id,))
+                if await held.fetchone() is None:
+                    continue
+                await _keep_sampling(conn, score, now)
+                if (found := await _sampling(conn, score.task_id, score.model)) is not None:
+                    kept.append(found)
+            order = {score.task_id: index for index, score in enumerate(scores)}
+            return sorted(kept, key=lambda s: order[s.task_id])
+
+    async def record_novelties(self, measures: list[Measure]) -> list[Novelty]:
+        """Keep how unlike the labelled items each item was measured to be, replacing what it was measured to be before,
+        and answer those kept, in the order given. A measure of a task that was dropped meanwhile is left out."""
+        async with self._transaction() as conn:
+            now = await _clock(conn)
+            kept: list[Novelty] = []
+            for measure in sorted(measures, key=lambda m: m.task_id):
+                stamped = Novelty(**measure.model_dump(), measured_at=now)
+                # Written from the task's own row, so a task that is gone writes nothing.
+                written = await conn.execute(
+                    "INSERT INTO novelties (task_id, novelty, document) SELECT task_id, %s, %s FROM tasks WHERE task_id = %s FOR SHARE "
+                    "ON CONFLICT (task_id) DO UPDATE SET novelty = EXCLUDED.novelty, document = EXCLUDED.document",
+                    (stamped.novelty, _stored("the novelty", stamped.model_dump(mode="json")), stamped.task_id),
+                )
+                if written.rowcount:
+                    kept.append(stamped)
+            order = {measure.task_id: index for index, measure in enumerate(measures)}
+            return sorted(kept, key=lambda n: order[n.task_id])
+
+    async def labelled_units(self, project_id: str, dataset: str, *, default: str | None, limit: int) -> list[str]:
+        """The unit keys of the project's labelled items of ``dataset``, the latest submitted first, at most ``limit``:
+        the items whose work was submitted and is in review or accepted. An item sent naming no dataset is one of the
+        deployment's ``default`` dataset, as a send reads it."""
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT document #>> '{source,keys,0}' FROM tasks "
+                    "WHERE project_id = %s AND coalesce(dataset, %s::text) = %s AND state IN ('in_review', 'accepted') AND submitted_at IS NOT NULL "
+                    "AND document #>> '{source,keys,0}' IS NOT NULL ORDER BY submitted_at DESC, task_id LIMIT %s",
+                    (project_id, default, dataset, limit),
+                )
+            ).fetchall()
+            return [str(row[0]) for row in rows]
+
+    async def keep_proposal(self, proposal: Proposal) -> None:
+        """Keep what sampling proposed, drop the project's proposals more than a day old, and of this person's on the
+        project keep the latest `KEPT_PROPOSALS`: asking again and again grows nothing."""
+        async with self._transaction() as conn:
+            await conn.execute("DELETE FROM sampling_proposals WHERE project_id = %s AND created_at < now() - interval '1 day'", (proposal.project_id,))
+            await conn.execute(
+                "INSERT INTO sampling_proposals (proposal_id, project_id, proposed_by, document) VALUES (%s, %s, %s, %s)",
+                (proposal.proposal_id, proposal.project_id, proposal.proposed_by, _stored("the proposal", proposal.model_dump(mode="json"))),
+            )
+            await conn.execute(
+                "DELETE FROM sampling_proposals WHERE project_id = %s AND proposed_by = %s AND proposal_id NOT IN ("
+                "SELECT proposal_id FROM sampling_proposals WHERE project_id = %s AND proposed_by = %s ORDER BY created_at DESC, proposal_id LIMIT %s)",
+                (proposal.project_id, proposal.proposed_by, proposal.project_id, proposal.proposed_by, KEPT_PROPOSALS),
+            )
+
+    async def proposal_of(self, project_id: str, proposal_id: str, proposed_by: str) -> Proposal | None:
+        """The proposal ``proposed_by`` was given for the project within the last day, or None."""
+        async with self._transaction() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT document FROM sampling_proposals "
+                    "WHERE proposal_id = %s AND project_id = %s AND proposed_by = %s AND created_at >= now() - interval '1 day'",
+                    (proposal_id, project_id, proposed_by),
+                )
+            ).fetchone()
+            return None if row is None else Proposal.model_validate(row[0])
+
     async def change_draft(
         self,
         task_id: str,
@@ -1257,6 +1384,23 @@ async def _clock(conn: Connection) -> datetime:
 async def _judgement(conn: Connection, task_id: str, submitted_at: datetime) -> Judgement | None:
     row = await (await conn.execute("SELECT document FROM judgements WHERE task_id = %s AND submitted_at = %s", (task_id, submitted_at))).fetchone()
     return None if row is None else Judgement.model_validate(row[0])
+
+
+async def _keep_sampling(conn: Connection, score: Score, now: datetime) -> None:
+    """Write ``score`` unless its model already scored the task: the first score of a model stands, and a score another
+    model gave is replaced."""
+    stamped = Sampling(**score.model_dump(), scored_at=now)
+    await conn.execute(
+        "INSERT INTO samplings (task_id, model, doubt, document) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (task_id) DO UPDATE SET model = EXCLUDED.model, doubt = EXCLUDED.doubt, document = EXCLUDED.document "
+        "WHERE samplings.model <> EXCLUDED.model",
+        (stamped.task_id, stamped.model, stamped.score, _stored("the sampling score", stamped.model_dump(mode="json"))),
+    )
+
+
+async def _sampling(conn: Connection, task_id: str, model: str) -> Sampling | None:
+    row = await (await conn.execute("SELECT document FROM samplings WHERE task_id = %s AND model = %s", (task_id, model))).fetchone()
+    return None if row is None else Sampling.model_validate(row[0])
 
 
 async def _settle_verdict(conn: Connection, task: Task, *, event: str, said: bool | None) -> None:

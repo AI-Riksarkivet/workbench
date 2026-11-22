@@ -259,6 +259,27 @@ Choosing which items are labelled next, or which items enter a project at all, b
 a model is least sure about, the items least like those already labelled, or a mix. A person can always override it.
 _Avoid_: active learning (the training side is not the workbench's), smart queue
 
+**Doubt**:
+How unsure a model is of an item: 1 less its confidence, from a score column in the item's dataset or from the model
+endpoint's proposals. What least sure orders by.
+_Avoid_: uncertainty score, entropy
+
+**Novelty**:
+How unlike the labelled items an item is: the cosine distance from its embedding to the nearest labelled item's. What
+least alike orders by.
+_Avoid_: diversity score, outlier score
+
+**Score column**:
+A column of a dataset that a pipeline wrote a model's confidence per row into, named with its model by the dataset's
+descriptor. A project sampling by that model reads it and asks no model.
+_Avoid_: prediction column, uncertainty column
+
+**Proposal** (a send's):
+The items sampling chose from the candidates a person has in hand, kept by the annotator so the send that names it
+records which items were sampling's choice and which the person's. Not a model's proposal, which is a label a model
+suggests on an item.
+_Avoid_: recommendation, suggestion
+
 **Learning loop**:
 People's kept, changed and removed proposals become published labels; a pipeline outside the workbench trains a model
 on them; the new model version answers at the model endpoint. The workbench publishes and shows versions; it trains

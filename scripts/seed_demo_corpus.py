@@ -17,8 +17,9 @@ declares three (`scripts/local-sources.json`), one of each kind, and this writes
 The three stamped datasets, in one warehouse:
 
 - ``<warehouse>$corpus``: page images. Three volumes of a few pages each, every page a drawn PNG with distinct prose and
-  an FTS index, a thumbnail per volume, an atlas projection, a two-layer topic tree over the pages, and a small knowledge
-  graph of the people, places and works the pages name.
+  an FTS index, a thumbnail per volume, an atlas projection, a two-layer topic tree over the pages, a small knowledge
+  graph of the people, places and works the pages name, and what sampling reads: a score column by the stand-in
+  endpoint's scorer (every fourth page of a volume unscored) and an embedding per page.
 - ``<warehouse>$recordings``: audio. Three short WAV recordings synthesized here, each a few seconds of two alternating
   voices, cut into timed segments with an FTS index, word alignments (the transcript window) and speaker turns (the
   speakers timeline).
@@ -445,6 +446,56 @@ def seed_pages(client: LanceNamespace, connection: lancedb.DBConnection, namespa
     _seed_topics(client, namespace)
     _seed_graph(client, namespace)
     _index_and_stamp(client, connection, namespace, "chunks", declared)
+    add_page_sampling(client, namespace)
+
+
+#: What the page corpus declares for sampling: the model its score column is by (the stand-in endpoint's scorer, so a
+#: project that samples by it reads these and asks the endpoint only about the pages the column leaves out), and what
+#: made its embeddings (a hash, a fixture's stand-in for a model's vectors).
+PAGE_SCORER = "stand-in-scorer"
+PAGE_EMBEDDER = "demo-hash-vectors"
+PAGE_SAMPLING = {
+    "scores": {"table": "chunks", "column": "model_score", "model": PAGE_SCORER},
+    "embeddings": {"table": "chunks", "column": "embedding", "model": PAGE_EMBEDDER},
+}
+#: Every this-many-th page of a volume carries no score: a pipeline that has not reached it.
+UNSCORED_EVERY = 4
+
+
+def _page_confidence(doc_id: str, page_no: int) -> float | None:
+    """How sure the page corpus's score column says a model is of a page: fixed by the page, from 0.05 to 0.95, and
+    none for the pages a pipeline has not scored."""
+    if page_no % UNSCORED_EVERY == UNSCORED_EVERY - 1:
+        return None
+    return 0.05 + hashlib.sha256(f"{doc_id}/{page_no}".encode()).digest()[0] % 91 / 100
+
+
+def _page_sampling_columns(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """A batch of pages' score and embedding: the embedding near its volume's own point, so pages of one volume are
+    alike and volumes are apart."""
+    doc_ids, pages = batch.column("doc_id").to_pylist(), batch.column("chunk_id").to_pylist()
+    titles, texts = batch.column("title").to_pylist(), batch.column("text").to_pylist()
+    return pa.RecordBatch.from_pydict(
+        {
+            "model_score": pa.array([_page_confidence(doc, page) for doc, page in zip(doc_ids, pages, strict=True)], pa.float32()),
+            "embedding": _clustered(titles, texts, 16),
+        }
+    )
+
+
+def add_page_sampling(client: LanceNamespace, namespace: list[str]) -> bool:
+    """Give the page corpus its score column and embeddings and declare them, unless it holds them: columns added to the
+    rows that are there (Lance's `add_columns`, which rewrites no data file), so the pages keep their keys and versions
+    and the items sent from them stay valid. Whether it wrote."""
+    table_id = [*namespace, "chunks"]
+    ds = lance.dataset(namespace_client=client, table_id=table_id)
+    if {"model_score", "embedding"} <= set(ds.schema.names):
+        return False
+    ds.add_columns(_page_sampling_columns, read_columns=["doc_id", "chunk_id", "title", "text"])
+    stamped = json.loads((ds.schema.metadata or {})[DESCRIPTOR_METADATA_KEY])
+    declared = Declared.model_validate(stamped | {"sampling": PAGE_SAMPLING})
+    lance.dataset(namespace_client=client, table_id=table_id).update_schema_metadata({DESCRIPTOR_METADATA_KEY.decode(): declared.model_dump_json()})
+    return True
 
 
 def _seed_topics(client: LanceNamespace, namespace: list[str]) -> None:
@@ -1012,6 +1063,8 @@ def main() -> None:
         **{f"lakehouse-{name}": partial(_seed_stamped, client, connection, seeder, namespace) for name, (seeder, namespace) in stamped.items()},
         "archive": lambda: f"archive {', '.join(seed_archive(os.path.join(root, 'archive')))} (no descriptor)",
         "loose": lambda: f"{seed_loose(os.path.join(root, 'loose'))} (a bare table)",
+        # After the corpus itself: a volume whose corpus an earlier seeder wrote gains the columns in place.
+        PAGE_SAMPLING_MARKER: partial(_seed_page_sampling, client, [DEFAULT_WAREHOUSE, PAGES]),
     }
     if once:
         with _seeding(root):
@@ -1019,11 +1072,29 @@ def main() -> None:
                 **{f"lakehouse-{name}": partial(_stamped_present, client, namespace) for name, (_seeder, namespace) in stamped.items()},
                 "archive": partial(_archive_present, os.path.join(root, "archive")),
                 "loose": lambda: _table_present(os.path.join(root, "loose", f"{SCANS}.lance")),
+                PAGE_SAMPLING_MARKER: partial(_page_sampling_present, client, [DEFAULT_WAREHOUSE, PAGES]),
             }
             _adopt_whole_volume_marker(root, present)
             _write(root, writers, once=True)
     else:
         _write(root, writers, once=False)
+
+
+#: The marker of the page corpus's sampling columns, a step of its own after the corpus's.
+PAGE_SAMPLING_MARKER = f"lakehouse-{PAGES}-sampling"
+
+
+def _seed_page_sampling(client: LanceNamespace, namespace: list[str]) -> str:
+    wrote = add_page_sampling(client, namespace)
+    return f"lakehouse {CATALOG_DELIMITER.join(namespace)} sampling columns ({'added to its rows' if wrote else 'already there'})"
+
+
+def _page_sampling_present(client: LanceNamespace, namespace: list[str]) -> bool:
+    try:
+        names = lance.dataset(namespace_client=client, table_id=[*namespace, "chunks"]).schema.names
+    except (LanceNamespaceError, OSError, ValueError):
+        return False
+    return {"model_score", "embedding"} <= set(names)
 
 
 def _write(root: str, writers: Mapping[str, Callable[[], str]], *, once: bool) -> None:

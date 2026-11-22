@@ -277,6 +277,7 @@
 							{me}
 							consensusN={project.consensus_n ?? 1}
 							adjudications={project.adjudications ?? {}}
+							sampling={project.sampling}
 							onchanged={refresh}
 						/>
 					{/if}
@@ -290,6 +291,7 @@
 							permissions={detail.permissions}
 							{me}
 							classes={project.ontology.classes}
+							sampling={project.sampling}
 							onchanged={refresh}
 						/>
 					{/if}

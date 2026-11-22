@@ -67,3 +67,13 @@ export function sendItemsFor(keys: readonly string[], from: SendSource, label: s
 		...(prediction ? { prediction } : {}),
 	}));
 }
+
+/** The keys a send carries while a sampling proposal is shown: the proposed ones the person left ticked, or every
+ *  candidate when they asked to send the rest too; with no proposal, every candidate. */
+export function keysToSend(
+	keys: readonly string[],
+	proposal: { ticked: ReadonlySet<string>; everyCandidate: boolean } | null,
+): string[] {
+	if (proposal === null || proposal.everyCandidate) return [...keys];
+	return keys.filter((key) => proposal.ticked.has(key));
+}

@@ -131,6 +131,10 @@ export const AdjudicationSchema = v.object({
 });
 export type Adjudication = v.InferOutput<typeof AdjudicationSchema>;
 
+/** A project's sampling strategy (ADR 0034). */
+export const SamplingStrategySchema = v.picklist(['off', 'least_sure', 'least_alike', 'mix']);
+export type SamplingStrategy = v.InferOutput<typeof SamplingStrategySchema>;
+
 export const ProjectSchema = v.object({
 	project_id: v.string(),
 	tenant: v.string(),
@@ -164,6 +168,11 @@ export const ProjectSchema = v.object({
 	pending_target_namespace: v.nullish(v.string()),
 	/** The model that judges the project's submissions, as the deployment's model endpoint names it; empty: none. */
 	judge_model: v.optional(v.string(), ''),
+	/** How the project's queue is ordered (ADR 0034): by its sampling model's doubt (`least_sure`), by how unlike the
+	 *  labelled items an item is (`least_alike`), the two interleaved (`mix`), or in item order (`off`). */
+	sampling: v.optional(SamplingStrategySchema, 'off'),
+	/** The model whose doubt `least_sure` and `mix` order by, as the deployment's endpoint names it; empty: none. */
+	sampling_model: v.optional(v.string(), ''),
 });
 export type Project = v.InferOutput<typeof ProjectSchema>;
 
@@ -233,6 +242,64 @@ const JudgeStateSchema = v.object({
 	unread: v.number(),
 });
 export type JudgeState = v.InferOutput<typeof JudgeStateSchema>;
+
+/** A model's score on one item (`annotator.sampling.Sampling`): its doubt (1 less its confidence), or that it proposed
+ *  nothing the item takes (`score` null), with the model and version that scored it, who asked and when. */
+export const SamplingSchema = v.object({
+	task_id: v.string(),
+	kind: v.picklist(['least_sure', 'proposed_nothing']),
+	score: v.nullable(v.number()),
+	model: v.string(),
+	version: v.string(),
+	asked_by: v.string(),
+	scored_at: v.string(),
+});
+export type Sampling = v.InferOutput<typeof SamplingSchema>;
+
+/** How unlike the labelled items one item is (`annotator.sampling.Novelty`): the cosine distance from the nearest of
+ *  `against` labelled or already chosen items, by the dataset's `vectors`. */
+const NoveltySchema = v.object({
+	task_id: v.string(),
+	novelty: v.number(),
+	against: v.number(),
+	vectors: v.string(),
+	model: v.nullable(v.string()),
+	asked_by: v.string(),
+	measured_at: v.string(),
+});
+
+/** What sampling knows of one listed item (`include=sampling`), and which strategy placed it where it is in a listing
+ *  sorted by sampling (null otherwise, or where nothing placed it). */
+const ItemSamplingSchema = v.object({
+	score: v.nullable(SamplingSchema),
+	novelty: v.nullable(NoveltySchema),
+	placed_by: v.nullish(v.picklist(['least_sure', 'least_alike'])),
+});
+export type ItemSampling = v.InferOutput<typeof ItemSamplingSchema>;
+
+/** Why an item was sent: sampling chose it (with the strategy, number and model it was chosen by), or a person did. */
+const ChosenSchema = v.object({
+	by: v.picklist(['sampling', 'person']),
+	kind: v.nullable(v.picklist(['least_sure', 'least_alike'])),
+	score: v.nullable(v.number()),
+	model: v.nullable(v.string()),
+});
+export type Chosen = v.InferOutput<typeof ChosenSchema>;
+
+/** A project's sampling as a listing reads it (`include=sampling`): its strategy and model, whether it can order the
+ *  list and why not, whether a model can be asked, and how many of the filter's items have each number. */
+const SamplingStateSchema = v.object({
+	strategy: SamplingStrategySchema,
+	model: v.string(),
+	available: v.boolean(),
+	reason: v.string(),
+	asks: v.boolean(),
+	scored: v.number(),
+	unscored: v.number(),
+	measured: v.number(),
+	unmeasured: v.number(),
+});
+export type SamplingState = v.InferOutput<typeof SamplingStateSchema>;
 
 /** The full task document (the details fan-out), plus its own legal events. */
 export const TaskDetailSchema = v.object({
@@ -336,6 +403,11 @@ export const TaskDetailSchema = v.object({
 	/** A listing's `include=judge`: the verdict on the item's submission of now, or null where no judge has read it.
 	 *  Absent unless asked for. */
 	judgement: v.optional(v.nullable(JudgementSchema)),
+	/** A listing's `include=sampling`: what sampling knows of the item, or null where it knows nothing. Absent unless
+	 *  asked for. */
+	sampling: v.optional(v.nullable(ItemSamplingSchema)),
+	/** Why the item was sent, where the send followed a sampling proposal; null for an item sent without one. */
+	chosen: v.nullish(ChosenSchema),
 });
 export type TaskDetail = v.InferOutput<typeof TaskDetailSchema>;
 
@@ -368,6 +440,8 @@ export const TaskListingSchema = v.object({
 	contributors: v.optional(v.array(ContributorSchema), []),
 	/** With `include=judge`: the project's judge and how it has read the filter's items. */
 	judge: v.optional(JudgeStateSchema),
+	/** With `include=sampling`: the project's sampling and how many of the filter's items it has numbers for. */
+	sampling: v.optional(SamplingStateSchema),
 	people: PeopleSchema,
 });
 export type TaskListing = v.InferOutput<typeof TaskListingSchema>;
@@ -409,6 +483,36 @@ export const SendItemSchema = v.object({
 });
 
 export type SendItem = v.InferInput<typeof SendItemSchema>;
+
+/** What sampling proposes to send (`POST /projects/{id}/sampling/proposals`): of the keys offered, the ones its
+ *  strategy chose, each with why, and what it could not do. A send that names `proposal_id` is recorded against it. */
+export const ProposalSchema = v.object({
+	proposal_id: v.string(),
+	project_id: v.string(),
+	dataset: v.string(),
+	proposed_by: v.string(),
+	strategy: SamplingStrategySchema,
+	chosen: v.array(
+		v.object({
+			key: v.string(),
+			kind: v.picklist(['least_sure', 'least_alike']),
+			score: v.number(),
+			model: v.nullable(v.string()),
+		}),
+	),
+	notes: v.optional(v.array(v.string()), []),
+});
+export type Proposal = v.InferOutput<typeof ProposalSchema>;
+
+/** What a read of items' numbers found (`POST /projects/{id}/sampling/reads`): the scores and novelties it kept, the
+ *  items a model is still to be asked about, and what it could not read, in plain sentences. */
+export const SamplingReadsSchema = v.object({
+	scored: v.array(SamplingSchema),
+	measured: v.array(NoveltySchema),
+	ask: v.array(v.string()),
+	notes: v.optional(v.array(v.string()), []),
+});
+export type SamplingReads = v.InferOutput<typeof SamplingReadsSchema>;
 
 /** What a send did: `sent` items, `created` of them new (a re-sent item is not duplicated). */
 export const SendReceiptSchema = v.object({

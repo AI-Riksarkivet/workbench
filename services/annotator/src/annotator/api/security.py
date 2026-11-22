@@ -34,9 +34,12 @@ from workbench.media.source_gate import admit
 
 #: The relation that reviews a project's work, and reads a consensus replica's.
 CAN_REVIEW = "can_review"
+#: The relation that labels a project's items: what a request spending a model on one of them takes.
+CAN_ANNOTATE = "can_annotate"
 
 __all__ = [
     "ANONYMOUS_SUBJECT",
+    "CAN_ANNOTATE",
     "CAN_REVIEW",
     "READS_DATASET",
     "AuthorizerDep",
@@ -162,7 +165,7 @@ def project_gate(relation: str) -> Any:
 
 
 #: The decorator dependencies an annotation write and an annotation read carry.
-MAY_ANNOTATE = project_gate("can_annotate")
+MAY_ANNOTATE = project_gate(CAN_ANNOTATE)
 MAY_VIEW = project_gate("can_view")
 
 

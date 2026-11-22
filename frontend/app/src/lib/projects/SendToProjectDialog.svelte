@@ -6,14 +6,24 @@
 	 * its classes and their shape kind, as the New project form makes one: an item is labelled with its project's
 	 * classes, so a project without any would leave every item it is sent unclassable. The project's own door decides:
 	 * `can_send_items` on it, and the dataset must be one the reader can read.
+	 *
+	 * SAMPLING (ADR 0034): where the chosen project's strategy is on, sampling proposes which of the selection to send,
+	 * each with why; the person unticks what they would not send, or sends every candidate after all. A send while a
+	 * proposal is shown names it, so the annotator records which items sampling chose and which the person added.
 	 */
 	import { resolve } from '$app/paths';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { Button } from '@riksarkivet/ui/button';
+	import { Checkbox } from '@riksarkivet/ui/checkbox';
 	import { Dialog } from '@riksarkivet/ui/dialog';
 	import { Input } from '@riksarkivet/ui/input';
 	import { Select } from '@riksarkivet/ui/select';
+	import { Switch } from '@riksarkivet/ui/switch';
 	import { createProject, fetchProject, listProjects, sendItems } from '#lib/api/projects.api.ts';
-	import { sendItemsFor, sendRefusal, type SendSource } from './send.ts';
+	import { PROPOSAL_CAP, proposeItems } from '#lib/api/sampling.api.ts';
+	import { reasonText } from './sampling.ts';
+	import { keysToSend, sendItemsFor, sendRefusal, type SendSource } from './send.ts';
+	import type { Proposal } from './types.ts';
 
 	let {
 		open = $bindable(false),
@@ -75,6 +85,51 @@
 		void chosen;
 		return '';
 	});
+	/** The chosen project's sampling: whether it proposes what to send. */
+	const samples = $derived(
+		chosenRead?.current?.ok ? chosenRead.current.data.project.sampling !== 'off' : false,
+	);
+	/** How many sampling is asked to propose: 50, or every candidate when fewer. */
+	let proposeCount = $derived(Math.min(50, keys.length, PROPOSAL_CAP));
+	/** What sampling proposed for the chosen project; a new choice of project starts with none. */
+	let proposal = $derived.by((): Proposal | null => {
+		void chosen;
+		return null;
+	});
+	/** The proposed keys the person leaves ticked. */
+	const ticked = new SvelteSet<string>();
+	/** Whether the send carries every candidate after all, beside what sampling chose. */
+	let everyCandidate = $state(false);
+	let proposing = $state(false);
+	const sendKeys = $derived(keysToSend(keys, proposal ? { ticked, everyCandidate } : null));
+
+	async function propose(): Promise<void> {
+		if (!chosen || proposing) return;
+		const count = Math.trunc(Number(proposeCount));
+		if (!(count >= 1 && count <= PROPOSAL_CAP)) {
+			error = `Propose between 1 and ${Math.min(keys.length, PROPOSAL_CAP)} items.`;
+			return;
+		}
+		proposing = true;
+		error = '';
+		const result = await proposeItems(chosen, { dataset: from.dataset, keys, count });
+		proposing = false;
+		if (!result.ok) {
+			error = result.detail;
+			return;
+		}
+		ticked.clear();
+		for (const c of result.data.chosen) ticked.add(c.key);
+		everyCandidate = false;
+		proposal = result.data;
+	}
+
+	function discardProposal(): void {
+		proposal = null;
+		ticked.clear();
+		everyCandidate = false;
+	}
+
 	let newSlug = $state('');
 	let newTitle = $state('');
 	let newClasses = $state('');
@@ -96,15 +151,23 @@
 
 	const refusal = $derived(sendRefusal({ fetched: keys.length, total }));
 	const count = $derived(`${total.toLocaleString()} item${total === 1 ? '' : 's'}`);
+	const items = (n: number): string => `${n.toLocaleString()} item${n === 1 ? '' : 's'}`;
 
 	async function sendTo(projectId: string): Promise<void> {
 		sending = true;
 		error = '';
-		const result = await sendItems({ projectId, items: sendItemsFor(keys, from, label) });
+		const proposed = proposal?.project_id === projectId ? proposal : null;
+		const result = await sendItems({
+			projectId,
+			items: sendItemsFor(proposed ? sendKeys : keys, from, label),
+			...(proposed ? { proposal: proposed.proposal_id } : {}),
+		});
 		sending = false;
 		// The door's own words: a 403 names the missing role, a 409 a project no longer taking items.
-		if (result.ok) done = { projectId, sent: result.data.sent, created: result.data.created };
-		else error = result.detail;
+		if (result.ok) {
+			done = { projectId, sent: result.data.sent, created: result.data.created };
+			discardProposal();
+		} else error = result.detail;
 	}
 
 	async function createAndSend(): Promise<void> {
@@ -221,8 +284,81 @@
 						</select>
 					</label>
 				{/if}
-				<Button type="submit" class="w-fit" disabled={sending || !chosen}>
-					{sending ? 'Sending…' : `Send ${count}`}
+				{#if samples && proposal === null}
+					<div class="flex flex-wrap items-center gap-2" data-testid="send-propose">
+						<Input
+							type="number"
+							min={1}
+							max={Math.min(keys.length, PROPOSAL_CAP)}
+							bind:value={proposeCount}
+							class="h-8 w-20"
+							aria-label="How many sampling proposes"
+							data-testid="send-propose-count"
+						/>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={proposing}
+							data-testid="send-propose-run"
+							onclick={() => void propose()}
+						>
+							{proposing ? 'Proposing…' : `Propose ${proposeCount} by sampling`}
+						</Button>
+					</div>
+				{:else if proposal}
+					<div class="flex flex-col gap-2" data-testid="send-proposal">
+						<p data-testid="send-proposal-summary">
+							Sampling proposes {proposal.chosen.length} of {items(keys.length)}
+						</p>
+						{#each proposal.notes as note (note)}
+							<p class="text-muted-foreground text-xs" data-testid="send-proposal-note">{note}</p>
+						{/each}
+						{#if proposal.chosen.length > 0}
+							<ul class="flex max-h-48 flex-col gap-1 overflow-y-auto">
+								{#each proposal.chosen as c (c.key)}
+									<li>
+										<label
+											class="flex items-center gap-2 text-xs"
+											data-testid="send-proposed"
+											data-key={c.key}
+										>
+											<Checkbox
+												checked={ticked.has(c.key)}
+												onCheckedChange={(on) => (on ? ticked.add(c.key) : ticked.delete(c.key))}
+												aria-label={`Send ${c.key}`}
+											/>
+											<span class="font-mono break-all">{c.key}</span>
+											<span class="text-muted-foreground ml-auto shrink-0"
+												>{reasonText(c.kind, c.score)}</span
+											>
+										</label>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+						<label class="flex items-center gap-2 text-xs" data-testid="send-every-candidate">
+							<Switch bind:checked={everyCandidate} />
+							Also send the items sampling did not choose
+						</label>
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							class="w-fit"
+							data-testid="send-proposal-discard"
+							onclick={discardProposal}
+						>
+							Send all {items(keys.length)} selected instead
+						</Button>
+					</div>
+				{/if}
+				<Button
+					type="submit"
+					class="w-fit"
+					disabled={sending || !chosen || (proposal !== null && sendKeys.length === 0)}
+				>
+					{sending ? 'Sending…' : `Send ${proposal !== null ? items(sendKeys.length) : count}`}
 				</Button>
 			</form>
 

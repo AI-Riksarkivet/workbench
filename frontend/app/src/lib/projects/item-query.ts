@@ -23,6 +23,7 @@ export const SORTS = [
 	'updated',
 	'submitted',
 	'reviewed',
+	'sampling',
 ] as const;
 export type Sort = (typeof SORTS)[number];
 export const DATE_FIELDS = ['updated', 'sent', 'submitted', 'reviewed'] as const;
@@ -103,8 +104,9 @@ function text(value: string | null): string | null {
 const pick = <T extends string>(allowed: readonly T[], value: string | null, fallback: T): T =>
 	allowed.includes(value as T) ? (value as T) : fallback;
 
-/** The query an address names; a value it cannot honour is left at its default rather than guessed. */
-export function readItemQuery(params: Params): ItemQuery {
+/** The query an address names; a value it cannot honour is left at its default rather than guessed. ``sort`` is the
+ *  order an address that names none is in: the project's sampling order on the Items tab while its strategy is on. */
+export function readItemQuery(params: Params, sort: Sort = DEFAULT_QUERY.sort): ItemQuery {
 	const size = Number(params.get('size'));
 	const sizeOk = (PAGE_SIZES as readonly number[]).includes(size);
 	const page = Number(params.get('page'));
@@ -126,7 +128,7 @@ export function readItemQuery(params: Params): ItemQuery {
 		date: pick(DATE_FIELDS, params.get('date'), DEFAULT_QUERY.date),
 		since: day('since'),
 		until: day('until'),
-		sort: pick(SORTS, params.get('sort'), DEFAULT_QUERY.sort),
+		sort: pick(SORTS, params.get('sort'), sort),
 		order: params.get('order') === 'desc' ? 'desc' : 'asc',
 		page:
 			Number.isInteger(page) && page >= 1 && (page - 1) * effectiveSize <= MAX_OFFSET ? page : 1,
@@ -134,8 +136,13 @@ export function readItemQuery(params: Params): ItemQuery {
 	};
 }
 
-/** The address with ``query`` written into it over ``base``'s other names (the tab, the project), defaults left out. */
-export function writeItemQuery(query: ItemQuery, base: Params): URLSearchParams {
+/** The address with ``query`` written into it over ``base``'s other names (the tab, the project), defaults left out;
+ *  ``sort`` is the order an address that names none is in, as `readItemQuery` takes it. */
+export function writeItemQuery(
+	query: ItemQuery,
+	base: Params,
+	sort: Sort = DEFAULT_QUERY.sort,
+): URLSearchParams {
 	const out = new URLSearchParams(base.toString());
 	for (const key of KEYS) out.delete(key);
 	for (const state of query.states) out.append('state', state);
@@ -149,7 +156,7 @@ export function writeItemQuery(query: ItemQuery, base: Params): URLSearchParams 
 		['date', query.date, DEFAULT_QUERY.date],
 		['since', query.since, null],
 		['until', query.until, null],
-		['sort', query.sort, DEFAULT_QUERY.sort],
+		['sort', query.sort, sort],
 		['order', query.order, DEFAULT_QUERY.order],
 		['page', String(query.page), String(DEFAULT_QUERY.page)],
 		['size', String(query.size), String(DEFAULT_QUERY.size)],
