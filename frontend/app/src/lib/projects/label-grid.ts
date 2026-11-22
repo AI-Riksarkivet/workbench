@@ -139,6 +139,27 @@ export function labelable(task: TaskDetail): Labelable {
 	};
 }
 
+/** What tells one claim of ``task`` from another: who holds it and when it was taken (its trail's last `claim` or
+ *  `assign`), or null when it is held by nobody or its taking has fallen off the trail. A lease's expiry cannot tell
+ *  them apart: every save into a claim renews it (`store.change_draft`), the canvas's in another tab too. */
+export function claimMark(
+	task: Pick<TaskDetail, 'state' | 'assignee' | 'transitions'>,
+): string | null {
+	if (task.state !== 'claimed' || !task.assignee) return null;
+	const taken = task.transitions.findLast((t) => t.event === 'claim' || t.event === 'assign');
+	return taken ? `${task.assignee}@${taken.at}` : null;
+}
+
+/** What a claim's own answer says the item was before it was claimed (the `from` of its trail's last `claim` or
+ *  `assign`): open, sent back, or null when the trail does not say. Read from the answer, never from a listing read
+ *  earlier, which the item may have moved on from since. */
+export function claimOrigin(answer: Pick<TaskDetail, 'transitions'>): 'open' | 'sent-back' | null {
+	const taken = answer.transitions.findLast((t) => t.event === 'claim' || t.event === 'assign');
+	if (taken?.from === 'unassigned') return 'open';
+	if (taken?.from === 'changes_requested') return 'sent-back';
+	return null;
+}
+
 /** Whether ``label`` is one of the item's own classes: those it was sent with (its captured ontology), which its submit
  *  is judged by. An item sent with no classes takes any. */
 export function itemTakes(task: TaskDetail, label: string): boolean {

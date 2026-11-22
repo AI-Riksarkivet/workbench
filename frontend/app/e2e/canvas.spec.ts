@@ -1531,6 +1531,10 @@ test('a reviewer judges three items in one pass by key: accepts one, fixes and a
 	await ready(page);
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Bert Beta’s work');
 	await expect(walk).toContainText('item 2 / 3');
+	// The verdict is said on the item the pass moved to.
+	await expect(page.getByTestId('canvas-notice')).toHaveText(
+		'Accepted: A letter from the harbour · page 1.',
+	);
 
 	// This item holds a proposal nobody kept or removed: it is counted, and neither verdict that accepts it is offered.
 	const judged = calls(page, '/tasks/judging-b/events');
@@ -1574,6 +1578,112 @@ test('a reviewer judges three items in one pass by key: accepts one, fixes and a
 	await expect(page.getByTestId('review-waiting')).toHaveText(
 		'Nothing is waiting for your review.',
 	);
+});
+
+test('a verdict on an item reached by skipping ahead goes on to the first item still waiting, its place and the strip’s agreeing', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/judging?tab=review');
+	await page.getByTestId('review-start').click();
+	const walk = page.getByRole('navigation', { name: 'Reviewing' });
+	await ready(page);
+	await expect(walk).toContainText('item 1 / 3');
+	await page.getByTestId('task-stream-next').click();
+	await expect(page).toHaveURL(/\/tasks\/judging-b\?/);
+	await ready(page);
+	await expect(walk).toContainText('item 2 / 3');
+
+	await page.keyboard.press('Shift+R');
+	const dialog = page.getByTestId('send-back-dialog');
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the seal too.');
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+
+	// The item skipped is still waiting: the pass goes back to it, second of three, with one more after it.
+	await expect(page).toHaveURL(/\/tasks\/judging-a\?of=3&done=1&pass=review/);
+	await ready(page);
+	await expect(walk).toContainText('item 2 / 3');
+	await expect(page.getByTestId('task-stream-next')).toBeVisible();
+	await expect(page.getByTestId('filmstrip-item')).toHaveCount(2);
+	await expect(page.getByTestId('filmstrip-item').first()).toHaveAttribute(
+		'aria-label',
+		'Item 2 of 3',
+	);
+	await expect(page.getByTestId('filmstrip-item').last()).toHaveAttribute(
+		'aria-label',
+		'Item 3 of 3',
+	);
+	await expect(page.getByTestId('canvas-notice')).toHaveText(
+		'Sent back: A letter about the harvest · page 1.',
+	);
+});
+
+test('a verdict whose read of the walk fails goes on to the decided item’s neighbour, never to a pass that reads as done', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/judging?tab=review');
+	await page.getByTestId('review-start').click();
+	await ready(page);
+	await expect(page).toHaveURL(/\/tasks\/judging-a\?/);
+	// The read of the first item still waiting fails, and answers only once the walk has been read again without the
+	// decided item.
+	const walkReadAgain = page.waitForResponse(
+		(res) =>
+			res.request().method() === 'GET' &&
+			/\/projects\/judging\/tasks\?.*around=judging-a/.test(res.url()),
+	);
+	await page.route(
+		/\/api\/annotator\/projects\/judging\/tasks\?.*limit=1&offset=0/,
+		async (route) => {
+			await walkReadAgain;
+			await route.fulfill({ status: 503, json: { detail: 'the annotator is busy' } });
+		},
+	);
+
+	await page.keyboard.press('Shift+A');
+
+	await expect(page).toHaveURL(/\/tasks\/judging-b\?of=3&done=1&pass=review/);
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
+test('back on the review list after a verdict, the judge is asked only about the items still waiting', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	// The project's judge fails every ask, so the four items stay unread for the next round to ask about.
+	await page.goto('/projects/appeals?tab=review');
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'The judge is unavailable: the model endpoint failed (500): stand-in-failing fails every ask',
+	);
+	await page.getByTestId('review-start').click();
+	await ready(page);
+	const decided = new URL(page.url()).pathname.split('/').at(-1) ?? '';
+	await page.keyboard.press('Shift+R');
+	const dialog = page.getByTestId('send-back-dialog');
+	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the seal too.');
+	await dialog.getByRole('button', { name: 'Send back' }).click();
+	await expect(page).not.toHaveURL(new RegExp(`/tasks/${decided}\\?`));
+	await ready(page);
+
+	const asked: string[] = [];
+	page.on('request', (req) => {
+		const url = new URL(req.url());
+		if (url.pathname.startsWith('/api/annotator/api/judge/'))
+			asked.push(url.searchParams.get('task') ?? '');
+	});
+	await page.getByRole('link', { name: "Back to the project's queue" }).click();
+	await page.getByTestId('tab-review').click();
+
+	await expect(page.getByTestId('review-judge')).toHaveText(
+		'The judge is unavailable: the model endpoint failed (500): stand-in-failing fails every ask',
+	);
+	await expect(page.getByTestId('review-list').locator(':scope > li')).toHaveCount(3);
+	expect(asked).toHaveLength(3);
+	expect(asked).not.toContain(decided);
 });
 
 test('a person browses a project’s labeled work read-only, one item after another, its filter in the address', async ({

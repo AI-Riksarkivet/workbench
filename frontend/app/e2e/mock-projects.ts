@@ -94,6 +94,8 @@ export interface Task {
 	holders?: string[];
 	prediction: { shape_type: string; label: string; source: string }[];
 	review_notes: { by: string; at: string; action: string; message: string }[];
+	/** The task's own trail of transitions, each with when and by whom (`Task.transitions`). */
+	transitions?: Transition[];
 	/** The ontology captured onto the task at send, which the canvas reads its rules from. */
 	ontology?: Record<string, unknown>;
 }
@@ -890,6 +892,93 @@ export const writeDraft = (sub: string, taskId: string, draft: Draft): void => {
 export const taskOf = (sub: string, taskId: string): Task | undefined =>
 	worldOf(sub).tasks.get(taskId);
 
+/** One row of a task's trail, as the store appends it (`store.fire_task`) and the wire names it (`from`, `to`). */
+interface Transition {
+	at: string;
+	by: string;
+	event: string;
+	from: string;
+	to: string;
+}
+
+/** Append ``event`` to ``t``'s trail, as fired by ``by`` now. */
+function recordTransition(t: Task, by: string, event: string, to: string): void {
+	const at = new Date().toISOString();
+	t.transitions = [...(t.transitions ?? []), { at, by, event, from: t.state, to }];
+}
+
+/** What a spec changes in an item's work away from the grid: a person's `letter` tag added, or every proposal removed. */
+export type WorkElsewhere = 'tag-letter' | 'remove-proposals';
+
+/** A spec's stand-in for a save to ``taskId``'s work made away from the grid (another tab, the canvas), as one revision
+ *  of its own; the grid's listing is not read again. */
+export function changeWorkElsewhere(sub: string, taskId: string, change: WorkElsewhere): boolean {
+	const world = worldOf(sub);
+	const draft = world.drafts.get(taskId) ?? { rows: [], links: [], revision: 0, history: [] };
+	const rows: Row[] =
+		change === 'tag-letter'
+			? [
+					...draft.rows,
+					{
+						id: crypto.randomUUID(),
+						shape_type: 'tag',
+						label: 'letter',
+						status: 'accepted',
+						source: 'human',
+					},
+				]
+			: draft.rows.filter((r) => r.status !== 'prediction');
+	const revision = draft.revision + 1;
+	const saved = { version: revision, timestamp: new Date().toISOString(), author: sub, rows };
+	world.drafts.set(taskId, {
+		rows,
+		links: draft.links,
+		revision,
+		history: [...draft.history, saved].slice(-50),
+	});
+	return true;
+}
+
+/** Where a spec moves an item away from the grid: sent back to `sub` after they claimed and submitted it elsewhere, or
+ *  open again after they claimed it and let it go. */
+export type Elsewhere = 'changes_requested' | 'unassigned';
+
+/** A spec's stand-in for ``taskId`` moved on away from the grid, its trail written as the store writes it: from open,
+ *  claimed, submitted and sent back to `sub` by another reviewer (`changes_requested`); from sent back, claimed and let
+ *  go (`unassigned`). The grid's listing is not read again. */
+export function moveElsewhere(sub: string, taskId: string, to: Elsewhere): boolean {
+	const t = worldOf(sub).tasks.get(taskId);
+	const from = to === 'changes_requested' ? 'unassigned' : 'changes_requested';
+	if (!t || t.state !== from) return false;
+	const step = (by: string, event: string, next: string): void => {
+		recordTransition(t, by, event, next);
+		t.state = next;
+	};
+	step(sub, 'claim', 'claimed');
+	if (to === 'changes_requested') {
+		step(sub, 'submit', 'in_review');
+		step('user:alpha', 'request_changes', 'changes_requested');
+		t.submitted_by = sub;
+		t.review_action = 'request_changes';
+	} else step(sub, 'release', 'unassigned');
+	t.assignee = null;
+	t.lease_expires_at = null;
+	return true;
+}
+
+/** A spec's stand-in for a claim of ``taskId`` that `sub` let go and took again away from the grid (another tab, the
+ *  canvas, a lapsed lease claimed again): its release and a new claim on the trail, a new lease, the work untouched. */
+export function reclaimElsewhere(sub: string, taskId: string): boolean {
+	const t = worldOf(sub).tasks.get(taskId);
+	if (!t || t.state !== 'claimed' || t.assignee !== sub) return false;
+	recordTransition(t, sub, 'release', 'unassigned');
+	t.state = 'unassigned';
+	recordTransition(t, sub, 'claim', 'claimed');
+	t.state = 'claimed';
+	t.lease_expires_at = later();
+	return true;
+}
+
 /** The permissions `sub` holds on `projectId` in their world: what the annotations door asks. */
 export const permissionsOn = (sub: string, projectId: string): string[] =>
 	held(worldOf(sub), sub, projectId);
@@ -977,6 +1066,31 @@ const refuse = (sub: string, relation: string, obj: string): Response => {
 		403,
 	);
 };
+
+/** What a spec plants on one path for one person: a failure, a dataset not built, a slow answer, a session that ended
+ *  (`unauthorized` on every call, `unauthorized-write` on a write alone), on `/api/assist/models` a deployment that
+ *  names no model endpoint (`no-endpoint`), or on one unit's `/api/assist/<unit>` an endpoint busy for it (`busy`) or
+ *  a model that answers it a shape its classes may not take, beside what it found (`mixed`) or in its place
+ *  (`polygon`), on one unit's `/api/annotations/<unit>` another save landing on top of a save (`moved-after`), or on
+ *  one unit's `/api/judge/<unit>` an item that left review while its judge was asked (`left-review`). */
+const FAULTS = [
+	'fail',
+	'unbuilt',
+	'slow',
+	'unauthorized',
+	'unauthorized-write',
+	'no-endpoint',
+	'busy',
+	'mixed',
+	'polygon',
+	'moved-after',
+	'left-review',
+] as const;
+export type Fault = (typeof FAULTS)[number];
+
+// Widened to look a string up: `includes` on the literal tuple takes only its own members.
+export const isFault = (kind: string | null): kind is Fault =>
+	kind !== null && (FAULTS as readonly string[]).includes(kind);
 
 /** Who made a call to the annotator and how the mock answers it: `record(status)` writes the call into the ledger,
  *  `fault` is the spec's switch for this person and path, and `endpoint` false is a deployment that names no model
@@ -1649,6 +1763,7 @@ export async function projectsDoor(
 				settled_action: event === 'accept' ? 'accepted' : event,
 				agreed: verdict.flags.length > 0 ? (judge_agreed ?? event !== 'accept') : null,
 			});
+		recordTransition(t, sub, event, edge[0]);
 		t.state = edge[0];
 		if (event === 'claim') {
 			t.assignee = sub;

@@ -28,10 +28,13 @@ export class JudgeTopUp {
 		this.#reread = reread;
 	}
 
-	/** Ask about the unread items of ``tasks`` not asked before, unless a round is out, the judge failed or it stopped. */
+	/** Ask about the items of ``tasks`` still in review that no judge has read and that were not asked before, unless a
+	 *  round is out, the judge failed or it stopped. */
 	async offer(tasks: readonly TaskDetail[]): Promise<void> {
 		if (this.judging || this.failure !== null || this.#stop.signal.aborted) return;
-		const unread = tasks.filter((t) => t.judgement === null && !this.#asked.has(t.task_id));
+		const unread = tasks.filter(
+			(t) => t.state === 'in_review' && t.judgement === null && !this.#asked.has(t.task_id),
+		);
 		if (unread.length === 0) return;
 		for (const t of unread) this.#asked.add(t.task_id);
 		this.judging = true;

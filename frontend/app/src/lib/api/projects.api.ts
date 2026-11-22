@@ -144,6 +144,24 @@ export async function readItem(projectId: string, taskId: string): Promise<TaskD
 	return result.ok ? (result.data.details?.find((t) => t.task_id === taskId) ?? null) : null;
 }
 
+/** The first item of a project's walk as the annotator filters and orders it now (``filter``, the door's own query),
+ *  read fresh; null when the walk is empty. */
+export async function firstOfWalk(
+	projectId: string,
+	filter: string,
+): Promise<ApiResult<TaskDetail | null>> {
+	const params = new URLSearchParams(filter);
+	params.append('include', 'details');
+	params.set('limit', '1');
+	params.set('offset', '0');
+	const result = await readJSON(
+		at(`/projects/${enc(projectId)}/tasks?${params}`),
+		TaskListingSchema,
+		UPSTREAM,
+	);
+	return result.ok ? { ok: true, data: result.data.details?.[0] ?? null } : result;
+}
+
 /** The most items a bulk action over "every item matching the filter" takes: past it, a person narrows the filter. */
 export const BULK_CAP = 1000;
 

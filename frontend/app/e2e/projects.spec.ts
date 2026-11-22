@@ -10,7 +10,7 @@ import {
 import { callsOf, person, signIn, watchCsp, type Call } from './session';
 import { EDGE } from './ports';
 import type { MockIdentity } from './mock-oidc';
-import { SENT_BACK_NOTE } from './mock-projects';
+import { SENT_BACK_NOTE, type Elsewhere, type Fault, type WorkElsewhere } from './mock-projects';
 import { FIRST_KEY } from './dpop';
 
 // The project plane on the built app: the projects of the reader's organisations, one project's queue, review,
@@ -1137,6 +1137,18 @@ test('a manager names the project’s judge from the endpoint’s judges and cle
 	]);
 });
 
+test('someone who may not change the judge reads the judge the project names, never said to be unserved by models nobody read', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Reviewer');
+	await page.goto('/projects/vetting?tab=settings');
+	const judge = page.getByLabel('Judge', { exact: true });
+	await expect(judge).toHaveText('stand-in-judge');
+	await expect(judge).toBeDisabled();
+	await expect(page.getByTestId('settings-judge-reason')).toHaveCount(0);
+});
+
 // THE BULK-LABELING GRID (`?tab=label`): the `sorting` project's items open to the reader, labelled from the keyboard.
 const grid = (page: Page) => page.getByTestId('label-grid');
 const cellOf = (page: Page, task: string) =>
@@ -1396,8 +1408,13 @@ test('the grid keeps and removes an item’s proposals, each one action its undo
 	);
 	await expect(cellOf(page, 'sorting-21').getByTestId('grid-cell-suggested')).toHaveText('map?');
 	await expect(proposals).toHaveText('1 proposal to keep or remove');
+	// The claim the keep took is given back with it.
+	await expect(cellOf(page, 'sorting-21').getByText('unassigned', { exact: true })).toBeVisible();
 
-	// Held by the reader now, it is offered for submitting, and the submit names the proposal rather than sending it.
+	// Claimed, it is offered for submitting, and the submit names the proposal rather than sending it.
+	await cellOf(page, 'sorting-21').click();
+	await page.getByTestId('grid-bulk-claim').click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Claimed: 1 item.');
 	await cellOf(page, 'sorting-21').click();
 	await page.getByTestId('grid-bulk-submit').click();
 	await expect(page.getByTestId('grid-refusals')).toContainText(
@@ -1406,7 +1423,8 @@ test('the grid keeps and removes an item’s proposals, each one action its undo
 	const events = (await annotatorCalls(page, who)).filter(
 		(c) => c.method === 'POST' && c.path === '/tasks/sorting-21/events',
 	);
-	expect(events.map((c) => c.status)).toEqual([200]);
+	// The keep's claim, the undo's release, the claim; the submit is not sent.
+	expect(events.map((c) => c.status)).toEqual([200, 200, 200]);
 
 	// Removed, it is gone, and the item is submitted.
 	await cellOf(page, 'sorting-21').focus();
@@ -1430,13 +1448,28 @@ function assistAsks(page: Page): Request[] {
 	});
 	return asked;
 }
-const UNITS: Record<string, string> = {
+const UNITS = {
 	'sorting-00': 'letter-001/0',
 	'sorting-01': 'letter-001/1',
 	'sorting-02': 'letter-002/0',
 	'sorting-03': 'map-003/0',
 	'sorting-mine': 'map-003/0',
-};
+} as const;
+/** The name of the grid's ``n``th open item (`sorting-<n>`), on the four pages the mock dataset has in turn. */
+const openItemName = (n: number): string =>
+	[
+		'A letter from the harbour · page 1',
+		'A letter from the harbour · page 2',
+		'A letter about the harvest · page 1',
+		'A map of the harbour · page 1',
+	][n % 4] ?? '';
+/** A save to ``unit``'s work reaches the annotator and lands, and its answer never reaches the page. */
+const loseAnswer = (page: Page, unit: string) =>
+	page.route(new RegExp(`/api/annotator/api/annotations/${unit}\\?`), async (route) => {
+		if (route.request().method() !== 'POST') return route.fallback();
+		await route.fetch();
+		await route.abort('connectionreset');
+	});
 /** Open the grid's models and read them. */
 async function openAsk(page: Page): Promise<Locator> {
 	await page.getByTestId('grid-assist-open').click();
@@ -1444,35 +1477,50 @@ async function openAsk(page: Page): Promise<Locator> {
 }
 const gridModel = (panel: Locator, name: string): Locator =>
 	panel.locator(`[data-testid="grid-assist-model"][data-model="${name}"]`);
-const faultOn = (page: Page, who: MockIdentity, path: string, kind: string) =>
+const faultOn = (page: Page, who: MockIdentity, path: string, kind: Fault) =>
 	page.request.post(
 		`${EDGE}/api/viewer/__fault?${new URLSearchParams({ sub: who.sub, path, kind })}`,
 	);
 
-test('a model asked over a selection proposes on each item with its model, version and score, undo restores each item as it was, and one keep or remove settles them all', async ({
+/** The task events the page fires, by item, in the order sent. */
+function taskEvents(page: Page): [string, string][] {
+	const fired: [string, string][] = [];
+	page.on('request', (req) => {
+		const at = /\/tasks\/([^/]+)\/events$/.exec(new URL(req.url()).pathname);
+		if (req.method() === 'POST' && at?.[1]) fired.push([at[1], String(req.postDataJSON().event)]);
+	});
+	return fired;
+}
+
+test('a model asked over a selection proposes on each item with its model, version and score, and undo takes each save back and gives back the claim it took on an open item', async ({
 	page,
 	context,
 }) => {
 	const who = await as(context, 'Annotator');
 	const asked = assistAsks(page);
+	const fired = taskEvents(page);
 	await page.goto('/projects/sorting?tab=label');
 	await cellOf(page, 'sorting-00').focus();
 	await page.keyboard.press('Shift+ArrowRight');
 	await page.keyboard.press('Shift+ArrowRight');
+	// The reader's own claim is asked about too, and stays theirs whatever is undone.
+	await cellOf(page, 'sorting-mine').click({ modifiers: ['Control'] });
 	const panel = await openAsk(page);
-	await expect(panel.getByRole('heading')).toHaveText('Ask a model about 3 items');
+	await expect(panel.getByRole('heading')).toHaveText('Ask a model about 4 items');
 
 	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
 
-	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 3 answered.');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 4 answered.');
+	const open = ['sorting-00', 'sorting-01', 'sorting-02'] as const;
+	const all = [...open, 'sorting-mine'] as const;
 	// Each item asked on its own unit, with the item alone: the tagger takes no prompt.
 	expect(asked.map((r) => [new URL(r.url()).pathname, r.postDataJSON()]).sort()).toEqual(
-		['sorting-00', 'sorting-01', 'sorting-02'].map((id) => [
+		all.map((id) => [
 			`/api/annotator/api/assist/${UNITS[id]}`,
 			{ model: 'stand-in-tagger', prompt: null, region: null, points: [], task_id: id },
 		]),
 	);
-	for (const id of ['sorting-00', 'sorting-01', 'sorting-02']) {
+	for (const id of all) {
 		await expect(cellOf(page, id).getByTestId('grid-cell-assisted')).toHaveText(
 			'stand-in-tagger stand-in.1: letter 0.60',
 		);
@@ -1481,31 +1529,117 @@ test('a model asked over a selection proposes on each item with its model, versi
 			'1 proposal to keep or remove',
 		);
 	}
-	// Claimed first, then one save each through the canvas's door.
+	// The open items claimed first, then one save each through the canvas's door.
+	expect(fired.toSorted()).toEqual(open.map((id) => [id, 'claim']));
 	const saves = (await annotatorCalls(page, who)).filter(
 		(c) => c.method === 'POST' && c.path.startsWith('/api/annotations/'),
 	);
-	expect(saves.map((c) => c.status)).toEqual([200, 200, 200]);
+	expect(saves.map((c) => c.status)).toEqual([200, 200, 200, 200]);
 	await expect(cellOf(page, 'sorting-00').getByText('claimed', { exact: true })).toBeVisible();
 
-	// The keyboard is back in the grid. Undo takes the ask back item by item: each holds what it held before it was asked.
+	// The keyboard is back in the grid. Undo takes the ask back item by item: each holds what it held before it was
+	// asked, and an item claimed only to be asked about is given back.
+	fired.length = 0;
 	await page.keyboard.press('Control+z');
 	await expect(page.getByTestId('grid-notice')).toHaveText(
-		'Undone: Asked Stand-in tagger: 3 changed.',
+		'Undone: Asked Stand-in tagger: 4 changed.',
 	);
-	for (const id of ['sorting-00', 'sorting-01', 'sorting-02']) {
+	for (const id of all) {
 		await expect(labelsOf(page, id)).toHaveText('no label');
 		await expect(cellOf(page, id).getByTestId('grid-cell-suggested')).toHaveCount(0);
 		await expect(cellOf(page, id).getByTestId('grid-cell-proposals')).toHaveCount(0);
 	}
-	// Redone, the proposals are back; Alt+A keeps every one of the selection in one action, and its undo gives them back.
+	for (const id of open)
+		await expect(cellOf(page, id).getByText('unassigned', { exact: true })).toBeVisible();
+	await expect(cellOf(page, 'sorting-mine').getByText('claimed', { exact: true })).toBeVisible();
+	expect(fired.toSorted()).toEqual(open.map((id) => [id, 'release']));
+	const released = (await annotatorCalls(page, who)).filter(
+		(c) => c.method === 'POST' && /^\/tasks\/sorting-0[0-2]\/events$/.test(c.path),
+	);
+	expect(released.map((c) => c.status)).toEqual([200, 200, 200, 200, 200, 200]);
+
+	// Redone, each open item is claimed again as the ask claimed it, and the proposals are back.
+	fired.length = 0;
 	await page.keyboard.press('Control+Shift+z');
 	await expect(page.getByTestId('grid-notice')).toHaveText(
-		'Redone: Asked Stand-in tagger: 3 changed.',
+		'Redone: Asked Stand-in tagger: 4 changed.',
 	);
+	for (const id of all)
+		await expect(cellOf(page, id).getByTestId('grid-cell-proposals')).toHaveText(
+			'1 proposal to keep or remove',
+		);
+	for (const id of open)
+		await expect(cellOf(page, id).getByText('claimed', { exact: true })).toBeVisible();
+	expect(fired.toSorted()).toEqual(open.map((id) => [id, 'claim']));
+});
+
+test('asking the same model again replaces its proposals on the item in one save that one undo takes back, and another model’s are kept', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	const item = cellOf(page, 'sorting-21');
+	// A model of its own proposed `map` on the item before.
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('1 proposal to keep or remove');
+	await item.focus();
+	const ask = async (): Promise<void> => {
+		const panel = await openAsk(page);
+		await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+		await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 1 answered.');
+	};
+
+	await ask();
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('2 proposals to keep or remove');
+	await expect(item.getByTestId('grid-cell-suggested')).toHaveText(['letter?', 'map?']);
+	await ask();
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('2 proposals to keep or remove');
+	// Asked again and finding nothing, the model's earlier proposals stay, and the item says so.
+	await page.route(/\/api\/annotator\/api\/assist\/(?!models)/, (route) =>
+		route.fulfill({
+			json: { model: 'stand-in-tagger', version: 'stand-in.1', proposals: [], dropped: [] },
+		}),
+	);
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Asked Stand-in tagger: 0 answered, 1 found nothing.',
+	);
+	await expect(item.getByTestId('grid-cell-unchanged')).toHaveText(
+		'found nothing: its earlier proposals stay',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('2 proposals to keep or remove');
+	await page.unrouteAll({ behavior: 'wait' });
+
+	await page.keyboard.press('Control+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('2 proposals to keep or remove');
+	await expect(item.getByTestId('grid-cell-suggested')).toHaveText(['letter?', 'map?']);
+	// Kept, the item holds one `letter` and the other model's `map`.
+	await page.keyboard.press('Alt+a');
+	await expect(page.getByTestId('grid-notice')).toHaveText('Kept the proposals: 1 changed.');
+	await expect(item.getByTestId('grid-cell-labels')).toHaveText('letter map');
+});
+
+test('the proposals of a whole selection are kept, taken back and removed in one action each', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.keyboard.press('Shift+ArrowRight');
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 3 answered.');
+	const asked = ['sorting-00', 'sorting-01', 'sorting-02'];
+
 	await page.keyboard.press('Alt+a');
 	await expect(page.getByTestId('grid-notice')).toHaveText('Kept the proposals: 3 changed.');
-	for (const id of ['sorting-00', 'sorting-01', 'sorting-02']) {
+	for (const id of asked) {
 		await expect(labelsOf(page, id)).toHaveText('letter');
 		await expect(cellOf(page, id).getByTestId('grid-cell-proposals')).toHaveCount(0);
 	}
@@ -1513,14 +1647,336 @@ test('a model asked over a selection proposes on each item with its model, versi
 	await expect(page.getByTestId('grid-notice')).toHaveText(
 		'Undone: Kept the proposals: 3 changed.',
 	);
-	await expect(cellOf(page, 'sorting-01').getByTestId('grid-cell-suggested')).toHaveText('letter?');
-	// Alt+R removes every one in one action.
+	for (const id of asked)
+		await expect(cellOf(page, id).getByTestId('grid-cell-suggested')).toHaveText('letter?');
 	await page.keyboard.press('Alt+r');
 	await expect(page.getByTestId('grid-notice')).toHaveText('Removed the proposals: 3 changed.');
-	for (const id of ['sorting-00', 'sorting-01', 'sorting-02']) {
+	for (const id of asked) {
 		await expect(labelsOf(page, id)).toHaveText('no label');
 		await expect(cellOf(page, id).getByTestId('grid-cell-proposals')).toHaveCount(0);
 	}
+});
+
+test('an undo keeps the claim it took on an item that had been sent back, and says why', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	await page.goto('/projects/batch?tab=label&size=50');
+	await cellOf(page, 'batch-sent-back').click();
+	await cellOf(page, 'batch-00').click({ modifiers: ['Control'] });
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 2 answered.');
+	expect(fired.toSorted()).toEqual([
+		['batch-00', 'claim'],
+		['batch-sent-back', 'claim'],
+	]);
+
+	fired.length = 0;
+	await page.keyboard.press('Control+z');
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed, 1 stays claimed by you.',
+	);
+	await expect(page.getByTestId('grid-stays').getByRole('listitem')).toHaveText([
+		'it stays claimed by you: it had been sent back, and releasing it would not send it back again (1): A letter about the harvest · page 1',
+	]);
+	const sentBack = cellOf(page, 'batch-sent-back');
+	await expect(sentBack.getByText('claimed', { exact: true })).toBeVisible();
+	await expect(sentBack.getByTestId('grid-cell-proposals')).toHaveCount(0);
+	await expect(cellOf(page, 'batch-00').getByText('unassigned', { exact: true })).toBeVisible();
+	expect(fired).toEqual([['batch-00', 'release']]);
+});
+
+test('a release refused after an undo is said on the item, which stays claimed by you', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.route(/\/api\/annotator\/tasks\/sorting-00\/events$/, (route) =>
+		route.request().postDataJSON().event === 'release'
+			? route.fulfill({ status: 409, json: { detail: 'the claim could not be released now' } })
+			: route.fallback(),
+	);
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 1 answered.');
+
+	await page.keyboard.press('Control+z');
+
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveText(
+		'Undone: Asked Stand-in tagger: 0 changed, 1 stays claimed by you.',
+	);
+	await expect(page.getByTestId('grid-stays').getByRole('listitem')).toHaveText([
+		'it stays claimed by you (the claim could not be released now) (1): A letter from the harbour · page 1',
+	]);
+	const item = cellOf(page, 'sorting-00');
+	await expect(item.getByTestId('grid-cell-stays')).toHaveText(
+		'it stays claimed by you (the claim could not be released now)',
+	);
+	await expect(item.getByText('claimed', { exact: true })).toBeVisible();
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveCount(0);
+});
+
+test('an undo after the person released the item and claimed it again leaves their claim alone', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	await page.goto('/projects/sorting?tab=label');
+	const item = cellOf(page, 'sorting-00');
+	await item.focus();
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 1 answered.');
+	await item.click();
+	await page.getByTestId('grid-bulk-release').click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Released: 1 item.');
+	await item.click();
+	await page.getByTestId('grid-bulk-claim').click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Claimed: 1 item.');
+
+	fired.length = 0;
+	await item.focus();
+	await page.keyboard.press('Control+z');
+
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveCount(0);
+	await expect(item.getByText('claimed', { exact: true })).toBeVisible();
+	expect(fired).toEqual([]);
+});
+
+/** Have ``who`` let go of their claim of ``task`` and take it again away from the grid (`reclaimElsewhere`). */
+const reclaimElsewhere = (page: Page, who: MockIdentity, task: string) =>
+	page.request.post(`${EDGE}/api/viewer/__reclaim?${new URLSearchParams({ sub: who.sub, task })}`);
+
+test('an undo leaves alone a claim the person let go and took again away from the grid', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	await page.goto('/projects/sorting?tab=label');
+	const item = cellOf(page, 'sorting-00');
+	await item.focus();
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 1 answered.');
+	// In another tab, say: the claim the ask took is let go, and the item claimed again.
+	expect((await reclaimElsewhere(page, who, 'sorting-00')).status()).toBe(200);
+
+	fired.length = 0;
+	await page.keyboard.press('Control+z');
+
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveCount(0);
+	await expect(item.getByText('claimed', { exact: true })).toBeVisible();
+	expect(fired).toEqual([]);
+});
+
+/** Move ``task`` on away from the grid, its listing not read again (`moveElsewhere`). */
+const moveElsewhere = (page: Page, who: MockIdentity, task: string, to: Elsewhere) =>
+	page.request.post(`${EDGE}/api/viewer/__move?${new URLSearchParams({ sub: who.sub, task, to })}`);
+/** Change ``task``'s work away from the grid, its listing not read again (`changeWorkElsewhere`). */
+const changeWorkElsewhere = (page: Page, who: MockIdentity, task: string, change: WorkElsewhere) =>
+	page.request.post(
+		`${EDGE}/api/viewer/__work?${new URLSearchParams({ sub: who.sub, task, change })}`,
+	);
+/** Every save to ``unit``'s work answered as one built on a revision the work has moved from. */
+const refuseSaves = (page: Page, unit: string) =>
+	page.route(new RegExp(`/api/annotator/api/annotations/${unit}\\?`), (route) =>
+		route.request().method() === 'POST'
+			? route.fulfill({ status: 409, json: { detail: 'annotations changed on the server' } })
+			: route.fallback(),
+	);
+
+test('whether a claim the grid took goes back is decided by the claim’s own answer, never by the listing read before', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	const fired = taskEvents(page);
+
+	// Read as open, it was claimed, submitted and sent back elsewhere: its claim stays, and says why.
+	await page.goto('/projects/sorting?tab=label');
+	await expect(cellOf(page, 'sorting-00').getByText('unassigned', { exact: true })).toBeVisible();
+	expect((await moveElsewhere(page, who, 'sorting-00', 'changes_requested')).status()).toBe(200);
+	await refuseSaves(page, UNITS['sorting-00']);
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('1');
+	await expect(page.getByTestId('grid-refusals').getByRole('listitem')).toHaveText([
+		'not labelled: annotations changed on the server; it stays claimed by you: it had been sent back, and releasing it would not send it back again (1): A letter from the harbour · page 1',
+	]);
+	await expect(cellOf(page, 'sorting-00').getByText('claimed', { exact: true })).toBeVisible();
+	expect(fired).toEqual([['sorting-00', 'claim']]);
+	await page.unrouteAll({ behavior: 'wait' });
+
+	// Read as sent back, it was claimed and let go elsewhere: open now, its claim goes back, and nothing says otherwise.
+	fired.length = 0;
+	await page.goto('/projects/batch?tab=label&size=50');
+	await expect(cellOf(page, 'batch-sent-back').getByText('changes requested')).toBeVisible();
+	expect((await moveElsewhere(page, who, 'batch-sent-back', 'unassigned')).status()).toBe(200);
+	await refuseSaves(page, 'letter-002/0');
+	await cellOf(page, 'batch-sent-back').focus();
+	await page.keyboard.press('1');
+	await expect(page.getByTestId('grid-refusals').getByRole('listitem')).toHaveText([
+		'not labelled, and released again: annotations changed on the server (1): A letter about the harvest · page 1',
+	]);
+	expect(fired).toEqual([
+		['batch-sent-back', 'claim'],
+		['batch-sent-back', 'release'],
+	]);
+	await page.unrouteAll({ behavior: 'wait' });
+});
+
+test('a label or a keep that finds what it asked already so gives back the claim it took for it', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	await page.goto('/projects/sorting?tab=label');
+	await expect(cellOf(page, 'sorting-00').getByText('unassigned', { exact: true })).toBeVisible();
+	await expect(cellOf(page, 'sorting-21').getByTestId('grid-cell-proposals')).toBeVisible();
+	// Elsewhere, the item is labelled `letter`; the grid has not read it again.
+	expect((await changeWorkElsewhere(page, who, 'sorting-00', 'tag-letter')).status()).toBe(200);
+
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('1');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Labelled letter: 0 changed, 1 already so.',
+	);
+	await expect(cellOf(page, 'sorting-00').getByText('unassigned', { exact: true })).toBeVisible();
+	// Elsewhere, the other model's proposal is removed; the grid has not read it again.
+	expect((await changeWorkElsewhere(page, who, 'sorting-21', 'remove-proposals')).status()).toBe(
+		200,
+	);
+	await cellOf(page, 'sorting-21').focus();
+	await page.keyboard.press('Alt+a');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Kept the proposals: 0 changed, 1 already so.',
+	);
+	await expect(cellOf(page, 'sorting-21').getByText('unassigned', { exact: true })).toBeVisible();
+	expect(fired).toEqual([
+		['sorting-00', 'claim'],
+		['sorting-00', 'release'],
+		['sorting-21', 'claim'],
+		['sorting-21', 'release'],
+	]);
+});
+
+test('a redo that claims again and whose undo is then refused gives the claim back, and says so', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	const panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 1 answered.');
+	await page.keyboard.press('Control+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed.',
+	);
+	// In another tab, the item is labelled and let go: its work has moved on from what the undo wrote.
+	const other = await context.newPage();
+	await other.goto('/projects/sorting?tab=label');
+	const there = other.locator('[data-testid="grid-cell"][data-task="sorting-00"]');
+	await there.focus();
+	await other.keyboard.press('1');
+	await expect(there.getByTestId('grid-cell-labels')).toHaveText('letter');
+	await there.click();
+	await other.getByTestId('grid-bulk-release').click();
+	await expect(other.getByTestId('grid-notice')).toHaveText('Released: 1 item.');
+	await other.close();
+
+	fired.length = 0;
+	await page.bringToFront();
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('Control+Shift+z');
+
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveText(
+		'Redone: Asked Stand-in tagger: 0 changed, 1 refused.',
+	);
+	await expect(page.getByTestId('grid-refusals').getByRole('listitem')).toHaveText([
+		'not redone, and released again: annotations changed on the server (loaded v2, now v3) (1): A letter from the harbour · page 1',
+	]);
+	expect(fired).toEqual([
+		['sorting-00', 'claim'],
+		['sorting-00', 'release'],
+	]);
+});
+
+test('a save waits on no read past Stop or past leaving the page: the claim goes back and nothing is written', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	const saves: string[] = [];
+	page.on('request', (req) => {
+		const url = new URL(req.url());
+		if (req.method() === 'POST' && url.pathname.startsWith('/api/annotator/api/annotations/'))
+			saves.push(url.searchParams.get('task') ?? '');
+	});
+	// The read of sorting-21's rows (it holds a model's proposal) is held until the test lets it go.
+	const holdRead = async (): Promise<Route[]> => {
+		const held: Route[] = [];
+		await page.route(/\/api\/annotator\/api\/annotations\/[^?]+\?.*task=sorting-21/, (route) =>
+			route.request().method() === 'GET' ? held.push(route) : route.fallback(),
+		);
+		return held;
+	};
+
+	// Stopped while the read is out.
+	let held = await holdRead();
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-20').click();
+	await cellOf(page, 'sorting-21').click({ modifiers: ['Control'] });
+	let panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect.poll(() => held.length).toBe(1);
+	await page.getByTestId('grid-stop').click();
+	await expect(page.getByTestId('grid-skipped').getByRole('listitem')).toHaveText([
+		'Not attempted, stopped while it was asked, and released again (1): A letter from the harbour · page 2',
+	]);
+	await Promise.all(held.map((r) => r.continue().catch(() => {})));
+	expect(saves).toEqual(['sorting-20']);
+	expect(fired.filter(([id]) => id === 'sorting-21')).toEqual([
+		['sorting-21', 'claim'],
+		['sorting-21', 'release'],
+	]);
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
+
+	// The page left while the read is out.
+	fired.length = 0;
+	held = await holdRead();
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-21').focus();
+	panel = await openAsk(page);
+	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+	await expect.poll(() => held.length).toBe(1);
+	await page.getByTestId('tab-items').click();
+	await expect(grid(page)).toHaveCount(0);
+	await Promise.all(held.map((r) => r.continue().catch(() => {})));
+	await expect
+		.poll(() => fired)
+		.toEqual([
+			['sorting-21', 'claim'],
+			['sorting-21', 'release'],
+		]);
+	expect(saves).toEqual(['sorting-20']);
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('a model that takes words asks every selected item with the one prompt, and one that needs a box or clicks is not offered', async ({
@@ -1573,7 +2029,7 @@ test('a slow, busy or failing model is named on each item it failed for, the ans
 
 	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
 
-	await expect(page.getByTestId('grid-notice')).toContainText(
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveText(
 		'Asked Stand-in tagger: 1 answered, 3 refused.',
 	);
 	// Grouped by what failed; each item's cell keeps the endpoint's own words.
@@ -1582,14 +2038,14 @@ test('a slow, busy or failing model is named on each item it failed for, the ans
 		'not answered, and released again: the model endpoint was busy (1): A letter about the harvest · page 1',
 		'not answered, and released again: the model endpoint failed (1): A map of the harbour · page 1',
 	]);
-	await expect(cellOf(page, 'sorting-01').getByTestId('grid-cell-refused')).toContainText(
-		'did not answer within 30 s',
+	await expect(cellOf(page, 'sorting-01').getByTestId('grid-cell-refused')).toHaveText(
+		'⚠ not answered, and released again: the model endpoint did not answer within 30 s',
 	);
-	await expect(cellOf(page, 'sorting-02').getByTestId('grid-cell-refused')).toContainText(
-		'busy or unavailable',
+	await expect(cellOf(page, 'sorting-02').getByTestId('grid-cell-refused')).toHaveText(
+		'⚠ not answered, and released again: the model endpoint is busy or unavailable for now',
 	);
-	await expect(cellOf(page, 'sorting-03').getByTestId('grid-cell-refused')).toContainText(
-		'failed (500)',
+	await expect(cellOf(page, 'sorting-03').getByTestId('grid-cell-refused')).toHaveText(
+		'⚠ not answered, and released again: the model endpoint failed (500)',
 	);
 	await expect(cellOf(page, 'sorting-00').getByTestId('grid-cell-assisted')).toHaveText(
 		'stand-in-tagger stand-in.1: letter 0.60',
@@ -1616,12 +2072,14 @@ test('Stop ends an ask with what is in flight given up and what is still waiting
 	await page.keyboard.press('Control+a');
 	const panel = await openAsk(page);
 	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
-	await expect(page.getByTestId('grid-progress')).toContainText('Asked Stand-in tagger: 0 of 25');
+	await expect(page.getByTestId('grid-progress')).toHaveText(
+		'Asked Stand-in tagger: 0 of 25… Stop',
+	);
 	await expect.poll(() => held.length).toBe(4);
 
 	await page.getByTestId('grid-stop').click();
 
-	await expect(page.getByTestId('grid-notice')).toContainText(
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveText(
 		'Asked Stand-in tagger: stopped at 0 of 25; 0 answered, 25 not attempted.',
 	);
 	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveAttribute(
@@ -1629,8 +2087,8 @@ test('Stop ends an ask with what is in flight given up and what is still waiting
 		'stopped',
 	);
 	await expect(page.getByTestId('grid-skipped').getByRole('listitem')).toHaveText([
-		/^Not attempted, stopped before it was started \(21\)/,
-		/^Not attempted, stopped while it was asked, and released again \(4\)/,
+		`Not attempted, stopped before it was started (21): ${[4, 5, 6, 7, 8].map(openItemName).join(', ')} and 16 more`,
+		`Not attempted, stopped while it was asked, and released again (4): ${[0, 1, 2, 3].map(openItemName).join(', ')}`,
 	]);
 	expect(held.length).toBe(4);
 	await expect(cellOf(page, 'sorting-00').getByText('unassigned', { exact: true })).toBeVisible();
@@ -1664,12 +2122,12 @@ test('an item taken meanwhile, or whose work moved since it was read, is refused
 	const panel = await openAsk(page);
 	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
 
-	await expect(page.getByTestId('grid-notice')).toContainText(
+	await expect(page.getByTestId('grid-notice').locator('[data-tone]')).toHaveText(
 		'Asked Stand-in tagger: 1 answered, 2 refused.',
 	);
 	await expect(page.getByTestId('grid-refusals').getByRole('listitem')).toHaveText([
-		/^not claimed: .+ \(1\): A letter from the harbour · page 2$/,
-		/^annotations changed on the server \(loaded v0, now v1\) \(1\): A map of the harbour · page 1$/,
+		'not claimed: illegal task transition: claimed --claim--> (1): A letter from the harbour · page 2',
+		'annotations changed on the server (loaded v0, now v1) (1): A map of the harbour · page 1',
 	]);
 	await expect(cellOf(page, 'sorting-mine').getByTestId('grid-cell-refused')).toBeVisible();
 	// Neither is overwritten: the item taken meanwhile was never asked, and the moved one keeps what it holds.
@@ -1697,9 +2155,14 @@ test('leaving the page while a model is asked gives up the asks in flight and cl
 	await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
 	await expect.poll(() => held.length).toBe(4);
 	const events: string[] = [];
+	const answered: string[] = [];
+	const isEvent = (req: Request): boolean =>
+		req.method() === 'POST' && /\/tasks\/[^/]+\/events$/.test(new URL(req.url()).pathname);
 	page.on('request', (req) => {
-		if (req.method() === 'POST' && /\/tasks\/[^/]+\/events$/.test(new URL(req.url()).pathname))
-			events.push(String(req.postDataJSON().event));
+		if (isEvent(req)) events.push(String(req.postDataJSON().event));
+	});
+	page.on('response', (res) => {
+		if (isEvent(res.request())) answered.push(res.url());
 	});
 
 	await page.getByTestId('tab-items').click();
@@ -1708,7 +2171,9 @@ test('leaving the page while a model is asked gives up the asks in flight and cl
 	// The four asks in flight give their claims back; no item waiting is claimed, asked or released. Nothing marks the
 	// end of work that must not happen, so the page is given a moment in which it would have.
 	await expect.poll(() => events).toEqual(['release', 'release', 'release', 'release']);
-	await page.waitForTimeout(1_000);
+	await expect.poll(() => answered.length).toBe(4);
+	// Every worker of the run reads the stop before it starts an item, and the stop came before these releases, so once
+	// they are answered no item is left to be claimed or asked.
 	expect(events).toEqual(['release', 'release', 'release', 'release']);
 	expect(held.length).toBe(4);
 	await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -1749,11 +2214,11 @@ test('an endpoint unavailable for an item, and an answer its classes cannot hold
 	await expect(cellOf(page, 'sorting-00').getByTestId('grid-cell-proposals')).toHaveText(
 		'1 proposal to keep or remove',
 	);
-	await expect(cellOf(page, 'sorting-01').getByTestId('grid-cell-refused')).toContainText(
-		"1 polygon proposal(s): this item's classes take bbox, tag",
+	await expect(cellOf(page, 'sorting-01').getByTestId('grid-cell-refused')).toHaveText(
+		"⚠ nothing it proposed fits, and released again: 1 polygon proposal(s): this item's classes take bbox, tag",
 	);
-	await expect(cellOf(page, 'sorting-02').getByTestId('grid-cell-refused')).toContainText(
-		'assist is unavailable: this deployment names no model endpoint',
+	await expect(cellOf(page, 'sorting-02').getByTestId('grid-cell-refused')).toHaveText(
+		'⚠ not answered, and released again: assist is unavailable: this deployment names no model endpoint',
 	);
 	for (const id of ['sorting-01', 'sorting-02'])
 		await expect(cellOf(page, id).getByText('unassigned', { exact: true })).toBeVisible();
@@ -1765,11 +2230,7 @@ test('a save whose answer was lost after it landed is reported as saved, keeps i
 }) => {
 	await as(context, 'Annotator');
 	// sorting-01's save reaches the annotator and lands, and its answer never reaches the page.
-	await page.route(/\/api\/annotator\/api\/annotations\/letter-001\/1\?/, async (route) => {
-		if (route.request().method() !== 'POST') return route.fallback();
-		await route.fetch();
-		await route.abort('connectionreset');
-	});
+	await loseAnswer(page, UNITS['sorting-01']);
 	await page.goto('/projects/sorting?tab=label');
 	await cellOf(page, 'sorting-00').focus();
 	await page.keyboard.press('Shift+ArrowRight');
@@ -1801,11 +2262,7 @@ test('a lost save another save landed on top of is reported saved, and an undo l
 	const who = await as(context, 'Annotator');
 	// sorting-01's save lands, another save lands on top of it, and its answer never reaches the page.
 	await faultOn(page, who, '/api/annotations/letter-001/1', 'moved-after');
-	await page.route(/\/api\/annotator\/api\/annotations\/letter-001\/1\?/, async (route) => {
-		if (route.request().method() !== 'POST') return route.fallback();
-		await route.fetch();
-		await route.abort('connectionreset');
-	});
+	await loseAnswer(page, UNITS['sorting-01']);
 	await page.goto('/projects/sorting?tab=label');
 	await cellOf(page, 'sorting-00').focus();
 	await page.keyboard.press('Shift+ArrowRight');
@@ -1964,10 +2421,10 @@ test('a label or an undo whose answer was lost is judged by what the item now ho
 
 	await page.keyboard.press('1');
 
-	await expect(page.getByTestId('grid-notice')).toHaveText(
-		'Labelled letter: 0 changed, 1 already so.',
-	);
+	// Its own tag is there: this save landed, and is reported done, its claim kept with it.
+	await expect(page.getByTestId('grid-notice')).toHaveText('Labelled letter: 1 changed.');
 	await expect(labelsOf(page, 'sorting-00')).toHaveText('letter');
+	await expect(cellOf(page, 'sorting-00').getByText('claimed', { exact: true })).toBeVisible();
 	await page.unrouteAll({ behavior: 'wait' });
 	await cellOf(page, 'sorting-01').focus();
 	await page.keyboard.press('1');

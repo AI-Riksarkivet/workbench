@@ -54,8 +54,9 @@
 	);
 	const editable = $derived(mayManage && !publishing);
 
-	// THE JUDGES the deployment's endpoint serves (models that judge labels), read for a manager. A judge the project
-	// names that the endpoint does not list now stays offered, so it can be seen and cleared.
+	// THE JUDGES the deployment's endpoint serves (models that judge labels), read for a manager, who alone changes the
+	// judge (the listing door asks `can_annotate`, which a reviewer may lack). A judge the project names that the endpoint
+	// does not list now stays offered, so it can be seen and cleared.
 	const modelsRead = $derived(mayManage ? listModels({ project: project.project_id }) : null);
 	const models = $derived(modelsRead?.current?.ok ? modelsRead.current.data : null);
 	const modelsFailure = $derived(
@@ -66,9 +67,11 @@
 			.filter(judges)
 			.map((m) => ({ value: m.name, label: m.title ? `${m.title} (${m.name})` : m.name }));
 		const named = project.judge_model ?? '';
-		return named && !offered.some((o) => o.value === named)
-			? [...offered, { value: named, label: `${named} (not served by the model endpoint now)` }]
-			: offered;
+		if (!named || offered.some((o) => o.value === named)) return offered;
+		// Said not served only against a listing that was read: one never read (someone who cannot change the judge) or
+		// refused says nothing of what the endpoint serves.
+		const label = models !== null ? `${named} (not served by the model endpoint now)` : named;
+		return [...offered, { value: named, label }];
 	});
 
 	const changes = $derived.by<ProjectSettings>(() => {

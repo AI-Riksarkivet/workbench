@@ -192,10 +192,8 @@ export type ApiResult<T> =
 
 /** Lift `detail` out of an error body (FastAPI's `{detail}` and problem+json's `detail` alike). */
 function detailFrom(body: unknown, fallback: string): string {
-	if (body !== null && typeof body === 'object' && 'detail' in body) {
-		const detail = (body as { detail: unknown }).detail;
-		return typeof detail === 'string' ? detail : JSON.stringify(detail);
-	}
+	if (body !== null && typeof body === 'object' && 'detail' in body)
+		return typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
 	return fallback;
 }
 
@@ -203,8 +201,7 @@ function detailFrom(body: unknown, fallback: string): string {
  *  detail says it in the words of one item. */
 function problemType(body: unknown): string | undefined {
 	if (body === null || typeof body !== 'object' || !('type' in body)) return undefined;
-	const type = (body as { type: unknown }).type;
-	return typeof type === 'string' ? type.slice(type.indexOf('#') + 1) : undefined;
+	return typeof body.type === 'string' ? body.type.slice(body.type.indexOf('#') + 1) : undefined;
 }
 
 async function failure(res: Response, upstream: string): Promise<ApiResult<never>> {
@@ -265,15 +262,19 @@ export async function readJSONDated<T>(
 }
 
 /** The binary sibling of {@link readJSON}: the response's bytes (an Arrow IPC stream), its ETag, and its
- *  headers for a door that answers more beside the body (the annotations' version). */
+ *  headers for a door that answers more beside the body (the annotations' version). A `signal` in `init` gives the read
+ *  up beside its timeout. */
 export async function readBytes(
 	url: string,
 	upstream: string,
 	init: RequestInit = {},
 ): Promise<ApiResult<{ bytes: Uint8Array; etag: string | null; headers: Headers }>> {
 	let res: Response;
+	const given = init.signal;
 	try {
-		res = await readFetch(url, init, () => timeoutSignal());
+		res = await readFetch(url, init, () =>
+			given ? AbortSignal.any([timeoutSignal(), given]) : timeoutSignal(),
+		);
 	} catch (err) {
 		return { ok: false, status: 0, detail: `${upstream} is unreachable (${String(err)})` };
 	}
@@ -288,6 +289,14 @@ export async function readBytes(
 	};
 }
 
+/** How a write goes: its method (POST unless named), the key that makes a resend converge, and a signal that gives it up
+ *  (the person stopped it, or left the page). */
+interface WriteOptions {
+	method?: string;
+	key?: WriteKey;
+	signal?: AbortSignal;
+}
+
 /** A write of JSON, waited for up to {@link WRITE_TIMEOUT_MS}. `key` makes a resend converge: the write
  *  goes with `Idempotency-Key`, the same one while an unsettled write of the same body is retried
  *  (`WriteKey`), so the service applies it once. A write with no answer is `status: 0`, whose detail says
@@ -297,30 +306,26 @@ export async function writeJSON<T>(
 	body: unknown,
 	schema: v.GenericSchema<unknown, T>,
 	upstream: string,
-	options: { method?: string; key?: WriteKey; signal?: AbortSignal } = {},
+	options: WriteOptions = {},
 ): Promise<ApiResult<T>> {
 	const text = JSON.stringify(body);
-	const result = await sendWrite(
-		url,
-		text,
-		schema,
-		upstream,
-		options.method ?? 'POST',
-		options.key?.take(text),
-		options.signal,
-	);
+	const result = await sendWrite({ url, text, upstream }, schema, {
+		method: options.method ?? 'POST',
+		idempotencyKey: options.key?.take(text),
+		signal: options.signal,
+	});
 	options.key?.settle(result);
 	return result;
 }
 
 async function sendWrite<T>(
-	url: string,
-	text: string,
+	{ url, text, upstream }: { url: string; text: string; upstream: string },
 	schema: v.GenericSchema<unknown, T>,
-	upstream: string,
-	method: string,
-	idempotencyKey: string | undefined,
-	stop: AbortSignal | undefined,
+	{
+		method,
+		idempotencyKey,
+		signal,
+	}: { method: string; idempotencyKey: string | undefined; signal: AbortSignal | undefined },
 ): Promise<ApiResult<T>> {
 	let res: Response;
 	try {
@@ -331,8 +336,8 @@ async function sendWrite<T>(
 				...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
 			},
 			body: text,
-			signal: stop
-				? AbortSignal.any([timeoutSignal(WRITE_TIMEOUT_MS), stop])
+			signal: signal
+				? AbortSignal.any([timeoutSignal(WRITE_TIMEOUT_MS), signal])
 				: timeoutSignal(WRITE_TIMEOUT_MS),
 		});
 	} catch (err) {

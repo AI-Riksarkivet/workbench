@@ -24,9 +24,8 @@
 	import { Badge } from '@riksarkivet/ui/badge';
 	import { Button } from '@riksarkivet/ui/button';
 	import { Dialog } from '@riksarkivet/ui/dialog';
-	import * as Popover from '@riksarkivet/ui/popover';
 	import { Select } from '@riksarkivet/ui/select';
-	import { AudioLines, ExternalLink, Redo2, Sparkles, Undo2 } from '@lucide/svelte';
+	import { AudioLines, ExternalLink, Redo2, Undo2 } from '@lucide/svelte';
 
 	import { linkWith } from '#lib/project.ts';
 	import { taskCanvasHref } from '#lib/canvas/task-stream.ts';
@@ -35,7 +34,9 @@
 	import {
 		annotationsUrl,
 		heldAsAt,
+		proposalsOf,
 		revertSave,
+		revisionHolding,
 		saveWork,
 		settleProposals,
 	} from '#lib/api/annotations.api.ts';
@@ -49,21 +50,15 @@
 	} from '#lib/api/projects.api.ts';
 	import { askJudgeAfterSubmit } from '#lib/api/judge.api.ts';
 	import { datasetView } from '#lib/api/explore.api.ts';
-	import {
-		fetchModels,
-		proposes,
-		requestAssist,
-		type AssistListing,
-		type AssistModel,
-	} from '#lib/api/assist.api.ts';
-	import { holdsRows } from '#lib/api/annotations.api.ts';
+	import { requestAssist, type AssistModel, type AssistUnit } from '#lib/api/assist.api.ts';
 	import { formatClock } from '#lib/media/time/timeline.ts';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import { bulkActions, targetsFor } from './bulk-events.ts';
 	import { indexRows, rowFor, rowKeysFor } from './corpus-rows.ts';
 	import { itemName } from './item-name.ts';
+	import GridAskPanel from './GridAskPanel.svelte';
 	import MediaThumb from './MediaThumb.svelte';
-	import { ANNOTATOR_HINT, EVENT_LABELS, sentence, taskStateVariant } from './presentation.ts';
+	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant } from './presentation.ts';
 	import { taskImageUrl } from './task-media.ts';
 	import { reauth } from '#lib/reauth.svelte.ts';
 	import { personName } from './people.ts';
@@ -77,7 +72,6 @@
 		digitOf,
 		discards,
 		excerpt,
-		fits,
 		gridClasses,
 		gridAsk,
 		gridDoorParams,
@@ -96,11 +90,13 @@
 		applyIntent,
 		askEach,
 		pooled,
-		revertEach,
+		redoEach,
 		settleEach,
+		undoEach,
 		type Control,
 		type Doors,
 		type Outcome,
+		type Run,
 		type Written,
 	} from './label-run.ts';
 	import type { TaskDetail } from './types.ts';
@@ -320,7 +316,7 @@
 		const result = await allMatching(projectId, filter, { work: true, judge: true });
 		selectingAll = false;
 		if (!result.ok) {
-			notice = { tone: 'error', text: result.detail, refused: [], skipped: [], left: [] };
+			notice = { tone: 'error', text: result.detail, ...NO_GROUPS };
 			return;
 		}
 		known = new Map(result.data.tasks.map((t) => [t.task_id, t]));
@@ -333,9 +329,7 @@
 			notice = {
 				tone: 'error',
 				text: `${matched.toLocaleString()} items match: the first ${BULK_CAP.toLocaleString()} are selected. Narrow the filter to label the rest.`,
-				refused: [],
-				skipped: [],
-				left: [],
+				...NO_GROUPS,
 			};
 	}
 
@@ -352,6 +346,7 @@
 			text: string;
 			proposed?: string;
 			left?: string;
+			stays?: string;
 			moment: string | null;
 		}
 	>();
@@ -375,16 +370,20 @@
 	}
 	/** How a summary reads: all as asked, stopped by the person (nothing failed), or something refused or not tried. */
 	type Tone = 'ok' | 'stopped' | 'error';
-	let notice = $state<{
-		tone: Tone;
-		text: string;
+	/** A summary's items by what became of them: refused, not attempted, answered in part, and done with a claim that
+	 *  stays the reader's. */
+	interface Groups {
 		refused: Group[];
 		skipped: Group[];
 		left: Group[];
-	} | null>(null);
+		stays: Group[];
+	}
+	const NO_GROUPS: Groups = { refused: [], skipped: [], left: [], stays: [] };
+	let notice = $state<({ tone: Tone; text: string } & Groups) | null>(null);
 	let pending = $state(0);
-	/** The run in flight: ``asks`` when Stop gives up the calls in flight (an ask of a model) rather than waits for them. */
-	let run = $state<{ what: string; done: number; total: number; asks: boolean } | null>(null);
+	/** What Stop does to the items in flight: waits for them to finish, or gives up their calls (an ask of a model). */
+	type Stop = 'waits' | 'gives-up';
+	let run = $state<{ what: string; done: number; total: number; stop: Stop } | null>(null);
 	let stopAsked = $state(false);
 	/** How many items had settled when the person pressed Stop: the summary says the run stopped there. */
 	let stoppedAt = $state<number | null>(null);
@@ -406,9 +405,7 @@
 				notice = {
 					tone: 'error',
 					text: `NOT CONFIRMED: ${String(err)}`,
-					refused: [],
-					skipped: [],
-					left: [],
+					...NO_GROUPS,
 				};
 			})
 			.finally(() => {
@@ -418,10 +415,10 @@
 	}
 	/** The control of one run: its progress shown as it settles, and the person's stop read before each item starts. A
 	 *  session a service refused stops it too: the items not yet started are left as they were, for after signing in. */
-	function control(what: string, total: number, asks = false): Control {
+	function control(what: string, total: number, stop: Stop): Control {
 		stopAsked = false;
 		stoppedAt = null;
-		run = { what, done: 0, total, asks };
+		run = { what, done: 0, total, stop };
 		const abort = new AbortController();
 		runAbort = abort;
 		return {
@@ -447,13 +444,15 @@
 	/** How many label actions an undo reaches back. */
 	const UNDO_DEPTH = 50;
 
-	const unitUrl = (task: TaskDetail): string =>
-		annotationsUrl({
-			project: projectId,
-			task: task.task_id,
-			dataset: task.source.where ?? '',
-			key: task.source.keys[0] ?? '',
-		});
+	/** The unit an item's work is held on. Every run judges an item by `labelable` first, which refuses one that names no
+	 *  unit, so an item reaching a door without one is a bug. */
+	function unitOf(task: TaskDetail): AssistUnit {
+		const dataset = task.source.where;
+		const key = task.source.keys[0];
+		if (!dataset || !key) throw new Error(`item ${task.task_id} names no unit of a dataset`);
+		return { project: projectId, task: task.task_id, dataset, key };
+	}
+	const unitUrl = (task: TaskDetail): string => annotationsUrl(unitOf(task));
 	const doors: Doors = {
 		claim: (task) => fireTaskEvent({ taskId: task.task_id, event: 'claim' }),
 		release: (task) => fireTaskEvent({ taskId: task.task_id, event: 'release' }),
@@ -462,19 +461,15 @@
 		revert: (task, revision) => revertSave(unitUrl(task), revision),
 		reread: (task) => readItem(projectId, task.task_id),
 		undone: (task, revision) => heldAsAt(unitUrl(task), revision - 1),
-		assist: (task, ask, signal) =>
-			requestAssist(
-				{
-					project: projectId,
-					task: task.task_id,
-					dataset: task.source.where ?? '',
-					key: task.source.keys[0] ?? '',
-				},
-				ask,
-				signal,
-			),
-		holds: (task, ids) => holdsRows(unitUrl(task), ids),
+		assist: (task, ask, signal) => requestAssist(unitOf(task), ask, signal),
+		proposals: (task, source, signal) => proposalsOf(unitUrl(task), source, signal),
+		revisionHolding: (task, ids) => revisionHolding(unitUrl(task), ids),
 	};
+	/** One run over ``total`` items, told as ``what``, whose Stop does as ``stop`` says. */
+	const runOf = (what: string, total: number, stop: Stop = 'waits'): Run => ({
+		doors,
+		control: control(what, total, stop),
+	});
 
 	/** The items as the listing answers them now (a selection past this page, as `known` read them). */
 	const current = (ids: readonly string[]): TaskDetail[] =>
@@ -511,6 +506,7 @@
 		const refused: { reason: string; name: string }[] = [];
 		const skipped: { reason: string; name: string }[] = [];
 		const left: { reason: string; name: string }[] = [];
+		const stays: { reason: string; name: string }[] = [];
 		let done = 0;
 		let unchanged = 0;
 		targets.forEach((task, i) => {
@@ -519,20 +515,28 @@
 			const name = described(task).name;
 			switch (result.status) {
 				case 'done':
-					done += 1;
 					if (result.left) left.push({ reason: result.left.group ?? result.left.reason, name });
+					// Done with a claim that stays is not plainly done: it is counted and named on its own.
+					if (result.stays) stays.push({ reason: result.stays.group ?? result.stays.reason, name });
+					else done += 1;
 					outcomes.set(task.task_id, {
 						status: 'done',
 						text: what,
 						proposed: result.proposed,
 						left: result.left?.reason,
+						stays: result.stays?.reason,
 						moment: null,
 					});
 					return;
-				case 'unchanged':
-					unchanged += 1;
-					outcomes.delete(task.task_id);
+				case 'unchanged': {
+					// Left as it was with a claim that stays is not plainly so: it is counted and named on its own.
+					if (result.stays) stays.push({ reason: result.stays.group ?? result.stays.reason, name });
+					else unchanged += 1;
+					const said = [result.note, result.stays?.reason].filter(Boolean).join('; ');
+					if (said) outcomes.set(task.task_id, { status: 'unchanged', text: said, moment: null });
+					else outcomes.delete(task.task_id);
 					return;
+				}
 				case 'refused':
 					refused.push({ reason: result.group ?? result.reason, name });
 					outcomes.set(task.task_id, { status: 'refused', text: result.reason, moment: null });
@@ -549,6 +553,9 @@
 		const parts = [
 			words.done(done),
 			left.length > 0 ? `${left.length} in part` : null,
+			stays.length > 0
+				? `${stays.length} ${stays.length === 1 ? 'stays' : 'stay'} claimed by you`
+				: null,
 			unchanged > 0 ? `${unchanged} ${words.unchanged}` : null,
 			refused.length > 0 ? `${refused.length} refused` : null,
 			skipped.length > 0 ? `${skipped.length} not attempted` : null,
@@ -559,14 +566,29 @@
 		const unchosen = skipped.some((s) => !stopped && !s.reason.startsWith('kept'));
 		notice = {
 			tone:
-				refused.length > 0 || left.length > 0 || unchosen ? 'error' : stopped ? 'stopped' : 'ok',
+				refused.length > 0 || left.length > 0 || stays.length > 0 || unchosen
+					? 'error'
+					: stopped
+						? 'stopped'
+						: 'ok',
 			text: stopped
 				? `${what}: stopped at ${stoppedAt} of ${targets.length}; ${parts.join(', ')}.`
 				: `${what}: ${parts.join(', ')}.`,
 			refused: grouped(refused),
 			skipped: grouped(skipped),
 			left: grouped(left),
+			stays: grouped(stays),
 		};
+	}
+
+	/** What a run over ``targets`` wrote that an undo can take back: each item whose save it can name. */
+	function writtenBy(targets: readonly TaskDetail[], results: readonly Outcome[]): Written[] {
+		return results.flatMap((r, i) => {
+			const task = targets[i];
+			return task && r.status === 'done' && r.revision !== null
+				? [{ task, revision: r.revision, claimed: r.claimed ?? null }]
+				: [];
+		});
 	}
 
 	async function settle(): Promise<void> {
@@ -586,12 +608,7 @@
 		// A grid that is gone has nobody to tell, and no undo to keep.
 		if (gone.signal.aborted) return;
 		report(what, targets, results, words);
-		const written: Written[] = [];
-		results.forEach((r, i) => {
-			const task = targets[i];
-			if (task && r.status === 'done' && r.revision !== null)
-				written.push({ task, revision: r.revision });
-		});
+		const written = writtenBy(targets, results);
 		if (written.length > 0) {
 			undos = [...undos, { what, written }].slice(-UNDO_DEPTH);
 			redos = [];
@@ -649,11 +666,8 @@
 			}
 			const results = await applyIntent(
 				targets,
-				intent,
-				gridNames,
-				doors,
-				control(what, targets.length),
-				keep,
+				{ intent, grid: gridNames, keep },
+				runOf(what, targets.length),
 			);
 			await finish(what, targets, results);
 		});
@@ -666,7 +680,7 @@
 		enqueue(async () => {
 			const targets = current(ids);
 			if (targets.length === 0) return;
-			const results = await settleEach(targets, action, doors, control(what, targets.length));
+			const results = await settleEach(targets, action, runOf(what, targets.length));
 			await finish(what, targets, results);
 		});
 	}
@@ -685,82 +699,53 @@
 			if (targets.length === 0) return;
 			const results = await askEach(
 				targets,
-				model,
-				ask,
-				doors,
-				control(what, targets.length, true),
+				{ model, ask },
+				runOf(what, targets.length, 'gives-up'),
 			);
 			await finish(what, targets, results, ANSWERED);
 		});
 	}
 
-	// THE MODELS the deployment's endpoint serves, read when the person opens them: those that propose anything and the
-	// grid can ask about many items at once (`gridAsk`), with the one prompt of words they take, each judged against the items it would be asked
-	// about (`fits`), since the items of one project may have been sent with different classes.
-	let askOpen = $state(false);
-	let models = $state.raw<AssistListing | null>(null);
-	let modelsFailure = $state<string | null>(null);
-	let askWords = $state('');
-	const askable = $derived(
-		(models?.models ?? []).filter((m) => proposes(m) && gridAsk(m) !== null),
-	);
-	const anyWords = $derived(askable.some((m) => gridAsk(m) === 'words'));
-	async function readModels(): Promise<void> {
-		if (models !== null) return;
-		modelsFailure = null;
-		const answered = await fetchModels(projectId);
-		if (answered.ok) models = answered.data;
-		else modelsFailure = answered.detail;
-	}
-	function askWith(model: AssistModel): void {
-		askOpen = false;
-		askAll(targetIds(), model, askWords);
-	}
-	const askCount = $derived(selection.size > 0 ? selection.size : tasks[focusAt] ? 1 : 0);
 	/** The items an ask would run on, as the grid has read them: the selection, else the item in focus. */
 	const askTargets = $derived(current(targetIds()));
-	/** How many of the items an ask would run on take a shape ``model`` returns. */
-	const fitting = (model: AssistModel): number => askTargets.filter((t) => fits(model, t)).length;
-	/** Whether ``model`` may be asked now: an item to ask, one that takes what it returns, and its words where it takes
-	 *  them. */
-	const askReady = (model: AssistModel): boolean =>
-		askCount > 0 && fitting(model) > 0 && (gridAsk(model) !== 'words' || askWords.trim() !== '');
-	/** The model Enter in the words asks: the first listed that takes words and may be asked now. */
-	const enterModel = $derived(askable.find((m) => gridAsk(m) === 'words' && askReady(m)) ?? null);
 
 	/** How many proposals ``items`` hold. */
 	const proposalsIn = (items: readonly TaskDetail[]): number =>
 		items.reduce((n, t) => n + (t.work?.proposals ?? 0), 0);
 
-	/** Undo the last label (or redo the last undone), each item by the annotator's own undo of the save that wrote it. */
-	function undo(redo = false): void {
+	/** Replay ``entry`` by ``each`` (the annotator's own undo of each item's save, or of that undo), told as ``verb``:
+	 *  what it wrote, for the opposite stack. */
+	async function replay(
+		entry: Entry,
+		verb: 'Undone' | 'Redone',
+		each: (written: readonly Written[], run: Run) => Promise<Outcome[]>,
+	): Promise<Entry | null> {
+		const what = `${verb}: ${entry.what}`;
+		const results = await each(entry.written, runOf(what, entry.written.length));
+		const tasks = entry.written.map((w) => w.task);
+		report(what, tasks, results);
+		const back = writtenBy(tasks, results);
+		return back.length > 0 ? { what: entry.what, written: back } : null;
+	}
+	/** Undo the last label, each item by the annotator's own undo of the save that wrote it. */
+	function undo(): void {
 		enqueue(async () => {
-			const entry = (redo ? redos : undos).at(-1);
+			const entry = undos.at(-1);
 			if (!entry) return;
-			const verb = redo ? 'Redone' : 'Undone';
-			const results = await revertEach(
-				entry.written,
-				doors,
-				control(`${verb}: ${entry.what}`, entry.written.length),
-			);
-			report(
-				`${verb}: ${entry.what}`,
-				entry.written.map((w) => w.task),
-				results,
-			);
-			const back: Written[] = [];
-			results.forEach((r, i) => {
-				const w = entry.written[i];
-				if (w && r.status === 'done' && r.revision !== null)
-					back.push({ task: w.task, revision: r.revision });
-			});
-			if (redo) {
-				redos = redos.slice(0, -1);
-				if (back.length > 0) undos = [...undos, { what: entry.what, written: back }];
-			} else {
-				undos = undos.slice(0, -1);
-				if (back.length > 0) redos = [...redos, { what: entry.what, written: back }];
-			}
+			const back = await replay(entry, 'Undone', undoEach);
+			undos = undos.slice(0, -1);
+			if (back) redos = [...redos, back];
+			await settle();
+		});
+	}
+	/** Redo the last label undone, each item by the annotator's own undo of the undo. */
+	function redo(): void {
+		enqueue(async () => {
+			const entry = redos.at(-1);
+			if (!entry) return;
+			const back = await replay(entry, 'Redone', redoEach);
+			redos = redos.slice(0, -1);
+			if (back) undos = [...undos, back];
 			await settle();
 		});
 	}
@@ -819,15 +804,26 @@
 						? { status: 'done', revision: 0 }
 						: { status: 'refused', reason: result.detail };
 				},
-				control(what, targets.length),
+				control(what, targets.length, 'waits'),
 				{ status: 'not-attempted', reason: 'stopped before it was started' },
 			);
 			report(what, targets, results, MOVED);
 			// A transition leaves an item's work as it was, so an undo of a label written before it is still built on the
-			// revision that label left.
+			// revision that label left. The claim is the person's from now on, whatever a run took: an undo leaves it be.
+			disown(targets.filter((_, i) => results[i]?.status === 'done').map((t) => t.task_id));
 			clearSelection();
 			await settle();
 		});
+	}
+	/** The undo and redo stacks with no claim of a run left on ``ids``. */
+	function disown(ids: readonly string[]): void {
+		const moved = new Set(ids);
+		const unclaimed = (entry: Entry): Entry => ({
+			what: entry.what,
+			written: entry.written.map((w) => (moved.has(w.task.task_id) ? { ...w, claimed: null } : w)),
+		});
+		undos = undos.map(unclaimed);
+		redos = redos.map(unclaimed);
 	}
 	let sendBackOpen = $state(false);
 
@@ -863,7 +859,8 @@
 		}
 		if (ctrl && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
 			e.preventDefault();
-			undo(e.key === 'y' || e.shiftKey);
+			if (e.key === 'y' || e.shiftKey) redo();
+			else undo();
 			return;
 		}
 		if (ctrl && e.key === 'a') {
@@ -975,6 +972,8 @@
 			detailedIn(tagsOf(task), gridNames) ? 'its label carries details' : null,
 			outcome?.status === 'done' && outcome.proposed ? `proposed by ${outcome.proposed}` : null,
 			outcome?.status === 'done' && outcome.left ? `left out: ${outcome.left}` : null,
+			outcome?.status === 'done' && outcome.stays ? outcome.stays : null,
+			outcome?.status === 'unchanged' ? outcome.text : null,
 			outcome?.status === 'refused' ? `refused: ${outcome.text}` : null,
 			outcome?.status === 'not-attempted' ? `not attempted: ${outcome.text}` : null,
 			note ? `sent back by ${personName(note.by, listing?.people)}: ${note.message}` : null,
@@ -1042,112 +1041,12 @@
 			/>
 		{/if}
 		{#if mayAnnotate && tasks.length > 0}
-			<Popover.Root bind:open={askOpen} onOpenChange={(o) => o && void readModels()}>
-				<Popover.Trigger>
-					{#snippet child({ props })}
-						<Button {...props} variant="outline" size="sm" data-testid="grid-assist-open">
-							<Sparkles class="size-4" /> Ask a model
-						</Button>
-					{/snippet}
-				</Popover.Trigger>
-				<Popover.Content
-					class="flex w-96 flex-col gap-3 p-3"
-					align="start"
-					data-testid="grid-assist-panel"
-					onCloseAutoFocus={(e: Event) => {
-						// Back to the item in focus once the panel is closed, so the grid's keys (Alt+A, Alt+R, Ctrl+Z) go on
-						// where they were. The panel's focus scope also lets go while it stays open (it is set up again
-						// when the panel's content changes), and moving the focus then would scroll the page from it.
-						e.preventDefault();
-						if (!askOpen) cells.get(focusAt)?.focus();
-					}}
-				>
-					<h3 class="text-sm font-medium">
-						Ask a model about {askCount} item{askCount === 1 ? '' : 's'}
-					</h3>
-					{#if modelsFailure}
-						<p class="text-destructive text-xs" role="alert" data-testid="grid-assist-failed">
-							The models could not be listed: {modelsFailure}
-						</p>
-					{:else if models === null}
-						<p class="text-muted-foreground text-xs" role="status">Reading the models…</p>
-					{:else if !models.available}
-						<p class="text-muted-foreground text-xs" data-testid="grid-assist-unavailable">
-							{sentence(models.reason)}.
-						</p>
-					{:else if askable.length === 0}
-						<p class="text-muted-foreground text-xs" data-testid="grid-assist-none">
-							The model endpoint serves no model the grid can ask: one that needs a drawn box or
-							clicks is asked on the canvas, one item at a time.
-						</p>
-					{:else}
-						{#if anyWords}
-							<label class="flex flex-col gap-1 text-xs">
-								<span class="text-muted-foreground">What to find, on every item</span>
-								<input
-									class="bg-background h-8 rounded-md border px-2 text-sm"
-									bind:value={askWords}
-									placeholder="e.g. stamp"
-									data-testid="grid-assist-prompt"
-									onkeydown={(e) => {
-										if (e.key !== 'Enter' || e.isComposing) return;
-										e.preventDefault();
-										if (enterModel) askWith(enterModel);
-									}}
-								/>
-								{#if enterModel}
-									<span class="text-muted-foreground" data-testid="grid-assist-enter"
-										>Enter finds it with {enterModel.title || enterModel.name}</span
-									>
-								{/if}
-							</label>
-						{/if}
-						<ul class="flex flex-col gap-2">
-							{#each askable as m (m.name)}
-								<li
-									class="flex flex-col gap-1 text-xs"
-									data-testid="grid-assist-model"
-									data-model={m.name}
-								>
-									<div class="flex items-center gap-2">
-										<span class="min-w-0 flex-1 truncate font-medium" title={m.name}
-											>{m.title || m.name}</span
-										>
-										{#if askTargets.length > 0 && fitting(m) < askTargets.length}
-											<Badge
-												variant="destructive"
-												class="text-[10px]"
-												title="What it returns ({m.returns.join(', ') ||
-													'nothing named'}) is no shape the classes of {askTargets.length -
-													fitting(m)} of these items take; those are not asked"
-												data-testid="grid-assist-incompatible"
-												>{fitting(m) === 0
-													? 'does not fit'
-													: `fits ${fitting(m)} of ${askTargets.length}`}</Badge
-											>
-										{/if}
-										<Button
-											size="xs"
-											variant="outline"
-											disabled={!askReady(m)}
-											onclick={() => askWith(m)}>{gridAsk(m) === 'item' ? 'Ask' : 'Find'}</Button
-										>
-									</div>
-									<span class="text-muted-foreground font-mono text-[11px]"
-										>{m.name} · {m.version} · returns {m.returns.join(', ') ||
-											'nothing named'}</span
-									>
-								</li>
-							{/each}
-						</ul>
-						<p class="text-muted-foreground text-xs">
-							Each item is asked on its own, claimed first where it is open, and its answer saved to
-							it as proposals to keep or remove. An item whose classes take no shape a model returns
-							is not asked.
-						</p>
-					{/if}
-				</Popover.Content>
-			</Popover.Root>
+			<GridAskPanel
+				{projectId}
+				targets={askTargets}
+				onask={(model, words) => askAll(targetIds(), model, words)}
+				onclose={() => cells.get(focusAt)?.focus()}
+			/>
 		{/if}
 		<span class="text-muted-foreground ml-auto text-xs tabular-nums" data-testid="grid-count">
 			{matched.toLocaleString()} item{matched === 1 ? '' : 's'}
@@ -1192,7 +1091,7 @@
 				aria-keyshortcuts="Control+Z"
 				data-testid="grid-undo"
 				disabled={undos.length === 0}
-				onclick={() => undo()}
+				onclick={undo}
 			>
 				<Undo2 class="size-4" />
 			</Button>
@@ -1203,7 +1102,7 @@
 				aria-keyshortcuts="Control+Shift+Z"
 				data-testid="grid-redo"
 				disabled={redos.length === 0}
-				onclick={() => undo(true)}
+				onclick={redo}
 			>
 				<Redo2 class="size-4" />
 			</Button>
@@ -1310,9 +1209,9 @@
 	{#if pageAllSelected && matched > tasks.length && selection.size < Math.min(matched, BULK_CAP)}
 		<p class="text-muted-foreground text-xs" data-testid="grid-select-all-offer">
 			All {tasks.length} on this page are selected.
-			<button
-				type="button"
-				class="text-foreground underline underline-offset-2"
+			<Button
+				variant="link"
+				size="xs"
 				data-testid="grid-select-all-matching"
 				disabled={selectingAll}
 				onclick={() => void selectAllMatching()}
@@ -1320,7 +1219,7 @@
 				{selectingAll
 					? 'Selecting…'
 					: `Select all ${Math.min(matched, BULK_CAP).toLocaleString()} matching`}
-			</button>
+			</Button>
 		</p>
 	{/if}
 
@@ -1332,7 +1231,8 @@
 			>
 				<span class="tabular-nums">
 					{run.what}: {run.done.toLocaleString()} of {run.total.toLocaleString()}{stopAsked
-						? run.asks
+						? run.stop ===
+							'gives-up'
 							? ', giving up the asks in flight'
 							: ', stopping after the items in flight'
 						: ''}…
@@ -1380,6 +1280,17 @@
 							Left out of an answer, {g.reason} ({g.names.length}): {g.names
 								.slice(0, 5)
 								.join(', ')}{g.names.length > 5
+								? ` and ${g.names.length - 5} more, each marked in the grid`
+								: ''}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if notice.stays.length > 0}
+				<ul class="text-destructive mt-1 list-disc pl-5 text-xs" data-testid="grid-stays">
+					{#each notice.stays as g (g.reason)}
+						<li>
+							{g.reason} ({g.names.length}): {g.names.slice(0, 5).join(', ')}{g.names.length > 5
 								? ` and ${g.names.length - 5} more, each marked in the grid`
 								: ''}
 						</li>
@@ -1598,6 +1509,24 @@
 											data-testid="grid-cell-left-out"
 										>
 											left out: {outcome.left}
+										</span>
+									{/if}
+									{#if outcome?.status === 'done' && outcome.stays}
+										<span
+											class="text-destructive line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
+											title={outcome.stays}
+											data-testid="grid-cell-stays"
+										>
+											{outcome.stays}
+										</span>
+									{/if}
+									{#if outcome?.status === 'unchanged'}
+										<span
+											class="text-muted-foreground line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
+											title={outcome.text}
+											data-testid="grid-cell-unchanged"
+										>
+											{outcome.text}
 										</span>
 									{/if}
 									{#if outcome?.status === 'refused'}

@@ -19,7 +19,13 @@
 	 * edits (`readOnlyReason`); otherwise it opens read-only and says why. The doors decide on their own.
 	 */
 	import { untrack } from 'svelte';
-	import { corpusRows, fetchProject, fetchTask, pageTasks } from '#lib/api/projects.api.ts';
+	import {
+		corpusRows,
+		fetchProject,
+		fetchTask,
+		firstOfWalk,
+		pageTasks,
+	} from '#lib/api/projects.api.ts';
 	import {
 		passParams,
 		passWindow,
@@ -35,7 +41,7 @@
 	import { nameCrumb } from '#lib/shell/crumb-names.svelte.ts';
 	import type { CanvasMedia, Part } from '#lib/canvas/media.ts';
 	import type { TaskDetail } from '#lib/projects/types.ts';
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { linkWith } from '#lib/project.ts';
 	import { titleOf } from '#lib/nav.ts';
@@ -74,24 +80,41 @@
 	let changed = $state<TaskDetail | null>(null);
 	const task = $derived(changed?.task_id === taskId ? changed : answer?.ok ? answer.data : null);
 	function ontaskchange(next: TaskDetail): void {
-		// A review pass moves on once the item leaves review: to the next item of the walk as it was before the verdict
-		// (the item has left the filter, so the walk read again would not hold its neighbours), one more verdict counted
-		// in the address, or, past the last, back to the project's Review tab.
-		const after =
-			pass === 'review' && next.state !== 'in_review'
-				? (neighbour(walkItems, taskId, 1) ?? neighbour(walkItems, taskId, -1))
-				: undefined;
-		const moveTo =
-			after === undefined
-				? null
-				: after === null
-					? reviewDoneHref
-					: link(hrefWith(passCount.done + 1)(after, projectId));
 		changed = next;
 		void taskRead.refresh().then(() => (changed = null));
 		void walkRead.refresh();
+		if (pass === 'review' && next.state !== 'in_review') void moveOn(next);
+	}
+	/** What a verdict is said as on the item a review pass moves to. */
+	const DECIDED = {
+		accepted: 'Accepted',
+		fix_and_accept: 'Accepted with fixes',
+		request_changes: 'Sent back',
+	} as const satisfies Record<string, string>;
+	const isDecision = (action: string | null | undefined): action is keyof typeof DECIDED =>
+		!!action && Object.hasOwn(DECIDED, action);
+	/** What the canvas says on arriving at the item a verdict moved the pass to, until the reader goes elsewhere. */
+	let arrival = $state<{ taskId: string; text: string } | null>(null);
+	afterNavigate((nav) => {
+		if (arrival && nav.to?.params?.task !== arrival.taskId) arrival = null;
+	});
+	/** A review pass moves on once the item leaves review: to the first item still waiting in it as the annotator orders
+	 *  it now, one more verdict counted in the address, or, with none left, back to the project's Review tab. The first
+	 *  waiting, not the decided item's neighbour: an item skipped earlier is still waiting, and an order by the judge
+	 *  changes as items are judged mid-pass, so a neighbour from before the verdict may stand after items still left. */
+	async function moveOn(decided: TaskDetail): Promise<void> {
+		const said = isDecision(decided.review_action)
+			? `${DECIDED[decided.review_action]}: ${name}.`
+			: null;
+		// Taken before the read: the walk read again meanwhile no longer holds the decided item, nor its neighbours.
+		const near = neighbour(walkItems, taskId, 1) ?? neighbour(walkItems, taskId, -1);
+		const head = await firstOfWalk(projectId, passParams(pass, passQuery, me).toString());
+		const after = head.ok ? head.data : near;
+		arrival = after && said ? { taskId: after.task_id, text: said } : null;
+		const moveTo =
+			after === null ? reviewDoneHref : link(hrefWith(passCount.done + 1)(after, projectId));
 		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the walk's hrefs are resolved (`linkWith`)
-		if (moveTo !== null) void goto(moveTo);
+		void goto(moveTo);
 	}
 	const elsewhere = $derived(task !== null && task.project_id !== projectId);
 
@@ -144,21 +167,17 @@
 						pass === 'review' ? withPassCount(passFilter, { ...passCount, done }) : passFilter,
 					);
 	const hrefOf = (t: StreamTask, project: string): string => hrefWith(passCount.done)(t, project);
-	const stream = $derived(
-		streamPosition(
-			walkItems,
-			taskId,
-			projectId,
-			link,
-			pass === 'review'
-				? passWindow(passCount, walkListing?.offset ?? 0, walkListing?.matched ?? 0)
-				: {
-						offset: walkListing?.offset ?? 0,
-						total: pass === 'label' ? walkItems.length : (walkListing?.matched ?? 0),
-					},
-			hrefOf,
-		),
+	/** Where the page of the walk sits in the whole and how long the walk is: one window, which the arrows' place and the
+	 *  strip's numbers both read, so they agree after every verdict. */
+	const walkWindow = $derived(
+		pass === 'review'
+			? passWindow(passCount, walkListing?.offset ?? 0, walkListing?.matched ?? 0)
+			: {
+					offset: walkListing?.offset ?? 0,
+					total: pass === 'label' ? walkItems.length : (walkListing?.matched ?? 0),
+				},
 	);
+	const stream = $derived(streamPosition(walkItems, taskId, projectId, link, walkWindow, hrefOf));
 	/** What the walk's controls are called: the arrows over the canvas, and the strip of its items. */
 	const WALK_LABELS = {
 		label: { nav: 'Your labeling queue', strip: 'Your claimed items' },
@@ -326,10 +345,11 @@
 				readOnly={readOnlyWhy}
 				person={me ?? 'anonymous'}
 				{stream}
+				arrival={arrival?.taskId === task.task_id ? arrival.text : null}
 				walk={{
 					items: walkItems,
-					offset: walkListing?.offset ?? 0,
-					total: stream.total,
+					offset: walkWindow.offset,
+					total: walkWindow.total,
 					hrefOf,
 					label: WALK_LABELS[pass].nav,
 					stripLabel: WALK_LABELS[pass].strip,

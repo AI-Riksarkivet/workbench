@@ -7,6 +7,21 @@ import { canonicalShapeType } from '@workbench/labeling/shape-types';
 import type { InsertRow } from '@workbench/labeling/annotations-client';
 import type { AssistAnswer, AssistProposal } from '#lib/api/assist.api.ts';
 
+/** The `source` a model's rows are saved under. */
+export const modelSource = (model: string): string => `model:${model}`;
+
+/** The ids of the proposals among ``rows`` that ``source`` made and nobody kept or removed yet: what a new answer of
+ *  the same model replaces. */
+export function proposalsFrom(
+	rows: Iterable<{ id: unknown; status: unknown; source: unknown }>,
+	source: string,
+): string[] {
+	const ids: string[] = [];
+	for (const row of rows)
+		if (row.status === 'prediction' && row.source === source) ids.push(String(row.id));
+	return ids;
+}
+
 /** The fields of the row ``proposal`` of ``answer`` is saved as, for `makeInsertRow` (which mints its id). */
 export function proposalFields(
 	answer: Pick<AssistAnswer, 'model' | 'version'>,
@@ -22,7 +37,7 @@ export function proposalFields(
 		label: proposal.label,
 		text: proposal.text,
 		status: 'prediction',
-		source: `model:${answer.model}`,
+		source: modelSource(answer.model),
 		model_version: answer.version,
 		confidence: proposal.score,
 	};

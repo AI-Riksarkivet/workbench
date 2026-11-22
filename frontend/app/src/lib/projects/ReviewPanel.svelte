@@ -70,10 +70,19 @@
 
 	// THE TOP-UP (`JudgeTopUp`): the page's items no judge has read are asked about while the list is open, and it stops
 	// when the panel goes.
+	// It offers only a listing read while this list is open: one held from before (the reviewer gave verdicts on the
+	// canvas since) still names the items they decided as waiting, so it is read again first, and nothing is offered
+	// while a read is out.
 	const topUp = new JudgeTopUp(requestJudgement, async () => read?.refresh());
 	$effect(() => () => topUp.stop());
 	$effect(() => {
-		if (!judge?.available) return;
+		const held = read;
+		untrack(() => {
+			if (held && held.current !== undefined && !held.loading) void held.refresh();
+		});
+	});
+	$effect(() => {
+		if (!judge?.available || read?.loading) return;
 		const listed = tasks;
 		untrack(() => void topUp.offer(listed));
 	});

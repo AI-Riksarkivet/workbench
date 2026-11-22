@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+	claimMark,
+	claimOrigin,
 	carryCount,
 	changeFor,
 	digitOf,
@@ -274,5 +276,71 @@ describe('whether an item takes what a model returns', () => {
 	it('takes any model where a class names no tool, or no class is declared', () => {
 		expect(fits({ returns: ['polygon'] }, classes(['tag'], []))).toBe(true);
 		expect(fits({ returns: ['polygon'] }, { ontology: undefined })).toBe(true);
+	});
+});
+
+describe('what tells one claim of an item from another', () => {
+	const at = (when: string, event: string, from = 'unassigned', to = 'claimed') => ({
+		at: when,
+		by: 'user:a',
+		event,
+		from,
+		to,
+	});
+	const claim = at('2026-11-22T10:00:00Z', 'claim');
+	const held = { state: 'claimed' as const, assignee: 'user:a', transitions: [claim] };
+
+	it('is its holder and when its last claim was taken', () => {
+		expect(claimMark(held)).toBe('user:a@2026-11-22T10:00:00Z');
+	});
+
+	it('changes when the holder let it go and took it again, whatever came between', () => {
+		const again = [
+			claim,
+			at('2026-11-22T10:05:00Z', 'save_draft', 'claimed'),
+			at('2026-11-22T10:06:00Z', 'release', 'claimed', 'unassigned'),
+			at('2026-11-22T10:07:00Z', 'claim'),
+		];
+		expect(claimMark({ ...held, transitions: again })).toBe('user:a@2026-11-22T10:07:00Z');
+	});
+
+	it('is the assignment where a manager assigned it', () => {
+		const assigned = at('2026-11-22T11:00:00Z', 'assign');
+		expect(claimMark({ ...held, transitions: [claim, assigned] })).toBe(
+			'user:a@2026-11-22T11:00:00Z',
+		);
+	});
+
+	it('is none for an item nobody holds, or whose taking fell off its trail', () => {
+		expect(claimMark({ ...held, state: 'unassigned', assignee: null })).toBeNull();
+		expect(claimMark({ ...held, transitions: [] })).toBeNull();
+	});
+});
+
+describe('what a claim says the item was before it', () => {
+	const row = (event: string, from: string) => ({
+		at: '2026-11-22T10:00:00Z',
+		by: 'user:a',
+		event,
+		from,
+		to: 'claimed',
+	});
+
+	it('is open where its last claim left an item nobody held', () => {
+		expect(claimOrigin({ transitions: [row('claim', 'unassigned')] })).toBe('open');
+	});
+
+	it('is sent back where its last claim left work sent back, whatever came before', () => {
+		const trail = [
+			row('claim', 'unassigned'),
+			row('submit', 'claimed'),
+			row('claim', 'changes_requested'),
+		];
+		expect(claimOrigin({ transitions: trail })).toBe('sent-back');
+	});
+
+	it('is unknown where the trail names no claim, or one from another state', () => {
+		expect(claimOrigin({ transitions: [] })).toBeNull();
+		expect(claimOrigin({ transitions: [row('claim', 'skipped')] })).toBeNull();
 	});
 });

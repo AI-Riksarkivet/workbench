@@ -290,6 +290,21 @@ export const TaskDetailSchema = v.object({
 	review_notes: v.optional(v.array(ReviewNoteSchema), []),
 	/** Everyone who ever held the item, in order. */
 	holders: v.optional(v.array(v.string()), []),
+	/** The task's own recent trail, oldest first (`Task.transitions`; the oldest rows fall off past its bound): each
+	 *  transition, when and by whom. */
+	transitions: v.optional(
+		v.array(
+			v.object({
+				at: v.string(),
+				by: v.string(),
+				event: v.string(),
+				/** The state it left and the one it reached (the store's `from_state`, `to_state`). */
+				from: v.string(),
+				to: v.string(),
+			}),
+		),
+		[],
+	),
 	sent_at: v.nullish(v.string()),
 	legal_events: v.optional(v.array(LegalEventSchema), []),
 	/** A single task's read names its people here; a listing's details share the listing's `people`. */

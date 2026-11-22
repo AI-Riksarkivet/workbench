@@ -18,7 +18,10 @@
 // can say each call it caused carried a valid proof. `POST /api/viewer/__fault?sub=<sub>&path=<path>&kind=`
 // makes one door fail (`fail`), answer that nothing is built there yet (`unbuilt`) or answer 2.5 s late
 // (`slow`), for that person only;
-// `clear` puts it back.
+// `clear` puts it back. `POST /api/viewer/__reclaim?sub=<sub>&task=<task>` has that person let go of a claim and take
+// it again away from the grid (`reclaimElsewhere`), and `POST /api/viewer/__move?sub=<sub>&task=<task>&to=<state>` moves
+// an item on away from the grid (`moveElsewhere`); `POST /api/viewer/__work?sub=<sub>&task=<task>&change=<change>`
+// changes an item's work away from the grid (`changeWorkElsewhere`).
 //
 // EACH SERVICE HOLDS ITS OWN COPY OF THE ISSUER'S KEY SET, kept per person as the mock issuer keys them (`mock-oidc.ts`),
 // and treats a token naming a key it does not hold as `workbench.governed.oidc.OIDCVerifier` does: one forced read
@@ -48,13 +51,18 @@ import { SHAPES, shapeOf } from './providers';
 import { annotationsDoor, assistDoor } from './mock-annotations';
 import {
 	draftOf,
+	isFault,
 	orgsOf,
 	permissionsOn,
+	changeWorkElsewhere,
 	judgeDoor,
+	moveElsewhere,
+	reclaimElsewhere,
 	projectsDoor,
 	registerName,
 	taskOf,
 	writeDraft,
+	type Fault,
 } from './mock-projects';
 import { MOCK_ANNOTATOR_PORT, MOCK_OIDC_PORT, MOCK_SEARCH_PORT, MOCK_VIEWER_PORT } from './ports';
 
@@ -971,37 +979,6 @@ const TOPICS = {
 };
 
 /** Who asked a door to fail or to have nothing built, by person and path. */
-/** What a spec plants on one path for one person: a failure, a dataset not built, a slow answer, a session that ended
- *  (`unauthorized` on every call, `unauthorized-write` on a write alone), on `/api/assist/models` a deployment that
- *  names no model endpoint (`no-endpoint`), or on one unit's `/api/assist/<unit>` an endpoint busy for it (`busy`) or
- *  a model that answers it a shape its classes may not take, beside what it found (`mixed`) or in its place
- *  (`polygon`), or on one unit's `/api/judge/<unit>` an item that left review while its judge was asked
- *  (`left-review`). */
-type Fault =
-	| 'fail'
-	| 'unbuilt'
-	| 'slow'
-	| 'unauthorized'
-	| 'unauthorized-write'
-	| 'no-endpoint'
-	| 'busy'
-	| 'mixed'
-	| 'polygon'
-	| 'moved-after'
-	| 'left-review';
-const FAULTS: readonly string[] = [
-	'fail',
-	'unbuilt',
-	'slow',
-	'unauthorized',
-	'unauthorized-write',
-	'no-endpoint',
-	'busy',
-	'mixed',
-	'polygon',
-	'moved-after',
-	'left-review',
-];
 const faults = new Map<string, Map<string, Fault>>();
 const faultOf = (sub: string, path: string): Fault | undefined => faults.get(sub)?.get(path);
 
@@ -1048,9 +1025,34 @@ Bun.serve({
 			const kind = url.searchParams.get('kind');
 			const held = faults.get(sub) ?? new Map<string, Fault>();
 			if (kind === 'clear') held.delete(path);
-			else held.set(path, kind !== null && FAULTS.includes(kind) ? (kind as Fault) : 'fail');
+			else held.set(path, isFault(kind) ? kind : 'fail');
 			faults.set(sub, held);
 			return json({ ok: true });
+		}
+		if (url.pathname === '/__reclaim' && req.method === 'POST') {
+			const done = reclaimElsewhere(
+				url.searchParams.get('sub') ?? '',
+				url.searchParams.get('task') ?? '',
+			);
+			return json({ ok: done }, done ? 200 : 409);
+		}
+		if (url.pathname === '/__work' && req.method === 'POST') {
+			const change = url.searchParams.get('change');
+			const done =
+				(change === 'tag-letter' || change === 'remove-proposals') &&
+				changeWorkElsewhere(
+					url.searchParams.get('sub') ?? '',
+					url.searchParams.get('task') ?? '',
+					change,
+				);
+			return json({ ok: done }, done ? 200 : 409);
+		}
+		if (url.pathname === '/__move' && req.method === 'POST') {
+			const to = url.searchParams.get('to');
+			const done =
+				(to === 'changes_requested' || to === 'unassigned') &&
+				moveElsewhere(url.searchParams.get('sub') ?? '', url.searchParams.get('task') ?? '', to);
+			return json({ ok: done }, done ? 200 : 409);
 		}
 		if (url.pathname === '/__reread' && req.method === 'POST') {
 			const sub = url.searchParams.get('sub') ?? '';
@@ -1677,17 +1679,15 @@ Bun.serve({
 			},
 		);
 		if (annotations) return annotations;
-		const assist = await assistDoor(
-			req,
-			url,
-			(projectId) => permissionsOn(who.sub, projectId),
-			(taskId) => taskOf(who.sub, taskId),
-			ok,
-			faultOf(who.sub, '/api/assist/models') !== 'no-endpoint',
-			fault,
-		);
-		if (assist) return assist;
 		const endpoint = faultOf(who.sub, '/api/assist/models') !== 'no-endpoint';
+		const assist = await assistDoor(req, url, {
+			perms: (projectId) => permissionsOn(who.sub, projectId),
+			taskOf: (taskId) => taskOf(who.sub, taskId),
+			record: ok,
+			endpoint,
+			fault,
+		});
+		if (assist) return assist;
 		const judge = await judgeDoor(req, url, {
 			sub: who.sub,
 			record: ok,

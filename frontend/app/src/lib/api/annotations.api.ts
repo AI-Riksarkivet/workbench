@@ -15,6 +15,7 @@ import { type Table, tableFromIPC } from 'apache-arrow';
 import * as v from 'valibot';
 import { parseVersions, signaturesOf, type AnnotationVersion } from '@workbench/labeling/history';
 import type { SavePayload } from '@workbench/labeling/annotations-client';
+import { proposalsFrom } from '#lib/canvas/proposal-rows.ts';
 import { readBytes, readJSON, writeJSON, type ApiResult } from './client.ts';
 import { serviceUrl } from './services.ts';
 
@@ -56,11 +57,12 @@ function decode(bytes: Uint8Array): ApiResult<Table> {
 	}
 }
 
-/** The unit's annotations and the version they were read at. */
+/** The unit's annotations and the version they were read at; ``signal`` gives the read up. */
 export async function loadAnnotations(
 	url: string,
+	signal?: AbortSignal,
 ): Promise<ApiResult<{ table: Table; version: number }>> {
-	const read = await readBytes(url, UPSTREAM);
+	const read = await readBytes(url, UPSTREAM, signal ? { signal } : {});
 	if (!read.ok) return read;
 	const table = decode(read.data.bytes);
 	if (!table.ok) return table;
@@ -152,11 +154,23 @@ export function settleProposals(
 
 /** The revision the unit's work is at now when it holds every row of ``ids`` (a save that wrote them landed), else null;
  *  null too when the read fails. */
-export async function holdsRows(url: string, ids: readonly string[]): Promise<number | null> {
+export async function revisionHolding(url: string, ids: readonly string[]): Promise<number | null> {
 	const now = await loadAnnotations(url);
 	if (!now.ok) return null;
 	const held = signaturesOf(now.data.table);
 	return ids.every((id) => held.has(id)) ? now.data.version : null;
+}
+
+/** The ids of the unit's proposals that ``source`` (a model, `modelSource`) made and nobody kept or removed, read until
+ *  ``signal`` aborts. */
+export async function proposalsOf(
+	url: string,
+	source: string,
+	signal: AbortSignal,
+): Promise<ApiResult<{ ids: string[] }>> {
+	const now = await loadAnnotations(url, signal);
+	if (!now.ok) return now;
+	return { ok: true, data: { ids: proposalsFrom(now.data.table.toArray(), source) } };
 }
 
 /** The revision the unit's work is at now when its rows are those it held at ``before`` (0: before its first save, no

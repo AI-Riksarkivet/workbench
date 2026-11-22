@@ -67,6 +67,7 @@
 		itemName,
 		replicas = [],
 		judgement = null,
+		arrival = null,
 	}: {
 		task: TaskDetail;
 		/** The open unit's key path. */
@@ -106,6 +107,8 @@
 		replicas?: readonly TaskDetail[];
 		/** What the project's judge said of the item's submission, where one has read it. */
 		judgement?: Judgement | null;
+		/** What happened that brought the reader here (a review pass's verdict on the item before), said once on arrival. */
+		arrival?: string | null;
 	} = $props();
 
 	const controller = new AnnotatorController();
@@ -114,6 +117,9 @@
 	// its relations, tag choices, attributes and transcription per class; the submit still enforces it. Read untracked,
 	// once: the page remounts this shell per task.
 	controller.configure(untrack(() => task.ontology));
+	// Read once: the page remounts this shell per item, and the words belong to the arrival alone.
+	const arrived = untrack(() => arrival);
+	if (arrived) controller.notice = { tone: 'success', text: arrived };
 	// Who may edit follows the task: a claim, a submit or a review changes it while the canvas stays open.
 	$effect.pre(() => {
 		controller.setReadOnly(readOnly);

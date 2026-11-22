@@ -8,7 +8,7 @@
 // words: a key whose parts are not the dataset's identity (422), a project the caller may not view (404), a task that is
 // not that project's (404), a unit that is not the task's (404), and a save the task takes no edit for (409 for its
 // state, 403 for the caller).
-import { mayReadWork, type Draft, type Row, type Task } from './mock-projects';
+import { mayReadWork, type Draft, type Fault, type Row, type Task } from './mock-projects';
 import {
 	Field,
 	Float32,
@@ -119,7 +119,7 @@ export async function annotationsDoor(
 	perms: (projectId: string) => string[],
 	taskOf: (taskId: string) => Task | undefined,
 	record: (status: number) => void,
-	fault: string | undefined,
+	fault: Fault | undefined,
 	work: {
 		read: (taskId: string) => Draft | undefined;
 		write: (taskId: string, draft: Draft) => void;
@@ -567,12 +567,16 @@ const SEGMENT = {
 	score: 0.5,
 };
 
-/** The task's classes as its captured ontology names them. */
-const classesOf = (task: Task): { name: string; tools: string[] }[] =>
-	((task.ontology?.classes ?? []) as { name: string; tools?: string[] }[]).map((c) => ({
-		name: c.name,
-		tools: c.tools ?? [],
-	}));
+/** The task's classes as its captured ontology names them; an entry that names no class is not one. */
+function classesOf(task: Task): { name: string; tools: string[] }[] {
+	const classes = task.ontology?.classes;
+	if (!Array.isArray(classes)) return [];
+	return classes.flatMap((c: unknown) => {
+		if (!c || typeof c !== 'object' || !('name' in c) || typeof c.name !== 'string') return [];
+		const tools = 'tools' in c && Array.isArray(c.tools) ? c.tools.map(String) : [];
+		return [{ name: c.name, tools }];
+	});
+}
 
 /** The proposals the task's classes can take, and what was refused of the rest, as the annotator settles them
  *  (`assist._within_the_task`): a shape of a type no class takes is refused and said, and a label that is none of the
@@ -606,6 +610,17 @@ function withinTheTask(
 	};
 }
 
+/** Who calls the assist door and how the mock answers them: ``perms`` what the caller holds on a project, ``taskOf``
+ *  a task as they may read it, ``record`` the call's status into the ledger, ``endpoint`` false a deployment that names
+ *  no model endpoint, and ``fault`` the spec's switch for this path. */
+interface AssistCall {
+	perms: (projectId: string) => string[];
+	taskOf: (taskId: string) => Task | undefined;
+	record: (status: number) => void;
+	endpoint: boolean;
+	fault: Fault | undefined;
+}
+
 /** Answer one call to `/api/assist/…`, or null when the path is not that door. Its gate is the service's: the
  *  annotating role on the project the request names (`assist.require_assist`), the task the ask names read in that
  *  project and the unit its own (`access.require_task_units`), and a picture to show (`assist.assist`). ``endpoint``
@@ -617,11 +632,7 @@ function withinTheTask(
 export async function assistDoor(
 	req: Request,
 	url: URL,
-	perms: (projectId: string) => string[],
-	taskOf: (taskId: string) => Task | undefined,
-	record: (status: number) => void,
-	endpoint: boolean,
-	fault: string | undefined,
+	{ perms, taskOf, record, endpoint, fault }: AssistCall,
 ): Promise<Response | null> {
 	if (!url.pathname.startsWith('/api/assist/')) return null;
 	const answer = (body: unknown, status = 200): Response => {

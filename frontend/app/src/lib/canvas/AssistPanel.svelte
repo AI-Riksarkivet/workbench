@@ -12,6 +12,7 @@
 	import { Check, Minus, Plus, Sparkles, X } from '@lucide/svelte';
 	import { Badge } from '@riksarkivet/ui/badge';
 	import { Button } from '@riksarkivet/ui/button';
+	import { Input } from '@riksarkivet/ui/input';
 	import * as Popover from '@riksarkivet/ui/popover';
 	import { Slider } from '@riksarkivet/ui/slider';
 	import {
@@ -108,8 +109,7 @@
 				{#if anyWords}
 					<label class="flex flex-col gap-1 text-xs">
 						<span class="text-muted-foreground">What to find</span>
-						<input
-							class="bg-background h-8 rounded-md border px-2 text-sm"
+						<Input
 							bind:value={controller.assistPrompt}
 							placeholder="e.g. stamp"
 							data-testid="assist-prompt"
