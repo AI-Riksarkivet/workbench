@@ -373,7 +373,7 @@ Two language-pure planes, as in rask; never blur them.
     refusal named on its item and grouped by reason; a label that would discard another label's text, attributes, links
     or a model's proposal asks once, skipping those by default, and choosing a proposed class keeps the proposal; undo
     and redo are the annotator's own undo of each item's save, `POST /api/annotations/<unit>/revert`, from its
-    `draft_history`, while the work is still at that revision; submit, accept and send back many, per item), Browse and Review (lists that open the canvas on
+    `draft_history`, while the work is as that save left it, so undo goes back step by step; submit, accept and send back many, per item), Browse and Review (lists that open the canvas on
     a pass, `?pass=browse` read-only or `?pass=review` with Accept, Accept with my fixes and Send back on the side panel
     and Shift+A, Shift+F, Shift+R, Page Up/Down stepping the walk the annotator reads around the open item), Settings
     (`PATCH /projects/{id}`, the rules of what may still change said beside each) and Publish. People are shown by the

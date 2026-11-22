@@ -28,7 +28,10 @@
  *
  * AN UNDO IS THE SERVER'S. The annotator keeps what undoes each save (`draft_history`), so a label is undone by naming the
  * revision its save wrote (`revertSave`): what it removed comes back whole, with its text, attributes, provenance, scores
- * and links, never rebuilt from what the grid read. Undoing that undo redoes the label the same way.
+ * and links, never rebuilt from what the grid read. Undoing that undo redoes the label the same way. The annotator takes
+ * an undo while the work is as that save left it, at its revision or with every save since taken back, so the grid's
+ * stack is walked back one run after another and forward again, each entry naming its own save's revision. A step it
+ * refuses (someone else changed the item since) is named on the item and leaves the stack; the steps after it stay.
  *
  * A CLAIM THE RUN TOOK goes back only where the item was open (`unassigned`) before it, as the claim's own answer says
  * (the `from` of its trail's last claim, `claimOrigin`), never the listing read earlier, which the item may have moved
@@ -637,8 +640,9 @@ async function recoverLostSave(
 	return at === null ? null : done(at === saved.base + 1 ? at : null);
 }
 
-/** Undo or redo one save on the server, by the revision ``written`` wrote: a 409 for an item whose work moved since,
- *  which is left as it is. */
+/** Undo or redo one save on the server, by the revision ``written`` wrote: accepted while the work is as that save left
+ *  it, at its revision or with every save since taken back (so an item's saves are undone one after another, and redone
+ *  the same way, each naming its own revision); a 409 for work that differs, which is left as it is. */
 async function revert({ task, revision }: Written, doors: Doors): Promise<Done | Refused> {
 	const reverted = await doors.revert(task, revision);
 	if (reverted.ok) return { status: 'done', revision: reverted.data.version };
@@ -648,6 +652,12 @@ async function revert({ task, revision }: Written, doors: Doors): Promise<Done |
 		? { status: 'refused', reason: reverted.detail }
 		: { status: 'done', revision: now };
 }
+
+/** A refused undo or redo in ``verb``'s words: the step leaves the grid's stack, so what was not done is named. */
+const said = (refused: Refused, verb: string): Refused => ({
+	status: 'refused',
+	reason: `${verb}: ${refused.reason}`,
+});
 
 /** Undo each of ``written`` on the server, then give back a claim its run took on an item that was open, where that
  *  claim is still the one the item is held under: read once, its holder and the instant its last claim was taken are
@@ -659,7 +669,8 @@ export function undoEach(written: readonly Written[], { doors, control }: Run): 
 		written,
 		async (entry): Promise<Outcome> => {
 			const reverted = await revert(entry, doors);
-			if (reverted.status !== 'done' || entry.claimed === null) return reverted;
+			if (reverted.status !== 'done') return said(reverted, 'not undone');
+			if (entry.claimed === null) return reverted;
 			if (entry.claimed.from !== 'open')
 				return { ...reverted, claimed: entry.claimed, stays: { reason: KEPT[entry.claimed.from] } };
 			return { ...reverted, ...(await giveBack(entry.task, entry.claimed, doors)) };
@@ -692,9 +703,8 @@ export function redoEach(written: readonly Written[], { doors, control }: Run): 
 		async (entry): Promise<Outcome> => {
 			if (entry.claimed?.from !== 'open') {
 				const reverted = await revert(entry, doors);
-				return reverted.status === 'done' && entry.claimed
-					? { ...reverted, claimed: entry.claimed }
-					: reverted;
+				if (reverted.status !== 'done') return said(reverted, 'not redone');
+				return entry.claimed ? { ...reverted, claimed: entry.claimed } : reverted;
 			}
 			const took = await taken(entry.task, 'claim-first', doors);
 			if (!took.ok) return took.outcome;

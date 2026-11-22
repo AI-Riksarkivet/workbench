@@ -1053,25 +1053,37 @@ class AnnotatorStore:
             )
 
     async def revert_save(self, task_id: str, *, author: str, revision: int, reviewing: bool = False) -> tuple[Draft, int]:
-        """Undo the save that wrote ``revision`` of the task's draft, while the draft is still at that revision: the
-        shapes it changed or removed come back whole (their provenance, status, scores, text, attributes and times) and
-        its links as they were, from the undo its history kept (`ReverseChange`). Written as a save is, under the same
-        rules and the task's row lock, as a new revision with its own undo, so undoing the revert redoes the save. A 409
-        when the draft moved past ``revision`` or its history no longer keeps that save. Answers the draft written and how
-        many shapes the undo put back or took away."""
+        """Undo the save that wrote ``revision`` of the task's draft, while the work is as that save left it: the shapes
+        it changed or removed come back whole (their provenance, status, scores, text, attributes and times) and its
+        links as they were, from the undo its history kept (`ReverseChange`). Written as a save is, under the same rules
+        and the task's row lock, as a new revision with its own undo, so undoing the revert redoes the save.
+
+        The work is as the save left it when the draft is still at ``revision``, or when every save since has been taken
+        back again (`_as_left_by`): undoing a save leaves the work as the save before it left it, so saves are undone
+        one after another, and redone the same way. A 409 when the work differs from what the save left, or its history
+        no longer keeps the save. Answers the draft written and how many shapes the undo put back or took away."""
         touched = 0
 
         async def reverted(conn: Connection, current: Draft | None, _now: datetime) -> tuple[list[Shape], list[Link]]:
             nonlocal touched
-            row = await (await conn.execute("SELECT undo FROM draft_history WHERE task_id = %s AND revision = %s", (task_id, revision))).fetchone()
-            if current is None or row is None:
+            at = current.revision if current is not None else 0
+            rows = await (
+                await conn.execute("SELECT revision, undo FROM draft_history WHERE task_id = %s AND revision >= %s ORDER BY revision DESC", (task_id, revision))
+            ).fetchall()
+            if current is None or revision > at:
+                raise ConflictError(f"annotations changed on the server (loaded v{revision}, now v{at})")
+            # The history is trimmed from its oldest end only, so holding ``revision`` is holding every save since.
+            if not rows or int(rows[-1][0]) != revision:
                 raise ConflictError(f"the history of this item's work no longer keeps the save that wrote v{revision}")
-            undo = ReverseChange.model_validate(row[0])
+            later = [ReverseChange.model_validate(undo) for _revision, undo in rows[:-1]]
+            if not _as_left_by(later, current):
+                raise ConflictError(f"annotations changed on the server (loaded v{revision}, now v{at})")
+            undo = ReverseChange.model_validate(rows[-1][1])
             touched = len(undo.restore) + len(undo.remove)
             return undo.undo(current.shapes, current.links)
 
         async with self._transaction() as conn:
-            draft = await self._write_draft(conn, task_id, author=author, change=reverted, base_revision=revision, reviewing=reviewing)
+            draft = await self._write_draft(conn, task_id, author=author, change=reverted, base_revision=None, require_base=False, reviewing=reviewing)
         return draft, touched
 
     async def _write_draft(
@@ -1166,6 +1178,16 @@ class AnnotatorStore:
             shapes, links = ReverseChange.model_validate(row[3]).undo(shapes, links)
         _rev, saved_at, author, _undo = rows[-1]
         return Draft(task_id=task_id, project_id=current.project_id, author=str(author), shapes=shapes, links=links, revision=revision, updated_at=saved_at)
+
+
+def _as_left_by(later: list[ReverseChange], current: Draft) -> bool:
+    """Whether ``current`` is the work as an earlier save left it, given the undo of every save since, newest first:
+    whether taking them all back leaves the work as it is now. Shapes are compared by id, since an undo puts a removed
+    shape back after the others."""
+    shapes, links = current.shapes, current.links
+    for undo in later:
+        shapes, links = undo.undo(shapes, links)
+    return {s.shape_id: s for s in shapes} == {s.shape_id: s for s in current.shapes} and links == current.links
 
 
 async def _update_unstarted(conn: Connection, project_id: str, fields: dict[str, Any]) -> None:

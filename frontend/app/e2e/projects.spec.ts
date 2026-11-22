@@ -1917,6 +1917,129 @@ test('a redo that claims again and whose undo is then refused gives the claim ba
 	]);
 });
 
+test('an item asked twice is undone one ask after another back to as it was, its claim given back with the first, and redone the same way', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	const fired = taskEvents(page);
+	await page.goto('/projects/sorting?tab=label');
+	const item = cellOf(page, 'sorting-00');
+	await item.focus();
+	const ask = async (): Promise<void> => {
+		const panel = await openAsk(page);
+		await gridModel(panel, 'stand-in-tagger').getByRole('button', { name: 'Ask' }).click();
+		await expect(page.getByTestId('grid-notice')).toHaveText('Asked Stand-in tagger: 1 answered.');
+	};
+	await ask();
+	await ask();
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('1 proposal to keep or remove');
+	expect(fired).toEqual([['sorting-00', 'claim']]);
+
+	fired.length = 0;
+	await page.keyboard.press('Control+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('1 proposal to keep or remove');
+	await expect(item.getByText('claimed', { exact: true })).toBeVisible();
+	expect(fired).toEqual([]);
+	await page.keyboard.press('Control+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Undone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveCount(0);
+	await expect(labelsOf(page, 'sorting-00')).toHaveText('no label');
+	await expect(item.getByText('unassigned', { exact: true })).toBeVisible();
+	expect(fired).toEqual([['sorting-00', 'release']]);
+
+	fired.length = 0;
+	await page.keyboard.press('Control+Shift+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Redone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByText('claimed', { exact: true })).toBeVisible();
+	await page.keyboard.press('Control+Shift+z');
+	await expect(page.getByTestId('grid-notice')).toHaveText(
+		'Redone: Asked Stand-in tagger: 1 changed.',
+	);
+	await expect(item.getByTestId('grid-cell-proposals')).toHaveText('1 proposal to keep or remove');
+	expect(fired).toEqual([['sorting-00', 'claim']]);
+});
+
+test('labels written twice over a selection are undone twice and redone twice, each step on every item', async ({
+	page,
+	context,
+}) => {
+	await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('Shift+ArrowRight');
+	await page.keyboard.press('Shift+ArrowRight');
+	const items = ['sorting-00', 'sorting-01', 'sorting-02'];
+	const labelled = async (text: string): Promise<void> => {
+		for (const id of items) await expect(labelsOf(page, id)).toHaveText(text);
+	};
+	const notice = page.getByTestId('grid-notice');
+	// Both directions are named where the keys are said.
+	await expect(page.getByTestId('grid-keys-help')).toHaveText(
+		'Arrows move, Shift with an arrow selects, Space picks one, Ctrl+A the page; 1–9 label the selection (or the item in focus, then the next), Alt with a digit adds a label beside the others, Delete clears, Alt+A keeps and Alt+R removes every proposal, Ctrl+Z undoes and Ctrl+Shift+Z or Ctrl+Y redoes, Enter opens the item on the canvas, Escape clears the selection.',
+	);
+
+	await page.keyboard.press('1');
+	await expect(notice).toHaveText('Labelled letter: 3 changed.');
+	await page.keyboard.press('2');
+	await expect(notice).toHaveText('Labelled map: 3 changed.');
+	await labelled('map');
+
+	await page.keyboard.press('Control+z');
+	await expect(notice).toHaveText('Undone: Labelled map: 3 changed.');
+	await labelled('letter');
+	await page.keyboard.press('Control+z');
+	await expect(notice).toHaveText('Undone: Labelled letter: 3 changed.');
+	await labelled('no label');
+	await page.keyboard.press('Control+Shift+z');
+	await expect(notice).toHaveText('Redone: Labelled letter: 3 changed.');
+	await labelled('letter');
+	await page.keyboard.press('Control+Shift+z');
+	await expect(notice).toHaveText('Redone: Labelled map: 3 changed.');
+	await labelled('map');
+});
+
+test('an undo refused because someone else changed the item is said on it, and the steps after it stay undone and redone', async ({
+	page,
+	context,
+}) => {
+	const who = await as(context, 'Annotator');
+	await page.goto('/projects/sorting?tab=label');
+	await cellOf(page, 'sorting-00').focus();
+	await page.keyboard.press('1');
+	await expect(labelsOf(page, 'sorting-00')).toHaveText('letter');
+	await expect(cellOf(page, 'sorting-01')).toBeFocused();
+	await page.keyboard.press('2');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('map');
+	// Elsewhere, sorting-00's work changes after the label.
+	expect((await changeWorkElsewhere(page, who, 'sorting-00', 'tag-letter')).status()).toBe(200);
+	const notice = page.getByTestId('grid-notice');
+
+	await page.keyboard.press('Control+z');
+	await expect(notice).toHaveText('Undone: Labelled map: 1 changed.');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('no label');
+	await page.keyboard.press('Control+z');
+	await expect(notice.locator('[data-tone]')).toHaveText(
+		'Undone: Labelled letter: 0 changed, 1 refused.',
+	);
+	await expect(page.getByTestId('grid-refusals').getByRole('listitem')).toHaveText([
+		'not undone: annotations changed on the server (loaded v1, now v2) (1): A letter from the harbour · page 1',
+	]);
+	await expect(cellOf(page, 'sorting-00').getByTestId('grid-cell-refused')).toHaveText(
+		'⚠ not undone: annotations changed on the server (loaded v1, now v2)',
+	);
+	await page.keyboard.press('Control+Shift+z');
+	await expect(notice).toHaveText('Redone: Labelled map: 1 changed.');
+	await expect(labelsOf(page, 'sorting-01')).toHaveText('map');
+});
+
 test('a save waits on no read past Stop or past leaving the page: the claim goes back and nothing is written', async ({
 	page,
 	context,

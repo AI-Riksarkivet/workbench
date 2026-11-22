@@ -3,8 +3,9 @@
 A client that changed many items at once (the bulk grid) undoes each item's change by naming the revision its save
 wrote: the store puts back what that save changed or removed, whole (each shape's provenance, status, scores, text,
 attributes and times) with the links as they were (`AnnotatorStore.revert_save`), rather than the client rebuilding the
-shapes from what it read of them. Only while the work is still at that revision: one changed since by anyone is a 409, so
-an undo never overwrites later work. It is a save in every other respect, under the same rules (`EditableUnit` here, and
+shapes from what it read of them. Only while the work is as that save left it: still at its revision, or with every
+save since taken back again, so saves are undone one after another and redone the same way. Work that differs from what
+the save left is a 409, so an undo never overwrites later work. It is a save in every other respect, under the same rules (`EditableUnit` here, and
 again under the task's row lock), and is kept in the history as its own revision, so reverting the revert redoes it.
 """
 
@@ -31,7 +32,7 @@ router = APIRouter(tags=["annotate"], dependencies=RECORDS_PERSON)
 
 
 class RevertSave(BaseModel):
-    """The save to undo, by the revision it wrote: the revision the work must still be at. Strict and closed, as the
+    """The save to undo, by the revision it wrote: the work must be as that save left it. Strict and closed, as the
     ontology's documents are: a revision written as text, or a key the door does not read, is a 422 naming it, never a
     guess at what the caller meant."""
 

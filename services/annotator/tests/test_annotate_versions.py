@@ -246,6 +246,37 @@ def test_a_save_reverted_on_the_server_brings_back_what_it_replaced_whole_and_re
     assert (redone.status_code, _work(work_client)) == (200, (labelled[0], labelled[1], 4))
 
 
+def test_saves_are_undone_one_after_another_and_redone_while_the_work_is_as_each_left_it(work_client: TestClient) -> None:
+    _save(work_client, 0, inserts=[{"id": "a", "shape_type": "tag", "label": "cat"}, {"id": "b", "shape_type": "tag", "label": "kept"}])
+    first = _work(work_client)[:2]
+    _save(work_client, 1, edits=[{"id": "a", "label": "dog"}])
+    second = _work(work_client)[:2]
+    _save(work_client, 2, deletes=["b"], edits=[{"id": "a", "label": "bird"}])
+    third = _work(work_client)[:2]
+
+    # Each revert names the save it undoes; the work has moved on by the reverts before it, and is as that save left it.
+    reverts = [work_client.post(f"{UNIT}/revert", params=QUERY, json={"revision": revision}) for revision in (3, 2)]
+    undone_twice = _work(work_client)
+    redone = [work_client.post(f"{UNIT}/revert", params=QUERY, json={"revision": revision}) for revision in (5, 4)]
+
+    assert [(r.status_code, r.json()["version"]) for r in reverts] == [(200, 4), (200, 5)]
+    assert undone_twice == (first[0], first[1], 5)
+    assert [(r.status_code, r.json()["version"]) for r in redone] == [(200, 6), (200, 7)]
+    assert _work(work_client) == (third[0], third[1], 7)
+    assert second != first
+
+
+def test_a_revert_of_a_save_the_history_no_longer_keeps_is_refused_and_writes_nothing(work_client: TestClient) -> None:
+    saves = MAX_DRAFT_HISTORY + 2
+    for base in range(saves):
+        _save(work_client, base, inserts=[{"id": f"s{base}", "shape_type": "tag", "label": "x"}])
+
+    refused = work_client.post(f"{UNIT}/revert", params=QUERY, json={"revision": 1})
+
+    assert (refused.status_code, refused.json()["detail"]) == (409, "the history of this item's work no longer keeps the save that wrote v1")
+    assert _work(work_client)[2] == saves
+
+
 @pytest.mark.parametrize(
     ("revision", "detail"),
     [

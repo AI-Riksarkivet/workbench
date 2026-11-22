@@ -108,6 +108,71 @@ interface SaveBody {
 	base_version: number | null;
 }
 
+/** An item's work at one revision: its rows and links. */
+interface Work {
+	rows: Row[];
+	links: Draft['links'];
+}
+
+/** What undoes one save (`store.ReverseChange`): the rows as they were before it (each one it changed or removed), the
+ *  ids of the rows it added, and the links before it when it changed them. */
+interface Undo {
+	restore: Row[];
+	remove: string[];
+	links: Draft['links'] | null;
+}
+
+/** ``value`` as text with its keys in order, so two rows written in different key orders compare equal. */
+const canonical = (value: unknown): string =>
+	JSON.stringify(value, (_key, v: unknown) =>
+		v && typeof v === 'object' && !Array.isArray(v)
+			? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)))
+			: v,
+	);
+
+/** What undoes the save that turned ``before`` into ``after`` (`ReverseChange.of`). */
+function undoOf(before: Work, after: Work): Undo {
+	const now = new Map(after.rows.map((r) => [r.id, canonical(r)]));
+	const then = new Set(before.rows.map((r) => r.id));
+	return {
+		restore: before.rows.filter((r) => now.get(r.id) !== canonical(r)),
+		remove: after.rows.filter((r) => !then.has(r.id)).map((r) => r.id),
+		links: canonical(before.links) === canonical(after.links) ? null : before.links,
+	};
+}
+
+/** ``work`` with ``undo`` applied (`ReverseChange.undo`): a row the save removed comes back after the others. */
+function undoneBy(work: Work, undo: Undo): Work {
+	const gone = new Set(undo.remove);
+	const kept = new Map(work.rows.filter((r) => !gone.has(r.id)).map((r) => [r.id, r]));
+	for (const row of undo.restore) kept.set(row.id, row);
+	return { rows: [...kept.values()], links: undo.links ?? work.links };
+}
+
+/** Whether two states of the work hold the same rows (by id) and links. */
+const sameWork = (a: Work, b: Work): boolean =>
+	canonical(Object.fromEntries(a.rows.map((r) => [r.id, r]))) ===
+		canonical(Object.fromEntries(b.rows.map((r) => [r.id, r]))) &&
+	canonical(a.links) === canonical(b.links);
+
+/** The undo of every save from the one that wrote ``revision`` to the draft's latest, oldest first, from the history's
+ *  kept states; null when the history no longer keeps one of them. */
+function undosFrom(draft: Draft, revision: number): Undo[] | null {
+	const at = (version: number): Work | undefined => {
+		if (version === 0) return { rows: [], links: [] };
+		const kept = draft.history.find((h) => h.version === version);
+		return kept && { rows: kept.rows, links: kept.links ?? [] };
+	};
+	const undos: Undo[] = [];
+	for (let version = revision; version <= draft.revision; version++) {
+		const before = at(version - 1);
+		const after = at(version);
+		if (!before || !after) return null;
+		undos.push(undoOf(before, after));
+	}
+	return undos;
+}
+
 /** Answer one call to `/api/annotations/…`, or null when the path is not that door. `perms` is what the caller holds
  *  on a project; `record` writes the call's status into the ledger; `fault` is the spec's switch for this path; `work`
  *  reads and writes a task's draft, the one store of its work in progress, which the task door serves too. Nothing here
@@ -254,34 +319,39 @@ export async function annotationsDoor(
 		return answer({ settled: proposed.size, version: next });
 	}
 	if (match[2] === '/revert') {
-		// The annotator's undo of one save (`annotations.revert`): the work as the save before it left it, rows and links
-		// whole, while the work is still at the revision that save wrote; written as a new revision of its own.
+		// The annotator's undo of one save (`annotations.revert`, `store.revert_save`): what that save changed or removed
+		// put back and what it added taken away, by the undo its history keeps, while the work is as that save left it,
+		// still at its revision or with every save since taken back again; written as a new revision of its own.
 		const { revision } = (await req.json()) as { revision: number };
-		if (revision !== version)
+		const current = { rows: draft?.rows ?? [], links: draft?.links ?? [] };
+		if (!draft || revision > version || revision < 1)
 			return answer(
 				{ detail: `annotations changed on the server (loaded v${revision}, now v${version})` },
 				409,
 			);
-		const prior =
-			revision === 1
-				? { rows: [], links: [] }
-				: draft?.history.find((h) => h.version === revision - 1);
-		if (!prior)
+		const kept = undosFrom(draft, revision);
+		if (!kept)
 			return answer(
 				{
 					detail: `the history of this item's work no longer keeps the save that wrote v${revision}`,
 				},
 				409,
 			);
-		const rows = structuredClone(prior.rows);
-		const links = structuredClone(prior.links ?? []);
+		const [own, ...later] = kept;
+		const left = later.toReversed().reduce(undoneBy, current);
+		if (!own || !sameWork(left, current))
+			return answer(
+				{ detail: `annotations changed on the server (loaded v${revision}, now v${version})` },
+				409,
+			);
+		const { rows, links } = structuredClone(undoneBy(current, own));
 		const next = version + 1;
 		work.write(taskId, {
 			rows,
 			links,
 			revision: next,
 			history: [
-				...(draft?.history ?? []),
+				...draft.history,
 				{
 					version: next,
 					timestamp: new Date().toISOString(),

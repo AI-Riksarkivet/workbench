@@ -1166,8 +1166,9 @@
 		<p id={instructions} class="text-muted-foreground text-xs" data-testid="grid-keys-help">
 			Arrows move, Shift with an arrow selects, Space picks one, Ctrl+A the page; 1–9 label the
 			selection (or the item in focus, then the next), Alt with a digit adds a label beside the
-			others, Delete clears, Alt+A keeps and Alt+R removes every proposal, Ctrl+Z undoes, Enter
-			opens the item on the canvas, Escape clears the selection.
+			others, Delete clears, Alt+A keeps and Alt+R removes every proposal, Ctrl+Z undoes and
+			Ctrl+Shift+Z or Ctrl+Y redoes, Enter opens the item on the canvas, Escape clears the
+			selection.
 		</p>
 	{/if}
 
