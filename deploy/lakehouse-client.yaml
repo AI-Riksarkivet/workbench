@@ -1,0 +1,18 @@
+# What the workbench asks of rask's lakehouse release on the development estate, supplied to that release from here
+# (rask names no client): rask's install is handed this file, `make k3s-up K3S_EXTRA_VALUES=<a workbench checkout on
+# main>/deploy/lakehouse-client.yaml`, beside `deploy/dex-client.yaml` for its Dex fixture (`K3S_DEX_EXTRA_VALUES`).
+# NOT FOR PRODUCTION: a platform's lakehouse install is handed the same entry from the platform's own values.
+#
+# `catalog.declared.grants` is a map keyed by a name each file chooses (rask's XC-221), so this entry merges with the
+# lakehouse's own and with any other repository's, and removing this file revokes exactly this grant. The catalog writes
+# a declared grant itself and converges on it, so no administrator signs in to make it.
+catalog:
+  declared:
+    grants:
+      # The workbench's own identity (its confidential client signed in for itself, `deploy/dex-client.yaml`) reads the
+      # one cell a signed media link names, so it holds `reader` on each warehouse whose datasets the viewer signs
+      # links for. People's reads are their own grants, which nothing here makes.
+      workbench-services-reads-acme:
+        object: warehouse:acme
+        relation: reader
+        principal: dex-client~workbench-services
