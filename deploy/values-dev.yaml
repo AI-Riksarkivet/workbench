@@ -113,12 +113,13 @@ app:
     # rask's dev Dex (v2.46.1) runs without `DEX_SESSIONS_ENABLED`, so it keeps no login session to sign anyone in from
     # without its form (docs/DEPLOY.md). On once the fixture turns its sessions on.
     silentSignIn: false
+# The annotator's state: the database `annotator` of the development PostgreSQL (`deploy/fixtures/postgres`), on the
+# Secrets that fixture makes.
+state:
+  host: workbench-postgres
+  password:
+    name: workbench-postgres-annotator
+  ca:
+    name: workbench-postgres-ca
 networkPolicy:
   enabled: true
-  # The API server as a policy sees it, after the Service's translation: the node's address, port 6443 (the dev
-  # estate's `kubernetes` endpoints, read 2026-11-16).
-  apiServerEgress:
-    - to:
-        - ipBlock: { cidr: 10.16.51.55/32 }
-      ports:
-        - { protocol: TCP, port: 6443 }

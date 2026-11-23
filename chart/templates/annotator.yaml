@@ -1,6 +1,6 @@
 {{- $r := .Release.Name -}}
 {{- $name := include "annotator.name" . -}}
-{{- $cluster := include "annotator.stateCluster" . -}}
+{{- $state := .Values.state -}}
 {{- $l := .Values.lifecycle -}}
 {{- $drain := sub $l.terminationGracePeriodSeconds (add $l.preStopSeconds $l.teardownSeconds) -}}
 {{- if le (int $drain) 0 }}{{ fail "lifecycle: need teardownSeconds < terminationGracePeriodSeconds - preStopSeconds" }}{{ end -}}
@@ -107,12 +107,12 @@ spec:
             # credential its catalog vends the person, so the pod holds no store key. The work in progress is the annotator's
             # own state below; only a publish writes to a lakehouse.
             {{- include "workbench.sourcesEnv" . | nindent 12 }}
-            # The annotator's own state: the Cluster this release renders, reached by its read-write Service, the server
-            # verified against the Cluster's own CA, the password read from its mounted file on every new connection.
-            - { name: ANNOTATOR_STATE_HOST, value: {{ printf "%s-rw" $cluster | quote }} }
-            - { name: ANNOTATOR_STATE_PORT, value: "5432" }
-            - { name: ANNOTATOR_STATE_DATABASE, value: "annotator" }
-            - { name: ANNOTATOR_STATE_USER, value: "annotator" }
+            # The annotator's own state: a database of the platform's PostgreSQL, by the address `state` names, the
+            # server verified against the CA it names, the password read from its mounted file on every new connection.
+            - { name: ANNOTATOR_STATE_HOST, value: {{ required "state.host: the PostgreSQL the annotator keeps its state on, which the platform provides" $state.host | quote }} }
+            - { name: ANNOTATOR_STATE_PORT, value: {{ $state.port | quote }} }
+            - { name: ANNOTATOR_STATE_DATABASE, value: {{ $state.database | quote }} }
+            - { name: ANNOTATOR_STATE_USER, value: {{ $state.user | quote }} }
             - { name: ANNOTATOR_STATE_SSLMODE, value: "verify-full" }
             - { name: ANNOTATOR_STATE_CA_FILE, value: /var/run/secrets/annotator/state-ca/ca.crt }
             - { name: ANNOTATOR_STATE_PASSWORD_FILE, value: /var/run/secrets/annotator/state-password/password }
@@ -152,12 +152,12 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: "2Gi" } }
-        # The Cluster's generated application credential, its password alone: the kubelet mounts it, so the pod's
-        # ServiceAccount needs no grant to read Secrets.
+        # The state database's password alone: the kubelet mounts it, so the pod's ServiceAccount needs no grant to
+        # read Secrets.
         - name: state-password
           secret:
-            secretName: {{ $cluster }}-app
-            items: [{ key: password, path: password }]
+            secretName: {{ required "state.password.name: the Secret holding the state database's password" $state.password.name }}
+            items: [{ key: {{ $state.password.key }}, path: password }]
         {{- include "workbench.sourcesVolume" . | nindent 8 }}
         {{- if include "workbench.lakehouseAuth" . }}
         # The workbench's confidential client's secret: the token exchange and its own token for the lakehouse.
@@ -174,11 +174,11 @@ spec:
             items: [{ key: {{ $.Values.auth.fga.credential.key }}, path: preshared-key }]
         {{- end }}
         {{- end }}
-        # The Cluster's CA certificate alone, never its key.
+        # The certificate authority the state database's certificate is verified against, alone.
         - name: state-ca
           secret:
-            secretName: {{ $cluster }}-ca
-            items: [{ key: ca.crt, path: ca.crt }]
+            secretName: {{ required "state.ca.name: the Secret holding the CA the state database's certificate is verified against" $state.ca.name }}
+            items: [{ key: {{ $state.ca.key }}, path: ca.crt }]
         {{- with .Values.models.endpoint }}
         {{- if .url }}
         # The pod's own identity at the model endpoint, for that audience alone.

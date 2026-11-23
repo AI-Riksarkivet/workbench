@@ -1,6 +1,6 @@
 .PHONY: help install sync local local-stop test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model model-protocol chart-check \
-	deploy-dev undeploy-dev dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-release dev-readback \
-	dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-namespace
+	deploy-dev undeploy-dev dev-clean-tree dev-images dev-postgres dev-openfga dev-model-stand-in dev-release dev-readback \
+	dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-postgres dev-undeploy-namespace
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
@@ -12,7 +12,7 @@ PYTEST_WORKERS ?= 8
 
 help:
 	@echo "Targets: install local local-stop test lint fmt typecheck check chart-check frontend-check app-dev app-e2e fga-test fga-model openfga postgres image NAME=<stem> claude-bootstrap"
-	@echo "Dev cluster (docs/DEPLOY.md): deploy-dev undeploy-dev, or one step at a time: dev-images dev-openfga dev-model-stand-in dev-release dev-readback"
+	@echo "Dev cluster (docs/DEPLOY.md): deploy-dev undeploy-dev, or one step at a time: dev-images dev-postgres dev-openfga dev-model-stand-in dev-release dev-readback"
 
 # The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
 # `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
@@ -119,7 +119,8 @@ image:
 # the Job that fills it and the source reading it at a path on its claim, `demo`), a platform's (an https
 # IdP that binds tokens, a rask lakehouse by reference), a release with no lakehouse at all (a directory catalog on a
 # claim and a bare table on a store), and one with sign-in off reading one table on a claim.
-CHART_APIS = --api-versions postgresql.cnpg.io/v1/Cluster --api-versions generators.external-secrets.io/v1alpha1/Password
+CHART_APIS = --api-versions generators.external-secrets.io/v1alpha1/Password
+CHART_STATE = --set state.host=pg.example --set state.password.name=wb-state --set state.ca.name=pg-ca
 CHART_PLATFORM = --set auth.oidc.issuer=https://id.example --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example \
 	--set auth.oidc.client.secret.name=wb-client --set auth.lakehouse.audience=lakehouse --set 'sources[0].name=lake' --set 'sources[0].kind=rask' --set 'sources[0].uri=https://lakehouse.example' \
 	--set auth.fga.apiUrl=https://fga.example --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
@@ -139,9 +140,9 @@ chart-check:
 	uv run python -m workbench.source_keys | diff - chart/files/source-keys.json
 	helm lint chart -f deploy/values-dev.yaml
 	helm template workbench chart -n workbench $(CHART_APIS) -f deploy/values-dev.yaml >/dev/null
-	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_PLATFORM) >/dev/null
-	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_NO_LAKEHOUSE) >/dev/null
-	helm template workbench chart -n workbench $(CHART_APIS) --set auth.enabled=false --set route.enabled=false \
+	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_STATE) $(CHART_PLATFORM) >/dev/null
+	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_STATE) $(CHART_NO_LAKEHOUSE) >/dev/null
+	helm template workbench chart -n workbench $(CHART_APIS) $(CHART_STATE) --set auth.enabled=false --set route.enabled=false \
 		--set 'sources[0].name=scans' --set 'sources[0].kind=tables' --set 'sources[0].claim=scans' --set 'sources[0].path=scans.lance' \
 		--set media.viewer.mediaUrlKey.name=wb-media >/dev/null
 	@# A Job's pod template cannot change in place: a change to any field of the demo seed's must name a new Job.
@@ -149,10 +150,14 @@ chart-check:
 		| grep -o 'workbench-demo-seed-[0-9a-f]\{10\}' | sort -u; }; \
 		test "$$(seed IfNotPresent)" != "$$(seed Always)" || { echo "the demo seed Job keeps its name when its pod template changes" >&2; exit 1; }
 	bash scripts/chart-refusals.sh
+	helm lint deploy/fixtures/postgres/chart
+	helm template workbench-postgres deploy/fixtures/postgres/chart -n workbench $(CHART_APIS) >/dev/null
 	helm lint deploy/fixtures/openfga/chart
 	helm lint deploy/fixtures/model-stand-in/chart --set image.tag=dev
 	helm template workbench-model-stand-in deploy/fixtures/model-stand-in/chart -n workbench --set image.tag=dev >/dev/null
 	helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) >/dev/null
+	@! helm template workbench-openfga deploy/fixtures/openfga/chart -n workbench $(CHART_APIS) --set database.host= >/dev/null 2>&1 \
+		|| { echo "the OpenFGA fixture renders with no database host" >&2; exit 1; }
 
 # ── The development cluster (docs/DEPLOY.md) ──────────────────────────────────────────────────────────────────────────
 # One entry point, `make deploy-dev`, and each step its own target, each safe to run again. Values come from git alone
@@ -160,6 +165,7 @@ chart-check:
 # Every dagger call names the shared engine, since an unscoped CLI removes engines named `dagger-engine-*`.
 DEV_NAMESPACE ?= workbench
 DEV_RELEASE ?= workbench
+DEV_POSTGRES_RELEASE ?= workbench-postgres
 DEV_OPENFGA_RELEASE ?= workbench-openfga
 DEV_MODEL_STAND_IN_RELEASE ?= workbench-model-stand-in
 DEV_REGISTRY_PUSH ?= 172.17.0.1:5000
@@ -171,7 +177,7 @@ DEV_HELM = helm --namespace $(DEV_NAMESPACE)
 # What the workbench asks of the lakehouse's estate is not installed from here: its sign-in clients at the development
 # Dex (`deploy/dex-client.yaml`) and its own reader grant (`deploy/lakehouse-client.yaml`) are values the lakehouse's
 # install is handed (docs/DEPLOY.md), so no target writes to Dex or to the catalog.
-deploy-dev: dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-release dev-readback
+deploy-dev: dev-clean-tree dev-images dev-postgres dev-openfga dev-model-stand-in dev-release dev-readback
 
 # Images are named by the commit they are built from, so the tree must be that commit.
 dev-clean-tree:
@@ -184,7 +190,13 @@ dev-images: dev-clean-tree
 	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=annotator publish --address=$(DEV_REGISTRY_PUSH)/workbench-annotator:$(DEV_TAG)
 	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=frontend publish --address=$(DEV_REGISTRY_PUSH)/workbench-app:$(DEV_TAG)
 
-# The workbench's own OpenFGA (deploy/fixtures/openfga), first: the release's model writer runs against it.
+# The development PostgreSQL (deploy/fixtures/postgres), standing in for a platform's: the annotator's state and the
+# development OpenFGA's tuples are databases on it, so it comes before both.
+dev-postgres:
+	$(DEV_HELM) upgrade --install $(DEV_POSTGRES_RELEASE) deploy/fixtures/postgres/chart --create-namespace --reset-values \
+		--description "workbench fixture: not for production" --wait --timeout 10m
+
+# The workbench's own OpenFGA (deploy/fixtures/openfga), before the release: its model writer runs against it.
 dev-openfga:
 	$(DEV_HELM) upgrade --install $(DEV_OPENFGA_RELEASE) deploy/fixtures/openfga/chart --create-namespace --reset-values \
 		--description "workbench fixture: not for production" --wait --timeout 10m
@@ -203,12 +215,12 @@ dev-release:
 # Every workload Ready, and the route answering the app's own /config.json through the Gateway under the workbench's host.
 dev-readback:
 	kubectl --namespace $(DEV_NAMESPACE) wait --for=condition=Available deployment --all --timeout=300s
-	kubectl --namespace $(DEV_NAMESPACE) wait --for=condition=Ready cluster.postgresql.cnpg.io --all --timeout=300s
+	kubectl --namespace $(DEV_NAMESPACE) rollout status statefulset/$(DEV_POSTGRES_RELEASE) --timeout=300s
 	@gateway="$$(kubectl --namespace kube-system get gateway traefik-gateway -o jsonpath='{.status.addresses[0].value}')"; \
 		curl -fsS -H 'Host: $(DEV_GATEWAY_HOST)' "http://$$gateway/config.json" >/dev/null \
 		&& echo "the workbench answers at http://$(DEV_GATEWAY_HOST):8080 (through the port-forward to the Gateway)"
 
-undeploy-dev: dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-namespace
+undeploy-dev: dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-postgres dev-undeploy-namespace
 	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry, and what the lakehouse's install carries for it (docs/DEPLOY.md)"
 
 dev-undeploy-release:
@@ -220,7 +232,13 @@ dev-undeploy-model-stand-in:
 dev-undeploy-openfga:
 	$(DEV_HELM) uninstall $(DEV_OPENFGA_RELEASE) --ignore-not-found --wait
 
-# The namespace last, and with it the claims both databases held.
+# The claim with the release: the passwords are made again at the next install, and the server takes them only when it
+# initialises an empty data directory.
+dev-undeploy-postgres:
+	$(DEV_HELM) uninstall $(DEV_POSTGRES_RELEASE) --ignore-not-found --wait
+	kubectl --namespace $(DEV_NAMESPACE) delete persistentvolumeclaim data-$(DEV_POSTGRES_RELEASE)-0 --ignore-not-found --wait
+
+# The namespace last.
 dev-undeploy-namespace:
 	kubectl delete namespace $(DEV_NAMESPACE) --ignore-not-found --wait
 

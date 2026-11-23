@@ -36,7 +36,7 @@ const (
 	FgaCliImage  = "openfga/cli:v0.6.4"
 	// The PostgreSQL the annotator's state runs on in the offline suite (tests/postgres.py) and the local stack: its
 	// server tree, assembled in the image by scripts/postgres-server.sh. `make postgres` exports the same tree for a
-	// developer box. The major matches the CloudNativePG Cluster the workbench chart (`chart/`) renders.
+	// developer box. The major matches the development PostgreSQL (`deploy/fixtures/postgres`).
 	PostgresImage = "postgres:17.6-bookworm"
 	// Where the workbench's authorization model lives in the source tree.
 	authModelDir = "packages/workbench/src/workbench/governed/auth"

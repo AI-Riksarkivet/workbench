@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APIS=(--api-versions postgresql.cnpg.io/v1/Cluster --api-versions generators.external-secrets.io/v1alpha1/Password)
+APIS=(--api-versions generators.external-secrets.io/v1alpha1/Password)
 BASE=(-f deploy/values-dev.yaml)
 failed=0
 checked=0
@@ -95,6 +95,7 @@ configures "silent sign-in, on by default" 'silentSignIn\":true' "${APIS[@]}" --
   --set auth.oidc.idpId=corp --set auth.oidc.publicOrigin=https://wb.example --set auth.oidc.client.secret.name=wb-client \
   --set auth.lakehouse.audience=lakehouse --set 'sources[0].name=lake' --set 'sources[0].kind=rask' \
   --set 'sources[0].uri=https://lakehouse.example' --set auth.fga.apiUrl=https://fga.example \
+  --set state.host=pg.example --set state.password.name=wb-state --set state.ca.name=pg-ca \
   --set media.viewer.mediaUrlKey.name=wb-media --set 'route.parentRefs[0].name=gw'
 configures "silent sign-in, off for the dev Dex" 'silentSignIn\":false' "${APIS[@]}" "${BASE[@]}"
 
@@ -136,9 +137,13 @@ every "no telemetry while it is off" absent "OTEL_" "${APIS[@]}" "${BASE[@]}" --
 every "no uvicorn access log" present '"--no-access-log"' "${APIS[@]}" "${BASE[@]}"
 
 # The platform's prerequisites, named when a cluster does not serve them.
-refuses "CloudNativePG is a prerequisite" --api-versions generators.external-secrets.io/v1alpha1/Password "${BASE[@]}"
-refuses "dev.secrets.enabled generates keys with the External Secrets Operator's Password generator" \
-  --api-versions postgresql.cnpg.io/v1/Cluster "${BASE[@]}"
+refuses "dev.secrets.enabled generates keys with the External Secrets Operator's Password generator" "${BASE[@]}"
+# The state database is the platform's, given by address: a release naming none, or none of its Secrets, is refused.
+refuses "state.host: the PostgreSQL the annotator keeps its state on" "${APIS[@]}" "${BASE[@]}" --set state.host=
+refuses "state.password.name: the Secret holding the state database's password" \
+  "${APIS[@]}" "${BASE[@]}" --set state.password.name=
+refuses "state.ca.name: the Secret holding the CA the state database's certificate is verified against" \
+  "${APIS[@]}" "${BASE[@]}" --set state.ca.name=
 refuses "media.viewer.mediaUrlKey.name: the Secret holding the viewer's media-URL signing key" \
   "${APIS[@]}" "${BASE[@]}" --set media.viewer.mediaUrlKey.name=
 refuses "dev.secrets.oidcClientSecret: the development identity provider's secret" \
@@ -147,8 +152,6 @@ refuses "dev.secrets.oidcClientSecret: the development identity provider's secre
 # The routes and the network.
 refuses "route.parentRefs must name the Gateway" "${APIS[@]}" "${BASE[@]}" --set route.parentRefs=null
 refuses "route.doors: /api/../x is not a path" "${APIS[@]}" "${BASE[@]}" --set 'route.doors[0]=/api/../x'
-refuses "networkPolicy.apiServerEgress must name the Kubernetes API server's endpoints" \
-  "${APIS[@]}" "${BASE[@]}" --set networkPolicy.apiServerEgress=null
 refuses "forwardedAllowIps must not be '*'" "${APIS[@]}" "${BASE[@]}" --set 'forwardedAllowIps=*'
 refuses "lifecycle: need teardownSeconds < terminationGracePeriodSeconds - preStopSeconds" \
   "${APIS[@]}" "${BASE[@]}" --set lifecycle.teardownSeconds=60

@@ -1,5 +1,5 @@
 # The workbench: the app, the annotator, the viewer and search. Every object is named from the release
-# (`<release>-annotator`, `<release>-viewer`, `<release>-search`, `<release>-app`, `<release>-annotator-state`).
+# (`<release>-annotator`, `<release>-viewer`, `<release>-search`, `<release>-app`).
 
 image:
   # A bare name is a side-loaded image on the node (make k3s-import); a registry path is pulled.
@@ -7,7 +7,7 @@ image:
   tag: dev
   pullPolicy: IfNotPresent
 
-# Replicas share the state in the Cluster below: a transition locks its rows there, so any replica may serve any request.
+# Replicas share the state in the database `state` names: a transition locks its rows there, so any replica may serve any request.
 replicas: 1
 port: 8103
 
@@ -47,29 +47,14 @@ route:
 # `media.yaml`), each selecting only this release's pods:
 # - each service (annotator, viewer, search) and the app admit their own port, from `edgeFrom` when named, else from any
 #   source (the Gateway's pods are the platform's, and a kubelet probe reaches the port too); their egress is not
-#   restricted, so they reach DNS, the identity provider, the catalog, the store a vended credential names and OpenFGA;
-# - the app may dial nothing (it serves files);
-# - the state Cluster's instances admit only the annotator's pods and each other on 5432 and the CloudNativePG operator
-#   on the status port, and dial only each other, DNS and the API server.
-# NetworkPolicies are additive: the database is reachable only by the annotator where no other policy of the namespace
-# admits its instances, so the release takes a namespace of its own. Off, it renders no policy.
+#   restricted, so they reach DNS, the identity provider, the catalog, the store a vended credential names, OpenFGA and the
+#   state database;
+# - the app may dial nothing (it serves files).
+# Who reaches the state database is its platform's to say. Off, it renders no policy.
 networkPolicy:
   enabled: false
   # The Gateway data plane's pods, as NetworkPolicy peers; empty admits any source to the app port.
   edgeFrom: []
-  # The egress rules reaching the Kubernetes API server as a policy sees it (after the Service's translation), which the
-  # state Cluster's instance managers watch it through. Required while `enabled`.
-  apiServerEgress: []
-  # Name resolution for the state Cluster's instances (a standby dials its primary by the Cluster's Service name).
-  dnsEgress:
-    - to:
-        - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: kube-system }
-          podSelector:
-            matchLabels: { k8s-app: kube-dns }
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
 # Interactive API docs (WORKBENCH_DOCS).
 docs: false
 # Peers whose x-forwarded-* headers uvicorn trusts (the Gateway's data plane); `*` is refused.
@@ -128,19 +113,25 @@ storeIdentity:
   audience: ""
   expirationSeconds: 600
 
-# The annotator's own state: its projects, tasks, drafts and claims are rows in a CloudNativePG Postgres this release
-# renders (the CloudNativePG operator is a prerequisite: in development the `cloudnative-pg` fixture); which pods may
-# reach it is `networkPolicy`'s, with what that needs of the namespace. The pod mounts the Cluster's generated `<cluster>-app` password and its CA as files,
-# and verifies the server's certificate against that CA on every connection.
+# The annotator's own state: its projects, tasks, drafts and claims are rows in a database of a PostgreSQL the platform
+# provides and this release is given by address, as it is given OpenFGA; it renders no database and needs no operator
+# (development: `deploy/fixtures/postgres`). The database and its role exist before the release is installed; the
+# annotator applies its own schema at start. The pod mounts the password and the CA as files and verifies the server's
+# certificate against that CA on every connection (`verify-full`).
 state:
-  instances: 1
-  storage: 2Gi
-  # The Postgres image the Cluster runs; empty takes the operator's default for its version.
-  imageName: ""
-  # The CloudNativePG operator's namespace and its pods' labels, admitted to each instance's status port while
-  # `networkPolicy.enabled`.
-  operatorNamespace: cnpg-system
-  operatorPodLabels: { app.kubernetes.io/name: cloudnative-pg }
+  # The server's name, which its certificate must carry. Required.
+  host: ""
+  port: 5432
+  database: annotator
+  user: annotator
+  # The Secret holding that role's password. Required.
+  password:
+    name: ""
+    key: password
+  # The Secret holding the certificate authority the server's certificate is verified against. Required.
+  ca:
+    name: ""
+    key: ca.crt
 
 # The pods' grace period, the preStop drain, and the lifespan teardown after uvicorn's drain.
 lifecycle:

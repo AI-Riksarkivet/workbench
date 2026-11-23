@@ -42,6 +42,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile: { type: RuntimeDefault }
       # The schema first, idempotently, on the same config: a pod whose database is not up yet retries here.
       initContainers:
@@ -54,7 +55,7 @@ spec:
             capabilities: { drop: ["ALL"] }
           volumeMounts: &mounts
             - { name: config, mountPath: /etc/openfga, readOnly: true }
-            - { name: database-ca, mountPath: /etc/openfga-database-ca, readOnly: true }
+            - { name: database, mountPath: /etc/openfga-database, readOnly: true }
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       containers:
@@ -79,8 +80,15 @@ spec:
           secret:
             secretName: {{ .Values.secretName }}
             items: [{ key: config.yaml, path: config.yaml }]
-        # The database Cluster's CA alone, never its key: the server verifies the database's certificate.
-        - name: database-ca
-          secret:
-            secretName: {{ include "openfga.database" . }}-ca
-            items: [{ key: ca.crt, path: ca.crt }]
+        # What the server reaches its database with: the role's password file and the CA its certificate is verified
+        # against, each alone from its Secret.
+        - name: database
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ .Values.database.credential.name }}
+                  items: [{ key: {{ .Values.database.credential.key }}, path: pgpass }]
+              - secret:
+                  name: {{ .Values.database.ca.name }}
+                  items: [{ key: {{ .Values.database.ca.key }}, path: ca.crt }]

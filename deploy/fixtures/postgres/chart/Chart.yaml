@@ -1,0 +1,9 @@
+apiVersion: v2
+name: workbench-postgres
+description: >-
+  NOT FOR PRODUCTION. The development estate's PostgreSQL, standing in for the one a platform gives the workbench by
+  address: one server, a database and a role for each of its users, their passwords and its certificate made in the
+  cluster. A platform's PostgreSQL replaces it.
+type: application
+version: 0.1.0
+appVersion: "17.6"

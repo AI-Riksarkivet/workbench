@@ -1,0 +1,164 @@
+{{- $name := .Release.Name -}}
+{{- $labels := include "postgres.labels" . | fromYaml -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+data:
+  # Over the network only TLS, and only with a password. The socket is the container's own, which the server's
+  # initialisation uses: whoever may exec into the pod is the superuser, as on any PostgreSQL host.
+  pg_hba.conf: |
+    local   all all     trust
+    hostssl all all all scram-sha-256
+  # Run once, by the image's entrypoint, when the data directory is first initialised: each database, and the role
+  # that owns it and alone may connect to it, its password read by psql from its mounted file (never an argument, which
+  # the process list would show). A role connects to its own database and no other, the server's own included.
+  databases.sh: |
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
+    REVOKE CONNECT ON DATABASE postgres, template1 FROM PUBLIC;
+    SQL
+    for name in {{ join " " .Values.databases }}; do
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
+    \set password \`cat /run/secrets/databases/$name/password\`
+    CREATE ROLE "$name" LOGIN PASSWORD :'password';
+    CREATE DATABASE "$name" OWNER "$name";
+    REVOKE CONNECT ON DATABASE "$name" FROM PUBLIC;
+    SQL
+    done
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- toYaml $labels | nindent 4 }}
+  ports:
+    - { name: postgres, port: {{ .Values.port }}, targetPort: postgres }
+---
+# Only this namespace's pods reach the server, and it dials nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $labels | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - { protocol: TCP, port: postgres }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- toYaml $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $labels | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: {{ .Values.image }}
+          args:
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file=/run/secrets/tls/tls.crt
+            - -c
+            - ssl_key_file=/run/secrets/tls/tls.key
+            - -c
+            - hba_file=/etc/postgres/pg_hba.conf
+          env:
+            - { name: POSTGRES_PASSWORD_FILE, value: /run/secrets/superuser/password }
+            - { name: POSTGRES_INITDB_ARGS, value: "--auth-host=scram-sha-256" }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+            - { name: tmp, mountPath: /tmp }
+            - { name: config, mountPath: /etc/postgres/pg_hba.conf, subPath: pg_hba.conf, readOnly: true }
+            - { name: config, mountPath: /docker-entrypoint-initdb.d/databases.sh, subPath: databases.sh, readOnly: true }
+            - { name: tls, mountPath: /run/secrets/tls, readOnly: true }
+            - { name: superuser, mountPath: /run/secrets/superuser, readOnly: true }
+            {{- range .Values.databases }}
+            - { name: database-{{ . }}, mountPath: /run/secrets/databases/{{ . }}, readOnly: true }
+            {{- end }}
+          # Over TCP: the socket also answers while the entrypoint's initialisation runs, before the databases exist.
+          readinessProbe:
+            exec: { command: ["pg_isready", "--host", "127.0.0.1", "--username", "postgres"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap: { name: {{ $name }} }
+        # The certificate and its key alone, readable by the server's group: PostgreSQL refuses a key anyone else reads.
+        - name: tls
+          secret:
+            secretName: {{ $name }}-tls
+            defaultMode: 0440
+            items: [{ key: tls.crt, path: tls.crt }, { key: tls.key, path: tls.key }]
+        - name: superuser
+          secret:
+            secretName: {{ $name }}-superuser
+            defaultMode: 0440
+            items: [{ key: password, path: password }]
+        {{- range .Values.databases }}
+        - name: database-{{ . }}
+          secret:
+            secretName: {{ $name }}-{{ . }}
+            defaultMode: 0440
+            items: [{ key: password, path: password }]
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: {{ .Values.storage | quote }} } }

@@ -1,7 +1,7 @@
 """The annotator's state store: its projects, tasks, drafts and claims, as rows in its own Postgres.
 
 Workflow state with claims and leases is transactional row state, so it lives in a relational database the annotator
-owns (the chart's CloudNativePG `Cluster`), reached directly with psycopg. Work in progress is kept here too: each
+owns (a database of the platform's PostgreSQL, which the chart's `state` names), reached directly with psycopg. Work in progress is kept here too: each
 task's draft is the one store of the labels people make (the canvas reads and saves it through `annotator.annotations`,
 each save kept in a bounded history), and nothing reaches the lakehouse until a publish writes the project's accepted
 work through the catalog's doors (`annotator.projects.lakehouse`).

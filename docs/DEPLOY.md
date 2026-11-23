@@ -1,15 +1,16 @@
 # Deploying the workbench
 
-The workbench is one Helm chart, `chart/`: the app, the annotator, the viewer and search, the annotator's Postgres
-(a CloudNativePG `Cluster`) and the job that writes the workbench's authorization model. Everything it relies on and does
-not render is named by reference: the identity provider, an OpenFGA, the sources it reads, the Gateway, the secrets. Every object
-is named from the release (`<release>-annotator`, `<release>-viewer`, `<release>-search`, `<release>-app`,
-`<release>-annotator-state`).
+The workbench is one Helm chart, `chart/`: the app, the annotator, the viewer and search, and the job that
+writes the workbench's authorization model. Everything it relies on and does not render is named by reference: the
+identity provider, an OpenFGA, the PostgreSQL the annotator keeps its state on, the sources it reads, the Gateway, the
+secrets. Every object is named from the release (`<release>-annotator`, `<release>-viewer`, `<release>-search`,
+`<release>-app`).
 
-Prerequisites on any cluster: the Gateway API with a Gateway the routes attach to, the CloudNativePG operator
-(`postgresql.cnpg.io/v1`), and, for the development secrets only, the External Secrets Operator's `Password` generator
-(`generators.external-secrets.io/v1alpha1`). Give the release a namespace of its own: the chart's NetworkPolicies are
-the only thing keeping other pods away from its database where no other policy of the namespace admits them.
+Prerequisites on any cluster: the Gateway API with a Gateway the routes attach to, a PostgreSQL the release is
+given by address (`state`, ADR 0036; the chart renders no database and needs no operator), and, for the development
+secrets only, the External Secrets Operator's `Password` generator (`generators.external-secrets.io/v1alpha1`). Give
+the release a namespace of its own: its policies select only its own pods, and the development PostgreSQL admits
+every pod of its namespace.
 
 ## The development cluster
 
@@ -25,12 +26,13 @@ make deploy-dev          # every step below, in order; each is safe to run again
 | Step | What it does on the cluster | Undo |
 | --- | --- | --- |
 | `make dev-images` | builds `media`, `annotator` and `frontend` through Dagger (the shared engine) and publishes them as `workbench-media`, `workbench-annotator`, `workbench-app` tagged with the commit (`git rev-parse --short=12 HEAD`) to `172.17.0.1:5000`; refuses a dirty tree | the tags stay in the registry until rask's `make registry-gc` |
-| `make dev-openfga` | release `workbench-openfga` (`deploy/fixtures/openfga`) in `workbench`, creating the namespace: OpenFGA v1.18.3 on a Postgres `Cluster` of its own, its database password and preshared key generated in the cluster | `make dev-undeploy-openfga` |
+| `make dev-postgres` | release `workbench-postgres` (`deploy/fixtures/postgres`) in `workbench`, creating the namespace: one PostgreSQL 17 standing in for a platform's (it needs the External Secrets Operator), with a database and a role each for the annotator's state and OpenFGA's tuples, every password generated in the cluster, and a certificate of its own so clients verify it (`<release>-ca`); only the namespace's pods reach it, over TLS | `make dev-undeploy-postgres`, which removes the claim too: the passwords are made again at the next install, and the server takes them only on an empty data directory |
+| `make dev-openfga` | release `workbench-openfga` (`deploy/fixtures/openfga`) in `workbench`: OpenFGA v1.18.3 on the database `openfga` of that PostgreSQL, reading its password from the fixture's password file, its preshared key generated in the cluster. Its config is made once: a change to its database values needs `make dev-undeploy-openfga` first | `make dev-undeploy-openfga` |
 | `make dev-model-stand-in` | release `workbench-model-stand-in` (`deploy/fixtures/model-stand-in`) in `workbench`: the annotator's image at the commit, run as the stand-in model endpoint (`python -m annotator.model_endpoint.stand_in`), which speaks the model protocol and holds no model; `deploy/values-dev.yaml` names it as `models.endpoint.url` | `make dev-undeploy-model-stand-in` |
-| `make dev-release` | release `workbench` from `chart/` with `deploy/values-dev.yaml` and the commit's image tags (`--reset-values`, nothing read back from a release): the four workloads, the annotator's `Cluster`, the HTTPRoutes under `workbench.localhost`, the NetworkPolicies, the model writer job, the development Secrets, and the demo source (below) | `make dev-undeploy-release` (the demo claim stays, until the namespace goes) |
-| `make dev-readback` | waits for every Deployment and `Cluster` in `workbench` and asks the Gateway for the app's `/config.json` under `workbench.localhost` | none needed |
+| `make dev-release` | release `workbench` from `chart/` with `deploy/values-dev.yaml` and the commit's image tags (`--reset-values`, nothing read back from a release): the four workloads, the HTTPRoutes under `workbench.localhost`, the NetworkPolicies, the model writer job, the development Secrets, and the demo source (below) | `make dev-undeploy-release` (the demo claim stays, until the namespace goes) |
+| `make dev-readback` | waits for every Deployment and the PostgreSQL fixture in `workbench` and asks the Gateway for the app's `/config.json` under `workbench.localhost` | none needed |
 
-`make undeploy-dev` uninstalls the releases and deletes the namespace (and with it both databases' claims). It leaves
+`make undeploy-dev` uninstalls the releases and deletes the namespace, the claim the databases are kept on included. It leaves
 the images in the registry, what the lakehouse's install carries for the workbench (below), and any table a publish
 wrote in the lakehouse, which is its owner's to drop at the catalog's drop door.
 
@@ -202,8 +204,15 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
 - **Models:** the workbench deploys none (ADR 0023). `models.endpoint.url` names the model endpoint assist asks: a Ray Serve deployment that speaks the workbench's model protocol, at its route prefix behind Serve's HTTP proxy (`http://<rayservice>-serve-svc:8000/<route prefix>`; ADR 0032, `docs/model-protocol.md` § A Ray Serve deployment); `models.endpoint.audience` is the audience of the ServiceAccount token the annotator presents to it (projected, an hour, read on every call), which the deployment verifies itself against the cluster issuer, with its subject the annotator's ServiceAccount (`system:serviceaccount:<namespace>:<release>-annotator`), since Serve verifies no token; `models.endpoint.timeoutSeconds` is how long an ask may take. With no `url` the release has no assist and the canvas says so. Each model's weights carry their own licence, checked before use.
 - **Secrets:** `media.viewer.mediaUrlKey` names the viewer's signing key; `dev.secrets.enabled` stays off, so git holds
   no secret's value.
-- **Routes:** `route.parentRefs` and `route.hostnames`; `networkPolicy.enabled` with `apiServerEgress` for the API
-  server as a policy sees it.
+- **The annotator's state:** `state.host` (and `port`, `database`, `user`) names a database of the platform's
+  PostgreSQL, `state.password` the Secret holding its role's password and `state.ca` the Secret holding the certificate
+  authority the server's certificate is verified against. Both Secrets are in the release's namespace (keys `password`
+  and `ca.crt` unless the values name others). The connection is always `verify-full` with the password, with no way
+  to turn it down: the server's certificate carries `state.host` as a name, and the server takes TLS connections with
+  password authentication. The database and the role exist before the install, the role owning the database (the
+  annotator creates its own tables and functions there at start). The suite and the development estate run
+  PostgreSQL 17. Who reaches the server is the platform's policy.
+- **Routes:** `route.parentRefs` and `route.hostnames`; `networkPolicy.enabled` for the release's own policies.
 
 ## Without rask, or beside it
 

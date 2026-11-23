@@ -1,0 +1,17 @@
+# NOT FOR PRODUCTION. Stock PostgreSQL, the version the workbench's offline suite runs the annotator's state on
+# (`.dagger/main.go`'s `PostgresImage`).
+image: postgres:17.6-bookworm
+port: 5432
+# The claim the server's data lives on. A StatefulSet's claim template is immutable after install.
+storage: 2Gi
+# One database each, owned by a role of the same name that alone may connect to it: the annotator's state (the
+# workbench release's `state`) and the development OpenFGA's tuples (`deploy/fixtures/openfga`). Each role's password
+# is generated in the cluster into the Secret `<release>-<name>`: `password`, and `pgpass` (the same password as a
+# PostgreSQL password file, for a client that reads one). They are created when the server first initialises its data
+# directory: a name added afterwards is not created, and passwords and data go together. An uninstall removes the
+# passwords, so `make dev-undeploy-postgres` removes the claim with them; a first start that failed part-way needs the
+# same before it is tried again.
+databases: [annotator, openfga]
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: "1", memory: 512Mi }

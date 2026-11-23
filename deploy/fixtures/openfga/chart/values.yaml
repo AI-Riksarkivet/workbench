@@ -8,11 +8,16 @@ resources:
   limits: { cpu: "1", memory: 512Mi }
 # The datastore. Postgres, not OpenFGA's in-memory engine: the tuples a project's creation and its members' changes
 # write are the workbench's record of who holds which role, which no model writer re-creates, so a restart must keep
-# them.
+# them. A database of the development PostgreSQL (`deploy/fixtures/postgres`), by its address: the server is verified
+# against `ca`, and the role's password is read from `credential`, a PostgreSQL password file, so the server's config
+# names none. The names below are that fixture's under its default release name. The config is made once, with the key:
+# a change here reaches a release only after `make dev-undeploy-openfga`.
 database:
-  instances: 1
-  storage: 1Gi
-  # The Postgres image the Cluster runs; empty takes the operator's default for its version.
-  imageName: ""
+  host: workbench-postgres
+  port: 5432
+  name: openfga
+  user: openfga
+  credential: { name: workbench-postgres-openfga, key: pgpass }
+  ca: { name: workbench-postgres-ca, key: ca.crt }
 # The Secret this release generates: the preshared key a client presents (`preshared-key`), and the server's config.
 secretName: workbench-openfga

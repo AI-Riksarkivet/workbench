@@ -52,42 +52,4 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "annotator.stateCluster" . }}
-  labels:
-    {{- include "annotator.selector" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels: { cnpg.io/cluster: {{ include "annotator.stateCluster" . }} }
-  policyTypes: [Ingress, Egress]
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              {{- include "annotator.selector" . | nindent 14 }}
-        - podSelector:
-            matchLabels: { cnpg.io/cluster: {{ include "annotator.stateCluster" . }} }
-      ports:
-        - { protocol: TCP, port: 5432 }
-    - from:
-        - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: {{ .Values.state.operatorNamespace | quote }} }
-          podSelector:
-            matchLabels:
-              {{- toYaml .Values.state.operatorPodLabels | nindent 14 }}
-      ports:
-        - { protocol: TCP, port: 8000 }
-  egress:
-    - to:
-        - podSelector:
-            matchLabels: { cnpg.io/cluster: {{ include "annotator.stateCluster" . }} }
-      ports:
-        - { protocol: TCP, port: 5432 }
-    {{- /* A standby reaches its primary by the Cluster's Service name, so the instances resolve names. */}}
-    {{- toYaml .Values.networkPolicy.dnsEgress | nindent 4 }}
-    {{- if not .Values.networkPolicy.apiServerEgress }}{{ fail "networkPolicy.apiServerEgress must name the Kubernetes API server's endpoints : each instance manager watches its Cluster" }}{{ end }}
-    {{- toYaml .Values.networkPolicy.apiServerEgress | nindent 4 }}
 {{- end }}

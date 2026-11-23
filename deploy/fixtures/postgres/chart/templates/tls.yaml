@@ -1,0 +1,37 @@
+{{- /*
+The server's certificate, so a client verifies it (`sslmode=verify-full`) as it would a platform's. A certificate
+authority made at install signs one certificate for the Service's names and its key is then discarded, so nothing can
+sign another; an upgrade keeps the pair the cluster holds. `<release>-tls` is the server's alone; `<release>-ca` holds
+the authority's certificate and nothing else, which is what a client mounts.
+*/ -}}
+{{- $name := .Release.Name -}}
+{{- $held := lookup "v1" "Secret" .Release.Namespace (printf "%s-tls" $name) -}}
+{{- $material := dict -}}
+{{- if $held -}}
+{{- $material = $held.data -}}
+{{- else -}}
+{{- $authority := genCA (printf "%s development CA" $name) 3650 -}}
+{{- $hosts := list $name (printf "%s.%s" $name .Release.Namespace) (printf "%s.%s.svc" $name .Release.Namespace) (printf "%s.%s.svc.cluster.local" $name .Release.Namespace) -}}
+{{- $certificate := genSignedCert $name nil $hosts 3650 $authority -}}
+{{- $material = dict "tls.crt" (b64enc $certificate.Cert) "tls.key" (b64enc $certificate.Key) "ca.crt" (b64enc $authority.Cert) -}}
+{{- end -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-tls
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ index $material "tls.crt" }}
+  tls.key: {{ index $material "tls.key" }}
+  ca.crt: {{ index $material "ca.crt" }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-ca
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+data:
+  ca.crt: {{ index $material "ca.crt" }}

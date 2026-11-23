@@ -11,7 +11,6 @@ app.kubernetes.io/component: annotator
 {{- /* The demo volume's claim (`demo`), which the demo source names as its `claim`. */ -}}
 {{- define "workbench.demoClaim" -}}{{ printf "%s-demo" .Release.Name }}{{- end -}}
 
-{{- define "annotator.stateCluster" -}}{{ printf "%s-state" (include "annotator.name" .) }}{{- end -}}
 
 {{- define "annotator.otlpEndpoint" -}}{{ required "otel.endpoint: the OTLP/HTTP endpoint telemetry is sent to" .Values.otel.endpoint }}{{- end -}}
 
