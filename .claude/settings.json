@@ -10,7 +10,6 @@
     "dockerfile@ra-skills": true,
     "zensical-setup@ra-skills": true,
     "zensical-authoring@ra-skills": true,
-    "toolkit-skills@claude-code-toolkit": true,
     "mcp-essentials@claude-code-toolkit": true,
     "analytics@claude-code-toolkit": true,
     "astral@astral-sh": true,
