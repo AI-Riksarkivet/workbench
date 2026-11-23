@@ -528,7 +528,7 @@ async function clientUnknown(oidc: UserManager): Promise<string | null> {
 	const body: unknown = await answer.json().catch(() => null);
 	const error = typeof body === 'object' && body !== null && 'error' in body ? body.error : null;
 	if (error !== 'invalid_client') return null;
-	return `the identity provider does not know this app's client "${oidc.settings.client_id}": register it there (a development estate: \`make dev-dex-client\`)`;
+	return `the identity provider does not know this app's client "${oidc.settings.client_id}": register it there (a development estate: the lakehouse's install carries it, docs/DEPLOY.md)`;
 }
 
 /** The session is ending: renew it in place where it can be; false when it could not be, and the person is then asked to

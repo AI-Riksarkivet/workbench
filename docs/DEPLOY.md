@@ -27,17 +27,43 @@ make deploy-dev          # every step below, in order; each is safe to run again
 | `make dev-images` | builds `media`, `annotator` and `frontend` through Dagger (the shared engine) and publishes them as `workbench-media`, `workbench-annotator`, `workbench-app` tagged with the commit (`git rev-parse --short=12 HEAD`) to `172.17.0.1:5000`; refuses a dirty tree | the tags stay in the registry until rask's `make registry-gc` |
 | `make dev-openfga` | release `workbench-openfga` (`deploy/fixtures/openfga`) in `workbench`, creating the namespace: OpenFGA v1.18.3 on a Postgres `Cluster` of its own, its database password and preshared key generated in the cluster | `make dev-undeploy-openfga` |
 | `make dev-model-stand-in` | release `workbench-model-stand-in` (`deploy/fixtures/model-stand-in`) in `workbench`: the annotator's image at the commit, run as the stand-in model endpoint (`python -m annotator.model_endpoint.stand_in`), which speaks the model protocol and holds no model; `deploy/values-dev.yaml` names it as `models.endpoint.url` | `make dev-undeploy-model-stand-in` |
-| `make dev-dex-client` | rask's `scripts/fixtures.sh dex` with `deploy/dex-client.yaml`: rask's development Dex gains the public client `workbench-app` (PKCE, redirect `http://workbench.localhost:8080/auth/callback`), the confidential client `workbench-services`, and the CORS origin `http://workbench.localhost:8080`; Dex restarts once when its configuration changes | `make dev-undeploy-dex-client` |
 | `make dev-release` | release `workbench` from `chart/` with `deploy/values-dev.yaml` and the commit's image tags (`--reset-values`, nothing read back from a release): the four workloads, the annotator's `Cluster`, the HTTPRoutes under `workbench.localhost`, the NetworkPolicies, the model writer job, the development Secrets, and the demo source (below) | `make dev-undeploy-release` (the demo claim stays, until the namespace goes) |
-| `make dev-grants` | at rask's catalog doors, as a development administrator (`DEV_ADMIN`, its password from `DEV_ADMIN_PASSWORD_FILE` or asked): grants the workbench's own identity `dex-client~workbench-services` `reader` on the warehouse `acme`, for the cells a signed media link names | `make dev-undeploy-grants` |
 | `make dev-readback` | waits for every Deployment and `Cluster` in `workbench` and asks the Gateway for the app's `/config.json` under `workbench.localhost` | none needed |
 
-`make undeploy-dev` revokes the grants, uninstalls both releases, deletes the namespace (and with it both databases'
-claims) and installs rask's Dex again without the workbench's clients. It leaves the images in the registry, and any
-table a publish wrote in the lakehouse, which is its owner's to drop at the catalog's drop door.
+`make undeploy-dev` uninstalls the releases and deletes the namespace (and with it both databases' claims). It leaves
+the images in the registry, what the lakehouse's install carries for the workbench (below), and any table a publish
+wrote in the lakehouse, which is its owner's to drop at the catalog's drop door.
 
-Rask's own `make k3s-up` installs its Dex with rask's values alone, so it drops the workbench's clients: run
-`make dev-dex-client` again after it.
+**What the workbench asks of the lakehouse's estate is declared here and carried by the lakehouse's install.** Nothing
+in this repository writes to Dex or to the catalog, and no administrator signs in to make a grant. Two values files,
+each for one of rask's releases:
+
+- `deploy/dex-client.yaml`, for rask's Dex fixture: the public client `workbench-app` (PKCE, redirect
+  `http://workbench.localhost:8080/auth/callback`, and its CORS origin `http://workbench.localhost:8080`) and the
+  confidential client `workbench-services`.
+- `deploy/lakehouse-client.yaml`, for rask's own release: one declared grant, `reader` on the warehouse `acme` for the
+  workbench's own identity `dex-client~workbench-services`, which the catalog writes and keeps itself.
+
+```bash
+# in rask's checkout: two lists of values files, appended after rask's own
+make k3s-up K3S_DEX_EXTRA_VALUES=<workbench checkout>/deploy/dex-client.yaml \
+            K3S_EXTRA_VALUES=<workbench checkout>/deploy/lakehouse-client.yaml
+```
+
+Both values are maps keyed by name (a client id, a grant's name), so these files merge with rask's own and with any
+other repository's. Every `make k3s-up` composes the estate from the files it is given: one run without a variable
+drops what that file declared (the clients go, where the run installs the Dex fixture, as it does by default; the
+catalog revokes the grant), until a run with it. The files are read from the checkout the variables name, so that
+checkout is kept on `main`.
+
+The catalog converges on the declaration about once a minute, and two things follow:
+
+- It writes a grant only on a warehouse that exists. `acme` is made at rask's doors, not declared, so on an estate
+  that does not hold it yet the grant, and with it every signed media link, waits for the warehouse and lands within a
+  minute of it.
+- A grant that already stands when it is first declared stays the grant of whoever made it at a door: the catalog
+  neither records it as declared nor revokes it when the declaration drops it. For the declaration to own a grant,
+  revoke the one made at the door; the next converge writes it.
 
 The development Dex keeps its state in memory, so every restart signs with new keys and every token signed before is
 unverifiable. Each service's background refresher reads the issuer's key set every 60 s (`KEY_SET_MAX_AGE_SECONDS`,
@@ -121,10 +147,10 @@ published.
 
 The workbench's services read datasets as the person: under Dex, the person's own token is passed on (it names the
 lakehouse's audience), so what a person may read is their own grants, made by their project's administrator at rask's
-doors. `make dev-grants` grants people nothing. It grants the workbench's own identity only what it uses as itself:
-reading the one cell a signed media link names. It writes nothing in the lakehouse while people label; a publish writes
-the project's table in its target namespace, which the project's administrator grants it (`writer` there) at rask's
-doors.
+doors. Nothing the workbench declares grants people anything. `deploy/lakehouse-client.yaml` declares for the
+workbench's own identity only what it uses as itself: reading the one cell a signed media link names. It writes
+nothing in the lakehouse while people label; a publish writes the project's table in its target namespace, which the
+project's administrator grants it (`writer` there) at rask's doors.
 
 ## On a platform
 
@@ -135,6 +161,11 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
   client for the app (`app.oidc.clientId`, PKCE, redirect `<publicOrigin>/auth/callback`) and, where the services
   write to or read the lakehouse as themselves, a confidential client (`auth.oidc.client.id`) whose secret is a Secret
   the platform provides (`auth.oidc.client.secret.name`).
+- **The workbench's own grant in the lakehouse:** that confidential client, signed in for itself (the machine
+  `<idp id>-client~<client id>`), reads the one cell a signed media link names, so it needs `reader` on each warehouse
+  whose datasets the viewer signs links for; without it every picture and recording fails to load. The platform's
+  lakehouse install declares it, as the development estate's does (`deploy/lakehouse-client.yaml`: one
+  `catalog.declared.grants` entry per warehouse), or an administrator makes it at the catalog's access doors.
 - **Staying signed in across a reload:** `app.oidc.silentSignIn` (on by default) makes the app's first sign-in in a
   tab ask with `prompt=none`, so an issuer holding the person's login session signs them in again with no form. The
   provider must keep a login session of its own and answer `prompt=none` from it (OIDC Core § 3.1.2.1), returning

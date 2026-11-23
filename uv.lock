@@ -3929,7 +3929,6 @@ source = { editable = "." }
 [package.dev-dependencies]
 dev = [
     { name = "import-linter" },
-    { name = "jsonschema" },
     { name = "moto", extra = ["s3", "server"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3949,7 +3948,6 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "import-linter", specifier = ">=2.5" },
-    { name = "jsonschema", specifier = ">=4.23" },
     { name = "moto", extras = ["s3", "server"], specifier = ">=5.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.25" },

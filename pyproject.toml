@@ -28,10 +28,8 @@ dev = [
     "moto[s3,server]>=5.0",
     "respx>=0.21",
     "requests>=2.32",
-    # scripts/lakehouse_grants.py reads the deployment's values; its test checks each request against the lakehouse's
-    # published OpenAPI schemas.
+    # The annotator's route test reads the chart's values.
     "pyyaml>=6.0",
-    "jsonschema>=4.23",
     "ruff",
     "ty",
     # The layer contracts below, run by `make lint` and `dagger call lint`.

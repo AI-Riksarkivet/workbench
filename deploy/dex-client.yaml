@@ -1,6 +1,7 @@
 # The workbench's clients at rask's development Dex, supplied to that fixture's release from here (rask's
-# deploy/fixtures/dex `clients` and `allowedOrigins` seams; rask names no client): `-f` this file beside the issuer rask
-# passes it. NOT FOR PRODUCTION: a platform's IdP registers the same two clients by its own means.
+# deploy/fixtures/dex `clients` and `allowedOrigins` seams; rask names no client): rask's install is handed this
+# file, `make k3s-up K3S_DEX_EXTRA_VALUES=<a workbench checkout on main>/deploy/dex-client.yaml`. NOT FOR PRODUCTION: a
+# platform's IdP registers the same two clients by its own means.
 #
 # - `workbench-app`, the app's public client: PKCE (S256, which the fixture enforces), redirected to the app's callback
 #   on the origin the dev Gateway is reached at. The fixture's audience client trusts every entry here, so the app's

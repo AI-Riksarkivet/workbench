@@ -1,6 +1,6 @@
 .PHONY: help install sync local local-stop test lint fmt typecheck check frontend-check frontend-fmt app-dev app-e2e image claude-bootstrap openfga postgres fga-test fga-model model-protocol chart-check \
-	deploy-dev undeploy-dev dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-dex-client dev-release dev-grants dev-readback \
-	dev-undeploy-grants dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-dex-client dev-undeploy-namespace
+	deploy-dev undeploy-dev dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-release dev-readback \
+	dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-namespace
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
@@ -12,7 +12,7 @@ PYTEST_WORKERS ?= 8
 
 help:
 	@echo "Targets: install local local-stop test lint fmt typecheck check chart-check frontend-check app-dev app-e2e fga-test fga-model openfga postgres image NAME=<stem> claude-bootstrap"
-	@echo "Dev cluster (docs/DEPLOY.md): deploy-dev undeploy-dev, or one step at a time: dev-images dev-openfga dev-dex-client dev-release dev-grants dev-readback"
+	@echo "Dev cluster (docs/DEPLOY.md): deploy-dev undeploy-dev, or one step at a time: dev-images dev-openfga dev-model-stand-in dev-release dev-readback"
 
 # The pinned OpenFGA server the offline suite asserts authorization against (tests/openfga.py), exported from the image
 # `.dagger/main.go` pins, so a developer box and `dagger call test` evaluate the model with one server. `dagger core` runs
@@ -165,18 +165,13 @@ DEV_MODEL_STAND_IN_RELEASE ?= workbench-model-stand-in
 DEV_REGISTRY_PUSH ?= 172.17.0.1:5000
 DEV_ENGINE ?= docker-container://dagger-engine-rask
 DEV_TAG = $(shell git rev-parse --short=12 HEAD)
-# rask's checkout, whose `scripts/fixtures.sh dex` installs its development Dex with the workbench's clients.
-RASK_DIR ?= $(abspath $(CURDIR)/../rask)
-DEV_ISSUER ?= http://localhost:8080/dex
-# The administrator who makes the workbench's grants on the lakehouse; the password is read from this file, or asked.
-DEV_ADMIN ?= alice@example.com
-DEV_ADMIN_PASSWORD_FILE ?=
 DEV_GATEWAY_HOST ?= workbench.localhost
 DEV_HELM = helm --namespace $(DEV_NAMESPACE)
-DEV_GRANTS = uv run python scripts/lakehouse_grants.py --values deploy/values-dev.yaml --reads acme --admin $(DEV_ADMIN) \
-	$(if $(DEV_ADMIN_PASSWORD_FILE),--password-file $(DEV_ADMIN_PASSWORD_FILE))
 
-deploy-dev: dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-dex-client dev-release dev-grants dev-readback
+# What the workbench asks of the lakehouse's estate is not installed from here: its sign-in clients at the development
+# Dex (`deploy/dex-client.yaml`) and its own reader grant (`deploy/lakehouse-client.yaml`) are values the lakehouse's
+# install is handed (docs/DEPLOY.md), so no target writes to Dex or to the catalog.
+deploy-dev: dev-clean-tree dev-images dev-openfga dev-model-stand-in dev-release dev-readback
 
 # Images are named by the commit they are built from, so the tree must be that commit.
 dev-clean-tree:
@@ -200,20 +195,10 @@ dev-model-stand-in:
 	$(DEV_HELM) upgrade --install $(DEV_MODEL_STAND_IN_RELEASE) deploy/fixtures/model-stand-in/chart --create-namespace --reset-values \
 		--set-string image.tag=$(DEV_TAG) --description "workbench fixture: not for production" --wait --timeout 5m
 
-# The workbench's clients at rask's development Dex, through rask's own fixture script: it installs Dex again with rask's
-# values, the issuer rask passes it and this file, so a second run changes nothing, and Dex restarts only when its
-# configuration changed.
-dev-dex-client:
-	@test -x $(RASK_DIR)/scripts/fixtures.sh || { echo "no rask checkout at $(RASK_DIR): set RASK_DIR" >&2; exit 1; }
-	$(RASK_DIR)/scripts/fixtures.sh dex -- --set-string issuer=$(DEV_ISSUER) -f $(CURDIR)/deploy/dex-client.yaml
-
 dev-release:
 	$(DEV_HELM) upgrade --install $(DEV_RELEASE) chart --create-namespace --reset-values -f deploy/values-dev.yaml \
 		--set-string image.tag=$(DEV_TAG) --set-string media.image.tag=$(DEV_TAG) --set-string app.image.tag=$(DEV_TAG) \
 		--wait --wait-for-jobs --timeout 15m
-
-dev-grants:
-	$(DEV_GRANTS) grant
 
 # Every workload Ready, and the route answering the app's own /config.json through the Gateway under the workbench's host.
 dev-readback:
@@ -223,11 +208,8 @@ dev-readback:
 		curl -fsS -H 'Host: $(DEV_GATEWAY_HOST)' "http://$$gateway/config.json" >/dev/null \
 		&& echo "the workbench answers at http://$(DEV_GATEWAY_HOST):8080 (through the port-forward to the Gateway)"
 
-undeploy-dev: dev-undeploy-grants dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-namespace dev-undeploy-dex-client
-	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry"
-
-dev-undeploy-grants:
-	$(DEV_GRANTS) revoke
+undeploy-dev: dev-undeploy-release dev-undeploy-model-stand-in dev-undeploy-openfga dev-undeploy-namespace
+	@echo "left: the images workbench-media, workbench-annotator and workbench-app in the development registry, and what the lakehouse's install carries for it (docs/DEPLOY.md)"
 
 dev-undeploy-release:
 	$(DEV_HELM) uninstall $(DEV_RELEASE) --ignore-not-found --wait
@@ -241,11 +223,6 @@ dev-undeploy-openfga:
 # The namespace last, and with it the claims both databases held.
 dev-undeploy-namespace:
 	kubectl delete namespace $(DEV_NAMESPACE) --ignore-not-found --wait
-
-# rask's development Dex installed again without the workbench's clients.
-dev-undeploy-dex-client:
-	@test -x $(RASK_DIR)/scripts/fixtures.sh || { echo "no rask checkout at $(RASK_DIR): set RASK_DIR" >&2; exit 1; }
-	$(RASK_DIR)/scripts/fixtures.sh dex -- --set-string issuer=$(DEV_ISSUER)
 
 claude-bootstrap:
 	@command -v claude  >/dev/null 2>&1 || { echo "  !! claude CLI not found — install Claude Code first"; exit 1; }
