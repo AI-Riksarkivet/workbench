@@ -175,7 +175,9 @@ SELECT annotator_declare_generated('drafts', 'labels', 'jsonb', $$x$$jsonb_path_
 SELECT annotator_declare_generated('drafts', 'has_work', 'boolean', $$x$$jsonb_path_exists(document, '$$.shapes[0]') OR jsonb_path_exists(document, '$$.links[0]')$$x$$);
 -- The draft's whole-item tags (its `tag` shapes) as a listing answers them for a bulk label (`task_query.work_of`), in the
 -- draft's order: each one's id and class, whether it carries more than its class (text, attributes, or a link to or from
--- it), which a new label would discard, and whether it is a proposal no person has kept yet (a `prediction`). Only these,
+-- it), which a new label would discard, whether it is a proposal no person has kept yet (a `prediction`), and for a
+-- proposal the model, its version and its score that made it, so a listing says who proposed it for as long as it is
+-- there. Only these,
 -- so a tag-heavy draft's row grows by a few dozen bytes a tag, never by a second copy of its shapes. The links' ends are
 -- read once, as a set, so a draft at its caps costs one pass over its links, not one per tag.
 SELECT annotator_declare_function('annotator_work_tags', 'jsonb', 'jsonb', $$body$$WITH ends AS (
@@ -188,7 +190,10 @@ SELECT annotator_declare_function('annotator_work_tags', 'jsonb', 'jsonb', $$bod
          'detailed', coalesce(t ->> 'text', '') <> ''
              OR coalesce(t -> 'attributes', '{}'::jsonb) NOT IN ('{}'::jsonb, 'null'::jsonb)
              OR (t ->> 'shape_id') IN (SELECT end_id FROM ends),
-         'prediction', coalesce(t ->> 'status', '') = 'prediction'
+         'prediction', coalesce(t ->> 'status', '') = 'prediction',
+         'proposed_by', CASE WHEN coalesce(t ->> 'status', '') = 'prediction' AND coalesce(t ->> 'source', '') LIKE 'model:%'
+             THEN jsonb_build_object('model', substr(t ->> 'source', 7), 'version', t -> 'model_version', 'score', t -> 'confidence')
+         END
      ) ORDER BY n), '[]'::jsonb)
      FROM jsonb_array_elements(coalesce($$1 -> 'shapes', '[]'::jsonb)) WITH ORDINALITY AS e(t, n)
      WHERE t ->> 'shape_type' = 'tag'$$body$$);

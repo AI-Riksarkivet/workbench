@@ -385,7 +385,7 @@ Two language-pure planes, as in rask; never blur them.
     each person's part; the bulk actions fire one gated event per item), Label (the bulk-labeling grid, `LabelGrid.svelte`,
     `label-grid.ts`, `label-run.ts`: the items open to the reader's labeling, `open_to`, or for a reviewer the work
     waiting for them, each with its work, `include=work`, its draft's revision and whole-item tags, each saying whether it
-    carries more than its class or is a model's proposal, from a generated `drafts.work_tags` column; the classes drawn
+    carries more than its class or is a model's proposal (and then which model, version and score made it, `proposed_by`), from a generated `drafts.work_tags` column; the classes drawn
     as a tag are its labels, digits 1-9, every other class labelled on the canvas; a `role="grid"` keyboard grid, a label
     written to each item through the canvas's own save door on the revision read, claimed first where its `legal_events`
     offer it (and released again when the label is then refused), a few in flight, told as "n of N" with a Stop, each

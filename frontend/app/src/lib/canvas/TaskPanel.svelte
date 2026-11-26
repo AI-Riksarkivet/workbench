@@ -23,6 +23,7 @@
 	let {
 		controller,
 		task,
+		itemName,
 		permissions,
 		me,
 		browsing = false,
@@ -31,6 +32,8 @@
 	}: {
 		controller: AnnotatorController;
 		task: TaskDetail;
+		/** What the item is called, for the send-back form's title. */
+		itemName: string;
 		permissions: readonly string[];
 		me: string | null;
 		/** A browse pass: the panel says where the item stands, read-only, whatever its state, and offers nothing. */
@@ -307,7 +310,7 @@
 
 <SendBackDialog
 	bind:open={noteOpen}
-	title="Send the item back"
+	title="Send back {itemName}"
 	description="Say what should change: the note goes to its annotator with the item."
 	placeholder="The second box cuts off the signature."
 	busy={busy !== null}

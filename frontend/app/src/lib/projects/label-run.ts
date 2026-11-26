@@ -64,7 +64,7 @@ import {
 	isEmpty,
 	itemTakes,
 	labelable,
-	proposedText,
+	shapesProposed,
 	type Change,
 	type Intent,
 } from './label-grid.ts';
@@ -92,8 +92,9 @@ export interface ClaimTaken {
 }
 
 /** What happened to one item: ``claimed`` when the run took the item's claim to write it, and ``stays`` why a claim it
- *  would have given back stays the reader's; for an ask, ``proposed`` says what the model's answer put on it and
- *  ``left`` what of it was not kept. An item left as it was may say why (``note``). */
+ *  would have given back stays the reader's; for an ask, ``proposed`` says what the model's answer put on it beyond the
+ *  whole-item tags its listing says, and ``left`` what of it was not kept. An item left as it was may say why
+ *  (``note``). */
 export type Outcome =
 	| {
 			status: 'done';
@@ -362,7 +363,7 @@ export function applyIntent(
 		targets,
 		async (task): Promise<Outcome> => {
 			if (keep.has(task.task_id))
-				return { status: 'not-attempted', reason: 'kept: what its label carries stays' };
+				return { status: 'not-attempted', reason: 'kept as it is, with what its label carries' };
 			const may = labelable(task);
 			if (may.kind === 'no') return { status: 'refused', reason: may.reason };
 			if (intent.kind !== 'clear' && !itemTakes(task, intent.label))
@@ -615,17 +616,19 @@ async function heldProposals(
 
 /** The outcome of ``answer`` saved to ``item`` at a revision (null: it has no undo of its own). What of the answer the
  *  item's classes could not hold is named on it beside what it kept. */
-const answerSaved =
-	(item: ItemWrite, answer: AssistAnswer) =>
-	(revision: number | null): Done => ({
+const answerSaved = (item: ItemWrite, answer: AssistAnswer) => {
+	// The tags it proposed are said from the item's listing; what else it proposed only the answer says.
+	const shapes = shapesProposed(answer);
+	return (revision: number | null): Done => ({
 		status: 'done',
 		revision,
 		...(item.claimed ? { claimed: item.claimed } : {}),
-		proposed: proposedText(answer),
+		...(shapes ? { proposed: shapes } : {}),
 		...(answer.dropped.length > 0
 			? { left: { reason: answer.dropped.join('; '), group: NO_FIT } }
 			: {}),
 	});
+};
 
 /** What a save of the rows ``saved.ids`` built on ``saved.base`` whose answer was lost did: ``done`` where the item holds
  *  them (it landed), else null. */

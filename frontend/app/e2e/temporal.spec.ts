@@ -36,7 +36,7 @@ test('a recording opens on its waveform, a dragged region takes a class from the
 	const violations = await watchCsp(page);
 	await page.goto('/projects/sounds/tasks/sounds-t1?project=sounds');
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText(
-		'Label Intervju om hamnen 1952, 0:02–0:04',
+		'Labeling Intervju om hamnen 1952, 0:02–0:04',
 	);
 	await expect(strip(page)).toHaveAttribute('data-ready', 'true');
 	await expect(page.getByTestId('temporal-canvas')).toHaveAttribute('data-ready', 'true');

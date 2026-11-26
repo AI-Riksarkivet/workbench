@@ -211,3 +211,15 @@ def test_a_reviewers_decision_on_a_flagged_item_records_whether_they_agreed(
     assert kept is not None
     assert (kept.agreed, kept.settled_by, kept.settled_action) == (agreed, "rita", action)
     assert kept.settled_at == datetime.fromisoformat(decided.json()["reviewed_at"])
+
+
+def test_a_suggested_class_the_flagged_labels_shape_cannot_take_is_dropped_and_the_flag_kept(client_for: Build, endpoint: str) -> None:
+    """The stand-in judge suggests `seal` for a box of class `stamp`; here `seal` takes only whole-item tags, so a reviewer
+    could never choose it for that box. The flag, its reason and its score stand; the suggestion goes."""
+    client = client_for(endpoint, judge=stand_in.JUDGE, tools_of={"seal": ["tag"]})
+    _submit(client)
+
+    verdict = _judge(client)
+
+    assert verdict.status_code == 200, verdict.text
+    assert verdict.json()["flags"] == [{**FLAGS[0], "suggested_label": ""}]

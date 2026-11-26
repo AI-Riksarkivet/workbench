@@ -64,6 +64,15 @@
 	import GridAskPanel from './GridAskPanel.svelte';
 	import MediaThumb from './MediaThumb.svelte';
 	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant } from './presentation.ts';
+	import {
+		askWording,
+		eventWording,
+		labelWording,
+		markerText,
+		settleWording,
+		stepWording,
+		type Wording,
+	} from './event-words.ts';
 	import { taskImageUrl } from './task-media.ts';
 	import { reauth } from '#lib/reauth.svelte.ts';
 	import { personName } from './people.ts';
@@ -87,8 +96,11 @@
 		itemMoment,
 		labelable,
 		moved,
+		producedText,
 		readGridQuery,
 		sentBackNote,
+		skipping,
+		tagProducers,
 		writeGridQuery,
 		GRID_SIZES,
 		type GridQuery,
@@ -445,8 +457,9 @@
 				run = null;
 			});
 	}
-	/** The control of one run: its progress shown as it settles, and the person's stop read before each item starts. A
-	 *  session a service refused stops it too: the items not yet started are left as they were, for after signing in. */
+	/** The control of one run, told as ``what`` while it runs: its progress shown as it settles, and the person's stop
+	 *  read before each item starts. A session a service refused stops it too: the items not yet started are left as they
+	 *  were, for after signing in. */
 	function control(what: string, total: number, stop: Stop): Control {
 		stopAsked = false;
 		stoppedAt = null;
@@ -468,7 +481,7 @@
 	}
 
 	interface Entry {
-		what: string;
+		what: Wording;
 		written: Written[];
 	}
 	let undos = $state.raw<Entry[]>([]);
@@ -497,10 +510,10 @@
 		proposals: (task, source, signal) => proposalsOf(unitUrl(task), source, signal),
 		revisionHolding: (task, ids) => revisionHolding(unitUrl(task), ids),
 	};
-	/** One run over ``total`` items, told as ``what``, whose Stop does as ``stop`` says. */
-	const runOf = (what: string, total: number, stop: Stop = 'waits'): Run => ({
+	/** One run over ``total`` items, told as ``what`` says while it runs, whose Stop does as ``stop`` says. */
+	const runOf = (what: Wording, total: number, stop: Stop = 'waits'): Run => ({
 		doors,
-		control: control(what, total, stop),
+		control: control(what.running, total, stop),
 	});
 
 	/** The items as the listing answers them now (a selection past this page, as `known` read them). */
@@ -632,14 +645,14 @@
 	/** After a run that saved to items: its report, its saves on the undo stack as one entry, the items past this page
 	 *  read again (they carry their new work for the next action on them), and the page read again. */
 	async function finish(
-		what: string,
+		what: Wording,
 		targets: readonly TaskDetail[],
 		results: readonly Outcome[],
 		words: Words = CHANGED,
 	): Promise<void> {
 		// A grid that is gone has nobody to tell, and no undo to keep.
 		if (gone.signal.aborted) return;
-		report(what, targets, results, words);
+		report(what.done, targets, results, words);
 		const written = writtenBy(targets, results);
 		if (written.length > 0) {
 			undos = [...undos, { what, written }].slice(-UNDO_DEPTH);
@@ -669,12 +682,7 @@
 
 	/** Label ``ids`` (the selection, else the focused item) as ``intent`` asks. */
 	function label(ids: readonly string[], intent: Intent): void {
-		const what =
-			intent.kind === 'clear'
-				? 'Cleared'
-				: intent.kind === 'set'
-					? `Labelled ${intent.label}`
-					: `Toggled ${intent.label}`;
+		const what = labelWording(intent);
 		// The question is asked before anything is written, so it names what is asked, not what was done.
 		const asked =
 			intent.kind === 'clear'
@@ -708,7 +716,7 @@
 	/** Keep or remove every proposal of ``ids`` (the selection, else the focused item), each item on its own, undone by
 	 *  the grid's undo as a label is. */
 	function settleAll(ids: readonly string[], action: 'keep' | 'remove'): void {
-		const what = action === 'keep' ? 'Kept the proposals' : 'Removed the proposals';
+		const what = settleWording(action);
 		enqueue(async () => {
 			const targets = current(ids);
 			if (targets.length === 0) return;
@@ -719,7 +727,7 @@
 	/** Ask ``model`` about each of ``ids`` (the selection, else the focused item), with ``words`` where it takes them, and
 	 *  save each answer to its item as proposals, undone by the grid's undo as a label is. */
 	function askAll(ids: readonly string[], model: AssistModel, words: string): void {
-		const what = `Asked ${model.title || model.name}`;
+		const what = askWording(model.title || model.name);
 		const ask = {
 			model: model.name,
 			prompt: gridAsk(model) === 'words' ? words.trim() : '',
@@ -745,17 +753,16 @@
 	const proposalsIn = (items: readonly TaskDetail[]): number =>
 		items.reduce((n, t) => n + (t.work?.proposals ?? 0), 0);
 
-	/** Replay ``entry`` by ``each`` (the annotator's own undo of each item's save, or of that undo), told as ``verb``:
+	/** Replay ``entry`` by ``each`` (the annotator's own undo of each item's save, or of that undo), told as ``what``:
 	 *  what it wrote, for the opposite stack. */
 	async function replay(
 		entry: Entry,
-		verb: 'Undone' | 'Redone',
+		what: Wording,
 		each: (written: readonly Written[], run: Run) => Promise<Outcome[]>,
 	): Promise<Entry | null> {
-		const what = `${verb}: ${entry.what}`;
 		const results = await each(entry.written, runOf(what, entry.written.length));
 		const tasks = entry.written.map((w) => w.task);
-		report(what, tasks, results);
+		report(what.done, tasks, results);
 		const back = writtenBy(tasks, results);
 		return back.length > 0 ? { what: entry.what, written: back } : null;
 	}
@@ -764,7 +771,9 @@
 		enqueue(async () => {
 			const entry = undos.at(-1);
 			if (!entry) return;
-			const back = await replay(entry, 'Undone', undoEach);
+			// The step is told by its place in the history, so two undos of steps of one kind say which each took back.
+			const what = stepWording('undo', undos.length, undos.length + redos.length, entry.what);
+			const back = await replay(entry, what, undoEach);
 			undos = undos.slice(0, -1);
 			if (back) redos = [...redos, back];
 			await settle();
@@ -775,7 +784,8 @@
 		enqueue(async () => {
 			const entry = redos.at(-1);
 			if (!entry) return;
-			const back = await replay(entry, 'Redone', redoEach);
+			const what = stepWording('redo', undos.length + 1, undos.length + redos.length, entry.what);
+			const back = await replay(entry, what, redoEach);
 			redos = redos.slice(0, -1);
 			if (back) undos = [...undos, back];
 			await settle();
@@ -798,21 +808,12 @@
 	const returnable = $derived(
 		selected.filter((t) => t.legal_events.some((e) => e.event === 'request_changes')),
 	);
-	/** What a transition did, as its summary says it: the grid's own words for its buttons, in the past. */
-	const DONE: Record<string, string> = {
-		claim: 'Claimed',
-		release: 'Released',
-		submit: 'Submitted for review',
-		accept: 'Accepted',
-		fix_and_accept: 'Accepted with fixes',
-		request_changes: 'Sent back',
-	};
 	/** The items a send-back covers that a judge flagged, and whether the reviewer found those flags right. */
 	const flaggedReturns = $derived(returnable.filter((t) => (t.judgement?.flags.length ?? 0) > 0));
 	let flagsRight = $state(true);
 	function fireAll(event: string, message?: string): void {
 		const ids = targetsFor(selected, [...selection], event).map((t) => t.task_id);
-		const what = DONE[event] ?? (EVENT_LABELS[event] ?? event).replace('…', '');
+		const what = eventWording(event);
 		enqueue(async () => {
 			const targets = current(ids);
 			const results = await pooled(
@@ -836,10 +837,10 @@
 						? { status: 'done', revision: 0 }
 						: { status: 'refused', reason: result.detail };
 				},
-				control(what, targets.length, 'waits'),
+				control(what.running, targets.length, 'waits'),
 				{ status: 'not-attempted', reason: 'stopped before it was started' },
 			);
-			report(what, targets, results, MOVED);
+			report(what.done, targets, results, MOVED);
 			// A transition leaves an item's work as it was, so an undo of a label written before it is still built on the
 			// revision that label left. The claim is the person's from now on, whatever a run took: an undo leaves it be.
 			disown(targets.filter((_, i) => results[i]?.status === 'done').map((t) => t.task_id));
@@ -991,6 +992,13 @@
 
 	const link = $derived(linkWith(projectId));
 	const tagsOf = (task: TaskDetail) => task.work?.tags ?? [];
+	/** Who proposed what on an item: read from the proposals its listed tags hold, so it stands for as long as they do
+	 *  (after an undo, a redo, another action, a reload), and beside it what the last ask proposed of another shape. */
+	function proposedOn(task: TaskDetail): string | null {
+		const outcome = outcomeOf(task);
+		const asked = outcome?.status === 'done' ? outcome.proposed : undefined;
+		return [producedText(tagProducers(tagsOf(task))), asked].filter(Boolean).join('; ') || null;
+	}
 	function cellName(task: TaskDetail): string {
 		const held = gridLabelsOf(tagsOf(task), labels).map((c) => c.name);
 		const proposed = gridLabelsOf(tagsOf(task), labels, true).map((c) => c.name);
@@ -1002,12 +1010,12 @@
 			proposed.length > 0 ? `suggested ${proposed.join(', ')}` : null,
 			(task.work?.proposals ?? 0) > 0 ? proposalCount(task.work?.proposals ?? 0) : null,
 			detailedIn(tagsOf(task), gridNames) ? 'its label carries details' : null,
-			outcome?.status === 'done' && outcome.proposed ? `proposed by ${outcome.proposed}` : null,
-			outcome?.status === 'done' && outcome.left ? `left out: ${outcome.left}` : null,
+			proposedOn(task),
+			outcome?.status === 'done' && outcome.left ? markerText('left-out', outcome.left) : null,
 			outcome?.status === 'done' && outcome.stays ? outcome.stays : null,
 			outcome?.status === 'unchanged' ? outcome.text : null,
-			outcome?.status === 'refused' ? `refused: ${outcome.text}` : null,
-			outcome?.status === 'not-attempted' ? `not attempted: ${outcome.text}` : null,
+			outcome?.status === 'refused' ? markerText('refused', outcome.text) : null,
+			outcome?.status === 'not-attempted' ? markerText('not-attempted', outcome.text) : null,
 			note ? `sent back by ${personName(note.by, listing?.people)}: ${note.message}` : null,
 		]
 			.filter(Boolean)
@@ -1191,7 +1199,7 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				aria-label="Undo {undos.at(-1)?.what ?? ''}"
+				aria-label="Undo {undos.at(-1)?.what.done ?? ''}"
 				aria-keyshortcuts="Control+Z"
 				data-testid="grid-undo"
 				disabled={undos.length === 0}
@@ -1202,8 +1210,8 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				aria-label="Redo {redos.at(-1)?.what ?? ''}"
-				aria-keyshortcuts="Control+Shift+Z"
+				aria-label="Redo {redos.at(-1)?.what.done ?? ''}"
+				aria-keyshortcuts="Control+Shift+Z Control+Y"
 				data-testid="grid-redo"
 				disabled={redos.length === 0}
 				onclick={redo}
@@ -1459,6 +1467,7 @@
 						{@const about = described(task)}
 						{@const held = gridLabelsOf(tagsOf(task), labels)}
 						{@const outcome = outcomeOf(task)}
+						{@const proposedLine = proposedOn(task)}
 						{@const note = sentBackNote(task)}
 						{@const picked = selection.has(task.task_id)}
 						<!-- The grid takes every key for its cells (`onkeydown` on the grid): a click here is the mouse's way to the same. -->
@@ -1605,22 +1614,22 @@
 											{note.message}
 										</p>
 									{/if}
-									{#if outcome?.status === 'done' && outcome.proposed}
+									{#if proposedLine}
 										<span
 											class="text-muted-foreground line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
-											title="proposed by {outcome.proposed}"
+											title={proposedLine}
 											data-testid="grid-cell-assisted"
 										>
-											{outcome.proposed}
+											{proposedLine}
 										</span>
 									{/if}
 									{#if outcome?.status === 'done' && outcome.left}
 										<span
 											class="text-destructive line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
-											title="left out: {outcome.left}"
+											title={markerText('left-out', outcome.left)}
 											data-testid="grid-cell-left-out"
 										>
-											left out: {outcome.left}
+											{markerText('left-out', outcome.left)}
 										</span>
 									{/if}
 									{#if outcome?.status === 'done' && outcome.stays}
@@ -1644,18 +1653,19 @@
 									{#if outcome?.status === 'refused'}
 										<span
 											class="text-destructive line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
-											title={outcome.text}
+											title={markerText('refused', outcome.text)}
 											data-testid="grid-cell-refused"
 										>
-											⚠ {outcome.text}
+											<span aria-hidden="true">⚠</span>
+											{markerText('refused', outcome.text)}
 										</span>
 									{:else if outcome?.status === 'not-attempted'}
 										<span
 											class="text-muted-foreground line-clamp-2 min-w-0 text-[11px] break-words group-focus:line-clamp-none"
-											title={outcome.text}
+											title={markerText('not-attempted', outcome.text)}
 											data-testid="grid-cell-skipped"
 										>
-											not attempted: {outcome.text}
+											{markerText('not-attempted', outcome.text)}
 										</span>
 									{/if}
 								</div>
@@ -1717,7 +1727,7 @@
 		<Dialog.Title>{asking?.what}: replace what other labels carry?</Dialog.Title>
 		<Dialog.Description data-testid="grid-ask-count">
 			{carryCount(asking?.count ?? 0, asking?.total ?? 0)} text, attributes, links or a model's proposal
-			on a label that this one replaces. Skipping keeps those items as they are and labels the rest.
+			on a label that this one replaces. {skipping(asking?.count ?? 0, asking?.total ?? 0)}
 		</Dialog.Description>
 		<form
 			class="flex justify-end gap-2"

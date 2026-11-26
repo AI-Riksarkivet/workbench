@@ -52,6 +52,17 @@ def _ask(state: AppState, caller: LakehouseCaller, dataset: str | None, key: str
     )
 
 
+def _takeable(suggested: str, label_id: str | None, task: Task, draft: Draft | None) -> str:
+    """``suggested`` where the task's classes let the flagged label's shape take it, else nothing: a model is told the
+    classes but not which shapes each takes, so it can suggest one the label cannot carry, which a reviewer could never
+    choose. The rule is the one assist keeps a proposal's class by (`LabelOntology.class_takes`). A flag on the whole
+    item names no label, and its suggestion is kept as it is."""
+    if not suggested or label_id is None:
+        return suggested
+    shape = next((s for s in (draft.shapes if draft else []) if s.shape_id == label_id), None)
+    return suggested if shape is not None and task.ontology.class_takes(suggested, shape.shape_type) else ""
+
+
 @router.post("/judge/{key:path}", dependencies=[READS_DATASET])
 async def judge(
     task: ReadableUnit,
@@ -97,7 +108,10 @@ async def judge(
             model=answer.model,
             version=answer.version,
             asked_by=subject,
-            flags=[Flag(shape_id=d.label_id, reason=d.reason, suggested_label=d.suggested_label, score=d.score) for d in answer.disagreements],
+            flags=[
+                Flag(shape_id=d.label_id, reason=d.reason, suggested_label=_takeable(d.suggested_label, d.label_id, task, draft), score=d.score)
+                for d in answer.disagreements
+            ],
         )
     )
     audit(

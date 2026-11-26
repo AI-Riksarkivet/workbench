@@ -68,7 +68,7 @@ export const EVENT_LABELS: Record<string, string> = {
 	requeue: 'Requeue',
 	accept: 'Accept',
 	fix_and_accept: 'Fix & accept',
-	request_changes: 'Request changes…',
+	request_changes: 'Send back…',
 	reopen: 'Reopen',
 };
 

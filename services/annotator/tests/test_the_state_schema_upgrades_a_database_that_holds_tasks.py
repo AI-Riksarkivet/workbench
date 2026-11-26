@@ -174,8 +174,8 @@ def test_a_database_the_previous_release_filled_is_upgraded_twice_and_listed_cou
         "b-submitted": {
             "revision": 1,
             "tags": [
-                {"id": "t-said", "label": "seal", "detailed": True, "prediction": False},
-                {"id": "t-proposed", "label": "seal", "detailed": False, "prediction": True},
+                {"id": "t-said", "label": "seal", "detailed": True, "prediction": False, "proposed_by": None},
+                {"id": "t-proposed", "label": "seal", "detailed": False, "prediction": True, "proposed_by": None},
             ],
             "tags_cut": False,
             "proposals": 1,
@@ -242,7 +242,7 @@ async def _with_a_tagged_draft(settings: AnnotatorSettings) -> None:
     await store.close()
 
 
-SAID = {"id": "said", "label": "seal", "detailed": True, "prediction": False}
+SAID = {"id": "said", "label": "seal", "detailed": True, "prediction": False, "proposed_by": None}
 
 
 @pytest.mark.asyncio

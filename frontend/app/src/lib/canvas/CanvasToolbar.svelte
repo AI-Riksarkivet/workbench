@@ -270,8 +270,8 @@
 			variant="ghost"
 			size="icon-sm"
 			aria-label="Redo"
-			aria-keyshortcuts="Control+Shift+Z"
-			title="Redo (Ctrl+Shift+Z)"
+			aria-keyshortcuts="Control+Shift+Z Control+Y"
+			title="Redo (Ctrl+Shift+Z or Ctrl+Y)"
 			disabled={!controller.canRedo}
 			onclick={() => controller.redo()}
 		>

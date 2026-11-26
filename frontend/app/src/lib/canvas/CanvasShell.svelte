@@ -616,6 +616,7 @@
 	<TaskPanel
 		{controller}
 		{task}
+		{itemName}
 		{permissions}
 		{me}
 		browsing={walk.browsing}
@@ -742,7 +743,7 @@
 			<dd>The previous · next item of the walk you are on</dd>
 			<dt class="font-mono">J · K</dt>
 			<dd>Next · previous annotation</dd>
-			<dt class="font-mono">Ctrl+Z · Ctrl+Shift+Z</dt>
+			<dt class="font-mono">Ctrl+Z · Ctrl+Shift+Z or Ctrl+Y</dt>
 			<dd>Undo · redo</dd>
 			<dt class="font-mono">Ctrl+S</dt>
 			<dd>Save</dd>

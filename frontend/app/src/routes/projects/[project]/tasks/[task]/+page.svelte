@@ -51,6 +51,9 @@
 	import { gpuUnsupportedReason } from '#lib/gpu/gpu-support.ts';
 	import { rowKeyFor } from '#lib/projects/corpus-rows.ts';
 	import { ANNOTATOR_HINT } from '#lib/projects/presentation.ts';
+	import { verdictDone } from '#lib/projects/event-words.ts';
+	import { carryVerdict } from '#lib/projects/pass-verdict.ts';
+	import { panelState } from '#lib/canvas/task-panel.ts';
 	import LoadFailure from '#lib/shell/load-failure.svelte';
 	import CanvasShell from '#lib/canvas/CanvasShell.svelte';
 	import { readOnlyReason } from '#lib/canvas/editability.ts';
@@ -85,14 +88,6 @@
 		void walkRead.refresh();
 		if (pass === 'review' && next.state !== 'in_review') void moveOn(next);
 	}
-	/** What a verdict is said as on the item a review pass moves to. */
-	const DECIDED = {
-		accepted: 'Accepted',
-		fix_and_accept: 'Accepted with fixes',
-		request_changes: 'Sent back',
-	} as const satisfies Record<string, string>;
-	const isDecision = (action: string | null | undefined): action is keyof typeof DECIDED =>
-		!!action && Object.hasOwn(DECIDED, action);
 	/** What the canvas says on arriving at the item a verdict moved the pass to, until the reader goes elsewhere. */
 	let arrival = $state<{ taskId: string; text: string } | null>(null);
 	afterNavigate((nav) => {
@@ -101,16 +96,17 @@
 	/** A review pass moves on once the item leaves review: to the first item still waiting in it as the annotator orders
 	 *  it now, one more verdict counted in the address, or, with none left, back to the project's Review tab. The first
 	 *  waiting, not the decided item's neighbour: an item skipped earlier is still waiting, and an order by the judge
-	 *  changes as items are judged mid-pass, so a neighbour from before the verdict may stand after items still left. */
+	 *  changes as items are judged mid-pass, so a neighbour from before the verdict may stand after items still left.
+	 *  The verdict is said on the item the pass moves to, or on the Review tab when it moves to none. */
 	async function moveOn(decided: TaskDetail): Promise<void> {
-		const said = isDecision(decided.review_action)
-			? `${DECIDED[decided.review_action]}: ${name}.`
-			: null;
+		const done = verdictDone(decided.review_action);
+		const said = done ? `${done}: ${name}.` : null;
 		// Taken before the read: the walk read again meanwhile no longer holds the decided item, nor its neighbours.
 		const near = neighbour(walkItems, taskId, 1) ?? neighbour(walkItems, taskId, -1);
 		const head = await firstOfWalk(projectId, passParams(pass, passQuery, me).toString());
 		const after = head.ok ? head.data : near;
 		arrival = after && said ? { taskId: after.task_id, text: said } : null;
+		if (after === null && said) carryVerdict(projectId, said);
 		const moveTo =
 			after === null ? reviewDoneHref : link(hrefWith(passCount.done + 1)(after, projectId));
 		// oxlint-disable-next-line svelte/no-navigation-without-resolve -- the walk's hrefs are resolved (`linkWith`)
@@ -192,6 +188,16 @@
 				: readOnlyReason(task, permissions, me, task.people)
 			: null,
 	);
+
+	/** What the reader is doing with the item, as the heading says it: reviewing where the side panel says so, browsing
+	 *  in a browse pass or wherever the canvas is read-only, labeling otherwise. Read from the panel's own state, so the
+	 *  two never disagree. */
+	const doing = $derived.by(() => {
+		if (!task || !permissions) return null;
+		const mode = panelState(task, permissions, me, { browsing: pass === 'browse' }).mode;
+		if (mode === 'reviewing') return 'Reviewing';
+		return mode === 'browsing' || readOnlyWhy !== null ? 'Browsing' : 'Labeling';
+	});
 
 	const unitKey = $derived(task?.source.keys[0] ?? null);
 	const dataset = $derived(task?.source.where ?? null);
@@ -364,7 +370,7 @@
 	{/if}
 {/snippet}
 
-<h1 class="sr-only">Label {name}</h1>
+<h1 class="sr-only">{doing ? `${doing} ${name}` : name}</h1>
 {#if gpuReason}
 	<div
 		class="text-muted-foreground flex flex-col items-center justify-center gap-1 p-6 text-center text-sm"

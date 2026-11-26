@@ -31,6 +31,7 @@
 		type ItemQuery,
 	} from './item-query.ts';
 	import { ANNOTATOR_HINT } from './presentation.ts';
+	import { takeVerdict } from './pass-verdict.ts';
 	import type { TaskDetail } from './types.ts';
 
 	let {
@@ -46,6 +47,8 @@
 	} = $props();
 
 	const mayReview = $derived(permissions.includes('can_review'));
+	// The last verdict of a pass that came back here with nothing left, said once: taken as the tab opens.
+	const told = untrack(() => takeVerdict(projectId));
 	const query = $derived(readItemQuery(page.url.searchParams));
 	const read = $derived(
 		mayReview
@@ -137,6 +140,9 @@
 		<p class="text-muted-foreground text-sm" role="status">Reading the items in review…</p>
 	{:else}
 		<div class="flex flex-wrap items-center gap-3">
+			{#if told}
+				<p class="text-success text-sm" role="status" data-testid="review-told">{told}</p>
+			{/if}
 			<p class="text-sm" data-testid="review-waiting">
 				{listing.matched === 0
 					? 'Nothing is waiting for your review.'

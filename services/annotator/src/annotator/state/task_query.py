@@ -337,15 +337,25 @@ async def samplings_of(
 MAX_WORK_TAGS: Final = 64
 
 
+class ProposedBy(BaseModel):
+    """The model that proposed a tag, as its row names it: the name its `model:<name>` source carries, its version and
+    its score."""
+
+    model: str
+    version: str | None
+    score: float | None
+
+
 class WorkTag(BaseModel):
     """One whole-item tag of an item's work: its shape id, its class, whether it carries more than its class (text,
-    attributes, or a link to or from it: what a new label would discard), and whether it is a proposal no person has kept
-    (`prediction`)."""
+    attributes, or a link to or from it: what a new label would discard), whether it is a proposal no person has kept
+    (`prediction`), and for a model's proposal the model that made it."""
 
     id: str
     label: str | None
     detailed: bool
     prediction: bool
+    proposed_by: ProposedBy | None = None
 
 
 class ItemWork(BaseModel):

@@ -221,13 +221,14 @@ def _work(shapes: list[Shape], links: list[Link] | None = None) -> Callable[[Any
 
 
 def _plain(tag_id: str, label: str = "letter") -> dict[str, Any]:
-    return {"id": tag_id, "label": label, "detailed": False, "prediction": False}
+    return {"id": tag_id, "label": label, "detailed": False, "prediction": False, "proposed_by": None}
 
 
 def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_may_read_it(project: _Project) -> None:
     """`include=work`: the revision a change is built on and the item's whole-item tags, by id and class, each saying
     whether it carries more than its class (text, attributes, a link: what a new label would discard) and whether it is a
-    proposal no person kept, at most 64 an item; a replica's work is left out for a reader who may not read it."""
+    proposal no person kept and, for a proposal, the model, version and score that made it; at most 64 an item; a
+    replica's work is left out for a reader who may not read it."""
 
     async def no_review(*, relation: str, **_kw: object) -> bool:
         return relation != "can_review"
@@ -240,7 +241,7 @@ def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_m
         _tag("linked", "letter"),
         _tag("said", "map", text="a map of the harbour"),
         _tag("dated", "map", attributes={"year": "1701"}),
-        _tag("proposed", "letter", status="prediction", source="model:vlm"),
+        _tag("proposed", "letter", status="prediction", source="model:vlm", model_version="vlm.3", confidence=0.62),
         _tag("plain", "map"),
         box,
         box.model_copy(update={"shape_id": "p-box", "status": "prediction", "source": "model:detector"}),
@@ -266,7 +267,7 @@ def test_each_items_work_is_answered_as_its_tags_and_revision_where_the_reader_m
                 {**_plain("linked"), "detailed": True},
                 {**_plain("said", "map"), "detailed": True},
                 {**_plain("dated", "map"), "detailed": True},
-                {**_plain("proposed"), "prediction": True},
+                {**_plain("proposed"), "prediction": True, "proposed_by": {"model": "vlm", "version": "vlm.3", "score": 0.62}},
                 _plain("plain", "map"),
             ],
             "tags_cut": False,

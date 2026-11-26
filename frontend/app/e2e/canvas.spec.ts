@@ -1521,6 +1521,10 @@ test('a reviewer judges three items in one pass by key: accepts one, fixes and a
 	const walk = page.getByRole('navigation', { name: 'Reviewing' });
 	await ready(page);
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Alma Alpha’s work');
+	// The page's heading says what the reader is doing, as the panel does.
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText(
+		'Reviewing A letter from the harbour · page 1',
+	);
 	await expect(walk).toContainText('item 1 / 3');
 
 	const accepted = page.waitForRequest((req) => req.url().includes('/tasks/judging-a/events'));
@@ -1563,8 +1567,11 @@ test('a reviewer judges three items in one pass by key: accepts one, fixes and a
 	await expect(panel.getByTestId('task-panel-title')).toHaveText('Reviewing Sam Else’s work');
 	await expect(walk).toContainText('item 3 / 3');
 
+	// The button and the form it opens name one action.
+	await expect(panel.getByTestId('task-request_changes')).toHaveText('Send back…');
 	await page.keyboard.press('Shift+R');
 	const dialog = page.getByTestId('send-back-dialog');
+	await expect(dialog.getByRole('heading')).toHaveText(/^Send back \S/);
 	await dialog.getByRole('textbox', { name: 'What should change' }).fill('Box the seal too.');
 	const sentBack = page.waitForRequest((req) => req.url().includes('/tasks/judging-c/events'));
 	await dialog.getByRole('button', { name: 'Send back' }).click();
@@ -1578,6 +1585,13 @@ test('a reviewer judges three items in one pass by key: accepts one, fixes and a
 	await expect(page.getByTestId('review-waiting')).toHaveText(
 		'Nothing is waiting for your review.',
 	);
+	// The last verdict is said there, once: a reload does not say it again.
+	await expect(page.getByTestId('review-told')).toHaveText(/^Sent back: \S.*\.$/);
+	await page.reload();
+	await expect(page.getByTestId('review-waiting')).toHaveText(
+		'Nothing is waiting for your review.',
+	);
+	await expect(page.getByTestId('review-told')).toHaveCount(0);
 });
 
 test('a verdict on an item reached by skipping ahead goes on to the first item still waiting, its place and the strip’s agreeing', async ({
@@ -1709,6 +1723,7 @@ test('a person browses a project’s labeled work read-only, one item after anot
 	await expect(page.getByTestId('task-panel').getByRole('button')).toHaveCount(0);
 	// The panel says where the item stands, in browse words, never a labeler's or a reviewer's.
 	await expect(page.getByTestId('task-panel-title')).toHaveText('Browsing');
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText(/^Browsing \S/);
 	await expect(page.getByTestId('task-panel')).toContainText(
 		'Submitted by Alma Alpha, waiting for a reviewer. You see the item as it was last saved',
 	);

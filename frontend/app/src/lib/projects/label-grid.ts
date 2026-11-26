@@ -54,13 +54,22 @@ export function gridClasses(
 	return { labels, canvas };
 }
 
+/** The model that proposed a tag, as the listing names it: its name, its version and its score. */
+export interface ProposedBy {
+	model: string;
+	version: string | null;
+	score: number | null;
+}
+
 /** One whole-item tag of an item's work, as the listing answers it: whether it carries more than its class (text,
- *  attributes, a link: what a new label would discard) and whether it is a proposal no person has kept yet. */
+ *  attributes, a link: what a new label would discard), whether it is a proposal no person has kept yet, and for a
+ *  model's proposal the model that made it. */
 export interface Tag {
 	id: string;
 	label: string | null;
 	detailed: boolean;
 	prediction: boolean;
+	proposed_by?: ProposedBy | null;
 }
 
 /** What a person asks of the selection: set one label (the item's other grid labels go), add or take away one label
@@ -199,14 +208,66 @@ export function fits(
 	return allowed.length === 0 || model.returns.some((shape) => allowed.includes(shape));
 }
 
-/** What a model's answer proposed on an item, as its cell says it: the model and its version, then each proposal's
- *  class (its shape where it is not a tag) and score. */
-export function proposedText(answer: AssistAnswer): string {
-	const each = answer.proposals.map(
-		(p) =>
-			`${p.label || 'no class'}${p.shape_type === 'tag' ? '' : ` (${p.shape_type})`} ${p.score.toFixed(2)}`,
-	);
-	return `${answer.model} ${answer.version}: ${each.join(', ')}`;
+/** One proposal as a cell names it: its class (none yet where it carries none), its shape and its score. */
+export interface Proposed {
+	label: string | null;
+	shape: string;
+	score: number | null;
+}
+
+/** What one producer proposed. */
+export interface Producer {
+	model: string;
+	version: string | null;
+	proposals: readonly Proposed[];
+}
+
+/** A proposal's words: its class, its shape where it is not a tag, and its score. One with no class says so in the
+ *  canvas's words for an unclassed mark, and what keeping it leaves the labeler to do. */
+function proposalWords(p: Proposed): string {
+	const score = p.score === null ? '' : ` ${p.score.toFixed(2)}`;
+	if (!p.label)
+		return `a ${p.shape} with no class yet${score} (keeping it leaves a class to pick before submitting)`;
+	return `${p.label}${p.shape === 'tag' ? '' : ` (${p.shape})`}${score}`;
+}
+
+/** Who proposed what on an item, as its cell says it: each producer by its name and version, then what it proposed. */
+export function producedText(producers: readonly Producer[]): string {
+	return producers
+		.filter((p) => p.proposals.length > 0)
+		.map(
+			(p) =>
+				`${[p.model, p.version].filter(Boolean).join(' ')} proposed ${p.proposals.map(proposalWords).join(', ')}`,
+		)
+		.join('; ');
+}
+
+/** The producers of the proposals an item's whole-item tags hold, in the order the item holds them. */
+export function tagProducers(tags: readonly Tag[]): Producer[] {
+	const by = new Map<string, { model: string; version: string | null; proposals: Proposed[] }>();
+	for (const t of tags) {
+		if (!t.prediction || !t.proposed_by) continue;
+		const { model, version, score } = t.proposed_by;
+		const key = JSON.stringify([model, version]);
+		const producer = by.get(key) ?? { model, version, proposals: [] };
+		producer.proposals.push({ label: t.label, shape: 'tag', score });
+		by.set(key, producer);
+	}
+	return [...by.values()];
+}
+
+/** What a model's answer proposed on an item that its listed tags do not say: its proposals of a shape other than a
+ *  tag, or null where it proposed only tags. */
+export function shapesProposed(answer: AssistAnswer): string | null {
+	const shapes = answer.proposals.filter((p) => p.shape_type !== 'tag');
+	if (shapes.length === 0) return null;
+	return producedText([
+		{
+			model: answer.model,
+			version: answer.version,
+			proposals: shapes.map((p) => ({ label: p.label, shape: p.shape_type, score: p.score })),
+		},
+	]);
 }
 
 // ── focus and selection ──────────────────────────────────────────────────────────────────────
@@ -299,6 +360,14 @@ export function sentBackNote(task: TaskDetail): { by: string; message: string } 
 /** The question asked before a label replaces what other labels carry: "1 of 1 item carries", "2 of 3 items carry". */
 export function carryCount(count: number, total: number): string {
 	return `${count} of ${total} item${total === 1 ? '' : 's'} ${count === 1 ? 'carries' : 'carry'}`;
+}
+
+/** What skipping does, as that question says it: it keeps the ``count`` items that carry more, and labels the rest of
+ *  the ``total`` where there is a rest. */
+export function skipping(count: number, total: number): string {
+	if (count >= total)
+		return `Skipping keeps ${total === 1 ? 'it as it is' : 'them as they are'}, and labels nothing.`;
+	return `Skipping keeps ${count === 1 ? 'that item as it is' : 'those items as they are'} and labels the rest.`;
 }
 
 /** The longest excerpt of an item's text a cell shows. */

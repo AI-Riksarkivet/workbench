@@ -66,6 +66,7 @@
 	import { personName } from './people.ts';
 	import { itemName } from './item-name.ts';
 	import { ANNOTATOR_HINT, EVENT_LABELS, taskStateVariant, VERDICTS } from './presentation.ts';
+	import { assignWording, eventWording, told } from './event-words.ts';
 	import {
 		DATE_FIELDS,
 		DEFAULT_QUERY,
@@ -259,8 +260,10 @@
 		const result = await fireTaskEvent({ taskId: task.task_id, event, ...opts });
 		busy = null;
 		if (result.ok && event === 'submit') askJudgeAfterSubmit(result.data);
+		notice = result.ok
+			? { ok: true, text: told(eventWording(event).done, called(task)) }
+			: { ok: false, text: result.detail };
 		if (result.ok) refresh();
-		else notice = { ok: false, text: result.detail };
 	}
 
 	async function fireFromQuick(task: TaskDetail, event: string): Promise<void> {
@@ -310,11 +313,13 @@
 	}
 
 	/** Run ``act`` on each of ``targets``, ONE gated call per item, reported per item: there is no transaction across
-	 *  items, so a refusal on one leaves the rest alone and is named. */
+	 *  items, so a refusal on one leaves the rest alone and is named. Done for one item's own row (``row``), the notice
+	 *  names that item; for a selection, it counts them. */
 	async function eachOf(
 		targets: TaskDetail[],
 		act: (t: TaskDetail) => Promise<{ ok: true } | { ok: false; detail: string }>,
 		done: string,
+		{ row = false }: { row?: boolean } = {},
 	): Promise<void> {
 		if (bulkBusy || targets.length === 0) return;
 		bulkBusy = true;
@@ -328,7 +333,10 @@
 		clearSelection();
 		notice =
 			failures.length === 0
-				? { ok: true, text: `${done}: ${targets.length} item${targets.length === 1 ? '' : 's'}.` }
+				? {
+						ok: true,
+						text: told(done, row && targets[0] ? called(targets[0]) : targets.length),
+					}
 				: {
 						ok: false,
 						text: `${targets.length - failures.length} of ${targets.length} — ${failures[0]}`,
@@ -340,7 +348,6 @@
 		const targets = targetsFor(selected, selectedIds, event);
 		if (event === 'skip' && !confirm(`Skip ${targets.length} item(s)? They leave the queue.`))
 			return;
-		const label = (EVENT_LABELS[event] ?? event).replace('…', '');
 		await eachOf(
 			targets,
 			async (t) => {
@@ -348,7 +355,7 @@
 				if (result.ok && event === 'submit') askJudgeAfterSubmit(result.data);
 				return result;
 			},
-			label,
+			eventWording(event).done,
 		);
 	}
 
@@ -377,6 +384,8 @@
 
 	// ASSIGN: a manager names who takes the items, chosen from the project's members by name (or typed as a principal).
 	let assignFor = $state<TaskDetail[] | null>(null);
+	/** Whether the assignment was asked from one item's row rather than for a selection. */
+	let assignRow = $state(false);
 	let assignee = $state('');
 	const membersRead = $derived(
 		permissions.includes('can_manage') ? fetchMembers({ projectId }) : null,
@@ -396,7 +405,8 @@
 		void eachOf(
 			targets,
 			(t) => fireTaskEvent({ taskId: t.task_id, event: 'assign', assignee: to }),
-			`Assigned to ${personName(to, memberPeople)}`,
+			assignWording(personName(to, memberPeople)).done,
+			{ row: assignRow },
 		);
 	}
 
@@ -736,6 +746,7 @@
 				title="assign this item to a named annotator (pinned — the lease never expires)"
 				onclick={() => {
 					assignFor = [task];
+					assignRow = true;
 					assignee = '';
 				}}
 			>
@@ -930,6 +941,7 @@
 							disabled={bulkBusy}
 							onclick={() => {
 								assignFor = [...assignable];
+								assignRow = false;
 								assignee = '';
 							}}
 						>
@@ -1104,7 +1116,7 @@
 
 <SendBackDialog
 	bind:open={changesOpen}
-	title="Send the item back"
+	title="Send back {changesFor ? called(changesFor) : 'the item'}"
 	description="The note travels with the item to its annotator: say what should change."
 	placeholder="The stamp in the corner is unlabelled…"
 	testid="items-send-back"

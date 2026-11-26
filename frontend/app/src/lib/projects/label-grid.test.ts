@@ -4,6 +4,7 @@ import {
 	claimOrigin,
 	carryCount,
 	changeFor,
+	skipping,
 	digitOf,
 	excerpt,
 	fits,
@@ -258,6 +259,14 @@ describe('the question asked before a label replaces what others carry', () => {
 			'1 of 1 item carries',
 			'1 of 3 items carries',
 			'2 of 3 items carry',
+		]);
+	});
+
+	it('says what skipping labels, naming a rest only where there is one', () => {
+		expect([skipping(1, 1), skipping(2, 2), skipping(1, 3)]).toEqual([
+			'Skipping keeps it as it is, and labels nothing.',
+			'Skipping keeps them as they are, and labels nothing.',
+			'Skipping keeps that item as it is and labels the rest.',
 		]);
 	});
 });

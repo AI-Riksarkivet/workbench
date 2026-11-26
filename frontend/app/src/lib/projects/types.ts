@@ -393,6 +393,17 @@ export const TaskDetailSchema = v.object({
 						label: v.nullable(v.string()),
 						detailed: v.boolean(),
 						prediction: v.boolean(),
+						/** For a model's proposal, the model that made it: its name, version and score. */
+						proposed_by: v.optional(
+							v.nullable(
+								v.object({
+									model: v.string(),
+									version: v.nullable(v.string()),
+									score: v.nullable(v.number()),
+								}),
+							),
+							null,
+						),
 					}),
 				),
 				tags_cut: v.boolean(),

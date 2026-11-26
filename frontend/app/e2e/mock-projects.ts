@@ -1498,6 +1498,18 @@ export async function projectsDoor(
 							(typeof r.metadata === 'string' && !['', '{}'].includes(r.metadata)) ||
 							(draft?.links ?? []).some((l) => l.from_shape === r.id || l.to_shape === r.id),
 						prediction: r.status === 'prediction',
+						// A model's proposal names its model, version and score, as the generated column reads them from the
+						// row (`annotator_work_tags`): the name its `model:<name>` source carries.
+						proposed_by:
+							r.status === 'prediction' &&
+							typeof r.source === 'string' &&
+							r.source.startsWith('model:')
+								? {
+										model: r.source.slice('model:'.length),
+										version: typeof r.model_version === 'string' ? r.model_version : null,
+										score: typeof r.confidence === 'number' ? r.confidence : null,
+									}
+								: null,
 					}));
 				return {
 					revision: draft?.revision ?? 0,
