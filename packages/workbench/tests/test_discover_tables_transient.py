@@ -184,9 +184,10 @@ def _remove(root: Path, table: str) -> None:
 
 
 class _RefusingCatalog(lance.namespace.DirectoryNamespace):
-    """A catalog that lists every table and refuses to describe the ones named in ``refused``, as a lakehouse answers a
-    caller who may describe a table but not read its rows (403 code 15, rask's `describer` level). Each describe asked is
-    counted by table."""
+    """A catalog that lists every table and refuses the data of the ones named in ``refused``, as a lakehouse answers a
+    caller who may describe a table but not read its rows (rask's `describer` level), measured on rask `c5dca08ee`
+    2026-11-26: a describe that leaves the vend unset (pylance's open) is answered with no credential, so the open fails
+    in the store; one that asks for the vend is refused, 403 code 15. Each describe asked is counted by table."""
 
     def __init__(self, root: Path) -> None:
         super().__init__(root=str(root))
@@ -196,8 +197,10 @@ class _RefusingCatalog(lance.namespace.DirectoryNamespace):
     def describe_table(self, request: DescribeTableRequest) -> DescribeTableResponse:
         table = (request.id or [""])[-1]
         self.described.append(table)
+        if table in self.refused and request.vend_credentials:
+            raise PermissionDeniedError(f"can_read_data required on table:{table} to vend credentials")
         if table in self.refused:
-            raise PermissionDeniedError(f"the caller may describe table {table} but not read its data")
+            raise OSError("LanceError(IO): Failed to get AWS credentials")
         return super().describe_table(request)
 
 
@@ -234,5 +237,6 @@ def test_a_table_the_catalog_lists_but_refuses_is_named_with_why_the_rest_opens_
 
     assert (sorted(refused.tables), refused.unreadable, refused.declared) == (["documents"], {"chunks": registry.LISTED_NOT_YOURS}, None)
     assert refused.problem == f"its descriptor names chunks, which {registry.LISTED_NOT_YOURS}"
-    assert (still, asked_again) == (["documents"], ["chunks"])
+    # The open, then the one describe that asks for the vend and learns it is refused; the readable table is not asked.
+    assert (still, asked_again) == (["documents"], ["chunks", "chunks"])
     assert (sorted(granted.tables), granted.unreadable, granted.declared is not None) == (["chunks", "documents"], {}, True)

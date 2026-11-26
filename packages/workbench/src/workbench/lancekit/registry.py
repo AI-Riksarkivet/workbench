@@ -129,8 +129,36 @@ class CallerSessions(BaseModel):
 
 
 def _open(client: LanceNamespace, table_id: list[str], session: lance.Session) -> lance.LanceDataset:
-    """One table at its latest version, through ``client`` on the storage options its DescribeTable answers."""
-    return bounded(lambda: lance.dataset(namespace_client=client, table_id=table_id, session=session))
+    """One table at its latest version, through ``client`` on the storage options its DescribeTable answers.
+
+    Raises:
+        lance_namespace.PermissionDeniedError: The catalog lists the table to the caller and refuses them its data
+            (`_raise_if_refused`).
+    """
+    try:
+        return bounded(lambda: lance.dataset(namespace_client=client, table_id=table_id, session=session))
+    except (ValueError, OSError) as exc:
+        if not reads_as_absent(exc):
+            _raise_if_refused(client, table_id, exc)
+        raise
+
+
+def _raise_if_refused(client: LanceNamespace, table_id: list[str], failure: Exception) -> None:
+    """Raise the catalog's refusal of ``table_id``'s data to the caller, if that is why an open failed.
+
+    pylance's open leaves DescribeTable's `vend_credentials` unset, and the spec lets the catalog then decide whether to
+    vend (`lance_docs/ns_catalog/spec.yaml` § DescribeTableRequest.vend_credentials). A lakehouse answers a caller it
+    refuses the data with no credential at all, so the open fails in the store; only a describe that asks for the vend
+    gets its verdict. Measured 2026-11-26 on rask `c5dca08ee`: a `describer` is answered 200 with no credential when the
+    vend is unset, and 403 code 15 ("can_read_data required ... to vend credentials") when it is asked for. Asked only
+    after a failed open, so an open that succeeds costs nothing more; any other answer leaves ``failure`` standing.
+    """
+    try:
+        bounded(lambda: client.describe_table(DescribeTableRequest(id=table_id, vend_credentials=True)))
+    except lance_namespace.PermissionDeniedError as refusal:
+        raise refusal from failure
+    except Exception:  # A diagnosis that cannot be made leaves the open's own failure to be reported.
+        logger.debug("why table %s could not be opened was not answered", "$".join(table_id), exc_info=True)
 
 
 def reusable_until(storage_options: Mapping[str, str] | None) -> float:
