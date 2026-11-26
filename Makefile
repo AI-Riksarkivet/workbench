@@ -4,9 +4,13 @@
 
 # Every image and gate also runs through Dagger (`dagger call <fn>`), so CI and a laptop run the same thing.
 DAGGER ?= dagger
-# A host's own settings, in a file git does not track. A host that shares one Dagger engine between repositories names it
-# here, `export _EXPERIMENTAL_DAGGER_RUNNER_HOST := docker-container://<engine>`, so every target's Dagger call reaches
-# that engine: a call with no engine named starts the CLI's own and can remove the shared one.
+# A host's own settings, in files git does not track: first the host's, read by every checkout and worktree of this
+# repository alike, then this checkout's, which may override it. A host that shares one Dagger engine between
+# repositories names it in the host's file, `export _EXPERIMENTAL_DAGGER_RUNNER_HOST := docker-container://<engine>`, so
+# every target's Dagger call reaches that engine: a call with no engine named starts the CLI's own, which removes every
+# engine named `dagger-engine-*`. A setting kept in one checkout's `local.mk` alone is missed by a worktree made later.
+HOST_SETTINGS ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/workbench/local.mk
+-include $(HOST_SETTINGS)
 -include local.mk
 PYTEST_WORKERS ?= 8
 
@@ -162,14 +166,13 @@ chart-check:
 # ── The development cluster (docs/DEPLOY.md) ──────────────────────────────────────────────────────────────────────────
 # One entry point, `make deploy-dev`, and each step its own target, each safe to run again. Values come from git alone
 # (`deploy/values-dev.yaml` and the commit's image tags, with --reset-values): nothing is read back from a release.
-# Every dagger call names the shared engine, since an unscoped CLI removes engines named `dagger-engine-*`.
+# Its Dagger calls reach the engine the host names, as every target's do (`HOST_SETTINGS` above).
 DEV_NAMESPACE ?= workbench
 DEV_RELEASE ?= workbench
 DEV_POSTGRES_RELEASE ?= workbench-postgres
 DEV_OPENFGA_RELEASE ?= workbench-openfga
 DEV_MODEL_STAND_IN_RELEASE ?= workbench-model-stand-in
 DEV_REGISTRY_PUSH ?= 172.17.0.1:5000
-DEV_ENGINE ?= docker-container://dagger-engine-rask
 DEV_TAG = $(shell git rev-parse --short=12 HEAD)
 DEV_GATEWAY_HOST ?= workbench.localhost
 DEV_HELM = helm --namespace $(DEV_NAMESPACE)
@@ -186,9 +189,9 @@ dev-clean-tree:
 # media (the viewer and search), the annotator and the app, published to the development registry the cluster pulls from
 # as localhost:5000 (the bridge address here, since the engine is itself a container).
 dev-images: dev-clean-tree
-	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=media publish --address=$(DEV_REGISTRY_PUSH)/workbench-media:$(DEV_TAG)
-	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=annotator publish --address=$(DEV_REGISTRY_PUSH)/workbench-annotator:$(DEV_TAG)
-	_EXPERIMENTAL_DAGGER_RUNNER_HOST=$(DEV_ENGINE) $(DAGGER) call image --name=frontend publish --address=$(DEV_REGISTRY_PUSH)/workbench-app:$(DEV_TAG)
+	$(DAGGER) call image --name=media publish --address=$(DEV_REGISTRY_PUSH)/workbench-media:$(DEV_TAG)
+	$(DAGGER) call image --name=annotator publish --address=$(DEV_REGISTRY_PUSH)/workbench-annotator:$(DEV_TAG)
+	$(DAGGER) call image --name=frontend publish --address=$(DEV_REGISTRY_PUSH)/workbench-app:$(DEV_TAG)
 
 # The development PostgreSQL (deploy/fixtures/postgres), standing in for a platform's: the annotator's state and the
 # development OpenFGA's tuples are databases on it, so it comes before both.

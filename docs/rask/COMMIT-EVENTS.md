@@ -159,7 +159,9 @@ named the table by its id.
 - A crash between the Lance commit and the stage loses that announcement, not the write: the catalog recorded the
   caller it authorized the commit for and the commit names its operation, and the catalog's reconcile timer (`catalog.commitReconcile`, every 10 minutes by default) announces
   every committed version older than `catalog.commitReconcile.graceSeconds` that the feed holds no row for, from the
-  table's version log (LH-497). A write's run id is derived from its commit (the table's uuid, ref, ref incarnation and
+  table's version log (LH-497). It reads the tables a door committed to lately; a walk of every table
+  (`catalog.commitReconcile.walkPeriodSeconds`, hourly by default) does the same and is what counts a version written
+  past every door. A write's run id is derived from its commit (the table's uuid, ref, ref incarnation and
   version, keyed by a secret only the catalog holds), so the write's own announcement and a re-announcement are one
   run and land one row, whichever arrives first. A versioned dataset change carries its commit's time as `eventTime`
   for the same reason. A re-announcement names the same commit, at the same version and for the same author, as the
@@ -230,6 +232,16 @@ percent-encoded, which `fga_ids.subject_of` decodes, or a userset):
 | `grant_added`, `grant_revoked` | the principal or userset the grant names; `extra.relation` is the rung and `object_id` the object |
 | `erasure_release_scheduled` | one event per person the release costs (the erasure's requester and each table owner), with the deadline in `extra.due_at` |
 | `principal_deleted` | the principal the estate admin offboarded: nobody is left to tell, so a notifier erases what it keeps for them |
+
+An event's `actor` is who made the change, spelled as `extra.subject` is: the OpenFGA user of the caller the catalog
+authenticated, which every grant naming that caller holds, so an actor, a subject and a grant name one person by one
+string ([[LH-608]]). The doors answer who acted on a record the same way: a trash entry's `dropped_by`, a protection's
+`set_by` and `protected_by`, an erasure obligation's `requested_by`, a contract's `set_by` and a label definition's
+`defined_by`. A service acting for itself names itself (`system:declaration`, `service:maintenance`) or no actor, and a
+stack that authenticates nobody names no actor (a trash entry and a protection say `anonymous`). The actor is who
+acted, never whom to tell: a notifier targets `extra.subject`. A role's `created_by` and an offboarding record's
+`deleted_by` name the principal key itself, as the audit trail does, and so does lineage's run feed (§ Whom a run names);
+where no caller was verified, each names `anonymous`, the one spelling the trail gives an unverified caller.
 
 ### What a notifier asks
 

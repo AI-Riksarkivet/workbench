@@ -256,9 +256,12 @@ Assign yourself the row you take (`gh issue edit <n> --add-assignee @me`).
 - **NEVER DOCKER. Dagger builds every image and runs every gate.** No `docker build`, `docker run`, `docker compose`,
   `docker ps` or any other docker command, for any purpose. `dagger call image --name=<stem>` builds
   `.docker/<stem>.dockerfile`; an ad-hoc container is `dagger core container from --address=<img> ...`.
-  - **On a host that runs a named engine** (the owner's runs `dagger-engine-rask`, shared with rask), prefix every
-    `dagger` command with `_EXPERIMENTAL_DAGGER_RUNNER_HOST=docker-container://dagger-engine-rask`: an unscoped CLI
-    removes engines named `dagger-engine-*` and breaks every session using it.
+  - **On a host that runs a named engine** (the owner's runs `dagger-engine-rask`, shared with rask), a Dagger CLI
+    that names no engine starts its own and removes every engine named `dagger-engine-*`, breaking every session
+    using it. The host names its engine once, outside git, in `~/.config/workbench/local.mk` (the Makefile's
+    `HOST_SETTINGS`: `export _EXPERIMENTAL_DAGGER_RUNNER_HOST := docker-container://<engine>`), which every checkout
+    and worktree reads, so every make target reaches it. A `dagger` command typed outside make still needs the
+    variable set in the shell. CI has no named engine and no such file.
   - **`dagger call app-end-to-end` uploads the working tree, not the index**, and two Playwright runs at once void
     each other: run one at a time (a shared `flock`), and never while a test's red check has the code broken.
 - **JS/TS uses bun exclusively** (`bun`, `bunx`; no npm, npx or pnpm). Every call is scoped to the frontend root:

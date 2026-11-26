@@ -38,6 +38,13 @@ from workbench.source_names import check_segments
 
 #: The most pages one listing a describe confirms its name against may read, and the most names it may hold.
 MAX_PAGES: Final = 100
+
+
+class OutsideDeclaredLocations(PermissionDeniedError):
+    """A source answered a table's location outside the ones git declares it may read: a refusal of the source, which
+    answers for every dataset read through it, unlike a catalog refusing one table to one caller."""
+
+
 MAX_NAMES: Final = 10_000
 
 
@@ -123,9 +130,9 @@ class ConfinedNamespace(LanceNamespace):
             raise TableNotFoundError(f"table {table!r} is not one source {self._name!r} lists")
         answer = self._inner.describe_table(DescribeTableRequest(id=identifier, version=request.version, vend_credentials=False))
         if not answer.location or not within(answer.location, self._roots):
-            raise PermissionDeniedError(f"source {self._name!r} answered a location outside the ones it is declared to read")
+            raise OutsideDeclaredLocations(f"source {self._name!r} answered a location outside the ones it is declared to read")
         answer.storage_options = dict(self._storage)
         return answer
 
 
-__all__ = ["ConfinedNamespace", "within"]
+__all__ = ["ConfinedNamespace", "OutsideDeclaredLocations", "within"]

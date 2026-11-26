@@ -363,20 +363,35 @@
         "title": "FeedProjection",
         "type": "object"
       },
-      "HTTPValidationError": {
+      "IngestAck": {
+        "description": "The door's acknowledgement of one recorded event.",
         "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "title": "Detail",
-            "type": "array"
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run"
+          },
+          "status": {
+            "const": "ingested",
+            "default": "ingested",
+            "title": "Status",
+            "type": "string"
           }
         },
-        "title": "HTTPValidationError",
+        "required": [
+          "run"
+        ],
+        "title": "IngestAck",
         "type": "object"
       },
       "Liveness": {
+        "description": "The body of ``/livez``.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/LivenessStatus",
@@ -387,8 +402,10 @@
         "type": "object"
       },
       "LivenessStatus": {
+        "description": "What ``/livez`` answers: ``ok`` while the process lives, ``stalled`` once its own check fails.",
         "enum": [
-          "ok"
+          "ok",
+          "stalled"
         ],
         "title": "LivenessStatus",
         "type": "string"
@@ -405,6 +422,65 @@
           }
         },
         "title": "ParkedRuns",
+        "type": "object"
+      },
+      "ProblemDetails": {
+        "properties": {
+          "code": {
+            "description": "The spec's error code, which a client dispatches on",
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "errors": {
+            "description": "Each field a request failed validation on",
+            "items": {
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "message",
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "instance": {
+            "description": "The W3C trace id of the request, which finds the error's log line",
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code",
+          "error"
+        ],
         "type": "object"
       },
       "ProjectedEvent": {
@@ -428,6 +504,7 @@
         "type": "object"
       },
       "Readiness": {
+        "description": "The body of ``/readyz``: the service's status and each component's verdict.",
         "properties": {
           "components": {
             "additionalProperties": {
@@ -447,6 +524,7 @@
         "type": "object"
       },
       "ReadinessStatus": {
+        "description": "Where a service stands in its lifecycle, as ``/readyz`` answers it.",
         "enum": [
           "starting",
           "ready",
@@ -456,46 +534,6 @@
         ],
         "title": "ReadinessStatus",
         "type": "string"
-      },
-      "ValidationError": {
-        "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "loc": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                }
-              ]
-            },
-            "title": "Location",
-            "type": "array"
-          },
-          "msg": {
-            "title": "Message",
-            "type": "string"
-          },
-          "type": {
-            "title": "Error Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
-        "title": "ValidationError",
-        "type": "object"
       }
     },
     "securitySchemes": {
@@ -543,13 +581,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -577,6 +625,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -618,13 +676,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -640,7 +708,7 @@
     },
     "/admin/dlq/{run_id}/replay": {
       "post": {
-        "description": "Re-ingest one staged event on demand, re-publish it, then drop it \u2014 the manual twin of the reconcile relay's drain.\n\nA replay IS a re-ingest, so it carries the SAME authz as a fresh ingest, twice over: the relay's gate on\nthe staged bytes (:func:`enforce_bus_authz` \u2014 signature and stamped author) and the ingest door's on the\noperator (:func:`enforce_output_authz` \u2014 ``can_write_data`` on the outputs, ``can_get_metadata`` on the\ninputs, fail-closed). The record is idempotent: every feed row and edge is written under its key. The\nstaged bytes are re-published\nto the lineage topic exactly as the relay re-publishes them, so subscribers hear of the event as well as\nthe feed. The drop is only reached on success \u2014 a failed re-ingest or re-publish leaves the object\nstaged for the relay to retry, and a failed re-publish answers 503 because the feed is already\nrepaired.\n\nNon-disclosure (audit 2026-07-20): replay must not become an oracle for events ``list_dlq`` hid. So a\nrun whose datasets the caller cannot SEE (or an unparseable poison object, which the governed list also\nhides) returns the SAME 404 as a missing run \u2014 never a distinct 422 or a 403 echoing hidden dataset\nnames. Only an event the caller could have listed reaches ``enforce_output_authz``.",
+        "description": "Re-ingest one staged event on demand, re-publish it, then drop it \u2014 the manual twin of the reconcile relay's drain.\n\nA replay IS a re-ingest, so it carries the SAME authz as a fresh ingest, twice over: the relay's gate on\nthe staged bytes (:func:`enforce_bus_authz` \u2014 signature and stamped author) and the ingest door's on the\noperator (:func:`enforce_output_authz` \u2014 ``can_write_data`` on the outputs, ``can_read_data`` on the\ninputs, fail-closed). The record is idempotent: every feed row and edge is written under its key. The\nstaged bytes are re-published\nto the lineage topic exactly as the relay re-publishes them, so subscribers hear of the event as well as\nthe feed. The drop is only reached on success \u2014 a failed re-ingest or re-publish leaves the object\nstaged for the relay to retry, and a failed re-publish answers 503 because the feed is already\nrepaired.\n\nNon-disclosure (audit 2026-07-20): replay must not become an oracle for events ``list_dlq`` hid. So a\nrun whose datasets the caller cannot SEE (or an unparseable poison object, which the governed list also\nhides) returns the SAME 404 as a missing run \u2014 never a distinct 422 or a 403 echoing hidden dataset\nnames. Only an event the caller could have listed reaches ``enforce_output_authz``.",
         "operationId": "replay_dlq_admin_dlq__run_id__replay_post",
         "parameters": [
           {
@@ -666,13 +734,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -900,18 +978,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "title": "Response Ingest Event Api V1 Lineage Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/IngestAck"
                 }
               }
             },
@@ -919,13 +986,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -1048,13 +1125,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -1133,13 +1220,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [
@@ -1166,6 +1263,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "summary": "Livez",
@@ -1187,6 +1304,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "summary": "Readyz",
@@ -1235,13 +1372,23 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Error"
           }
         },
         "security": [

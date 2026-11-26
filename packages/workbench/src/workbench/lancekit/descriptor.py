@@ -229,6 +229,19 @@ class Declared(BaseModel):
             return self.search
         return next((s for s in self.searches if s.name == name), None)
 
+    def tables_named(self) -> set[str]:
+        """Every table a declared role reads: each search's row, full-text and vector tables, the document table, each
+        atlas space's table, the sampling bindings' tables, and the table each capability names (`<table>.<column>`)."""
+        named = {table for search in self.searches for table in (search.row_table, search.fts.table if search.fts else None) if table}
+        named |= {binding.table for search in self.searches for binding in search.vectors.values()}
+        named |= {space.table for space in self.atlas}
+        named |= {target.partition(".")[0] for target in self.capabilities.values()}
+        if self.document is not None:
+            named.add(self.document.table)
+        if self.sampling is not None:
+            named |= {binding.table for binding in (self.sampling.scores, self.sampling.embeddings) if binding is not None}
+        return named
+
 
 class DatasetDescriptor(BaseModel):
     """Merged view served to clients: dataset id + discovered tables + declared roles.

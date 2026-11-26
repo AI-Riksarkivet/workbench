@@ -100,7 +100,7 @@ export interface paths {
          *
          *     A replay IS a re-ingest, so it carries the SAME authz as a fresh ingest, twice over: the relay's gate on
          *     the staged bytes (:func:`enforce_bus_authz` — signature and stamped author) and the ingest door's on the
-         *     operator (:func:`enforce_output_authz` — ``can_write_data`` on the outputs, ``can_get_metadata`` on the
+         *     operator (:func:`enforce_output_authz` — ``can_write_data`` on the outputs, ``can_read_data`` on the
          *     inputs, fail-closed). The record is idempotent: every feed row and edge is written under its key. The
          *     staged bytes are re-published
          *     to the lineage topic exactly as the relay re-publishes them, so subscribers hear of the event as well as
@@ -457,21 +457,34 @@ export interface components {
             /** Oldest Seq */
             oldest_seq?: number | null;
         };
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
+        /**
+         * IngestAck
+         * @description The door's acknowledgement of one recorded event.
+         */
+        IngestAck: {
+            /** Run */
+            run: string | null;
+            /**
+             * Status
+             * @default ingested
+             * @constant
+             */
+            status?: "ingested";
         };
-        /** Liveness */
+        /**
+         * Liveness
+         * @description The body of ``/livez``.
+         */
         Liveness: {
             /** @default ok */
             status?: components["schemas"]["LivenessStatus"];
         };
         /**
          * LivenessStatus
+         * @description What ``/livez`` answers: ``ok`` while the process lives, ``stalled`` once its own check fails.
          * @enum {string}
          */
-        LivenessStatus: "ok";
+        LivenessStatus: "ok" | "stalled";
         /**
          * ParkedRuns
          * @description The runs whose events a park keeps, from the bus lane and the outbox drain alike, each with how many, for the estate admin ([[LH-148]]).
@@ -481,6 +494,23 @@ export interface components {
             runs?: {
                 [key: string]: number;
             };
+        };
+        ProblemDetails: {
+            /** @description The spec's error code, which a client dispatches on */
+            code: number;
+            detail: string;
+            error: string;
+            /** @description Each field a request failed validation on */
+            errors?: {
+                field: string;
+                message: string;
+                type: string;
+            }[];
+            /** @description The W3C trace id of the request, which finds the error's log line */
+            instance?: string;
+            status: number;
+            title: string;
+            type: string;
         };
         /**
          * ProjectedEvent
@@ -494,7 +524,10 @@ export interface components {
             /** Seq */
             seq: number;
         };
-        /** Readiness */
+        /**
+         * Readiness
+         * @description The body of ``/readyz``: the service's status and each component's verdict.
+         */
         Readiness: {
             /** Components */
             components?: {
@@ -504,22 +537,10 @@ export interface components {
         };
         /**
          * ReadinessStatus
+         * @description Where a service stands in its lifecycle, as ``/readyz`` answers it.
          * @enum {string}
          */
         ReadinessStatus: "starting" | "ready" | "degraded" | "unhealthy" | "shutting_down";
-        /** ValidationError */
-        ValidationError: {
-            /** Context */
-            ctx?: Record<string, never>;
-            /** Input */
-            input?: unknown;
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
-            type: string;
-        };
     };
     responses: never;
     parameters: never;
@@ -555,7 +576,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -576,6 +606,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ParkedRuns"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -606,7 +645,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -637,7 +685,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -766,9 +823,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string | null;
-                    };
+                    "application/json": components["schemas"]["IngestAck"];
                 };
             };
             /** @description Validation Error */
@@ -777,7 +832,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -813,7 +877,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -846,7 +919,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -869,6 +951,24 @@ export interface operations {
                     "application/json": components["schemas"]["Liveness"];
                 };
             };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Liveness"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
         };
     };
     readyz_readyz_get: {
@@ -887,6 +987,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Readiness"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Readiness"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };
@@ -919,7 +1037,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };

@@ -49,6 +49,7 @@ from workbench.exceptions import DomainError, ForbiddenError, NotFoundError, Ser
 from workbench.governed.token_exchange import LakehouseCaller
 from workbench.lancekit.absence import reads_as_absent
 from workbench.lancekit.catalog import CALL_TIMEOUT_S, bounded, translate_catalog_errors
+from workbench.lancekit.confined import OutsideDeclaredLocations
 from workbench.lancekit.descriptor import DESCRIPTOR_METADATA_KEY, DatasetDescriptor, Declared, validate_descriptor
 from workbench.lancekit.introspect import TableInfo, dataset_info
 from workbench.media.config import MediaSettings
@@ -90,6 +91,10 @@ LISTED_NOT_WRITTEN: Final = "the catalog lists it, but holds no version of it to
 #: again: a listing every page makes does not open a table that is not there each time, and a table written since is
 #: seen within this.
 ABSENT_RECHECK_S: Final = 60.0
+#: Why a table a lakehouse lists to the caller is left out of their dataset when its rows are refused to them: a
+#: lakehouse lists a table to a caller who may only describe it (rask's `describer` access level), and refuses them a
+#: read of its data.
+LISTED_NOT_YOURS: Final = "the catalog lists it, but does not let you read its rows"
 
 
 class UnknownDatasetError(LookupError):
@@ -366,7 +371,13 @@ _REASONS: Final = (
     (DatasetAbsentError, LISTED_NOT_WRITTEN),
 )
 COULD_NOT_READ: Final = "it could not be read right now"
-_REFUSALS: Final = (ForbiddenError, UnauthorizedError, lance_namespace.PermissionDeniedError, lance_namespace.UnauthenticatedError)
+#: A refusal of the caller's credential, or of the source itself, which answers for every table of the dataset alike.
+_REFUSALS: Final = (UnauthorizedError, lance_namespace.UnauthenticatedError, OutsideDeclaredLocations)
+#: A refusal of one table to an accepted caller: that table's answer, not the dataset's.
+_TABLE_REFUSALS: Final = (ForbiddenError, lance_namespace.PermissionDeniedError)
+#: The reasons a cached dataset's tables are asked again for after `ABSENT_RECHECK_S`: a table with nothing to read may
+#: be written since, and a refused one granted since.
+_RECHECKED: Final = frozenset({LISTED_NOT_WRITTEN, LISTED_NOT_YOURS})
 
 
 def reason_for(exc: BaseException) -> str:
@@ -459,8 +470,14 @@ def load_dataset_descriptor(
             ds = _open(client, [*namespace, name], session)
             info = dataset_info(ds, name)
         except _REFUSALS:
-            # A refusal is the caller's answer for the dataset, never a table's reason to show it without that table.
+            # A credential the catalog does not accept, or a source answering outside its declared locations, answers for
+            # the whole dataset.
             raise
+        except _TABLE_REFUSALS:
+            # The catalog listed the table to this caller and refuses them its rows: their other tables still open.
+            logger.info("table %s of %s is listed to the caller and its rows refused", name, dataset_id)
+            unreadable[name] = LISTED_NOT_YOURS
+            continue
         except Exception as exc:
             absent = isinstance(exc, ValueError | OSError) and reads_as_absent(exc)
             if absent:
@@ -483,13 +500,22 @@ def load_dataset_descriptor(
     if override.resolve().parent != descriptor_dir.resolve():
         raise UnknownDatasetError(f"dataset id {dataset_id!r} names no file of the descriptor directory")
     declared = Declared.model_validate_json(override.read_text()) if override.exists() else stamped
+    refused = sorted(name for name, reason in unreadable.items() if reason == LISTED_NOT_YOURS)
+    callers_answer = False
     if transient and declared is not None:
         problem = "a table could not be read right now, so its descriptor is not used until it can be"
         declared = None
+    elif declared is not None and (needed := sorted(declared.tables_named().intersection(refused))):
+        # The caller's answer, not a fault in the data or its descriptor: said as such, and logged as information.
+        problem = f"its descriptor names {', '.join(needed)}, which {LISTED_NOT_YOURS}"
+        declared = None
+        callers_answer = True
     elif declared is not None and (problems := validate_descriptor(declared, tables)):
         problem = "its descriptor names what the dataset lacks: " + "; ".join(problems)
         declared = None
-    if problem is not None:
+    if callers_answer:
+        logger.info("dataset %s is shown to the caller as a plain table: %s", dataset_id, problem)
+    elif problem is not None:
         logger.warning("dataset %s is shown as a plain table: %s", dataset_id, problem)
     return DatasetDescriptor(
         id=dataset_id,
@@ -624,7 +650,8 @@ class DatasetRegistry:
             DatasetAbsentError: No table the catalog lists in it holds a version to read; answered so, unopened, for
                 :data:`ABSENT_RECHECK_S`.
             ForbiddenError: The source is the workbench's to decide and the caller is not one of its readers; asked before
-                the caller's cached handle is served (`workbench.sources.require_admitted`).
+                the caller's cached handle is served (`workbench.sources.require_admitted`). Or the catalog lists every
+                table of the dataset to the caller and refuses them each one's rows.
         """
         try:
             located = self._settings.sources.dataset(dataset_id)
@@ -656,7 +683,10 @@ class DatasetRegistry:
             raise UnknownDatasetError(f"dataset {dataset_id!r} not found: {exc}") from exc
         if not descriptor.tables and not descriptor.unreadable:
             raise UnknownDatasetError(f"dataset {dataset_id!r} holds no table")
-        holds_absent = LISTED_NOT_WRITTEN in descriptor.unreadable.values()
+        if not descriptor.tables and set(descriptor.unreadable.values()) == {LISTED_NOT_YOURS}:
+            # Every table it lists is refused to this caller: they are refused the dataset, as a read of it would be.
+            raise ForbiddenError(f"dataset {dataset_id!r}: the catalog does not let you read any of its tables")
+        rechecks = not _RECHECKED.isdisjoint(descriptor.unreadable.values())
         if not descriptor.tables and set(descriptor.unreadable.values()) == {LISTED_NOT_WRITTEN}:
             # Nothing in it can be read: the dataset is answered as absent, and not opened again for a while.
             with self._lock:
@@ -684,9 +714,9 @@ class DatasetRegistry:
             self._absent.pop(key, None)
             self._handles[key] = handle
             self._handles.move_to_end(key)
-            # A dataset holding a table with nothing to read is opened again after a while, so a table written since is
-            # seen; one whose every table opened is kept until it is evicted.
-            if holds_absent:
+            # A dataset holding a table with nothing to read, or one refused to this caller, is asked again after a while,
+            # so a table written or granted since is seen; one whose every table opened is kept until it is evicted.
+            if rechecks:
                 self._recheck[key] = self._clock() + ABSENT_RECHECK_S
             else:
                 self._recheck.pop(key, None)
@@ -704,11 +734,11 @@ class DatasetRegistry:
         descriptor: DatasetDescriptor,
         session: lance.Session,
     ) -> bool:
-        """Whether a cached dataset holding gone tables is as it was: the catalog lists the same tables (one ListTables)
-        and each gone one still holds no version (one open each). Its readable tables are not described again: they are
-        reopened for a read when their vend runs out (`DatasetHandle`). Any other answer, or a failure, is a change, and
-        the dataset is opened again whole."""
-        gone = [name for name, reason in descriptor.unreadable.items() if reason == LISTED_NOT_WRITTEN]
+        """Whether a cached dataset holding gone or refused tables is as it was: the catalog lists the same tables (one
+        ListTables), each gone one still holds no version and each refused one is still refused (one open each). Its
+        readable tables are not described again: they are reopened for a read when their vend runs out
+        (`DatasetHandle`). Any other answer, or a failure, is a change, and the dataset is opened again whole."""
+        gone = [name for name, reason in descriptor.unreadable.items() if reason in _RECHECKED]
         try:
             with translate_catalog_errors():
                 listed = set(_tables_of(source, _list_tables(client, namespace).names))
@@ -718,7 +748,13 @@ class DatasetRegistry:
                     try:
                         _open(client, [*namespace, name], session)
                     except (ValueError, OSError) as exc:
-                        if reads_as_absent(exc):
+                        if descriptor.unreadable[name] == LISTED_NOT_WRITTEN and reads_as_absent(exc):
+                            continue
+                        return False
+                    except OutsideDeclaredLocations:
+                        return False
+                    except _TABLE_REFUSALS:
+                        if descriptor.unreadable[name] == LISTED_NOT_YOURS:
                             continue
                         return False
                     # It opens: written since.

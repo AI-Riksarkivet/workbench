@@ -165,8 +165,9 @@ class CatalogPublisher:
 
         Every row on the path is one the workbench's client may describe once it holds a grant on the target: the
         lakehouse lets a grant beneath a warehouse or namespace see that container (`can_get_metadata` is
-        `reader_effective or visible_below from child` on both, rask `packages/lakehouse/src/lakehouse/governed/auth/
-        model.fga` at `f9c2c4e02`), and serves a describe on a warehouse's own one-segment name.
+        `describer_effective or visible_below from child` on both, where `describer_effective` includes every reader,
+        rask `packages/lakehouse/src/lakehouse/governed/auth/model.fga` at `c5dca08ee`), and serves a describe on a
+        warehouse's own one-segment name.
 
         Raises:
             PublishRefusal: The catalog refused to describe a namespace on the path, so whether the target requires a run

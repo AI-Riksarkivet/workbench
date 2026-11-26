@@ -9,14 +9,16 @@ The workbench is a client of a rask lakehouse and reaches it only through what r
 
 Data goes through stock `lance_namespace` and pylance on credentials the catalog vends.
 
-These four files are copied unchanged from `AI-Riksarkivet/rask` at `e495417da` (`docs/`, 2026-11-21). Links inside
+These four files are copied unchanged from `AI-Riksarkivet/rask` at `c5dca08ee` (`docs/`, 2026-11-26), the commit the
+development estate's lakehouse image (`lance-rest-catalog:c5dca08ee`, rask helm revision 138) is built from. Links inside
 them that point at rask's own tree (`adr/`, `lance_docs/`) resolve in rask's repository, not here. Refresh them with:
 
 ```bash
 for f in catalog-openapi.json lineage-openapi.json COMMIT-EVENTS.md WRITE-GOVERNANCE.md; do
-  git -C <rask checkout> show origin/main:docs/$f > docs/rask/$f
+  git -C <rask checkout> show <sha>:docs/$f > docs/rask/$f
 done
 bun --cwd=frontend run gen:types
 ```
 
-Then record the new sha here.
+where `<sha>` is the commit the development estate's lakehouse image is built from (its `lance-rest-catalog` tag), so
+the contract is the one the estate answers by. Then record the new sha here.

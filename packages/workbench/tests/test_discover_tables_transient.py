@@ -17,7 +17,7 @@ from pathlib import Path
 import lance
 import pyarrow as pa
 import pytest
-from lance_namespace import DeclareTableRequest, LanceNamespace
+from lance_namespace import DeclareTableRequest, DescribeTableRequest, DescribeTableResponse, LanceNamespace, PermissionDeniedError
 
 from tests.media_catalog import lakehouse_dir, namespace_client, write_table
 from workbench.governed.deps import ANONYMOUS_CALLER
@@ -181,3 +181,58 @@ def test_a_cached_dataset_holding_a_gone_table_is_opened_again_once_the_interval
 
 def _remove(root: Path, table: str) -> None:
     shutil.rmtree(Path(registry.lance.dataset(namespace_client=namespace_client(root), table_id=["wh", "ns", table]).uri.removeprefix("file://")))
+
+
+class _RefusingCatalog(lance.namespace.DirectoryNamespace):
+    """A catalog that lists every table and refuses to describe the ones named in ``refused``, as a lakehouse answers a
+    caller who may describe a table but not read its rows (403 code 15, rask's `describer` level). Each describe asked is
+    counted by table."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root=str(root))
+        self.refused: set[str] = set()
+        self.described: list[str] = []
+
+    def describe_table(self, request: DescribeTableRequest) -> DescribeTableResponse:
+        table = (request.id or [""])[-1]
+        self.described.append(table)
+        if table in self.refused:
+            raise PermissionDeniedError(f"the caller may describe table {table} but not read its data")
+        return super().describe_table(request)
+
+
+class _OnCatalog(registry.DatasetRegistry):
+    """The registry, reading every source through one catalog the test holds."""
+
+    def __init__(self, settings: MediaSettings, catalog: LanceNamespace, clock: _Clock) -> None:
+        super().__init__(settings, clock=clock)
+        self._catalog = catalog
+
+    def client(self, source: object, caller: LakehouseCaller) -> LanceNamespace:
+        return self._catalog
+
+
+def test_a_table_the_catalog_lists_but_refuses_is_named_with_why_the_rest_opens_and_a_later_grant_is_seen(tmp_path: Path) -> None:
+    """A refused table is the table's answer, not the dataset's: the caller's other tables open, the descriptor that
+    needs it says it is refused rather than missing, the cached dataset asks only that table again while it stays
+    refused, and it opens once the caller is granted it."""
+    clock = _Clock()
+    write_table(tmp_path, ["wh", "ns", "chunks"], pa.table({"doc_id": ["a"]}))
+    write_table(tmp_path, ["wh", "ns", "documents"], pa.table({"doc_id": ["a"]}), descriptor=_DESCRIPTOR)
+    catalog = _RefusingCatalog(tmp_path)
+    catalog.refused = {"chunks"}
+    datasets = _OnCatalog(MediaSettings.model_validate({**lakehouse_dir(str(tmp_path))}), catalog, clock)
+
+    refused = datasets.get("lake~wh$ns", ANONYMOUS_CALLER).descriptor
+    clock.now += A_MINUTE
+    catalog.described.clear()
+    still = _opened_tables(datasets, ANONYMOUS_CALLER)
+    asked_again = list(catalog.described)
+    catalog.refused.clear()
+    clock.now += A_MINUTE
+    granted = datasets.get("lake~wh$ns", ANONYMOUS_CALLER).descriptor
+
+    assert (sorted(refused.tables), refused.unreadable, refused.declared) == (["documents"], {"chunks": registry.LISTED_NOT_YOURS}, None)
+    assert refused.problem == f"its descriptor names chunks, which {registry.LISTED_NOT_YOURS}"
+    assert (still, asked_again) == (["documents"], ["chunks"])
+    assert (sorted(granted.tables), granted.unreadable, granted.declared is not None) == (["chunks", "documents"], {}, True)
