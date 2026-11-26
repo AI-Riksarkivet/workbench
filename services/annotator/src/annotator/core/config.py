@@ -56,6 +56,11 @@ class AnnotatorSettings(GovernedMediaSettings):
     state_ca_file: Path | None = Field(default=None, alias="ANNOTATOR_STATE_CA_FILE")
     #: The most connections one process holds.
     state_pool_size: int = Field(default=10, ge=2, le=100, alias="ANNOTATOR_STATE_POOL_SIZE")
+    #: How long one statement may run, waiting included, before the database cancels it, so one slow query cannot hold
+    #: a connection, a row lock or a request without end. The schema applied at start is exempt (`apply_schema`).
+    state_statement_timeout_seconds: float = Field(default=30.0, gt=0, le=3600, alias="ANNOTATOR_STATE_STATEMENT_TIMEOUT_SECONDS")
+    #: How long one statement may wait for another request's lock before the database cancels it.
+    state_lock_timeout_seconds: float = Field(default=10.0, gt=0, le=3600, alias="ANNOTATOR_STATE_LOCK_TIMEOUT_SECONDS")
 
     #: How long a publish run's lease on its project lasts past each renewal. Renewed between the saga's steps, so it is
     #: set to outlast the longest single step, the catalog create (up to `CREATE_ATTEMPTS` calls of pylance's REST client,

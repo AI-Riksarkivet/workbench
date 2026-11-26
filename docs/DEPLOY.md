@@ -211,7 +211,20 @@ A platform runs its own identity provider, OpenFGA and secret store, and the cha
   to turn it down: the server's certificate carries `state.host` as a name, and the server takes TLS connections with
   password authentication. The database and the role exist before the install, the role owning the database (the
   annotator creates its own tables and functions there at start). The suite and the development estate run
-  PostgreSQL 17. Who reaches the server is the platform's policy.
+  PostgreSQL 17. Who reaches the server is the platform's policy. `state.statementTimeoutSeconds` (30) and
+  `state.lockTimeoutSeconds` (10) bound how long one statement may run, and wait for another request's lock, before
+  the database cancels it and the request answers 503 with the reason; the schema applied at start is exempt.
+- **What the platform keeps for the annotator** (ADR 0036): its PostgreSQL holds people's unpublished work (every
+  project's tasks, drafts, claims, verdicts and the last saves each item can be undone to) until a project is
+  published, and nothing else holds it. So the platform backs that database up, and its backup schedule is how much
+  recent labelling a restore can lose: a restore from a backup taken an hour before a failure brings the work back as
+  it was an hour before. What a publish wrote to the lakehouse is the lakehouse's and is not lost with it. Bringing a
+  restored database back: point `state` at it (the same role owning it) and restart the annotator; it applies its own
+  schema at start, which converges a database restored from an earlier release. One case needs a person: a project
+  published after the backup was taken reads as unpublished in the restored database, while the lakehouse already holds
+  what it published; publishing it again would write a second table, so check the lakehouse for that project's table
+  before publishing anything a restore brought back. A restore taken during a publish keeps that publish's token, and
+  the publish completes as it would have. The development fixture has one instance and no backup.
 - **Routes:** `route.parentRefs` and `route.hostnames`; `networkPolicy.enabled` for the release's own policies.
 
 ## Without rask, or beside it

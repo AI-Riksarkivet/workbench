@@ -30,7 +30,7 @@ from fastapi import Depends, Request
 from psycopg import Error as DatabaseError
 
 from annotator.api.security import CurrentToken
-from annotator.state.store import AnnotatorStore
+from annotator.state.store import AnnotatorStore, StatementCancelled
 
 
 logger = logging.getLogger(__name__)
@@ -75,8 +75,9 @@ async def register_person(request: Request, caller: CurrentToken) -> None:
         return
     try:
         await store.remember_person(caller.subject, name)
-    except DatabaseError:
-        # A name is a convenience beside the write; the write itself reports any fault of the store it then meets.
+    except (DatabaseError, StatementCancelled):
+        # A name is a convenience beside the write; the write itself reports any fault of the store it then meets,
+        # a statement the database cancelled at its timeout included.
         logger.warning("person_name_not_kept", exc_info=True)
 
 

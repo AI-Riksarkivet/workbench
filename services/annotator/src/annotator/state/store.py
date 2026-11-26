@@ -41,6 +41,7 @@ from importlib import resources
 from string import Template
 from typing import TYPE_CHECKING, Any, Final, cast
 
+import psycopg.errors
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -99,7 +100,7 @@ from annotator.state.task_query import (
     work_of,
 )
 from annotator.text import storable_json, storable_text
-from workbench.exceptions import ConflictError, DomainError, NotFoundError
+from workbench.exceptions import ConflictError, DomainError, NotFoundError, ServiceUnavailableError
 
 
 if TYPE_CHECKING:
@@ -238,14 +239,42 @@ def connection_kwargs(settings: AnnotatorSettings) -> dict[str, Any]:
         "sslmode": settings.state_sslmode,
         "application_name": "annotator",
         "connect_timeout": 10,
-        # Every stamp the store reads back from the database's clock is in UTC, whatever the server's own zone.
-        "options": "-c TimeZone=UTC",
+        # Every stamp the store reads back from the database's clock is in UTC, whatever the server's own zone; and no
+        # statement runs, or waits for a lock, past its timeout.
+        "options": (
+            "-c TimeZone=UTC"
+            f" -c statement_timeout={_milliseconds(settings.state_statement_timeout_seconds)}"
+            f" -c lock_timeout={_milliseconds(settings.state_lock_timeout_seconds)}"
+        ),
     }
     if settings.state_ca_file is not None:
         kwargs["sslrootcert"] = str(settings.state_ca_file)
     if settings.state_password_file is not None:
         kwargs["password"] = settings.state_password_file.read_text().rstrip("\n")
     return kwargs
+
+
+def _milliseconds(seconds: float) -> int:
+    return max(1, round(seconds * 1000))
+
+
+class StatementCancelled(ServiceUnavailableError):
+    """The database cancelled a request's statement at its statement or lock timeout; its transaction was rolled back."""
+
+    problem_type = "about:blank#statement-cancelled"
+
+
+def _cancelled(exc: psycopg.errors.QueryCanceled | psycopg.errors.LockNotAvailable, settings: AnnotatorSettings) -> StatementCancelled:
+    """What a person reads when the database cancelled a statement: which limit, and that nothing changed."""
+    if isinstance(exc, psycopg.errors.LockNotAvailable):
+        return StatementCancelled(
+            f"the annotator's database stopped this request after it waited {settings.state_lock_timeout_seconds:g} s for another "
+            "request's change to the same item. Nothing was changed; try again."
+        )
+    return StatementCancelled(
+        f"the annotator's database stopped this request at its {settings.state_statement_timeout_seconds:g} s limit; it may have been "
+        "waiting on another request's change to the same item. Nothing was changed; try again."
+    )
 
 
 def _sql_list(values: Iterable[str]) -> str:
@@ -258,6 +287,10 @@ async def apply_schema(pool: AsyncConnectionPool[Any]) -> None:
     template = Template(resources.files("annotator.state").joinpath("schema.sql").read_text())
     schema = template.substitute(project_states=_sql_list(ProjectState), task_states=_sql_list(TaskState))
     async with pool.connection() as conn, conn.transaction():
+        # Exempt from the timeouts: a start that computes a generated column again for every row, or waits for another
+        # replica's apply, takes as long as it takes, and a cancelled apply would leave the service unable to start.
+        await conn.execute("SET LOCAL statement_timeout = 0")
+        await conn.execute("SET LOCAL lock_timeout = 0")
         await conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK,))
         await conn.execute(schema.encode())
 
@@ -290,8 +323,9 @@ def _refuse_if_frozen(project: AnnotationProject, task: Task, event: str) -> Non
 class AnnotatorStore:
     """The state store over one connection pool. Built and closed by the service's lifespan (`annotator.main`)."""
 
-    def __init__(self, pool: AsyncConnectionPool[Any]) -> None:
+    def __init__(self, pool: AsyncConnectionPool[Any], settings: AnnotatorSettings) -> None:
         self._pool = pool
+        self._settings = settings
 
     @classmethod
     async def open(cls, settings: AnnotatorSettings) -> AnnotatorStore:
@@ -311,15 +345,25 @@ class AnnotatorStore:
         except BaseException:
             await pool.close()
             raise
-        return cls(pool)
+        return cls(pool, settings)
 
     async def close(self) -> None:
         await self._pool.close()
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncGenerator[Connection]:
-        async with self._pool.connection() as conn, conn.transaction():
-            yield cast("Connection", conn)
+        async with self._connection() as conn:
+            yield conn
+
+    @asynccontextmanager
+    async def _connection(self) -> AsyncGenerator[Connection]:
+        """One connection in one transaction; a statement the database cancelled at a timeout is the request's
+        `StatementCancelled`, its transaction rolled back."""
+        try:
+            async with self._pool.connection() as conn, conn.transaction():
+                yield cast("Connection", conn)
+        except (psycopg.errors.QueryCanceled, psycopg.errors.LockNotAvailable) as exc:
+            raise _cancelled(exc, self._settings) from exc
 
     # ---------------------------------------------------------------------------------------------
     # Projects
@@ -756,8 +800,7 @@ class AnnotatorStore:
         ONE snapshot (a repeatable-read transaction), so the page, its counts, its work and the
         publish precondition beside it never disagree."""
         extras = extras or PageExtras()
-        async with self._pool.connection() as raw, raw.transaction():
-            conn = cast("Connection", raw)
+        async with self._connection() as conn:
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             index = await _task_index(conn, project_id)
             page = await page_of(conn, project_id, filters, sort=sort, order=order, limit=limit, offset=offset, around=around)

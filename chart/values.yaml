@@ -132,6 +132,10 @@ state:
   ca:
     name: ""
     key: ca.crt
+  # How long one statement may run, waiting included, and how long it may wait for another request's lock, before the
+  # database cancels it and the request answers 503. The schema the annotator applies at start is exempt.
+  statementTimeoutSeconds: 30
+  lockTimeoutSeconds: 10
 
 # The pods' grace period, the preStop drain, and the lifespan teardown after uvicorn's drain.
 lifecycle:

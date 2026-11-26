@@ -116,6 +116,8 @@ spec:
             - { name: ANNOTATOR_STATE_SSLMODE, value: "verify-full" }
             - { name: ANNOTATOR_STATE_CA_FILE, value: /var/run/secrets/annotator/state-ca/ca.crt }
             - { name: ANNOTATOR_STATE_PASSWORD_FILE, value: /var/run/secrets/annotator/state-password/password }
+            - { name: ANNOTATOR_STATE_STATEMENT_TIMEOUT_SECONDS, value: {{ $state.statementTimeoutSeconds | quote }} }
+            - { name: ANNOTATOR_STATE_LOCK_TIMEOUT_SECONDS, value: {{ $state.lockTimeoutSeconds | quote }} }
             {{- with .Values.models.endpoint }}
             {{- if .url }}
             # The model endpoint assist asks (ADR 0023): called as this pod, on its own ServiceAccount token for the
