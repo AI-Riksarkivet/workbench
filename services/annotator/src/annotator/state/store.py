@@ -277,6 +277,23 @@ def _cancelled(exc: psycopg.errors.QueryCanceled | psycopg.errors.LockNotAvailab
     )
 
 
+class SharedView(BaseModel):
+    """A saved view its owner shares by its link (ADR 0022): the app's snapshot of a dataset's arrangement, set-ups and
+    search, kept as the app sent it."""
+
+    view_id: str
+    owner: str
+    dataset: str
+    name: str
+    snapshot: dict[str, Any]
+    shared_at: datetime | None = None
+
+
+def _shared_view(row: tuple[Any, ...]) -> SharedView:
+    view_id, owner, dataset, name, snapshot, shared_at = row
+    return SharedView(view_id=view_id, owner=owner, dataset=dataset, name=name, snapshot=snapshot, shared_at=shared_at)
+
+
 def _sql_list(values: Iterable[str]) -> str:
     return ", ".join(f"'{value}'" for value in values)
 
@@ -831,6 +848,45 @@ class AnnotatorStore:
                 "ON CONFLICT (principal) DO UPDATE SET name = EXCLUDED.name, seen_at = EXCLUDED.seen_at WHERE people.name IS DISTINCT FROM EXCLUDED.name",
                 (storable_text("a person's principal", principal), storable_text("a person's name", name)),
             )
+
+    async def share_view(self, view: SharedView) -> SharedView:
+        """Keep ``view`` under its id, stamped with the database's clock."""
+        async with self._transaction() as conn:
+            row = await (
+                await conn.execute(
+                    "INSERT INTO shared_views (view_id, owner, dataset, name, snapshot, shared_at) VALUES (%s, %s, %s, %s, %s, clock_timestamp()) "
+                    "RETURNING shared_at",
+                    (view.view_id, view.owner, view.dataset, storable_text("a view's name", view.name), Jsonb(view.snapshot)),
+                )
+            ).fetchone()
+        assert row is not None, "INSERT ... RETURNING answers its row"
+        return view.model_copy(update={"shared_at": row[0]})
+
+    async def shared_view(self, view_id: str) -> SharedView | None:
+        """The shared view ``view_id``, or None when nobody shares one by that id."""
+        async with self._transaction() as conn:
+            row = await (
+                await conn.execute("SELECT view_id, owner, dataset, name, snapshot, shared_at FROM shared_views WHERE view_id = %s", (view_id,))
+            ).fetchone()
+        return None if row is None else _shared_view(row)
+
+    async def views_shared_by(self, owner: str, dataset: str, *, limit: int) -> list[SharedView]:
+        """The views ``owner`` shares of ``dataset``, newest first, at most ``limit``."""
+        async with self._transaction() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT view_id, owner, dataset, name, snapshot, shared_at FROM shared_views WHERE owner = %s AND dataset = %s "
+                    "ORDER BY shared_at DESC, view_id LIMIT %s",
+                    (owner, dataset, limit),
+                )
+            ).fetchall()
+        return [_shared_view(row) for row in rows]
+
+    async def unshare_view(self, view_id: str, owner: str) -> bool:
+        """Stop sharing ``view_id`` when ``owner`` shares it; whether there was one to stop."""
+        async with self._transaction() as conn:
+            cursor = await conn.execute("DELETE FROM shared_views WHERE view_id = %s AND owner = %s", (view_id, owner))
+        return cursor.rowcount == 1
 
     async def names_of(self, principals: Iterable[str]) -> dict[str, str]:
         """The kept name of each of ``principals`` that has one."""

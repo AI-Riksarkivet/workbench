@@ -24,9 +24,19 @@
  * plain JSON of bounded size, so the comparison is cheap and, unlike a flag, self-correcting: drag a
  * panel away and back, and the marker clears itself.
  */
+import type { ApiResult } from '#lib/api/client.ts';
+import type { SharedView, SharedViewsListing } from '#lib/api/views.api.ts';
 import { parseSetups } from '#lib/plain/setup.ts';
+import { told } from '#lib/projects/event-words.ts';
 import { readStoredLayout } from './layout.ts';
 import type { StoredView, ViewSnapshot, ViewsStore } from './store.ts';
+
+/** One dataset's shared views (ADR 0022): kept by a service, listed only to their owner, opened by their link. */
+export interface SharedViewsDoor {
+	list(): Promise<ApiResult<SharedViewsListing>>;
+	share(name: string, snapshot: ViewSnapshot): Promise<ApiResult<SharedView>>;
+	stop(viewId: string, name: string): Promise<ApiResult<null>>;
+}
 
 /** Applying a view: `ok` with what it holds, `absent` for a view no longer stored, or `unreadable` with why. */
 export type ViewRead =
@@ -74,6 +84,26 @@ function readView(view: StoredView): ViewRead {
 	};
 }
 
+/** A shared view as the stored record its snapshot is read from: nothing in it is trusted for coming from the server,
+ *  and each part is checked as a view kept in this browser is (`readView`). */
+function fromShared(view: SharedView): StoredView {
+	const snapshot = view.snapshot;
+	return {
+		id: view.view_id,
+		name: view.name,
+		dataset: view.dataset,
+		layout: snapshot.layout,
+		setups: snapshot.setups,
+		table: typeof snapshot.table === 'string' ? snapshot.table : null,
+		q: typeof snapshot.q === 'string' ? snapshot.q : null,
+		node: snapshot.node,
+		updated: view.shared_at ?? '',
+	};
+}
+
+/** What a shared view holds, checked part by part as a stored view is. */
+export const readSharedView = (view: SharedView): ViewRead => readView(fromShared(view));
+
 /** JSON with SORTED object keys, recursively — the divergence baseline's serializer. A layout built
  *  by the dock and the same layout read back from storage can list their keys in different orders,
  *  and key order is not layout. */
@@ -99,12 +129,30 @@ export interface ViewSummary {
 	readonly isDefault: boolean;
 }
 
+/** A shared view's row: its id is the one its link names. */
+export interface SharedSummary {
+	readonly id: string;
+	readonly name: string;
+}
+
 export type ViewsPhase = 'loading' | 'ready' | 'unreadable';
 
 export class DockViews {
 	#store: ViewsStore;
 	/** Reads what is on screen now. */
 	#snapshot: () => ViewSnapshot | null;
+	#door: SharedViewsDoor | null;
+
+	/** The person's own shared views of the dataset, newest first, from the service that keeps them. */
+	#shared = $state.raw<SharedView[]>([]);
+	/** Whether the person shares more views of the dataset than the listing answered. */
+	#sharedMore = $state(false);
+	/** Why the shared views could not be listed, or null. */
+	#sharedProblem = $state<string | null>(null);
+	/** The shared view whose link the sidebar shows: the one just shared, or one whose link was asked for. */
+	#linkShown = $state.raw<SharedSummary | null>(null);
+	/** What the last action did, told in the past tense; cleared by the next action. */
+	#notice = $state<string | null>(null);
 
 	#views = $state<StoredView[]>([]);
 	#activeId = $state<string | null>(null);
@@ -118,9 +166,53 @@ export class DockViews {
 	/** The last refused write, or null — the sidebar renders it instead of failing silently. */
 	#lastError = $state<string | null>(null);
 
-	constructor(store: ViewsStore, snapshot: () => ViewSnapshot | null) {
+	constructor(
+		store: ViewsStore,
+		snapshot: () => ViewSnapshot | null,
+		door: SharedViewsDoor | null = null,
+	) {
 		this.#store = store;
 		this.#snapshot = snapshot;
+		this.#door = door;
+	}
+
+	/** Whether views can be shared here: a service keeps them. */
+	get canShare(): boolean {
+		return this.#door !== null;
+	}
+
+	/** The person's own shared views of the dataset, newest first. */
+	get shared(): SharedSummary[] {
+		return this.#shared.map(({ view_id, name }) => ({ id: view_id, name }));
+	}
+
+	/** Whether the shared views listed are the newest of more. */
+	get sharedCut(): boolean {
+		return this.#sharedMore;
+	}
+
+	get sharedProblem(): string | null {
+		return this.#sharedProblem;
+	}
+
+	get linkShown(): SharedSummary | null {
+		return this.#linkShown;
+	}
+
+	/** Show the link of the shared view `id`. */
+	showLink(id: string): void {
+		const view = this.#shared.find((v) => v.view_id === id);
+		this.#linkShown = view === undefined ? null : { id, name: view.name };
+	}
+
+	get notice(): string | null {
+		return this.#notice;
+	}
+
+	/** Say what an action the page carried out for the sidebar did (a link copied). */
+	tell(done: string): void {
+		this.#notice = done;
+		this.#lastError = null;
 	}
 
 	/** Every saved view, newest first. Layout payloads stay inside — the sidebar renders summaries. */
@@ -140,6 +232,11 @@ export class DockViews {
 
 	get activeId(): string | null {
 		return this.#activeId;
+	}
+
+	/** Whether the active view is a shared one, which is applied but never saved over. */
+	get activeIsShared(): boolean {
+		return this.#shared.some((v) => v.view_id === this.#activeId);
 	}
 
 	get active(): ViewSummary | null {
@@ -205,9 +302,82 @@ export class DockViews {
 		this.#views = read.views;
 		this.#phase = 'ready';
 		this.#detail = null;
-		if (this.#activeId !== null && !this.#views.some((v) => v.id === this.#activeId)) {
+		if (this.#activeId !== null && this.#find(this.#activeId) === undefined) {
 			this.clearActive();
 		}
+	}
+
+	/** List the person's shared views of the dataset; a listing that fails is said, never shown as none. */
+	async refreshShared(): Promise<void> {
+		if (this.#door === null) return;
+		const read = await this.#door.list();
+		if (!read.ok) {
+			this.#sharedProblem = `Your shared views could not be listed: ${read.detail}`;
+			return;
+		}
+		this.#shared = read.data.views;
+		this.#sharedMore = read.data.more;
+		this.#sharedProblem = null;
+	}
+
+	/** Share the saved view `id`: what it holds, checked as when it is applied, and its name. */
+	async share(id: string): Promise<boolean> {
+		const door = this.#door;
+		const view = this.#views.find((v) => v.id === id);
+		if (door === null || view === undefined || this.#busy) return false;
+		const read = readView(view);
+		if (read.status !== 'ok') {
+			this.#lastError = `This view could not be shared: ${read.status === 'unreadable' ? read.detail : 'it is not stored'}.`;
+			return false;
+		}
+		this.#busy = true;
+		try {
+			const result = await door.share(view.name, read.view);
+			if (!result.ok) {
+				this.#lastError = `Sharing failed: ${result.detail}`;
+				this.#notice = null;
+				return false;
+			}
+			this.#shared = [result.data, ...this.#shared];
+			this.#linkShown = { id: result.data.view_id, name: result.data.name };
+			this.#lastError = null;
+			this.#notice = told('Shared', result.data.name);
+			return true;
+		} finally {
+			this.#busy = false;
+		}
+	}
+
+	/** Stop sharing the shared view `id`: its link opens nothing after. The person has confirmed it. */
+	async stopSharing(id: string): Promise<boolean> {
+		const door = this.#door;
+		const view = this.#shared.find((v) => v.view_id === id);
+		if (door === null || view === undefined || this.#busy) return false;
+		this.#busy = true;
+		try {
+			const result = await door.stop(id, view.name);
+			if (!result.ok) {
+				this.#lastError = `Stopping sharing failed: ${result.detail}`;
+				this.#notice = null;
+				return false;
+			}
+			this.#shared = this.#shared.filter((v) => v.view_id !== id);
+			if (this.#linkShown?.id === id) this.#linkShown = null;
+			if (this.#activeId === id) this.clearActive();
+			this.#lastError = null;
+			this.#notice = told('Stopped sharing', view.name);
+			return true;
+		} finally {
+			this.#busy = false;
+		}
+	}
+
+	/** A view by id: one saved in this browser, or one of the person's shared views. */
+	#find(id: string): StoredView | undefined {
+		const local = this.#views.find((v) => v.id === id);
+		if (local !== undefined) return local;
+		const shared = this.#shared.find((v) => v.view_id === id);
+		return shared === undefined ? undefined : fromShared(shared);
 	}
 
 	/**
@@ -219,14 +389,14 @@ export class DockViews {
 	 * that does not apply never leaves a checked, unapplied view.
 	 */
 	select(id: string): ViewRead {
-		const view = this.#views.find((v) => v.id === id);
+		const view = this.#find(id);
 		if (view === undefined) return { status: 'absent' };
 		return readView(view);
 	}
 
 	/** Commit a view as ACTIVE — call after its layout was actually applied to the dock. */
 	activate(id: string): void {
-		const view = this.#views.find((v) => v.id === id);
+		const view = this.#find(id);
 		if (view === undefined) return;
 		const read = readView(view);
 		this.#activeId = id;
@@ -283,7 +453,7 @@ export class DockViews {
 	async save(): Promise<boolean> {
 		const id = this.#activeId;
 		const snapshot = this.#snapshot();
-		if (id === null || snapshot === null) return false;
+		if (id === null || snapshot === null || this.activeIsShared) return false;
 		return this.#write('Save', async () => {
 			if (!(await this.#store.update(id, snapshot))) return false;
 			this.#views = this.#views.map((v) => (v.id === id ? { ...v, ...snapshot } : v));
@@ -333,6 +503,7 @@ export class DockViews {
 		try {
 			const ok = await fn();
 			this.#lastError = ok ? null : `${op} failed — not saved`;
+			this.#notice = null;
 			return ok;
 		} finally {
 			this.#busy = false;

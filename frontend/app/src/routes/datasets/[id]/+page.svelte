@@ -17,6 +17,15 @@
 	 * history entry, so Back leaves the dataset), and a link or a reload opens on them: the panels it names
 	 * are brought in front over the restored layout.
 	 *
+	 * A SHARED VIEW'S LINK (`?view=<id>`, ADR 0022) opens the view the annotator keeps under that id, read under the
+	 * reader's own rights, and applies it over the dataset's default view: the same arrangement, table, set-ups and
+	 * search the sharer saved, checked part by part as a view kept in this browser is. Once applied the parameter
+	 * leaves the address, which then carries what is shown as any address here does. A refusal is said with the door's
+	 * reason and nothing is applied.
+	 *
+	 * WHAT A VIEW NAMES THAT IS GONE (a table the dataset no longer holds, a column its table no longer has) is left out
+	 * and named in the dock's one status line (`#lib/dock/view-fit.ts`), for a view kept here and a shared one alike.
+	 *
 	 * The page also hosts what every panel shares and none owns: the health poll the search modes read,
 	 * and the keyboard's `/` and Escape.
 	 */
@@ -43,7 +52,11 @@
 	import { readDockLink, writeDockLink, type DockLink } from '#lib/dock/link.ts';
 	import { startWorkbench, type WorkbenchSession } from '#lib/dock/session.ts';
 	import { openWorkbenchStore, type ViewSnapshot } from '#lib/dock/store.ts';
-	import type { ViewRead } from '#lib/dock/views.svelte.ts';
+	import { fitView } from '#lib/dock/view-fit.ts';
+	import { readSharedView, type ViewRead } from '#lib/dock/views.svelte.ts';
+	import type { ApiResult } from '#lib/api/client.ts';
+	import { openSharedView, sharedViewsOf, type SharedView } from '#lib/api/views.api.ts';
+	import { told } from '#lib/projects/event-words.ts';
 	import { plain } from '#lib/plain/plain.svelte.ts';
 	import { explore } from '#lib/explore/explore.svelte.ts';
 	import { panelGates } from '#lib/explore/pane-capabilities.ts';
@@ -106,6 +119,12 @@
 	/** Why the link this page opened on carried a set-up that was not used. */
 	// svelte-ignore state_referenced_locally
 	let linkProblem = $state<string | null>(data.link.setupProblem ?? null);
+	/** The shared view this page's link names, read once as the page opens. */
+	const sharedId = untrack(() => page.url.searchParams.get('view'));
+	/** Whether that shared view was applied, after which its parameter leaves the address. */
+	let sharedApplied = $state(false);
+	/** What applying a view did that the person should know: a shared view opened, a refusal, or what is gone. */
+	let viewNotice = $state<{ text: string; problem: boolean } | null>(null);
 
 	/** What a view holds of what is on screen now. */
 	function snapshot(): ViewSnapshot | null {
@@ -168,11 +187,14 @@
 	onMount(() => {
 		let left = false;
 		const opening = openWorkbenchStore(auth.enabled ? (auth.session?.sub ?? null) : null);
+		// Asked for beside the store, and applied once the dock is up.
+		const sharedOpening = sharedId === null ? null : openSharedView(sharedId);
 		void startWorkbench(
 			opening,
 			id,
 			{
 				snapshot,
+				shared: sharedViewsOf(id),
 				onLayout: (read, wasRefused) => {
 					unreadable = read.status === 'unreadable' ? read.detail : null;
 					if (wasRefused && read.status === 'ok') {
@@ -185,8 +207,10 @@
 					unreadable = read.status === 'unreadable' ? read.detail : null;
 					layout = withLink(read.status === 'ok' ? read.layout : firstLayout());
 					session = started;
-					const preferred = started.views.defaultId;
-					if (preferred !== null && !linked(opened)) applyView(preferred);
+					if (sharedOpening === null) applyDefault();
+					void sharedOpening?.then((result) => {
+						if (!left) openShared(result);
+					});
 				},
 			},
 			() => left,
@@ -221,24 +245,81 @@
 			return;
 		}
 		if (read.status !== 'ok') return;
-		const saved = read.view;
-		if (isPlain) {
-			if (saved.table !== null && saved.table !== plain.table && !plain.choose(saved.table)) {
-				// The view's set-ups and node belong to a table this dataset no longer holds: its layout is
-				// shown over the table in view, and none of them is applied.
-				session?.views.report(
-					`This view names the table ${saved.table}, which this dataset no longer holds: its set-ups were not applied. Pick a table in the Rows panel.`,
-				);
-			} else {
-				plain.restore(saved.setups, saved.node);
-				if (saved.q) plain.search(saved.q);
-				else if (saved.node === null && plain.rows.q) plain.reset();
-			}
-		} else if (saved.q && saved.q !== explore.spec.q) {
-			explore.apply({ ...explore.spec, q: saved.q });
-		}
-		layout = saved.layout;
+		const missing = applySnapshot(read.view);
+		viewNotice = missing.length > 0 ? { text: missing.join(' '), problem: true } : null;
 		session?.views.activate(viewId);
+	}
+
+	/** Each table the plain dataset holds, by name, and its columns. */
+	function heldTables(): Record<string, string[]> {
+		return Object.fromEntries(
+			Object.entries(plain.facts?.tables ?? {}).map(([name, table]) => [
+				name,
+				table.columns.map((c) => c.name),
+			]),
+		);
+	}
+
+	/** Apply what a view holds that the dataset still holds; answers what it names that is gone, as sentences. */
+	function applySnapshot(saved: ViewSnapshot): readonly string[] {
+		const { view: held, missing } = isPlain
+			? fitView(saved, heldTables(), plain.facts?.unreadable ?? {})
+			: { view: saved, missing: [] };
+		if (isPlain) {
+			// A table that is gone takes its set-ups, node and search with it: the table in view keeps its own.
+			if (saved.table === null || held.table !== null) {
+				if (held.table !== null && held.table !== plain.table) plain.choose(held.table);
+				plain.restore(held.setups, held.node);
+				if (held.q) plain.search(held.q);
+				else if (held.node === null && plain.rows.q) plain.reset();
+			}
+		} else if (held.q && held.q !== explore.spec.q) {
+			explore.apply({ ...explore.spec, q: held.q });
+		}
+		layout = held.layout;
+		return missing;
+	}
+
+	/** The dataset's default view, where it has one and the link names nothing else to show. */
+	function applyDefault(): void {
+		const preferred = session?.views.defaultId ?? null;
+		if (preferred !== null && !linked(opened)) applyView(preferred);
+	}
+
+	/**
+	 * Apply the shared view this page's link names, or say why it was not and open as the dataset opens with no shared
+	 * view. It is not made the sidebar's active view: only its owner's listing could show it, and that listing is read
+	 * beside it, so the opened view is told in the status line instead, the same for every reader on every load.
+	 */
+	function openShared(result: ApiResult<SharedView>): void {
+		const refuse = (text: string): void => {
+			applyDefault();
+			viewNotice = { text, problem: true };
+		};
+		if (!result.ok) {
+			refuse(`This shared view could not be opened: ${result.detail}`);
+			return;
+		}
+		const shared = result.data;
+		if (shared.dataset !== id) {
+			refuse(
+				`This shared view is of the dataset ${shared.dataset}, not this one: it was not applied.`,
+			);
+			return;
+		}
+		const read = readSharedView(shared);
+		if (read.status !== 'ok') {
+			refuse(
+				`The shared view ${shared.name} could not be applied: ${read.status === 'unreadable' ? read.detail : 'it holds nothing'}.`,
+			);
+			return;
+		}
+		const missing = applySnapshot(read.view);
+		sharedApplied = true;
+		viewNotice = {
+			text: [told('Opened the shared view', shared.name), ...missing].join(' '),
+			problem: missing.length > 0,
+		};
 	}
 
 	/** The first visit's arrangement: the wide one, which a narrow window shows stacked meanwhile. */
@@ -274,6 +355,7 @@
 		const searched = !isPlain && explore.mapSelection === null;
 		// The address as it is now (a shallow replace is not a navigation), not as the page opened.
 		const here = new URLSearchParams(location.search);
+		if (sharedApplied) here.delete('view');
 		if (isPlain && plain.table !== null && Object.keys(plain.facts?.tables ?? {}).length > 1) {
 			here.set('table', plain.table);
 		}
@@ -328,7 +410,7 @@
 <h1 class="sr-only">{id}</h1>
 <div class="wrap">
 	{#if views}
-		<ViewSidebar {views} onselect={applyView} />
+		<ViewSidebar {views} dataset={id} onselect={applyView} />
 	{/if}
 	<div class="dock">
 		{#if unreadable}
@@ -338,6 +420,11 @@
 					is shown and changes are not saved.
 				</span>
 				<Button variant="outline" size="xs" onclick={resetLayout}>Reset layout</Button>
+			</p>
+		{:else if viewNotice}
+			<p class={['note', { problem: viewNotice.problem }]} role="status">
+				<span>{viewNotice.text}</span>
+				<Button variant="ghost" size="xs" onclick={() => (viewNotice = null)}>Dismiss</Button>
 			</p>
 		{:else if linkProblem}
 			<p class="note problem" role="status">

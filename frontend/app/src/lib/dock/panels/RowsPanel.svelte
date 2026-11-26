@@ -48,7 +48,8 @@
 	const panes = $derived(plainPanes(columns, facts?.read_only ?? null));
 	const tables = $derived(Object.keys(facts?.tables ?? {}).sort());
 
-	let draft = $state('');
+	/** What the box holds: the search the rows are listed by (typed here, or set by a link or a view), until typed over. */
+	let draft = $derived(plain.rows.q ?? '');
 
 	const failure = (err: unknown): string =>
 		typeof err === 'object' && err !== null && 'body' in err

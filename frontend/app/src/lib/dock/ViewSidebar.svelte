@@ -9,15 +9,51 @@
 	 * loading a view does NOT redirect autosave at it. Autosave keeps writing the implicit draft, and
 	 * the view stays frozen until you press Save. Overwriting on every drag would mean you could never
 	 * open a saved arrangement to LOOK at it without destroying it.
+	 *
+	 * A saved view can be shared (ADR 0022): what it holds and its name are kept by the annotator, and the
+	 * sidebar shows the link that opens it, `/datasets/<id>?view=<view id>`. A view nobody shared stays in this
+	 * browser alone. The person's own shared views of the dataset are listed under Shared in whichever browser they
+	 * sign in on, each marked shared, with its link and the way to stop sharing it, which asks first: the link
+	 * then opens nothing for anyone who holds it.
 	 */
-	import { Check, ChevronRight, Plus, Save, Star, Trash2 } from '@lucide/svelte';
+	import { Check, ChevronRight, Link, Plus, Save, Share2, Star, Trash2, X } from '@lucide/svelte';
+	import { resolve } from '$app/paths';
+	import { told } from '#lib/projects/event-words.ts';
 	import type { DockViews } from './views.svelte.ts';
 
 	interface Props {
 		views: DockViews;
+		/** The dataset the views are of, which a shared view's link names. */
+		dataset: string;
 		onselect: (id: string) => void;
 	}
-	let { views, onselect }: Props = $props();
+	let { views, dataset, onselect }: Props = $props();
+
+	/** The link that opens the shared view `id`: this dataset's page, naming the view. */
+	function linkOf(id: string): string {
+		const url = new URL(
+			resolve('/datasets/[id]', { id: encodeURIComponent(dataset) }),
+			location.origin,
+		);
+		url.searchParams.set('view', id);
+		return url.href;
+	}
+
+	async function copy(id: string, name: string): Promise<void> {
+		views.showLink(id);
+		try {
+			await navigator.clipboard.writeText(linkOf(id));
+			views.tell(told('Copied the link', name));
+		} catch {
+			views.report('The link could not be copied here: select it and copy it by hand.');
+		}
+	}
+
+	function stopSharing(id: string, name: string): void {
+		if (!confirm(`Stop sharing ${name}? Its link will open nothing for anyone who holds it.`))
+			return;
+		void views.stopSharing(id);
+	}
 
 	let creating = $state(false);
 	/** Open on a wide screen; on a narrow one the panels get the height, and the list opens on demand. */
@@ -82,6 +118,33 @@
 
 		{#if views.lastError !== null}
 			<p class="problem">{views.lastError}</p>
+		{:else if views.notice !== null}
+			<p class="done" role="status">{views.notice}</p>
+		{/if}
+
+		{#if views.linkShown}
+			{@const shown = views.linkShown}
+			<div class="link">
+				<label for="dock-view-link">The link to {shown.name}</label>
+				<div class="link-row">
+					<input
+						id="dock-view-link"
+						type="text"
+						readonly
+						value={linkOf(shown.id)}
+						onfocus={(e) => e.currentTarget.select()}
+					/>
+					<button
+						type="button"
+						class="icon"
+						title="Copy the link"
+						aria-label="Copy this link"
+						onclick={() => void copy(shown.id, shown.name)}
+					>
+						<Link size={13} />
+					</button>
+				</div>
+			</div>
 		{/if}
 
 		{#if views.phase === 'unreadable'}
@@ -139,6 +202,18 @@
 								<Save size={13} />
 							</button>
 						{/if}
+						{#if views.canShare}
+							<button
+								type="button"
+								class="icon"
+								title="Share this view: anyone who may read this dataset can open its link"
+								aria-label="Share {v.name}"
+								disabled={views.busy}
+								onclick={() => void views.share(v.id)}
+							>
+								<Share2 size={13} />
+							</button>
+						{/if}
 						<button
 							type="button"
 							class="icon"
@@ -148,6 +223,49 @@
 							onclick={() => void views.remove(v.id)}
 						>
 							<Trash2 size={13} />
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+
+		{#if views.canShare && (views.shared.length > 0 || views.sharedProblem !== null)}
+			<p class="group">Shared</p>
+			{#if views.sharedProblem !== null}
+				<p class="problem">{views.sharedProblem}</p>
+			{/if}
+			{#if views.sharedCut}
+				<p class="empty">
+					Showing your {views.shared.length} newest shared views of this dataset; you share more.
+				</p>
+			{/if}
+			<ul aria-label="Your shared views">
+				{#each views.shared as v (v.id)}
+					{@const isActive = v.id === views.activeId}
+					<li>
+						<button type="button" class={['row', { on: isActive }]} onclick={() => onselect(v.id)}>
+							{#if isActive}<Check size={13} />{/if}
+							<span class="name">{v.name}</span>
+							<span class="tag">shared</span>
+						</button>
+						<button
+							type="button"
+							class="icon"
+							title="Show and copy its link"
+							aria-label="Copy the link to {v.name}"
+							onclick={() => void copy(v.id, v.name)}
+						>
+							<Link size={13} />
+						</button>
+						<button
+							type="button"
+							class="icon"
+							title="Stop sharing: its link opens nothing after"
+							aria-label="Stop sharing {v.name}"
+							disabled={views.busy}
+							onclick={() => stopSharing(v.id, v.name)}
+						>
+							<X size={13} />
 						</button>
 					</li>
 				{/each}
@@ -290,6 +408,41 @@
 		background: var(--background);
 		color: var(--foreground);
 		font-size: 12px;
+	}
+	.group {
+		margin: 8px 2px 0;
+		font-size: 11px;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--muted-foreground);
+	}
+	.tag {
+		flex: 0 0 auto;
+		margin-inline-start: auto;
+		padding: 0 4px;
+		border-radius: calc(var(--radius) - 6px);
+		background: var(--accent);
+		color: var(--muted-foreground);
+		font-size: 10px;
+	}
+	.link {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		margin: 0 2px;
+		font-size: 11px;
+		color: var(--muted-foreground);
+	}
+	.link-row {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+	.done {
+		margin: 4px 2px;
+		font-size: 11px;
+		color: var(--foreground);
 	}
 	.empty,
 	.problem {

@@ -288,3 +288,16 @@ CREATE TABLE IF NOT EXISTS people (
     name      text        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 120),
     seen_at   timestamptz NOT NULL
 );
+
+-- A saved view its owner shared by its link (ADR 0022, `annotator.api.v1.endpoints.views`): a dataset's arrangement,
+-- set-ups and search as the app keeps them, opaque here and checked by the app as it applies them. Opening it is a read
+-- of `dataset` under the reader's own rights; the row grants nothing. Deleted when its owner stops sharing it.
+CREATE TABLE IF NOT EXISTS shared_views (
+    view_id   text        PRIMARY KEY CHECK (char_length(view_id) BETWEEN 1 AND 64),
+    owner     text        NOT NULL CHECK (char_length(owner) BETWEEN 1 AND 512),
+    dataset   text        NOT NULL CHECK (char_length(dataset) BETWEEN 1 AND 512),
+    name      text        NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
+    snapshot  jsonb       NOT NULL CHECK (jsonb_typeof(snapshot) = 'object'),
+    shared_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shared_views_of_owner ON shared_views (owner, dataset, shared_at);

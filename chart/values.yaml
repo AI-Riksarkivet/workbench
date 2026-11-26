@@ -37,6 +37,8 @@ route:
     - /projects
     # one task: its events (claim, submit, review, ...), its draft and imports
     - /tasks
+    # saved views shared by their link: shared, opened as a read of their dataset, and unshared by their owner
+    - /views
   # The Gateway the routes attach to. Required while `enabled`.
   parentRefs: []
   # The hosts the routes answer for; empty answers every host the Gateway serves. A route naming a host wins over one

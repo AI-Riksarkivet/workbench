@@ -188,6 +188,110 @@ test('a view keeps the set-ups and opens with the dataset, a link draws them in 
 	await other.close();
 });
 
+test('a view shared by its link opens for another reader as it was saved and is listed for its owner elsewhere; a reader who may not read the dataset is refused with why, a gone table is named, and a view no longer shared says so', async ({
+	page,
+	context,
+	browser,
+}) => {
+	const sharer = person('Barbara');
+	await signIn(context, sharer);
+	await page.goto(DATASET);
+	await openPanel(page, 'Atlas');
+	await page.getByRole('button', { name: 'Draw the atlas' }).click();
+	const rows = page.getByRole('region', { name: 'Rows' });
+	await rows.getByRole('searchbox').fill('salt');
+	await rows.getByRole('searchbox').press('Enter');
+	await expect(rows.getByRole('table').getByRole('row')).toHaveCount(3);
+	await page.getByRole('button', { name: 'New view' }).click();
+	await page.getByLabel('View name').fill('Salt atlas');
+	await page.getByLabel('View name').press('Enter');
+
+	await page.getByRole('button', { name: 'Share Salt atlas' }).click();
+	await expect(page.getByRole('status').filter({ hasText: 'Shared: Salt atlas.' })).toBeVisible();
+	const link = await page.getByRole('textbox', { name: 'The link to Salt atlas' }).inputValue();
+	expect(link).toMatch(/\/datasets\/archive~field%24survey\?view=[0-9a-f]{32}$/);
+	const shared = (on: Page) =>
+		on.getByRole('list', { name: 'Your shared views' }).getByRole('button', {
+			name: /^Salt atlas\s*shared$/,
+		});
+	await expect(shared(page)).toBeVisible();
+
+	// The sharer on a browser that never saved it finds it listed, marked shared.
+	const elsewhere = await browser.newContext();
+	await signIn(elsewhere, sharer);
+	const own = await elsewhere.newPage();
+	await own.goto(DATASET);
+	await expect(shared(own)).toBeVisible();
+	await expect(
+		own.getByText('No saved views of this dataset yet.', { exact: false }),
+	).toBeVisible();
+	await elsewhere.close();
+
+	// Another person, on a browser with nothing stored, opens the link: the same layout, table, set-up and search.
+	const other = await browser.newContext();
+	await signIn(other, person('Ida'));
+	const reader = await other.newPage();
+	await reader.goto(link);
+	const opened = reader.getByRole('status').filter({ hasText: 'Opened the shared view' });
+	await expect(opened).toContainText('Opened the shared view: Salt atlas.');
+	await expect(reader.getByRole('tab', { name: /^Atlas/ })).toBeVisible();
+	await expect(
+		reader.getByRole('region', { name: 'Atlas' }).getByRole('status').first(),
+	).toContainText('4 of 4 rows');
+	const theirRows = reader.getByRole('region', { name: 'Rows' });
+	await expect(theirRows.getByRole('searchbox')).toHaveValue('salt');
+	await expect(theirRows.getByRole('table').getByRole('row')).toHaveCount(3);
+	await expect(reader).toHaveURL(/av=embedding/);
+	await expect(reader).not.toHaveURL(/view=/);
+
+	// A view whose table the dataset no longer holds opens with its arrangement, and names the table.
+	await reader.route('**/api/annotator/views/*', async (route) => {
+		const answer = await route.fetch();
+		const body = await answer.json();
+		body.snapshot.table = 'gone';
+		await route.fulfill({ response: answer, json: body });
+	});
+	await reader.goto(link);
+	await expect(opened).toContainText(
+		'This view names the table gone, which this dataset no longer holds: its set-ups and search were left out.',
+	);
+	await expect(reader.getByRole('tab', { name: /^Atlas/ })).toBeVisible();
+	await reader.unrouteAll();
+
+	// A person who may not read the dataset is refused as that read is, with the door's reason, and stays on the page.
+	const outside = await browser.newContext();
+	await signIn(outside, person('Outsider'));
+	const refused = await outside.newPage();
+	await refused.goto(link);
+	await expect(
+		refused.getByRole('status').filter({ hasText: 'This shared view could not be opened' }),
+	).toContainText(
+		/This shared view could not be opened: user:outsider-\w+ may not read source 'archive'/,
+	);
+	await expect(refused).toHaveURL(/\/datasets\/archive~field%24survey\?.*view=/);
+	await outside.close();
+
+	// Its owner stops sharing it, after a deliberate yes; the link then opens nothing, and says why.
+	const asked: string[] = [];
+	page.once('dialog', async (dialog) => {
+		asked.push(dialog.message());
+		await dialog.accept();
+	});
+	await page.getByRole('button', { name: 'Stop sharing Salt atlas' }).click();
+	await expect(
+		page.getByRole('status').filter({ hasText: 'Stopped sharing: Salt atlas.' }),
+	).toBeVisible();
+	expect(asked).toEqual([
+		'Stop sharing Salt atlas? Its link will open nothing for anyone who holds it.',
+	]);
+	await expect(shared(page)).toHaveCount(0);
+	await reader.goto(link);
+	await expect(
+		reader.getByRole('status').filter({ hasText: 'This shared view could not be opened' }),
+	).toContainText('its owner may have stopped sharing it');
+	await other.close();
+});
+
 // The demo's own plain tables, answered as the viewer answered them (`e2e/seeded-answers.json`, recorded from the
 // real viewer by `scripts/record_derived_answers.py` and held to it by the viewer's suite): the suggested set-ups
 // are drawn, not only filled in, so an answer the app cannot read fails here.

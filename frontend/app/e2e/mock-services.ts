@@ -49,6 +49,7 @@ import { FIRST_KEY, athOf, readToken, verifyProof, type TokenClaims } from './dp
 import { lakehouseCallsOf, readAsPerson } from './mock-lakehouse';
 import { SHAPES, shapeOf } from './providers';
 import { annotationsDoor, assistDoor } from './mock-annotations';
+import { viewsDoor } from './mock-views';
 import {
 	draftOf,
 	isFault,
@@ -1711,6 +1712,8 @@ Bun.serve({
 			endpoint,
 		});
 		if (projects) return projects;
+		const shared = await viewsDoor(req, url, { sub: who.sub, name: who.name, record: ok });
+		if (shared) return shared;
 		ok(404);
 		return json({ detail: `unstubbed ${req.method} ${url.pathname}` }, 404);
 	},

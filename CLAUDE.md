@@ -163,7 +163,7 @@ The settings, one `WORKBENCH_*` name each (`workbench.governed.settings`); every
 | `WORKBENCH_EMBED_URL`, `WORKBENCH_RERANK_URL` | the embedding and reranking model servers search queries and the viewer's health reports on |
 | `VIEWER_CACHE_BYTES`, `VIEWER_DERIVED_BUILDS` | the one byte budget the viewer's drawn answers share (the chart's `media.viewer.cacheBytes`), and how many derived views it builds at once |
 | `SEARCH_CACHE_SIZE`, `SEARCH_CACHE_BYTES` | search's version-keyed result cache: how many result sets, and how many bytes (0 disables each) |
-| `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
+| `ANNOTATOR_STATE_HOST`, `_PORT`, `_DATABASE`, `_USER`, `_SSLMODE`, `_CA_FILE`, `_PASSWORD_FILE` | the annotator's own PostgreSQL (its projects, tasks, drafts and claims, and the saved views people share): names only, the password a mounted file read on each new connection; `verify-full` against the CA by default, `disable` refused off the loopback; unset, the project and task plane answers 503 |
 | `ANNOTATOR_STATE_STATEMENT_TIMEOUT_SECONDS`, `_LOCK_TIMEOUT_SECONDS` | how long one statement may run, waiting included (default 30 s), and wait for another request's lock (10 s), before the database cancels it; the request answers 503 `statement-cancelled` with the reason, its transaction rolled back. The schema applied at start is exempt (the chart's `state.statementTimeoutSeconds`, `lockTimeoutSeconds`) |
 | `ANNOTATOR_PUBLISH_LEASE_SECONDS`, `_REDRIVE_SECONDS`, `_CONCURRENCY` | a publish run's lease on its project (default 300 s), how often each replica sweeps for publishes no live run holds (30 s, jittered), and how many runs one replica drives at once (2, below the pool size) |
 | `WORKBENCH_FGA_ENABLED`, `_API_URL`, `_STORE`, `_MODEL_ID`, `_CREDENTIAL_FILE` | the workbench's own OpenFGA store, found by name, its model by the body the image carries unless pinned; required with sign-in on beside a source the workbench authorizes, and the chart gives it to the viewer and search there as to the annotator |
@@ -307,7 +307,7 @@ Two language-pure planes, as in rask; never blur them.
   through lance-namespace, as the caller on a lakehouse (on the credentials the catalog vends) and with no token anywhere
   else: the workbench holds no store key.
 - `services/`: runnable Python. `viewer`, `search`, `annotator`, `flows`, each with its own `tests/`.
-  - The annotator keeps its projects, tasks, drafts and claims in its own PostgreSQL (`annotator.state.store`, psycopg 3
+  - The annotator keeps its projects, tasks, drafts and claims, and the saved views people share, in its own PostgreSQL (`annotator.state.store`, psycopg 3
     with its pool, plain SQL over `state/schema.sql`, applied at start under an advisory lock): each row holds its Pydantic
     document as JSONB beside the columns a query locks or filters on. Those columns are stored generated columns, and a
     stored value is never stale by construction: each is declared through `annotator_declare_generated`, which drops and
@@ -368,7 +368,11 @@ Two language-pure planes, as in rask; never blur them.
     dataset's layout is kept per dataset (`#lib/dock/store.ts`); one never arranged opens with the default that fits it
     (`defaultLayout`: only the panels it can feed, the views tabbed together). A dataset's named views (the Views rail,
     `#lib/dock/views.svelte.ts`) are the arrangement, a plain table's set-ups and the search or node its rows listed,
-    several per dataset, one of which may be its default, which it opens with when no link says otherwise. The panels share one selection (`explore`, the atlas's `crossFilter`, `#lib/graph/graph-explorer.svelte.ts`):
+    several per dataset, one of which may be its default, which it opens with when no link says otherwise. A view is kept
+    in its owner's browser until they share it (ADR 0022): the annotator's `/views` doors keep a copy and give it a link,
+    `/datasets/<id>?view=<view_id>`, which opens as a read of the dataset under the reader's own rights (the link grants
+    nothing), applied through the same checks as a stored view, saying by name a table or column it names that is gone
+    (`#lib/dock/view-fit.ts`); the owner's shared views are listed to them alone, in any browser, until they stop sharing. The panels share one selection (`explore`, the atlas's `crossFilter`, `#lib/graph/graph-explorer.svelte.ts`):
     a topic chosen in the tree is the search's `topic=`, an entity picked in the graph searches for its name, and the
     Atlas lights up the results. The address is the view (`#lib/dock/link.ts`): the search, the topic, the row opened,
     the graph's entity, a plain table's set-ups and the node its rows are filtered to (validated, bounded, and left out

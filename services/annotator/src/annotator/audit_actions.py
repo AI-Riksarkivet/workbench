@@ -23,6 +23,8 @@ class AnnotatorAuditAction(StrEnum):
     ANNOTATOR_ASSIST = "annotator.assist"
     ANNOTATOR_JUDGE = "annotator.judge"
     ANNOTATOR_SAMPLE = "annotator.sample"
+    VIEW_SHARE = "view.share"
+    VIEW_UNSHARE = "view.unshare"
     ANNOTATOR_AUTHORIZE = "annotator.authorize"
     PROJECT_ADJUDICATE = "project.adjudicate"
     PROJECT_DROP_TASK = "project.drop_task"

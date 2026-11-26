@@ -9,7 +9,7 @@
 import { LayoutAutosave } from './autosave.ts';
 import type { LayoutRead } from './layout.ts';
 import { viewsOf, type ViewSnapshot, type WorkbenchStore } from './store.ts';
-import { DockViews } from './views.svelte.ts';
+import { DockViews, type SharedViewsDoor } from './views.svelte.ts';
 
 export interface WorkbenchSession {
 	readonly store: WorkbenchStore;
@@ -36,6 +36,8 @@ export interface SessionHooks {
 	 * runs a microtask later, and a page torn down in that gap would hold nothing to stop.
 	 */
 	started: (session: WorkbenchSession) => void;
+	/** Where the person's shared views of the dataset are kept, when a service keeps them. */
+	shared?: SharedViewsDoor | null;
 }
 
 /** Start the workbench for `dataset` over the store `opening` resolves to; nothing starts when the page `left`
@@ -54,10 +56,12 @@ export async function startWorkbench(
 		hooks.onLayout({ status: 'unreadable', detail }, false),
 	);
 	const restored = autosave.restore();
-	const views = new DockViews(viewsOf(store, dataset), hooks.snapshot);
-	// Listed before the page starts, so it can open on the dataset's default view.
+	const views = new DockViews(viewsOf(store, dataset), hooks.snapshot, hooks.shared ?? null);
+	// Listed before the page starts, so it can open on the dataset's default view. The shared views are listed
+	// beside it: the dataset opens on no shared view by itself, so the page does not wait for them.
 	await views.refresh();
 	if (left()) return;
+	void views.refreshShared();
 
 	const stopWatching = store.onChange(() => {
 		const wasRefused = !autosave.saving;

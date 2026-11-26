@@ -16,6 +16,7 @@ from annotator.api.v1.endpoints.projects import router as projects_router
 from annotator.api.v1.endpoints.sampling import project_router as sampling_project_router
 from annotator.api.v1.endpoints.sampling import router as sampling_router
 from annotator.api.v1.endpoints.tasks import router as tasks_router
+from annotator.api.v1.endpoints.views import router as views_router
 
 
 router = APIRouter()
@@ -30,5 +31,6 @@ for r in (
     project_events_router,
     members_router,
     tasks_router,
+    views_router,
 ):
     router.include_router(r)

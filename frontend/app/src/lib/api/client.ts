@@ -318,6 +318,33 @@ export async function writeJSON<T>(
 	return result;
 }
 
+/** A write that sends no body and is answered with none (a DELETE answered 204), waited for as {@link writeJSON}
+ *  waits. A write with no answer is `status: 0`, NOT CONFIRMED. */
+export async function writeNoContent(
+	url: string,
+	upstream: string,
+	options: Pick<WriteOptions, 'method' | 'signal'> = {},
+): Promise<ApiResult<null>> {
+	let res: Response;
+	try {
+		res = await authorizedFetch(url, {
+			method: options.method ?? 'DELETE',
+			signal: options.signal
+				? AbortSignal.any([timeoutSignal(WRITE_TIMEOUT_MS), options.signal])
+				: timeoutSignal(WRITE_TIMEOUT_MS),
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			status: 0,
+			detail: `NOT CONFIRMED: ${upstream} gave no answer (${String(err)}), so the write may have landed`,
+		};
+	}
+	if (!res.ok) return failure(res, upstream);
+	await res.body?.cancel().catch(() => {});
+	return { ok: true, data: null };
+}
+
 async function sendWrite<T>(
 	{ url, text, upstream }: { url: string; text: string; upstream: string },
 	schema: v.GenericSchema<unknown, T>,
